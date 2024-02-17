@@ -5,10 +5,11 @@ use std::{
 
 use itertools::Itertools;
 use nom::{
+    branch::alt,
     bytes::complete::{tag, take_till, take_until},
     character::complete::{char, space0},
     combinator::map_res,
-    sequence::{delimited, preceded},
+    sequence::preceded,
     IResult,
 };
 
@@ -68,13 +69,9 @@ impl PlaylistEntry {
         let (i, duration) = parse_duration(i)?;
         let (i, _) = space0(i)?;
         let (i, _) = parse_xui_id(i)?;
-        let (i, _) = space0(i)?;
         let (i, tvg_id) = parse_tvg_id(i)?;
-        let (i, _) = space0(i)?;
         let (i, tvg_name) = parse_tvg_name(i)?;
-        let (i, _) = space0(i)?;
         let (i, tvg_logo) = parse_tvg_logo(i)?;
-        let (i, _) = space0(i)?;
         let (i, group_title) = parse_group_title(i)?;
         let (i, _) = char(',')(i)?;
         let (i, (name, url)) = parse_name_and_url(i)?;
@@ -110,24 +107,24 @@ fn parse_duration(input: &str) -> IResult<&str, i32> {
     })(input)
 }
 
-fn parse_tvg_id(input: &str) -> IResult<&str, &str> {
-    delimited(tag("tvg-id=\""), take_until("\""), tag("\""))(input)
+fn parse_xui_id(input: &str) -> IResult<&str, &str> {
+    preceded(tag(" xui-id=\""), take_until_key)(input)
 }
 
-fn parse_xui_id(input: &str) -> IResult<&str, &str> {
-    delimited(tag("xui-id=\""), take_until("\""), tag("\""))(input)
+fn parse_tvg_id(input: &str) -> IResult<&str, &str> {
+    preceded(tag("\" tvg-id=\""), take_until_key)(input)
 }
 
 fn parse_tvg_name(input: &str) -> IResult<&str, &str> {
-    delimited(tag("tvg-name=\""), take_until("\""), tag("\""))(input)
+    preceded(tag("\" tvg-name=\""), take_until_key)(input)
 }
 
 fn parse_tvg_logo(input: &str) -> IResult<&str, &str> {
-    delimited(tag("tvg-logo=\""), take_until("\""), tag("\""))(input)
+    preceded(tag("\" tvg-logo=\""), take_until_key)(input)
 }
 
 fn parse_group_title(input: &str) -> IResult<&str, &str> {
-    delimited(tag("group-title=\""), take_until("\""), tag("\""))(input)
+    preceded(tag("\" group-title=\""), take_until_key)(input)
 }
 
 fn parse_name_and_url(input: &str) -> IResult<&str, (&str, &str)> {
@@ -135,6 +132,39 @@ fn parse_name_and_url(input: &str) -> IResult<&str, (&str, &str)> {
     let (input, _) = char('\n')(input)?;
     let (input, url) = take_till(|c| c == '\n' || c == '\0')(input)?;
     Ok((input, (name, url)))
+}
+
+enum EntryKey {
+    Duration,
+    XuiId,
+    TvgId,
+    TvgName,
+    TvgLogo,
+    GroupTitle,
+}
+
+impl EntryKey {
+    fn as_str(&self) -> &str {
+        match self {
+            EntryKey::Duration => "#EXTINF:",
+            EntryKey::XuiId => " xui-id=\"",
+            EntryKey::TvgId => "\" tvg-id=\"",
+            EntryKey::TvgName => "\" tvg-name=\"",
+            EntryKey::TvgLogo => "\" tvg-logo=\"",
+            EntryKey::GroupTitle => "\" group-title=\"",
+        }
+    }
+}
+
+fn take_until_key(input: &str) -> IResult<&str, &str> {
+    alt((
+        take_until(EntryKey::Duration.as_str()),
+        take_until(EntryKey::XuiId.as_str()),
+        take_until(EntryKey::TvgId.as_str()),
+        take_until(EntryKey::TvgName.as_str()),
+        take_until(EntryKey::TvgLogo.as_str()),
+        take_until(EntryKey::GroupTitle.as_str()),
+    ))(input)
 }
 
 #[cfg(test)]

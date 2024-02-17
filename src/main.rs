@@ -3,7 +3,6 @@ use std::{env, fs};
 use crate::parse::Playlist;
 
 mod parse;
-mod parse_alt;
 
 #[tokio::main]
 async fn main() {
