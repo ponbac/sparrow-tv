@@ -42,12 +42,14 @@ impl AppState {
         let client = reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
             .build()?;
-        let playlist_content = client
+        let response = client
             .get(std::env::var("M3U_PATH").unwrap())
             .send()
-            .await?
-            .text()
             .await?;
+        if response.status() != 200 {
+            tracing::error!("Received a non-200 response: {:?}", response);
+        }
+        let playlist_content = response.text().await?;
         // let playlist_content =
         //     std::fs::read_to_string("playlist_full.m3u").expect("Failed to read playlist file");
         let mut playlist: Playlist = playlist_content.parse().expect("Failed to parse playlist");
