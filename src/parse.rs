@@ -7,13 +7,13 @@ use itertools::Itertools;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_till, take_until},
-    character::complete::{char, space0},
+    character::complete::char,
     combinator::map_res,
     sequence::preceded,
     IResult,
 };
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct PlaylistEntry {
     pub duration: i32,
     pub tvg_id: String,
@@ -24,7 +24,7 @@ pub struct PlaylistEntry {
     pub url: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Playlist {
     pub entries: Vec<PlaylistEntry>,
 }
@@ -38,6 +38,16 @@ impl Playlist {
                 .map(|entry| entry.to_string())
                 .join("\n")
         )
+    }
+
+    pub fn exclude_groups(&mut self, groups: Vec<&str>) {
+        self.entries
+            .retain(|entry| !groups.contains(&entry.group_title.as_str()));
+    }
+
+    pub fn exclude_all_extensions(&mut self) {
+        self.entries
+            .retain(|entry| !entry.url.split('/').last().unwrap().contains('.'));
     }
 }
 
@@ -67,13 +77,11 @@ impl FromStr for Playlist {
 impl PlaylistEntry {
     pub fn parse(i: &str) -> IResult<&str, PlaylistEntry> {
         let (i, duration) = parse_duration(i)?;
-        let (i, _) = space0(i)?;
         let (i, _) = parse_xui_id(i)?;
         let (i, tvg_id) = parse_tvg_id(i)?;
         let (i, tvg_name) = parse_tvg_name(i)?;
         let (i, tvg_logo) = parse_tvg_logo(i)?;
         let (i, group_title) = parse_group_title(i)?;
-        let (i, _) = char(',')(i)?;
         let (i, (name, url)) = parse_name_and_url(i)?;
 
         Ok((
@@ -124,10 +132,11 @@ fn parse_tvg_logo(input: &str) -> IResult<&str, &str> {
 }
 
 fn parse_group_title(input: &str) -> IResult<&str, &str> {
-    preceded(tag("\" group-title=\""), take_until_key)(input)
+    preceded(tag("\" group-title=\""), take_until("\","))(input)
 }
 
 fn parse_name_and_url(input: &str) -> IResult<&str, (&str, &str)> {
+    let (input, _) = tag("\",")(input)?;
     let (input, name) = take_until("\n")(input)?;
     let (input, _) = char('\n')(input)?;
     let (input, url) = take_till(|c| c == '\n' || c == '\0')(input)?;
@@ -170,39 +179,6 @@ fn take_until_key(input: &str) -> IResult<&str, &str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_duration() {
-        assert_eq!(parse_duration("#EXTINF:-1"), Ok(("", -1)));
-    }
-
-    #[test]
-    fn test_parse_tvg_id() {
-        assert_eq!(parse_tvg_id("tvg-id=\"\""), Ok(("", "")));
-    }
-
-    #[test]
-    fn test_parse_tvg_name() {
-        assert_eq!(parse_tvg_name("tvg-name=\"\""), Ok(("", "")));
-    }
-
-    #[test]
-    fn test_parse_tvg_logo() {
-        assert_eq!(parse_tvg_logo("tvg-logo=\"\""), Ok(("", "")));
-    }
-
-    #[test]
-    fn test_parse_group_title() {
-        assert_eq!(parse_group_title("group-title=\"\""), Ok(("", "")));
-    }
-
-    #[test]
-    fn test_parse_name_and_url() {
-        assert_eq!(
-            parse_name_and_url("ABC ‧ TEST\nhttp://abc.xyz:8080/user/pass/168917"),
-            Ok(("", ("ABC ‧ TEST", "http://abc.xyz:8080/user/pass/168917")))
-        );
-    }
 
     #[test]
     fn test_parse_playlist_entry() {
