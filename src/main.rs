@@ -39,7 +39,12 @@ impl AppState {
             }
         }
 
-        let playlist_content = reqwest::get(std::env::var("M3U_PATH").unwrap())
+        let client = reqwest::Client::builder()
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+            .build()?;
+        let playlist_content = client
+            .get(std::env::var("M3U_PATH").unwrap())
+            .send()
             .await?
             .text()
             .await?;
