@@ -1,4 +1,4 @@
-FROM lukemathwalker/cargo-chef:latest-rust-1.71.1 as chef
+FROM lukemathwalker/cargo-chef:latest-rust-1.76.0 as chef
 WORKDIR /app
 RUN apt update && apt install lld clang -y
 
@@ -17,7 +17,7 @@ COPY . .
 # Build our project
 RUN cargo build --release --bin sparrow-tv
 
-FROM debian:bullseye-slim as runtime
+FROM ubuntu:22.04 as runtime
 WORKDIR /app
 RUN apt-get update -y \
     && apt-get install -y --no-install-recommends openssl ca-certificates \
