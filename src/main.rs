@@ -73,11 +73,14 @@ async fn main() {
     let env_filter = EnvFilter::from("info,sparrow_tv=debug,tower_http=debug,axum=debug");
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
+    let app_state = AppState::new();
+    app_state.fetch_playlist().await.unwrap();
+
     // Start server
     let cors_options = CorsLayer::very_permissive();
     let app: Router = Router::new()
         .route("/", get(routes::download_playlist))
-        .with_state(AppState::new())
+        .with_state(app_state)
         .layer(cors_options)
         .layer(TraceLayer::new_for_http());
 
