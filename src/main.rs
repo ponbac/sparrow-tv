@@ -139,7 +139,7 @@ mod routes {
     }
 }
 
-const SNIPPETS_TO_EXCLUDE: &[&str] = &["NO", "DK"];
+const SNIPPETS_TO_EXCLUDE: &[&str] = &["NO", "DK", "PL", "FI"];
 
 const GROUPS_TO_EXCLUDE: &[&str] = &[
     "For Adults",
