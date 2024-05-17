@@ -45,6 +45,14 @@ impl Playlist {
             .retain(|entry| !groups.contains(&entry.group_title.as_str()));
     }
 
+    pub fn exclude_containing(&mut self, snippets: Vec<&str>) {
+        self.entries.retain(|entry| {
+            !snippets
+                .iter()
+                .any(|snippet| entry.group_title.contains(snippet))
+        });
+    }
+
     pub fn exclude_all_extensions(&mut self) {
         self.entries
             .retain(|entry| !entry.url.split('/').last().unwrap().contains('.'));

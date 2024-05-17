@@ -54,6 +54,7 @@ impl AppState {
         //     std::fs::read_to_string("playlist_full.m3u").expect("Failed to read playlist file");
         let mut playlist: Playlist = playlist_content.parse().expect("Failed to parse playlist");
         playlist.exclude_groups(GROUPS_TO_EXCLUDE.to_vec());
+        playlist.exclude_containing(SNIPPETS_TO_EXCLUDE.to_vec());
         playlist.exclude_all_extensions();
 
         let mut cached_playlist = self.cached_playlist.write().unwrap();
@@ -137,6 +138,8 @@ mod routes {
             .unwrap())
     }
 }
+
+const SNIPPETS_TO_EXCLUDE: &[&str] = &["NO", "DK"];
 
 const GROUPS_TO_EXCLUDE: &[&str] = &[
     "For Adults",
