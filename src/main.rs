@@ -1,6 +1,7 @@
 use std::{
     net::SocketAddr,
     sync::{Arc, RwLock},
+    time::Duration,
 };
 
 use axum::{routing::get, Router};
@@ -17,9 +18,15 @@ struct PlaylistFetch {
     fetched: time::Instant,
 }
 
+impl PlaylistFetch {
+    pub fn is_stale(&self) -> bool {
+        self.fetched.elapsed() > time::Duration::hours(6)
+    }
+}
+
 #[derive(Debug, Clone)]
 struct AppState {
-    cached_playlist: Arc<RwLock<Option<PlaylistFetch>>>,
+    pub cached_playlist: Arc<RwLock<Option<PlaylistFetch>>>,
 }
 
 impl AppState {
@@ -33,7 +40,7 @@ impl AppState {
         {
             let cached_playlist = self.cached_playlist.read().unwrap();
             if let Some(playlist_fetch) = &*cached_playlist {
-                if playlist_fetch.fetched.elapsed() < time::Duration::hours(12) {
+                if !playlist_fetch.is_stale() {
                     return Ok(playlist_fetch.playlist.clone());
                 }
             }
@@ -50,8 +57,6 @@ impl AppState {
             tracing::error!("Received a non-200 response: {:?}", response);
         }
         let playlist_content = response.text().await?;
-        // let playlist_content =
-        //     std::fs::read_to_string("playlist_full.m3u").expect("Failed to read playlist file");
         let mut playlist: Playlist = playlist_content.parse().expect("Failed to parse playlist");
         playlist.exclude_groups(GROUPS_TO_EXCLUDE.to_vec());
         playlist.exclude_containing(SNIPPETS_TO_EXCLUDE.to_vec());
@@ -76,6 +81,26 @@ async fn main() {
 
     let app_state = AppState::new();
     app_state.fetch_playlist().await.unwrap();
+
+    // thread that fetches the playlist if stale
+    let app_state_clone = app_state.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            let is_stale = {
+                let playlist = app_state_clone.cached_playlist.read().unwrap();
+                if let Some(playlist_fetch) = &*playlist {
+                    playlist_fetch.is_stale()
+                } else {
+                    false
+                }
+            };
+            if is_stale {
+                tracing::info!("Playlist is stale, fetching new one");
+                let _ = app_state_clone.fetch_playlist().await;
+            }
+        }
+    });
 
     // Start server
     let cors_options = CorsLayer::very_permissive();
