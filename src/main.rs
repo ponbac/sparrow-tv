@@ -61,6 +61,11 @@ impl AppState {
         playlist.exclude_groups(GROUPS_TO_EXCLUDE.to_vec());
         playlist.exclude_containing(SNIPPETS_TO_EXCLUDE.to_vec());
         playlist.exclude_all_extensions();
+        tracing::info!(
+            "Fetched playlist with {} groups:\n{}",
+            playlist.groups().len(),
+            playlist.groups().join("\n")
+        );
 
         let mut cached_playlist = self.cached_playlist.write().unwrap();
         *cached_playlist = Some(PlaylistFetch {

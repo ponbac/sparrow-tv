@@ -30,6 +30,18 @@ pub struct Playlist {
 }
 
 impl Playlist {
+    pub fn new(entries: Vec<PlaylistEntry>) -> Self {
+        Self { entries }
+    }
+
+    pub fn groups(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .map(|entry| entry.group_title.clone())
+            .unique()
+            .collect()
+    }
+
     pub fn to_m3u(&self) -> String {
         format!(
             "#EXTM3U\n{}",
@@ -41,15 +53,29 @@ impl Playlist {
     }
 
     pub fn exclude_groups(&mut self, groups: Vec<&str>) {
-        self.entries
-            .retain(|entry| !groups.contains(&entry.group_title.as_str()));
+        self.entries.retain(|entry| {
+            let group_title = entry.group_title.as_str();
+            let is_excluded = groups.contains(&group_title);
+            if is_excluded {
+                tracing::debug!("Excluding group: {}", group_title);
+            }
+            !is_excluded
+        });
     }
 
     pub fn exclude_containing(&mut self, snippets: Vec<&str>) {
         self.entries.retain(|entry| {
-            !snippets
+            let is_excluded = snippets
                 .iter()
-                .any(|snippet| entry.group_title.contains(snippet))
+                .any(|snippet| entry.group_title.contains(snippet));
+            if is_excluded {
+                tracing::debug!(
+                    "Excluding entry {} with group title: {}",
+                    entry.name,
+                    entry.group_title
+                );
+            }
+            !is_excluded
         });
     }
 
@@ -78,7 +104,7 @@ impl FromStr for Playlist {
             })
             .collect::<Vec<PlaylistEntry>>();
 
-        Ok(Playlist { entries })
+        Ok(Playlist::new(entries))
     }
 }
 
