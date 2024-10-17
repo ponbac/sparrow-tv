@@ -51,16 +51,9 @@ impl Playlist {
                 .join("\n")
         )
     }
-
-    pub fn exclude_groups(&mut self, groups: Vec<&str>) {
-        self.entries.retain(|entry| {
-            let group_title = entry.group_title.as_str();
-            let is_excluded = groups.contains(&group_title);
-            if is_excluded {
-                tracing::debug!("Excluding group: {}", group_title);
-            }
-            !is_excluded
-        });
+    pub fn exclude_groups(&mut self, groups_to_exclude: Vec<&str>) {
+        self.entries
+            .retain(|entry| !groups_to_exclude.contains(&entry.group_title.as_str()));
     }
 
     pub fn exclude_containing(&mut self, snippets: Vec<&str>) {

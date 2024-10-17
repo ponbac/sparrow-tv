@@ -5,12 +5,13 @@ use std::{
 };
 
 use axum::{routing::get, Router};
-use parse::Playlist;
+use playlist::Playlist;
 use tokio::net::TcpListener;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::EnvFilter;
 
-mod parse;
+mod playlist;
+mod epg;
 
 #[derive(Debug)]
 struct PlaylistFetch {
