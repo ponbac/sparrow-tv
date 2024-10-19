@@ -5,13 +5,18 @@ use std::{
 };
 
 use axum::{routing::get, Router};
+use epg::Epg;
 use playlist::Playlist;
 use tokio::net::TcpListener;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::EnvFilter;
 
-mod playlist;
 mod epg;
+mod playlist;
+
+trait FileFetch {
+    fn is_stale(&self) -> bool;
+}
 
 #[derive(Debug)]
 struct PlaylistFetch {
@@ -19,8 +24,20 @@ struct PlaylistFetch {
     fetched: time::Instant,
 }
 
-impl PlaylistFetch {
-    pub fn is_stale(&self) -> bool {
+#[derive(Debug)]
+struct EpgFetch {
+    epg: Epg,
+    fetched: time::Instant,
+}
+
+impl FileFetch for PlaylistFetch {
+    fn is_stale(&self) -> bool {
+        self.fetched.elapsed() > time::Duration::hours(6)
+    }
+}
+
+impl FileFetch for EpgFetch {
+    fn is_stale(&self) -> bool {
         self.fetched.elapsed() > time::Duration::hours(6)
     }
 }
@@ -28,12 +45,14 @@ impl PlaylistFetch {
 #[derive(Debug, Clone)]
 struct AppState {
     pub cached_playlist: Arc<RwLock<Option<PlaylistFetch>>>,
+    pub cached_epg: Arc<RwLock<Option<EpgFetch>>>,
 }
 
 impl AppState {
     fn new() -> Self {
         Self {
             cached_playlist: Arc::new(RwLock::new(None)),
+            cached_epg: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -76,6 +95,27 @@ impl AppState {
 
         Ok(playlist)
     }
+
+    async fn fetch_epg(&self) -> Result<Epg, Box<dyn std::error::Error>> {
+        {
+            let cached_epg = self.cached_epg.read().unwrap();
+            if let Some(epg_fetch) = &*cached_epg {
+                if !epg_fetch.is_stale() {
+                    return Ok(epg_fetch.epg.clone());
+                }
+            }
+        }
+
+        let epg = Epg::from_url(&std::env::var("EPG_PATH").unwrap()).await?;
+
+        let mut cached_epg = self.cached_epg.write().unwrap();
+        *cached_epg = Some(EpgFetch {
+            epg: epg.clone(),
+            fetched: time::Instant::now(),
+        });
+
+        Ok(epg)
+    }
 }
 
 #[tokio::main]
@@ -112,6 +152,7 @@ async fn main() {
     let cors_options = CorsLayer::very_permissive();
     let app: Router = Router::new()
         .route("/", get(routes::download_playlist))
+        .route("/search", get(routes::search))
         .with_state(app_state)
         .layer(cors_options)
         .layer(TraceLayer::new_for_http());
@@ -132,18 +173,20 @@ async fn main() {
 
 mod routes {
     use axum::{
-        debug_handler,
         extract::{Query, State},
         http::{Response, StatusCode},
+        Json,
     };
-    use serde::Deserialize;
+    use chrono::{DateTime, FixedOffset};
+    use serde::{Deserialize, Serialize};
+
+    use crate::epg;
 
     #[derive(Debug, Deserialize)]
     pub struct DownloadQuery {
         pw: String,
     }
 
-    #[debug_handler]
     pub async fn download_playlist(
         Query(DownloadQuery { pw }): Query<DownloadQuery>,
         State(app_state): State<super::AppState>,
@@ -167,6 +210,47 @@ mod routes {
             .header("Content-Type", "audio/x-mpegurl")
             .body(m3u)
             .unwrap())
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct SearchQuery {
+        search: String,
+    }
+
+    #[derive(Debug, Serialize)]
+    pub struct SearchResult {
+        programme_title: String,
+        programme_desc: String,
+        start: DateTime<FixedOffset>,
+        stop: DateTime<FixedOffset>,
+        channel_id: String,
+        channel_name: String,
+    }
+
+    pub async fn search(
+        Query(SearchQuery { search }): Query<SearchQuery>,
+        State(app_state): State<super::AppState>,
+    ) -> Result<Json<Vec<SearchResult>>, (StatusCode, &'static str)> {
+        let epg = app_state.fetch_epg().await.map_err(|e| {
+            tracing::error!("Failed to fetch EPG: {:?}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch EPG")
+        })?;
+        let channel_map = epg.channel_map();
+        let programmes = epg.search(&search);
+
+        let results: Vec<SearchResult> = programmes
+            .into_iter()
+            .map(|p| SearchResult {
+                programme_title: p.title,
+                programme_desc: p.desc,
+                start: p.start,
+                stop: p.stop,
+                channel_id: p.channel.clone(),
+                channel_name: channel_map.get(&p.channel).unwrap().display_name.clone(),
+            })
+            .collect();
+
+        Ok(Json(results))
     }
 }
 
