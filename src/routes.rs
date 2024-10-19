@@ -38,6 +38,36 @@ pub async fn download_playlist(
         .unwrap())
 }
 
+pub async fn download_epg(
+    Query(DownloadQuery { pw }): Query<DownloadQuery>,
+    State(app_state): State<AppState>,
+) -> Result<Response<String>, (StatusCode, &'static str)> {
+    if pw != std::env::var("PASSWORD").unwrap() {
+        return Err((StatusCode::UNAUTHORIZED, "Unauthorized"));
+    }
+
+    let mut epg = app_state.fetch_epg().await.map_err(|e| {
+        tracing::error!("Failed to fetch EPG: {:?}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch EPG")
+    })?;
+    let playlist = app_state.fetch_playlist().await.map_err(|e| {
+        tracing::error!("Failed to fetch playlist: {:?}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to fetch playlist",
+        )
+    })?;
+
+    let channels_to_keep: Vec<String> = playlist.entries.iter().map(|e| e.tvg_id.clone()).collect();
+    epg.filter_channels(&channels_to_keep);
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/xml")
+        .body(epg.to_xml().unwrap())
+        .unwrap())
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SearchQuery {
     #[serde(rename = "q")]

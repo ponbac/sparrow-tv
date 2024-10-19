@@ -153,6 +153,7 @@ async fn main() {
     let cors_options = CorsLayer::very_permissive();
     let app: Router = Router::new()
         .route("/", get(routes::download_playlist))
+        .route("/epg", get(routes::download_epg))
         .route("/search", get(routes::search))
         .with_state(app_state)
         .layer(cors_options)
@@ -172,9 +173,9 @@ async fn main() {
     axum::serve(listener, app).await.unwrap()
 }
 
-const SNIPPETS_TO_EXCLUDE: &[&str] = &["NO", "DK", "PL", "FI"];
+pub const SNIPPETS_TO_EXCLUDE: &[&str] = &["NO", "DK", "PL", "FI"];
 
-const GROUPS_TO_EXCLUDE: &[&str] = &[
+pub const GROUPS_TO_EXCLUDE: &[&str] = &[
     "For Adults",
     "Afganistan",
     "Pakistan",

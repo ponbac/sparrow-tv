@@ -41,35 +41,6 @@ pub struct Programme {
 impl Epg {
     pub fn from_reader(reader: impl Read) -> Result<Epg, Box<dyn std::error::Error>> {
         let epg: Epg = serde_xml_rs::from_reader(reader)?;
-
-        println!("Found {} channels", epg.channels.len());
-        println!("Found {} programmes", epg.programmes.len());
-
-        let channel_map: HashMap<String, Channel> = epg
-            .clone()
-            .channels
-            .into_iter()
-            .map(|c| (c.id.clone(), c))
-            .collect();
-
-        let search_term = "six kings";
-        let time_now = time::Instant::now();
-        for programme in &epg.programmes {
-            if programme.title.to_lowercase().contains(search_term)
-                || programme.desc.to_lowercase().contains(search_term)
-            {
-                let channel = channel_map.get(&programme.channel).unwrap();
-                println!(
-                    "{} - {}\nStart: {}\nStop: {}",
-                    channel.display_name, programme.title, programme.start, programme.stop
-                );
-            }
-        }
-        println!(
-            "Time taken: {:?} seconds",
-            time_now.elapsed().as_seconds_f32()
-        );
-
         Ok(epg)
     }
 
@@ -102,6 +73,51 @@ impl Epg {
             .cloned()
             .collect()
     }
+
+    pub fn to_xml(&self) -> Result<String, Box<dyn std::error::Error>> {
+        let header = r#"
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE tv SYSTEM "xmltv.dtd">
+<tv generator-info-name="NXT" generator-info-url="nxtplay.xyz">"#;
+        let footer = "\n</tv>";
+        let mut body = String::new();
+        for channel in &self.channels {
+            body.push_str(&format!("\n<channel id=\"{}\">", channel.id));
+            body.push_str(&format!(
+                "\n<display-name>{}</display-name>",
+                channel.display_name
+            ));
+            if let Some(icon) = &channel.icon {
+                body.push_str(&format!("\n<icon src=\"{}\"/>", icon.src));
+            }
+            body.push_str("\n</channel>");
+        }
+        for programme in &self.programmes {
+            body.push_str(&format!(
+                "\n<programme start=\"{}\" stop=\"{}\" channel=\"{}\">",
+                programme.start, programme.stop, programme.channel
+            ));
+            body.push_str(&format!("\n<title>{}</title>", programme.title));
+            body.push_str(&format!("\n<desc>{}</desc>", programme.desc));
+            body.push_str("\n</programme>");
+        }
+        Ok(format!("{}{}{}", header, body, footer))
+    }
+
+    pub fn filter_channels(&mut self, channels_to_keep: &[String]) {
+        self.channels = self
+            .channels
+            .iter()
+            .filter(|c| channels_to_keep.contains(&c.id))
+            .cloned()
+            .collect();
+        self.programmes = self
+            .programmes
+            .iter()
+            .filter(|p| channels_to_keep.contains(&p.channel))
+            .cloned()
+            .collect();
+    }
 }
 
 fn deserialize_datetime<'de, D>(deserializer: D) -> Result<DateTime<FixedOffset>, D::Error>
@@ -115,6 +131,8 @@ where
 #[cfg(test)]
 mod tests {
     use std::fs::File;
+
+    use crate::{playlist::Playlist, GROUPS_TO_EXCLUDE, SNIPPETS_TO_EXCLUDE};
 
     use super::*;
 
@@ -137,5 +155,13 @@ mod tests {
         let programme: Programme = serde_xml_rs::from_str(xml).unwrap();
         assert_eq!(programme.start.to_rfc3339(), "2024-10-17T13:09:00+01:00");
         assert_eq!(programme.stop.to_rfc3339(), "2024-10-17T14:00:00+01:00");
+    }
+
+    #[test]
+    fn test_to_xml() -> Result<(), Box<dyn std::error::Error>> {
+        let file = File::open("examples/mini-epg.xml")?;
+        let epg = Epg::from_reader(file)?;
+        let _ = epg.to_xml()?;
+        Ok(())
     }
 }
