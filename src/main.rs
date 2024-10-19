@@ -269,7 +269,7 @@ mod routes {
         let channels: Vec<ChannelResult> = playlist
             .entries
             .iter()
-            .filter(|e| e.name.to_lowercase().contains(&search))
+            .filter(|e| e.name.to_lowercase().contains(&search.to_lowercase()))
             .map(|e| ChannelResult {
                 channel_name: e.name.clone(),
             })
