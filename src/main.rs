@@ -226,4 +226,7 @@ pub const GROUPS_TO_EXCLUDE: &[&str] = &[
     "Uraguay",
     "Discovery+ Sport FI",
     "Italy",
+    "Venezuela",
+    "Music Collection",
+    "SIMINN PPV (iceland)",
 ];
