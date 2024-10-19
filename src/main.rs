@@ -218,7 +218,7 @@ mod routes {
     }
 
     #[derive(Debug, Serialize)]
-    pub struct SearchResult {
+    pub struct ProgrammeResult {
         channel_name: String,
         programme_title: String,
         programme_desc: String,
@@ -226,10 +226,21 @@ mod routes {
         stop: DateTime<FixedOffset>,
     }
 
+    #[derive(Debug, Serialize)]
+    pub struct ChannelResult {
+        channel_name: String,
+    }
+
+    #[derive(Debug, Serialize)]
+    pub struct SearchResult {
+        programmes: Vec<ProgrammeResult>,
+        channels: Vec<ChannelResult>,
+    }
+
     pub async fn search(
         Query(SearchQuery { search }): Query<SearchQuery>,
         State(app_state): State<super::AppState>,
-    ) -> Result<Json<Vec<SearchResult>>, (StatusCode, &'static str)> {
+    ) -> Result<Json<SearchResult>, (StatusCode, &'static str)> {
         let epg = app_state.fetch_epg().await.map_err(|e| {
             tracing::error!("Failed to fetch EPG: {:?}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch EPG")
@@ -237,9 +248,9 @@ mod routes {
         let channel_map = epg.channel_map();
         let programmes = epg.search(&search);
 
-        let results: Vec<SearchResult> = programmes
+        let programme_results: Vec<ProgrammeResult> = programmes
             .into_iter()
-            .map(|p| SearchResult {
+            .map(|p| ProgrammeResult {
                 programme_title: p.title,
                 programme_desc: p.desc,
                 start: p.start,
@@ -248,7 +259,26 @@ mod routes {
             })
             .collect();
 
-        Ok(Json(results))
+        let playlist = app_state.fetch_playlist().await.map_err(|e| {
+            tracing::error!("Failed to fetch playlist: {:?}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to fetch playlist",
+            )
+        })?;
+        let channels: Vec<ChannelResult> = playlist
+            .entries
+            .iter()
+            .filter(|e| e.name.to_lowercase().contains(&search))
+            .map(|e| ChannelResult {
+                channel_name: e.name.clone(),
+            })
+            .collect();
+
+        Ok(Json(SearchResult {
+            programmes: programme_results,
+            channels,
+        }))
     }
 }
 
