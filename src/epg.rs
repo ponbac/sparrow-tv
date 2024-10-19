@@ -1,4 +1,5 @@
 use chrono::{DateTime, FixedOffset};
+use itertools::Itertools;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use std::io::Read;
@@ -97,6 +98,7 @@ impl Epg {
                     && (p.title.to_lowercase().contains(&search_term)
                         || p.desc.to_lowercase().contains(&search_term))
             })
+            .sorted_by_key(|p| p.start)
             .cloned()
             .collect()
     }
