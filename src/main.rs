@@ -214,7 +214,8 @@ mod routes {
 
     #[derive(Debug, Deserialize)]
     pub struct SearchQuery {
-        search: String,
+        #[serde(rename = "q")]
+        search_query: String,
     }
 
     #[derive(Debug, Serialize)]
@@ -238,7 +239,7 @@ mod routes {
     }
 
     pub async fn search(
-        Query(SearchQuery { search }): Query<SearchQuery>,
+        Query(SearchQuery { search_query }): Query<SearchQuery>,
         State(app_state): State<super::AppState>,
     ) -> Result<Json<SearchResult>, (StatusCode, &'static str)> {
         let epg = app_state.fetch_epg().await.map_err(|e| {
@@ -246,7 +247,7 @@ mod routes {
             (StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch EPG")
         })?;
         let channel_map = epg.channel_map();
-        let programmes = epg.search(&search);
+        let programmes = epg.search(&search_query);
 
         let programme_results: Vec<ProgrammeResult> = programmes
             .into_iter()
@@ -269,7 +270,7 @@ mod routes {
         let channels: Vec<ChannelResult> = playlist
             .entries
             .iter()
-            .filter(|e| e.name.to_lowercase().contains(&search.to_lowercase()))
+            .filter(|e| e.name.to_lowercase().contains(&search_query.to_lowercase()))
             .map(|e| ChannelResult {
                 channel_name: e.name.clone(),
             })
