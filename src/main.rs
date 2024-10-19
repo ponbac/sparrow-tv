@@ -219,12 +219,11 @@ mod routes {
 
     #[derive(Debug, Serialize)]
     pub struct SearchResult {
+        channel_name: String,
         programme_title: String,
         programme_desc: String,
         start: DateTime<FixedOffset>,
         stop: DateTime<FixedOffset>,
-        channel_id: String,
-        channel_name: String,
     }
 
     pub async fn search(
@@ -245,7 +244,6 @@ mod routes {
                 programme_desc: p.desc,
                 start: p.start,
                 stop: p.stop,
-                channel_id: p.channel.clone(),
                 channel_name: channel_map.get(&p.channel).unwrap().display_name.clone(),
             })
             .collect();
