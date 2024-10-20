@@ -17,13 +17,13 @@ tracing-subscriber = { version = "0.3.18", features = [
     "local-time",
 ] }
 tower = { version = "0.5.1", features = ["util"] }
-tower-http = { version = "0.6.1", features = ["trace", "cors"] }
+tower-http = { version = "0.6.1", features = ["trace", "cors", "fs"] }
 thiserror = "1.0.56"
 reqwest = { version = "0.12.8" }
 nom = "7.1.3"
-anyhow = "1.0.79"
+anyhow = "1.0.90"
 serde = { version = "1.0.193", features = ["derive"] }
-serde_json = "1.0.108"
+serde_json = "1.0.132"
 time = "0.3.34"
 serde-xml-rs = "0.6.0"
 chrono = { version = "0.4.38", features = ["serde"] }

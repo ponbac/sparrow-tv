@@ -26,4 +26,6 @@ RUN apt-get update -y \
     && rm -rf /var/lib/apt/lists/*
 # Copy necessary files from builder
 COPY --from=builder /app/target/release/sparrow-tv sparrow-tv
+COPY --from=builder /app/app/dist app/dist
+EXPOSE 8000
 ENTRYPOINT ["./sparrow-tv"]

@@ -1,6 +1,9 @@
 import ky from "ky";
 
-export const API_URL = "http://localhost:8000";
+export const API_URL =
+  import.meta.env.MODE === "development"
+    ? "http://localhost:8000"
+    : "https://tv.ponbac.xyz";
 
 export const api = ky.create({
   prefixUrl: API_URL,

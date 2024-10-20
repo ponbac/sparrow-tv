@@ -8,7 +8,11 @@ use axum::{routing::get, Router};
 use epg::Epg;
 use playlist::Playlist;
 use tokio::net::TcpListener;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::{
+    cors::CorsLayer,
+    services::{ServeDir, ServeFile},
+    trace::TraceLayer,
+};
 use tracing_subscriber::EnvFilter;
 
 mod epg;
@@ -149,17 +153,22 @@ async fn main() {
         }
     });
 
+    let serve_dir =
+        ServeDir::new("./app/dist").not_found_service(ServeFile::new("./app/dist/index.html"));
+
     // Start server
     let cors_options = CorsLayer::very_permissive();
     let app: Router = Router::new()
         .route("/", get(routes::download_playlist))
         .route("/epg", get(routes::download_epg))
         .route("/search", get(routes::search))
+        .nest_service("/app", serve_dir.clone())
+        .fallback_service(serve_dir)
         .with_state(app_state)
         .layer(cors_options)
         .layer(TraceLayer::new_for_http());
 
-    let host = std::env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let host = std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
     let port = std::env::var("PORT")
         .ok()
         .and_then(|p| p.parse().ok())
