@@ -75,6 +75,7 @@ pub struct SearchQuery {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProgrammeResult {
     channel_name: String,
     programme_title: String,
@@ -84,11 +85,13 @@ pub struct ProgrammeResult {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ChannelResult {
     channel_name: String,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SearchResult {
     programmes: Vec<ProgrammeResult>,
     channels: Vec<ChannelResult>,
