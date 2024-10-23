@@ -132,6 +132,7 @@ async fn main() {
 
     let app_state = AppState::new();
     app_state.fetch_playlist().await.unwrap();
+    app_state.fetch_epg().await.unwrap();
 
     // thread that fetches the playlist if stale
     let app_state_clone = app_state.clone();
@@ -149,6 +150,26 @@ async fn main() {
             if is_stale {
                 tracing::info!("Playlist is stale, fetching new one");
                 let _ = app_state_clone.fetch_playlist().await;
+            }
+        }
+    });
+
+    // thread that fetches the epg if stale
+    let app_state_clone = app_state.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            let is_stale = {
+                let epg = app_state_clone.cached_epg.read().unwrap();
+                if let Some(epg_fetch) = &*epg {
+                    epg_fetch.is_stale()
+                } else {
+                    false
+                }
+            };
+            if is_stale {
+                tracing::info!("EPG is stale, fetching new one");
+                let _ = app_state_clone.fetch_epg().await;
             }
         }
     });
@@ -182,7 +203,7 @@ async fn main() {
     axum::serve(listener, app).await.unwrap()
 }
 
-pub const SNIPPETS_TO_EXCLUDE: &[&str] = &["NO", "DK", "PL", "FI"];
+pub const SNIPPETS_TO_EXCLUDE: &[&str] = &["PL", "FI"];
 
 pub const GROUPS_TO_EXCLUDE: &[&str] = &[
     "For Adults",

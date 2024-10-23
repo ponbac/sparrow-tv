@@ -131,7 +131,7 @@ pub async fn search(
         .iter()
         .filter(|e| e.name.to_lowercase().contains(&search_query.to_lowercase()))
         .map(|e| ChannelResult {
-            channel_name: e.name.clone(),
+            channel_name: format!("{} ({})", e.name, e.group_title),
         })
         .collect();
 
