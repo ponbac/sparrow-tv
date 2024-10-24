@@ -94,8 +94,8 @@ impl Epg {
         for programme in &self.programmes {
             body.push_str(&format!(
                 "\n<programme start=\"{}\" stop=\"{}\" channel=\"{}\">",
-                programme.start,
-                programme.stop,
+                programme.start.format("%Y%m%d%H%M%S %z"),
+                programme.stop.format("%Y%m%d%H%M%S %z"),
                 escape_xml(&programme.channel)
             ));
             body.push_str(&format!(

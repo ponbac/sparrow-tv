@@ -84,9 +84,7 @@ pub async fn download_epg(
 
     Ok(Response::builder()
         .status(StatusCode::OK)
-        .header("Content-Type", "application/octet-stream")
-        // .header("Content-Length", "0")
-        .header("Connection", "keep-alive")
+        .header("Content-Type", "application/xml")
         .body(xml)
         .unwrap())
     // let start = time::Instant::now();
