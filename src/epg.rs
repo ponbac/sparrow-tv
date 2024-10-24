@@ -7,9 +7,9 @@ use std::io::Read;
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Epg {
     #[serde(rename = "channel", default)]
-    channels: Vec<Channel>,
+    pub channels: Vec<Channel>,
     #[serde(rename = "programme", default)]
-    programmes: Vec<Programme>,
+    pub programmes: Vec<Programme>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -81,23 +81,28 @@ impl Epg {
         let footer = "\n</tv>";
         let mut body = String::new();
         for channel in &self.channels {
-            body.push_str(&format!("\n<channel id=\"{}\">", channel.id));
+            body.push_str(&format!("\n<channel id=\"{}\">", escape_xml(&channel.id)));
             body.push_str(&format!(
                 "\n<display-name>{}</display-name>",
-                channel.display_name
+                escape_xml(&channel.display_name)
             ));
             if let Some(icon) = &channel.icon {
-                body.push_str(&format!("\n<icon src=\"{}\"/>", icon.src));
+                body.push_str(&format!("\n<icon src=\"{}\"/>", escape_xml(&icon.src)));
             }
             body.push_str("\n</channel>");
         }
         for programme in &self.programmes {
             body.push_str(&format!(
                 "\n<programme start=\"{}\" stop=\"{}\" channel=\"{}\">",
-                programme.start, programme.stop, programme.channel
+                programme.start,
+                programme.stop,
+                escape_xml(&programme.channel)
             ));
-            body.push_str(&format!("\n<title>{}</title>", programme.title));
-            body.push_str(&format!("\n<desc>{}</desc>", programme.desc));
+            body.push_str(&format!(
+                "\n<title>{}</title>",
+                escape_xml(&programme.title)
+            ));
+            body.push_str(&format!("\n<desc>{}</desc>", escape_xml(&programme.desc)));
             body.push_str("\n</programme>");
         }
         Ok(format!("{}{}{}", header, body, footer))
@@ -117,6 +122,14 @@ impl Epg {
             .cloned()
             .collect();
     }
+}
+
+fn escape_xml(s: &str) -> String {
+    s.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\"", "&quot;")
+        .replace("'", "&apos;")
 }
 
 fn deserialize_datetime<'de, D>(deserializer: D) -> Result<DateTime<FixedOffset>, D::Error>

@@ -77,12 +77,17 @@ pub async fn download_epg(
     // epg.filter_channels(&channels_to_keep);
     // tracing::info!("Filtered channels in {:?}", start.elapsed());
 
+    tracing::info!("Found {} channels", epg.channels.len());
+    tracing::info!("Found {} programmes", epg.programmes.len());
+
+    let xml = epg.to_xml().unwrap();
+
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "application/octet-stream")
         // .header("Content-Length", "0")
         .header("Connection", "keep-alive")
-        .body(epg.to_xml().unwrap())
+        .body(xml)
         .unwrap())
     // let start = time::Instant::now();
     // let xml = epg.to_xml().unwrap();
@@ -94,7 +99,7 @@ fn stream_xml(xml: String) -> impl Stream<Item = String> {
     let chunked_xml = xml
         .chars()
         .collect::<Vec<_>>()
-        .chunks(128)
+        .chunks(64)
         .map(|chunk| chunk.iter().collect::<String>())
         .collect::<Vec<_>>();
     iter(chunked_xml)
