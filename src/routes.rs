@@ -1,10 +1,18 @@
+use std::time::Duration;
+
 use axum::{
     extract::{Query, State},
     http::{Response, StatusCode},
+    response::IntoResponse,
     Json,
 };
+use axum_streams::StreamBodyAs;
 use chrono::{DateTime, FixedOffset};
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
+use tokio::stream;
+use tokio_stream::Stream;
+use tokio_stream::{iter, StreamExt};
 
 use crate::AppState;
 
@@ -41,8 +49,14 @@ pub async fn download_playlist(
 pub async fn download_epg(
     Query(DownloadQuery { pw }): Query<DownloadQuery>,
     State(app_state): State<AppState>,
-) -> Result<Response<String>, (StatusCode, &'static str)> {
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    // for (key, value) in headers.iter() {
+    //     tracing::info!("Header: {}: {:?}", key, value);
+    // }
+
     if pw != std::env::var("PASSWORD").unwrap() {
+        // return Ok(Err((StatusCode::UNAUTHORIZED, "Unauthorized")));
         return Err((StatusCode::UNAUTHORIZED, "Unauthorized"));
     }
 
@@ -58,8 +72,10 @@ pub async fn download_epg(
         )
     })?;
 
-    let channels_to_keep: Vec<String> = playlist.entries.iter().map(|e| e.tvg_id.clone()).collect();
-    epg.filter_channels(&channels_to_keep);
+    // let start = time::Instant::now();
+    // let channels_to_keep: Vec<String> = playlist.entries.iter().map(|e| e.tvg_id.clone()).collect();
+    // epg.filter_channels(&channels_to_keep);
+    // tracing::info!("Filtered channels in {:?}", start.elapsed());
 
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -68,6 +84,20 @@ pub async fn download_epg(
         .header("Connection", "keep-alive")
         .body(epg.to_xml().unwrap())
         .unwrap())
+    // let start = time::Instant::now();
+    // let xml = epg.to_xml().unwrap();
+    // tracing::info!("Generated XML in {:?}", start.elapsed());
+    // Ok(StreamBodyAs::text(stream_xml(xml)).into_response())
+}
+
+fn stream_xml(xml: String) -> impl Stream<Item = String> {
+    let chunked_xml = xml
+        .chars()
+        .collect::<Vec<_>>()
+        .chunks(128)
+        .map(|chunk| chunk.iter().collect::<String>())
+        .collect::<Vec<_>>();
+    iter(chunked_xml)
 }
 
 #[derive(Debug, Deserialize)]

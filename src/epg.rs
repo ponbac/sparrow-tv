@@ -75,8 +75,7 @@ impl Epg {
     }
 
     pub fn to_xml(&self) -> Result<String, Box<dyn std::error::Error>> {
-        let header = r#"
-<?xml version="1.0" encoding="utf-8"?>
+        let header = r#"<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE tv SYSTEM "xmltv.dtd">
 <tv generator-info-name="NXT" generator-info-url="nxtplay.xyz">"#;
         let footer = "\n</tv>";

@@ -27,3 +27,5 @@ serde_json = "1.0.132"
 time = "0.3.34"
 serde-xml-rs = "0.6.0"
 chrono = { version = "0.4.38", features = ["serde"] }
+axum-streams = { version = "0.19.0", features = ["text"] }
+tokio-stream = "0.1.16"
