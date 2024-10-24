@@ -55,6 +55,27 @@ struct AppState {
 
 impl AppState {
     fn new() -> Self {
+        #[cfg(debug_assertions)]
+        {
+            let playlist_file = std::fs::read_to_string("./examples/playlist.m3u").unwrap();
+            let playlist: Playlist = playlist_file.parse().unwrap();
+            let epg_file = std::fs::File::open("./examples/epg.xml").unwrap();
+            let epg = Epg::from_reader(epg_file).unwrap();
+
+            let now = time::Instant::now();
+            let in_a_year = now + time::Duration::days(365);
+            return Self {
+                cached_playlist: Arc::new(RwLock::new(Some(PlaylistFetch {
+                    playlist,
+                    fetched: in_a_year,
+                }))),
+                cached_epg: Arc::new(RwLock::new(Some(EpgFetch {
+                    epg,
+                    fetched: in_a_year,
+                }))),
+            };
+        }
+
         Self {
             cached_playlist: Arc::new(RwLock::new(None)),
             cached_epg: Arc::new(RwLock::new(None)),

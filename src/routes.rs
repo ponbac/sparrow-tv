@@ -63,7 +63,9 @@ pub async fn download_epg(
 
     Ok(Response::builder()
         .status(StatusCode::OK)
-        .header("Content-Type", "application/octet-stream") // TODO: is this enough?
+        .header("Content-Type", "application/octet-stream")
+        // .header("Content-Length", "0")
+        .header("Connection", "keep-alive")
         .body(epg.to_xml().unwrap())
         .unwrap())
 }
