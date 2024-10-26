@@ -21,6 +21,7 @@ export function searchProgrammes(query: string, includeHidden?: boolean) {
 export interface ProgrammeResult {
   channelName: string;
   channelGroup: string | null;
+  channelUrl: string | null;
   programmeTitle: string;
   programmeDesc: string;
   start: string;
@@ -29,6 +30,7 @@ export interface ProgrammeResult {
 
 export interface ChannelResult {
   channelName: string;
+  url: string;
 }
 
 export interface SearchResult {

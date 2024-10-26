@@ -8,10 +8,12 @@ import { Card, CardContent } from "./components/ui/card";
 import { Badge } from "./components/ui/badge";
 import { Switch } from "./components/ui/switch";
 import { Label } from "./components/ui/label";
+import { TvPlayer } from "./components/tv-player";
 
 function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [includeHidden, setIncludeHidden] = useState(false);
+  const [selectedUrl, setSelectedUrl] = useState<string | null>(null);
 
   const { data } = useQuery({
     queryKey: ["programmes", searchQuery, includeHidden],
@@ -25,8 +27,6 @@ function App() {
       minute: "2-digit",
     });
   };
-
-  console.log(data);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-400 via-pink-500 to-red-500 p-4">
@@ -67,7 +67,8 @@ function App() {
                 <Badge
                   key={index}
                   variant="secondary"
-                  className="bg-white/80 text-purple-700"
+                  className="bg-white/80 text-purple-700 cursor-pointer hover:bg-white"
+                  onClick={() => channel.url && setSelectedUrl(channel.url)}
                 >
                   <Tv className="mr-1 h-4 w-4" />
                   {channel.channelName}
@@ -79,7 +80,8 @@ function App() {
             {data?.programmes.map((programme, index) => (
               <Card
                 key={index}
-                className="overflow-hidden bg-white/90 backdrop-blur-sm hover:shadow-lg transition-shadow duration-300"
+                className="overflow-hidden bg-white/90 backdrop-blur-sm hover:shadow-lg transition-shadow duration-300 cursor-pointer"
+                onClick={() => programme.channelUrl && setSelectedUrl(programme.channelUrl)}
               >
                 <div className="bg-gradient-to-r from-purple-600 to-pink-600 p-4">
                   <h3 className="text-lg font-bold text-white leading-tight">
@@ -120,6 +122,12 @@ function App() {
           </div>
         </div>
       </div>
+      {selectedUrl && (
+        <TvPlayer 
+          url={selectedUrl} 
+          onClose={() => setSelectedUrl(null)} 
+        />
+      )}
     </div>
   );
 }

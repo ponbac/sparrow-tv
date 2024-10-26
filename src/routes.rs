@@ -91,6 +91,7 @@ pub struct SearchQuery {
 pub struct ProgrammeResult {
     channel_name: String,
     channel_group: Option<String>,
+    channel_url: Option<String>,
     programme_title: String,
     programme_desc: String,
     start: DateTime<FixedOffset>,
@@ -101,6 +102,7 @@ pub struct ProgrammeResult {
 #[serde(rename_all = "camelCase")]
 pub struct ChannelResult {
     channel_name: String,
+    url: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -161,6 +163,8 @@ pub async fn search(
                         .get(&c.id)
                         .map(|pc| pc.group_title.clone())
                 }),
+                channel_url: channel
+                    .and_then(|c| playlist_channels.get(&c.id).map(|pc| pc.url.clone())),
             }
         })
         .filter(|p| {
@@ -178,6 +182,7 @@ pub async fn search(
         .filter(|e| e.name.to_lowercase().contains(&lower_search_query))
         .map(|e| ChannelResult {
             channel_name: format!("{} ({})", e.name, e.group_title),
+            url: e.url.clone(),
         })
         .collect();
 
