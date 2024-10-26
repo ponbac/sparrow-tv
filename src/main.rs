@@ -109,8 +109,8 @@ impl AppState {
         playlist.exclude_all_extensions();
         tracing::info!(
             "Fetched playlist with {} groups:\n{}",
-            playlist.groups().len(),
-            playlist.groups().join("\n")
+            playlist.filtered_groups().len(),
+            playlist.filtered_groups().join("\n")
         );
 
         let mut cached_playlist = self.cached_playlist.write().unwrap();

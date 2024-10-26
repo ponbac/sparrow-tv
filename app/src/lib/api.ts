@@ -10,12 +10,17 @@ export const api = ky.create({
   retry: 0,
 });
 
-export function searchProgrammes(query: string) {
-  return api.get("search", { searchParams: { q: query } }).json<SearchResult>();
+export function searchProgrammes(query: string, includeHidden?: boolean) {
+  return api
+    .get("search", {
+      searchParams: { q: query, includeHidden: includeHidden ?? false },
+    })
+    .json<SearchResult>();
 }
 
 export interface ProgrammeResult {
   channelName: string;
+  channelGroup: string | null;
   programmeTitle: string;
   programmeDesc: string;
   start: string;

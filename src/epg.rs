@@ -63,16 +63,19 @@ impl Epg {
         let search_term = search_term.to_lowercase();
         let time_now = chrono::Utc::now();
 
-        self.programmes
-            .iter()
+        let mut matching_programmes: Vec<Programme> = self
+            .programmes
+            .par_iter()
             .filter(|p| {
                 p.stop >= time_now
                     && (p.title.to_lowercase().contains(&search_term)
                         || p.desc.to_lowercase().contains(&search_term))
             })
-            .sorted_by_key(|p| p.start)
             .cloned()
-            .collect()
+            .collect();
+        matching_programmes.sort_by_key(|p| p.start);
+
+        matching_programmes
     }
 
     pub fn to_xml(&self) -> Result<String, Box<dyn std::error::Error>> {

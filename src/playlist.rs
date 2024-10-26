@@ -27,15 +27,19 @@ pub struct PlaylistEntry {
 #[derive(Debug, Clone)]
 pub struct Playlist {
     pub entries: Vec<PlaylistEntry>,
+    pub filtered_entries: Vec<PlaylistEntry>,
 }
 
 impl Playlist {
     pub fn new(entries: Vec<PlaylistEntry>) -> Self {
-        Self { entries }
+        Self {
+            entries: entries.clone(),
+            filtered_entries: entries,
+        }
     }
 
-    pub fn groups(&self) -> Vec<String> {
-        self.entries
+    pub fn filtered_groups(&self) -> Vec<String> {
+        self.filtered_entries
             .iter()
             .map(|entry| entry.group_title.clone())
             .unique()
@@ -45,19 +49,19 @@ impl Playlist {
     pub fn to_m3u(&self) -> String {
         format!(
             "#EXTM3U\n{}",
-            self.entries
+            self.filtered_entries
                 .iter()
                 .map(|entry| entry.to_string())
                 .join("\n")
         )
     }
     pub fn exclude_groups(&mut self, groups_to_exclude: Vec<&str>) {
-        self.entries
+        self.filtered_entries
             .retain(|entry| !groups_to_exclude.contains(&entry.group_title.as_str()));
     }
 
     pub fn exclude_containing(&mut self, snippets: Vec<&str>) {
-        self.entries.retain(|entry| {
+        self.filtered_entries.retain(|entry| {
             let is_excluded = snippets
                 .iter()
                 .any(|snippet| entry.group_title.contains(snippet));
@@ -73,7 +77,7 @@ impl Playlist {
     }
 
     pub fn exclude_all_extensions(&mut self) {
-        self.entries
+        self.filtered_entries
             .retain(|entry| !entry.url.split('/').last().unwrap().contains('.'));
     }
 }
