@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{fs, time::Duration};
 
 use axum::{
     extract::{Query, State},
@@ -72,20 +72,19 @@ pub async fn download_epg(
         )
     })?;
 
-    // let start = time::Instant::now();
-    // let channels_to_keep: Vec<String> = playlist.entries.iter().map(|e| e.tvg_id.clone()).collect();
-    // epg.filter_channels(&channels_to_keep);
-    // tracing::info!("Filtered channels in {:?}", start.elapsed());
-
-    tracing::info!("Found {} channels", epg.channels.len());
-    tracing::info!("Found {} programmes", epg.programmes.len());
+    let channels_to_keep: Vec<String> = playlist.entries.iter().map(|e| e.tvg_id.clone()).collect();
+    let start = time::Instant::now();
+    epg.filter_channels(&channels_to_keep);
+    tracing::info!("Filtered channels in {:?}", start.elapsed());
 
     let xml = epg.to_xml().unwrap();
+    let real_xml = fs::read_to_string("./examples/epg.xml").unwrap();
 
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "application/xml")
         .body(xml)
+        // .body(real_xml)
         .unwrap())
     // let start = time::Instant::now();
     // let xml = epg.to_xml().unwrap();

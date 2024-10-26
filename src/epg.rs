@@ -1,7 +1,8 @@
 use chrono::{DateTime, FixedOffset};
 use itertools::Itertools;
+use rayon::prelude::*;
 use serde::{Deserialize, Deserializer, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -109,18 +110,10 @@ impl Epg {
     }
 
     pub fn filter_channels(&mut self, channels_to_keep: &[String]) {
-        self.channels = self
-            .channels
-            .iter()
-            .filter(|c| channels_to_keep.contains(&c.id))
-            .cloned()
-            .collect();
-        self.programmes = self
-            .programmes
-            .iter()
-            .filter(|p| channels_to_keep.contains(&p.channel))
-            .cloned()
-            .collect();
+        let channels_to_keep: HashSet<&String> = channels_to_keep.iter().collect();
+        self.channels.retain(|c| channels_to_keep.contains(&c.id));
+        self.programmes
+            .retain(|p| channels_to_keep.contains(&p.channel));
     }
 }
 
