@@ -1,5 +1,4 @@
 use chrono::{DateTime, FixedOffset};
-use itertools::Itertools;
 use rayon::prelude::*;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{HashMap, HashSet};

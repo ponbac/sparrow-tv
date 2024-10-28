@@ -28,3 +28,7 @@ time = "0.3.34"
 serde-xml-rs = "0.6.0"
 chrono = { version = "0.4.38", features = ["serde"] }
 rayon = "1.10.0"
+
+[profile.dev]
+debug = 0
+strip = "debuginfo"
