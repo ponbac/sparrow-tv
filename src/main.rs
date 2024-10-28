@@ -1,10 +1,11 @@
+use futures::StreamExt;
 use std::{
     net::SocketAddr,
     sync::{Arc, RwLock},
     time::Duration,
 };
 
-use axum::{routing::get, Router};
+use axum::{body::Body, extract::Path, http::Response, routing::get, Router};
 use epg::Epg;
 use playlist::Playlist;
 use tokio::net::TcpListener;
@@ -204,6 +205,7 @@ async fn main() {
         .route("/", get(routes::download_playlist))
         .route("/epg", get(routes::download_epg))
         .route("/search", get(routes::search))
+        .route("/proxy/*stream_path", get(proxy_stream))
         .nest_service("/app", serve_dir.clone())
         .fallback_service(serve_dir)
         .with_state(app_state)
@@ -222,6 +224,57 @@ async fn main() {
     tracing::info!("listening on {}", socket_addr);
     let listener = TcpListener::bind(&socket_addr).await.unwrap();
     axum::serve(listener, app).await.unwrap()
+}
+
+pub async fn proxy_stream(
+    Path(stream_path): Path<String>,
+) -> Result<Response<Body>, (axum::http::StatusCode, String)> {
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+        .build()
+        .map_err(|e| (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to create client: {}", e),
+        ))?;
+
+    let response = client.get(&stream_path).send().await.map_err(|e| {
+        (
+            axum::http::StatusCode::BAD_GATEWAY,
+            format!("Failed to fetch stream: {}", e),
+        )
+    })?;
+
+    let status = response.status();
+    let headers = response.headers().clone();
+
+    // Convert the response body into a stream
+    let stream = response
+        .bytes_stream()
+        .map(|result| result.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err)));
+
+    // Build the response with streaming body
+    let mut builder = Response::builder().status(status);
+
+    // Copy relevant headers
+    for (name, value) in headers.iter() {
+        if name != "transfer-encoding" {
+            builder = builder.header(name, value);
+        }
+    }
+
+    // Add CORS headers
+    builder = builder
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Access-Control-Allow-Methods", "GET, OPTIONS");
+
+    let response = builder.body(Body::from_stream(stream)).map_err(|e| {
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to build response: {}", e),
+        )
+    })?;
+
+    Ok(response)
 }
 
 pub const SNIPPETS_TO_EXCLUDE: &[&str] = &["PL", "FI"];
