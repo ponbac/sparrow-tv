@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { searchProgrammes } from "./lib/api";
+import { API_URL, searchProgrammes } from "./lib/api";
 import { Input } from "./components/ui/input";
 import { Search, Clock, Calendar, Tv } from "lucide-react";
 import { Button } from "./components/ui/button";
@@ -139,7 +139,10 @@ function App() {
         </div>
       </div>
       {selectedUrl && (
-        <TvPlayer url={selectedUrl} onClose={() => setSelectedUrl(null)} />
+        <TvPlayer
+          url={`${API_URL}/proxy/${selectedUrl}`}
+          onClose={() => setSelectedUrl(null)}
+        />
       )}
     </div>
   );
