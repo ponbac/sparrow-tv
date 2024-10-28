@@ -1,10 +1,10 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App.tsx";
+import "@fontsource-variable/inter";
+import "@fontsource-variable/jetbrains-mono";
 import "./index.css";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import 'video.js/dist/video-js.css';
-import '@videojs/http-streaming';
 
 const queryClient = new QueryClient();
 
