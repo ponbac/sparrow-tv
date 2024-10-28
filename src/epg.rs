@@ -139,8 +139,6 @@ where
 mod tests {
     use std::fs::File;
 
-    use crate::{playlist::Playlist, GROUPS_TO_EXCLUDE, SNIPPETS_TO_EXCLUDE};
-
     use super::*;
 
     #[test]
