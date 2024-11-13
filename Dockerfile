@@ -22,7 +22,6 @@ WORKDIR /app
 COPY /app .
 RUN bun install --frozen-lockfile
 RUN bun run build
-RUN ls -la
 
 FROM ubuntu:22.04 AS runtime
 WORKDIR /app
