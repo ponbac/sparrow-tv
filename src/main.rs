@@ -4,14 +4,22 @@ use std::{
     sync::{Arc, RwLock},
     time::Duration,
 };
+use tower::ServiceBuilder;
 
-use axum::{body::Body, extract::Path, http::Response, routing::get, Router};
+use axum::{
+    body::Body,
+    extract::Path,
+    http::{HeaderName, HeaderValue, Response},
+    routing::get,
+    Router,
+};
 use epg::Epg;
 use playlist::Playlist;
 use tokio::net::TcpListener;
 use tower_http::{
     cors::CorsLayer,
     services::{ServeDir, ServeFile},
+    set_header::SetResponseHeaderLayer,
     trace::TraceLayer,
 };
 use tracing_subscriber::EnvFilter;
@@ -196,8 +204,13 @@ async fn main() {
         }
     });
 
-    let serve_dir =
-        ServeDir::new("./app/dist").not_found_service(ServeFile::new("./app/dist/index.html"));
+    let serve_index = ServiceBuilder::new()
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("Cache-Control"),
+            HeaderValue::from_static("no-store, no-cache, must-revalidate, max-age=0"),
+        ))
+        .service(ServeFile::new("./app/dist/index.html"));
+    let serve_dir = ServeDir::new("./app/dist").not_found_service(serve_index);
 
     // Start server
     let cors_options = CorsLayer::very_permissive();

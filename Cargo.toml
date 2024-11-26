@@ -17,7 +17,12 @@ tracing-subscriber = { version = "0.3.18", features = [
     "local-time",
 ] }
 tower = { version = "0.5.1", features = ["util"] }
-tower-http = { version = "0.6.1", features = ["trace", "cors", "fs"] }
+tower-http = { version = "0.6.1", features = [
+    "trace",
+    "cors",
+    "fs",
+    "set-header",
+] }
 thiserror = "1.0.65"
 reqwest = { version = "0.12.8", features = ["stream"] }
 nom = "7.1.3"
