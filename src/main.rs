@@ -205,7 +205,7 @@ async fn main() {
     });
 
     let serve_index = ServiceBuilder::new()
-        .layer(SetResponseHeaderLayer::if_not_present(
+        .layer(SetResponseHeaderLayer::overriding(
             HeaderName::from_static("Cache-Control"),
             HeaderValue::from_static("no-store, no-cache, must-revalidate, max-age=0"),
         ))
