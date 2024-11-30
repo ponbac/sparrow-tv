@@ -1,4 +1,5 @@
 use futures::StreamExt;
+use http::{HeaderName, HeaderValue};
 use std::{
     net::SocketAddr,
     sync::{Arc, RwLock},
@@ -6,13 +7,7 @@ use std::{
 };
 use tower::ServiceBuilder;
 
-use axum::{
-    body::Body,
-    extract::Path,
-    http::{HeaderName, HeaderValue, Response},
-    routing::get,
-    Router,
-};
+use axum::{body::Body, extract::Path, http::Response, routing::get, Router};
 use epg::Epg;
 use playlist::Playlist;
 use tokio::net::TcpListener;
@@ -205,8 +200,9 @@ async fn main() {
     });
 
     let serve_index = ServiceBuilder::new()
-        .layer(SetResponseHeaderLayer::overriding(
-            HeaderName::from_static("Cache-Control"),
+        // this does not seem to work
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_lowercase(b"cache-control").expect("Invalid header name"),
             HeaderValue::from_static("no-store, no-cache, must-revalidate, max-age=0"),
         ))
         .service(ServeFile::new("./app/dist/index.html"));
