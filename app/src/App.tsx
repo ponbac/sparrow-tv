@@ -14,16 +14,19 @@ import { Badge } from "./components/ui/badge";
 import { Switch } from "./components/ui/switch";
 import { Label } from "./components/ui/label";
 import { TvPlayer } from "./components/tv-player";
+import { useDebounce } from "./hooks/useDebounce";
 
 export default function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [includeHidden, setIncludeHidden] = useState(false);
   const [selectedUrl, setSelectedUrl] = useState<string | null>(null);
 
+  const debouncedSearch = useDebounce(searchQuery);
+
   const { data } = useQuery({
-    queryKey: ["programmes", searchQuery, includeHidden],
-    queryFn: () => searchProgrammes(searchQuery, includeHidden),
-    enabled: !!searchQuery && searchQuery.length > 3,
+    queryKey: ["programmes", debouncedSearch, includeHidden],
+    queryFn: () => searchProgrammes(debouncedSearch, includeHidden),
+    enabled: !!debouncedSearch && debouncedSearch.length > 3,
   });
 
   const randomName = ["Tojvi", "Kjelle", "Ralph"][

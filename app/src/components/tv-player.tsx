@@ -82,6 +82,27 @@ export const TvPlayer = (props: { url: string; onClose?: () => void }) => {
     };
   }, [props.url]);
 
+  // Handle orientation change on mobile, set fullscreen if landscape
+  useEffect(() => {
+    function handleOrientationChange() {
+      const isLandscape = screen.orientation.type.includes("landscape");
+
+      if (isLandscape && videoRef.current && !document.fullscreenElement) {
+        videoRef.current.requestFullscreen();
+        setIsFullscreen(true);
+      }
+    }
+
+    screen.orientation.addEventListener("change", handleOrientationChange);
+
+    // Check initial orientation
+    handleOrientationChange();
+
+    return () => {
+      screen.orientation.removeEventListener("change", handleOrientationChange);
+    };
+  }, []);
+
   return (
     <div className="fixed bottom-8 right-8 w-full max-w-4xl bg-gray-900 rounded-lg overflow-hidden shadow-2xl">
       <div className="relative">
