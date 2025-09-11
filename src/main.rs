@@ -1,9 +1,10 @@
 use futures::StreamExt;
 use http::{HeaderName, HeaderValue};
 use std::{
+    io,
     net::SocketAddr,
     sync::{Arc, RwLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tower::ServiceBuilder;
 
@@ -30,24 +31,24 @@ trait FileFetch {
 #[derive(Debug)]
 struct PlaylistFetch {
     playlist: Playlist,
-    fetched: time::Instant,
+    fetched: Instant,
 }
 
 #[derive(Debug)]
 struct EpgFetch {
     epg: Epg,
-    fetched: time::Instant,
+    fetched: Instant,
 }
 
 impl FileFetch for PlaylistFetch {
     fn is_stale(&self) -> bool {
-        self.fetched.elapsed() > time::Duration::hours(6)
+        self.fetched.elapsed() > Duration::from_secs(6 * 60 * 60) // 6 hours
     }
 }
 
 impl FileFetch for EpgFetch {
     fn is_stale(&self) -> bool {
-        self.fetched.elapsed() > time::Duration::hours(6)
+        self.fetched.elapsed() > Duration::from_secs(6 * 60 * 60) // 6 hours
     }
 }
 
@@ -66,8 +67,8 @@ impl AppState {
             let epg_file = std::fs::File::open("./examples/epg.xml").unwrap();
             let epg = Epg::from_reader(epg_file).unwrap();
 
-            let now = time::Instant::now();
-            let in_a_year = now + time::Duration::days(365);
+            let now = Instant::now();
+            let in_a_year = now + Duration::from_secs(365 * 24 * 60 * 60);
             return Self {
                 cached_playlist: Arc::new(RwLock::new(Some(PlaylistFetch {
                     playlist,
@@ -120,7 +121,7 @@ impl AppState {
         let mut cached_playlist = self.cached_playlist.write().unwrap();
         *cached_playlist = Some(PlaylistFetch {
             playlist: playlist.clone(),
-            fetched: time::Instant::now(),
+            fetched: Instant::now(),
         });
 
         Ok(playlist)
@@ -141,7 +142,7 @@ impl AppState {
         let mut cached_epg = self.cached_epg.write().unwrap();
         *cached_epg = Some(EpgFetch {
             epg: epg.clone(),
-            fetched: time::Instant::now(),
+            fetched: Instant::now(),
         });
 
         Ok(epg)
@@ -259,7 +260,7 @@ pub async fn proxy_stream(
     // Convert the response body into a stream
     let stream = response
         .bytes_stream()
-        .map(|result| result.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err)));
+        .map(|result| result.map_err(io::Error::other));
 
     // Build the response with streaming body
     let mut builder = Response::builder().status(status);

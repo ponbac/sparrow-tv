@@ -1,9 +1,0 @@
-You are an expert at modern TypeScript, Rust and React. Write clean code.
-
-When writing React:
-- shadcn components are primarily used.
-- When creating components, do not use React.FC.
-- Prefer the syntax (props: { ... }) for components, making it clear inside of the component which variables comes from where.
-- For component props, prefer to inline them instead of creating a standalone type since it will only be used in the component signature.
-- Prefer 'type' over 'interface'.
-- Prefer function instead of const for helper functions.

@@ -78,7 +78,7 @@ impl Playlist {
 
     pub fn exclude_all_extensions(&mut self) {
         self.filtered_entries
-            .retain(|entry| !entry.url.split('/').last().unwrap().contains('.'));
+            .retain(|entry| !entry.url.split('/').next_back().unwrap().contains('.'));
     }
 }
 

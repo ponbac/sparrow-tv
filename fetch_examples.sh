@@ -9,6 +9,9 @@ if [ -z "$M3U_PATH" ] || [ -z "$EPG_PATH" ]; then
   exit 1
 fi
 
+# Ensure output directory exists
+mkdir -p ./examples
+
 echo "Fetching EPG..."
 curl -o ./examples/epg.xml "$EPG_PATH"
 

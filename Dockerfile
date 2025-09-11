@@ -1,4 +1,4 @@
-FROM lukemathwalker/cargo-chef:latest-rust-1.82.0 AS chef
+FROM lukemathwalker/cargo-chef:latest-rust-1.89.0 AS chef
 WORKDIR /app
 RUN apt update && apt install lld clang -y
 
@@ -17,7 +17,7 @@ COPY . .
 # Build our project
 RUN cargo build --release --bin sparrow-tv
 
-FROM oven/bun:1.1.33 AS bun
+FROM oven/bun:1.2.21 AS bun
 WORKDIR /app
 COPY /app .
 RUN bun install --frozen-lockfile
