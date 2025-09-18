@@ -15,7 +15,8 @@ const INITIAL_VOLUME = 0.25;
 const MAX_RETRIES = 5;
 const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30000;
-const STALL_THRESHOLD_MS = 8000; // consider frozen if no progress for 8s
+const STALL_THRESHOLD_MS = 8000; // detect potential stall after 8s of no progress
+const HARD_STALL_MS = 25000; // only reconnect if stall persists for 25s
 
 export const TvPlayer = (props: { url: string; onClose?: () => void }) => {
   const [isPlaying, setIsPlaying] = useState(false);
@@ -30,6 +31,7 @@ export const TvPlayer = (props: { url: string; onClose?: () => void }) => {
   const stallIntervalRef = useRef<number | null>(null);
   const lastPlaybackTimeRef = useRef(0);
   const lastProgressAtRef = useRef<number>(Date.now());
+  const stallSinceRef = useRef<number | null>(null);
   // Backoff timer presence is used to dedupe reconnect attempts
 
   const togglePlay = () => {
@@ -109,6 +111,7 @@ export const TvPlayer = (props: { url: string; onClose?: () => void }) => {
     // Reset progress trackers; keep retry attempts until we see progress
     lastPlaybackTimeRef.current = 0;
     lastProgressAtRef.current = Date.now();
+    stallSinceRef.current = null;
 
     // Wire player error handling
     player.on(mpegts.Events.ERROR, () => {
@@ -128,11 +131,18 @@ export const TvPlayer = (props: { url: string; onClose?: () => void }) => {
       if (!video) return;
       const now = Date.now();
 
-      const isLikelyStalled =
+      const noProgress =
         !video.paused && now - lastProgressAtRef.current > STALL_THRESHOLD_MS;
 
-      if (isLikelyStalled) {
-        scheduleReconnect("stall watchdog");
+      if (noProgress) {
+        if (stallSinceRef.current == null) {
+          stallSinceRef.current = now;
+        } else if (now - stallSinceRef.current > HARD_STALL_MS) {
+          scheduleReconnect("hard stall watchdog");
+        }
+      } else {
+        // Progress resumed
+        stallSinceRef.current = null;
       }
     }, 1000);
   };
@@ -227,8 +237,19 @@ export const TvPlayer = (props: { url: string; onClose?: () => void }) => {
               reconnectAttemptsRef.current = 0;
             }
           }}
-          onStalled={() => scheduleReconnect("video stalled event")}
-          onWaiting={() => scheduleReconnect("video waiting event")}
+          onStalled={() => {
+            if (stallSinceRef.current == null) {
+              stallSinceRef.current = Date.now();
+            }
+          }}
+          onWaiting={() => {
+            if (stallSinceRef.current == null) {
+              stallSinceRef.current = Date.now();
+            }
+          }}
+          onPlaying={() => {
+            stallSinceRef.current = null;
+          }}
           onError={(e) => {
             console.error("Video error:", e);
             scheduleReconnect("video error event");
