@@ -12,6 +12,10 @@ import mpegts from "mpegts.js";
 import { cn } from "@/lib/utils";
 
 const INITIAL_VOLUME = 0.25;
+const MAX_RETRIES = 5;
+const INITIAL_BACKOFF_MS = 1000;
+const MAX_BACKOFF_MS = 30000;
+const STALL_THRESHOLD_MS = 8000; // consider frozen if no progress for 8s
 
 export const TvPlayer = (props: { url: string; onClose?: () => void }) => {
   const [isPlaying, setIsPlaying] = useState(false);
@@ -21,6 +25,12 @@ export const TvPlayer = (props: { url: string; onClose?: () => void }) => {
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const playerRef = useRef<mpegts.Player | null>(null);
+  const reconnectAttemptsRef = useRef(0);
+  const backoffTimeoutRef = useRef<number | null>(null);
+  const stallIntervalRef = useRef<number | null>(null);
+  const lastPlaybackTimeRef = useRef(0);
+  const lastProgressAtRef = useRef<number>(Date.now());
+  // Backoff timer presence is used to dedupe reconnect attempts
 
   const togglePlay = () => {
     if (videoRef.current) {
@@ -59,27 +69,113 @@ export const TvPlayer = (props: { url: string; onClose?: () => void }) => {
     }
   };
 
-  useEffect(() => {
-    if (videoRef.current && !playerRef.current) {
-      if (mpegts.getFeatureList().mseLivePlayback) {
-        playerRef.current = mpegts.createPlayer({
-          type: "mpegts",
-          url: props.url,
-          isLive: true,
-        });
-        playerRef.current.attachMediaElement(videoRef.current);
-        videoRef.current.volume = INITIAL_VOLUME;
-        playerRef.current.load();
-        playerRef.current.play();
+  // Helper to clean up player and timers
+  const destroyPlayer = () => {
+    if (playerRef.current) {
+      try {
+        playerRef.current.destroy();
+      } catch (e) {
+        console.error("Failed to destroy player", e);
       }
+      playerRef.current = null;
+    }
+  };
+
+  const clearTimers = () => {
+    if (backoffTimeoutRef.current) {
+      window.clearTimeout(backoffTimeoutRef.current);
+      backoffTimeoutRef.current = null;
+    }
+    if (stallIntervalRef.current) {
+      window.clearInterval(stallIntervalRef.current);
+      stallIntervalRef.current = null;
+    }
+  };
+
+  const createPlayer = () => {
+    if (!videoRef.current) return;
+    if (!mpegts.getFeatureList().mseLivePlayback) return;
+
+    const player = mpegts.createPlayer({
+      type: "mpegts",
+      url: props.url,
+      isLive: true,
+    });
+
+    player.attachMediaElement(videoRef.current);
+    videoRef.current.volume = volume ?? INITIAL_VOLUME;
+    videoRef.current.muted = isMuted;
+
+    // Reset progress trackers; keep retry attempts until we see progress
+    lastPlaybackTimeRef.current = 0;
+    lastProgressAtRef.current = Date.now();
+
+    // Wire player error handling
+    player.on(mpegts.Events.ERROR, () => {
+      scheduleReconnect("mpegts error");
+    });
+
+    player.load();
+    player.play();
+    playerRef.current = player;
+
+    // Start a stall watchdog
+    if (stallIntervalRef.current) {
+      window.clearInterval(stallIntervalRef.current);
+    }
+    stallIntervalRef.current = window.setInterval(() => {
+      const video = videoRef.current;
+      if (!video) return;
+      const now = Date.now();
+
+      const isLikelyStalled =
+        !video.paused && now - lastProgressAtRef.current > STALL_THRESHOLD_MS;
+
+      if (isLikelyStalled) {
+        scheduleReconnect("stall watchdog");
+      }
+    }, 1000);
+  };
+
+  const scheduleReconnect = (reason: string) => {
+    const attempts = reconnectAttemptsRef.current;
+    if (attempts >= MAX_RETRIES) {
+      console.error("Max reconnect attempts reached; giving up", { reason });
+      return;
+    }
+    // If a reconnect timer is already pending, don't schedule another
+    if (backoffTimeoutRef.current) return;
+
+    const delay =
+      Math.min(MAX_BACKOFF_MS, INITIAL_BACKOFF_MS * Math.pow(2, attempts)) +
+      Math.floor(Math.random() * 250);
+
+    reconnectAttemptsRef.current = attempts + 1;
+    console.warn(`Reconnecting (attempt ${attempts + 1}) in ${delay}ms`, {
+      reason,
+    });
+
+    if (backoffTimeoutRef.current) {
+      window.clearTimeout(backoffTimeoutRef.current);
+    }
+    backoffTimeoutRef.current = window.setTimeout(() => {
+      destroyPlayer();
+      createPlayer();
+      // Allow future retries if still stalled
+      backoffTimeoutRef.current = null;
+    }, delay);
+  };
+
+  useEffect(() => {
+    if (!playerRef.current) {
+      createPlayer();
     }
 
     return () => {
-      if (playerRef.current) {
-        playerRef.current.destroy();
-        playerRef.current = null;
-      }
+      clearTimers();
+      destroyPlayer();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.url]);
 
   // Handle orientation change on mobile, set fullscreen if landscape
@@ -120,7 +216,23 @@ export const TvPlayer = (props: { url: string; onClose?: () => void }) => {
           className="w-full aspect-video"
           onPlay={() => setIsPlaying(true)}
           onPause={() => setIsPlaying(false)}
-          onError={(e) => console.error("Video error:", e)}
+          onTimeUpdate={() => {
+            const video = videoRef.current;
+            if (!video) return;
+            const t = video.currentTime;
+            if (t > lastPlaybackTimeRef.current + 0.05) {
+              lastPlaybackTimeRef.current = t;
+              lastProgressAtRef.current = Date.now();
+              // Reset attempts on healthy progress
+              reconnectAttemptsRef.current = 0;
+            }
+          }}
+          onStalled={() => scheduleReconnect("video stalled event")}
+          onWaiting={() => scheduleReconnect("video waiting event")}
+          onError={(e) => {
+            console.error("Video error:", e);
+            scheduleReconnect("video error event");
+          }}
         >
           <source src={props.url} type="application/x-mpegURL" />
           Your browser does not support the video tag.
