@@ -1,17 +1,12 @@
 use std::{
+    collections::HashMap,
     fmt::{self, Display, Formatter},
+    num::ParseIntError,
     str::FromStr,
 };
 
 use itertools::Itertools;
-use nom::{
-    branch::alt,
-    bytes::complete::{tag, take_till, take_until},
-    character::complete::char,
-    combinator::map_res,
-    sequence::preceded,
-    IResult,
-};
+use thiserror::Error;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct PlaylistEntry {
@@ -28,6 +23,27 @@ pub struct PlaylistEntry {
 pub struct Playlist {
     pub entries: Vec<PlaylistEntry>,
     pub filtered_entries: Vec<PlaylistEntry>,
+}
+
+#[derive(Debug, Error)]
+pub enum PlaylistParseError {
+    #[error("playlist is empty or missing #EXTM3U header")]
+    MissingHeader,
+    #[error("playlist entry {entry_index} is incomplete:\n{chunk}")]
+    IncompleteEntry { entry_index: usize, chunk: String },
+    #[error("playlist entry {entry_index} has invalid duration `{value}`")]
+    InvalidDuration {
+        entry_index: usize,
+        value: String,
+        #[source]
+        source: ParseIntError,
+    },
+    #[error("playlist entry {entry_index} is malformed: {reason}\n{chunk}")]
+    MalformedEntry {
+        entry_index: usize,
+        reason: String,
+        chunk: String,
+    },
 }
 
 impl Playlist {
@@ -55,6 +71,7 @@ impl Playlist {
                 .join("\n")
         )
     }
+
     pub fn exclude_groups(&mut self, groups_to_exclude: Vec<&str>) {
         self.filtered_entries
             .retain(|entry| !groups_to_exclude.contains(&entry.group_title.as_str()));
@@ -77,56 +94,116 @@ impl Playlist {
     }
 
     pub fn exclude_all_extensions(&mut self) {
-        self.filtered_entries
-            .retain(|entry| !entry.url.split('/').next_back().unwrap().contains('.'));
+        self.filtered_entries.retain(|entry| {
+            entry
+                .url
+                .rsplit('/')
+                .next()
+                .is_some_and(|segment| !segment.contains('.'))
+        });
     }
 }
 
 impl FromStr for Playlist {
-    type Err = nom::error::Error<&'static str>;
+    type Err = PlaylistParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let entries = s
+        let mut lines = s
             .lines()
-            .skip(1)
-            .chunks(2)
-            .into_iter()
-            .map(|chunk| {
-                let joined_chunk = chunk.collect::<Vec<&str>>().join("\n");
-                let entry = match PlaylistEntry::parse(joined_chunk.trim()) {
-                    Ok((_, entry)) => entry,
-                    Err(e) => panic!("Failed to parse playlist entry: {:?}\n{}", e, joined_chunk),
-                };
-                entry
-            })
-            .collect::<Vec<PlaylistEntry>>();
+            .map(|line| line.trim_end_matches('\r'))
+            .filter(|line| !line.trim().is_empty());
+
+        let Some(header) = lines.next() else {
+            return Err(PlaylistParseError::MissingHeader);
+        };
+        if header.trim() != "#EXTM3U" {
+            return Err(PlaylistParseError::MissingHeader);
+        }
+
+        let mut entries = Vec::new();
+        let mut entry_index = 1;
+
+        loop {
+            let Some(info_line) = lines.next() else {
+                break;
+            };
+            let url_line = lines
+                .next()
+                .ok_or_else(|| PlaylistParseError::IncompleteEntry {
+                    entry_index,
+                    chunk: info_line.to_string(),
+                })?;
+            let chunk = format!("{info_line}\n{url_line}");
+            let entry = PlaylistEntry::parse(entry_index, &chunk)?;
+            entries.push(entry);
+            entry_index += 1;
+        }
 
         Ok(Playlist::new(entries))
     }
 }
 
 impl PlaylistEntry {
-    pub fn parse(i: &str) -> IResult<&str, PlaylistEntry> {
-        let (i, duration) = parse_duration(i)?;
-        let (i, _) = parse_xui_id(i)?;
-        let (i, tvg_id) = parse_tvg_id(i)?;
-        let (i, tvg_name) = parse_tvg_name(i)?;
-        let (i, tvg_logo) = parse_tvg_logo(i)?;
-        let (i, group_title) = parse_group_title(i)?;
-        let (i, (name, url)) = parse_name_and_url(i)?;
+    pub fn parse(entry_index: usize, input: &str) -> Result<PlaylistEntry, PlaylistParseError> {
+        let mut lines = input.lines().map(|line| line.trim_end_matches('\r'));
 
-        Ok((
-            i,
-            PlaylistEntry {
-                duration,
-                tvg_id: tvg_id.to_string(),
-                tvg_name: tvg_name.to_string(),
-                tvg_logo: tvg_logo.to_string(),
-                group_title: group_title.to_string(),
-                name: name.to_string(),
-                url: url.to_string(),
-            },
-        ))
+        let info_line = lines
+            .next()
+            .ok_or_else(|| PlaylistParseError::IncompleteEntry {
+                entry_index,
+                chunk: input.to_string(),
+            })?;
+        let url_line = lines
+            .next()
+            .ok_or_else(|| PlaylistParseError::IncompleteEntry {
+                entry_index,
+                chunk: input.to_string(),
+            })?;
+
+        let info = info_line.strip_prefix("#EXTINF:").ok_or_else(|| {
+            PlaylistParseError::MalformedEntry {
+                entry_index,
+                reason: "missing #EXTINF prefix".to_string(),
+                chunk: input.to_string(),
+            }
+        })?;
+
+        let (metadata, name) =
+            split_extinf_metadata(info).ok_or_else(|| PlaylistParseError::MalformedEntry {
+                entry_index,
+                reason: "missing channel name separator".to_string(),
+                chunk: input.to_string(),
+            })?;
+
+        let (duration_str, attrs_str) = split_duration_and_attrs(metadata);
+        let duration =
+            duration_str
+                .parse::<i32>()
+                .map_err(|source| PlaylistParseError::InvalidDuration {
+                    entry_index,
+                    value: duration_str.to_string(),
+                    source,
+                })?;
+
+        let attrs =
+            parse_attributes(attrs_str).map_err(|reason| PlaylistParseError::MalformedEntry {
+                entry_index,
+                reason,
+                chunk: input.to_string(),
+            })?;
+
+        Ok(PlaylistEntry {
+            duration,
+            tvg_id: attrs.get("tvg-id").cloned().unwrap_or_default(),
+            tvg_name: attrs
+                .get("tvg-name")
+                .cloned()
+                .unwrap_or_else(|| name.to_string()),
+            tvg_logo: attrs.get("tvg-logo").cloned().unwrap_or_default(),
+            group_title: attrs.get("group-title").cloned().unwrap_or_default(),
+            name: name.to_string(),
+            url: url_line.trim().to_string(),
+        })
     }
 }
 
@@ -135,76 +212,70 @@ impl Display for PlaylistEntry {
         write!(
             f,
             "#EXTINF:{} xui-id=\"{{XUI_ID}}\" tvg-id=\"{}\" tvg-name=\"{}\" tvg-logo=\"{}\" group-title=\"{}\",{}\n{}",
-            self.duration, self.tvg_id, self.tvg_name, self.tvg_logo, self.group_title, self.name, self.url
+            self.duration,
+            self.tvg_id,
+            self.tvg_name,
+            self.tvg_logo,
+            self.group_title,
+            self.name,
+            self.url
         )
     }
 }
 
-fn parse_duration(input: &str) -> IResult<&str, i32> {
-    map_res(preceded(tag("#EXTINF:"), take_until(" ")), |s: &str| {
-        s.parse::<i32>()
-    })(input)
-}
-
-fn parse_xui_id(input: &str) -> IResult<&str, &str> {
-    preceded(tag(" xui-id=\""), take_until_key)(input)
-}
-
-fn parse_tvg_id(input: &str) -> IResult<&str, &str> {
-    preceded(tag("\" tvg-id=\""), take_until_key)(input)
-}
-
-fn parse_tvg_name(input: &str) -> IResult<&str, &str> {
-    preceded(tag("\" tvg-name=\""), take_until_key)(input)
-}
-
-fn parse_tvg_logo(input: &str) -> IResult<&str, &str> {
-    preceded(tag("\" tvg-logo=\""), take_until_key)(input)
-}
-
-fn parse_group_title(input: &str) -> IResult<&str, &str> {
-    preceded(tag("\" group-title=\""), take_until("\","))(input)
-}
-
-fn parse_name_and_url(input: &str) -> IResult<&str, (&str, &str)> {
-    let (input, _) = tag("\",")(input)?;
-    let (input, name) = take_until("\n")(input)?;
-    let (input, _) = char('\n')(input)?;
-    let (input, url) = take_till(|c| c == '\n' || c == '\0')(input)?;
-    Ok((input, (name, url)))
-}
-
-enum EntryKey {
-    Duration,
-    XuiId,
-    TvgId,
-    TvgName,
-    TvgLogo,
-    GroupTitle,
-}
-
-impl EntryKey {
-    fn as_str(&self) -> &str {
-        match self {
-            EntryKey::Duration => "#EXTINF:",
-            EntryKey::XuiId => " xui-id=\"",
-            EntryKey::TvgId => "\" tvg-id=\"",
-            EntryKey::TvgName => "\" tvg-name=\"",
-            EntryKey::TvgLogo => "\" tvg-logo=\"",
-            EntryKey::GroupTitle => "\" group-title=\"",
+fn split_extinf_metadata(input: &str) -> Option<(&str, &str)> {
+    let mut in_quotes = false;
+    for (index, ch) in input.char_indices() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            ',' if !in_quotes => {
+                let metadata = input[..index].trim();
+                let name = input[index + 1..].trim();
+                return Some((metadata, name));
+            }
+            _ => {}
         }
     }
+    None
 }
 
-fn take_until_key(input: &str) -> IResult<&str, &str> {
-    alt((
-        take_until(EntryKey::Duration.as_str()),
-        take_until(EntryKey::XuiId.as_str()),
-        take_until(EntryKey::TvgId.as_str()),
-        take_until(EntryKey::TvgName.as_str()),
-        take_until(EntryKey::TvgLogo.as_str()),
-        take_until(EntryKey::GroupTitle.as_str()),
-    ))(input)
+fn split_duration_and_attrs(input: &str) -> (&str, &str) {
+    let trimmed = input.trim();
+    let split_index = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
+    let duration = &trimmed[..split_index];
+    let attrs = trimmed[split_index..].trim();
+    (duration, attrs)
+}
+
+fn parse_attributes(input: &str) -> Result<HashMap<String, String>, String> {
+    let mut rest = input.trim();
+    let mut attributes = HashMap::new();
+
+    while !rest.is_empty() {
+        let Some(eq_index) = rest.find('=') else {
+            return Err(format!("missing `=` in attribute segment `{rest}`"));
+        };
+        let key = rest[..eq_index].trim();
+        if key.is_empty() {
+            return Err(format!("missing attribute key in segment `{rest}`"));
+        }
+
+        let value_start = &rest[eq_index + 1..];
+        let Some(value_start) = value_start.strip_prefix('"') else {
+            return Err(format!("attribute `{key}` is not quoted"));
+        };
+        let Some(end_quote) = value_start.find('"') else {
+            return Err(format!(
+                "attribute `{key}` has an unterminated quoted value"
+            ));
+        };
+
+        let value = &value_start[..end_quote];
+        attributes.insert(key.to_string(), value.to_string());
+        rest = value_start[end_quote + 1..].trim_start();
+    }
+
+    Ok(attributes)
 }
 
 #[cfg(test)]
@@ -218,19 +289,46 @@ mod tests {
 http://abc.xyz:8080/user/pass/360
         "#;
         assert_eq!(
-            dbg!(PlaylistEntry::parse(test_channel.trim())),
-            Ok((
-                "",
-                PlaylistEntry {
-                    duration: -1,
-                    tvg_id: "ABC.se".to_string(),
-                    tvg_name: "ABC FHD SE".to_string(),
-                    tvg_logo: "https://logo.com".to_string(),
-                    group_title: "Sweden".to_string(),
-                    name: "ABC FHD SE".to_string(),
-                    url: "http://abc.xyz:8080/user/pass/360".to_string()
-                }
-            ))
+            PlaylistEntry::parse(1, test_channel.trim()).unwrap(),
+            PlaylistEntry {
+                duration: -1,
+                tvg_id: "ABC.se".to_string(),
+                tvg_name: "ABC FHD SE".to_string(),
+                tvg_logo: "https://logo.com".to_string(),
+                group_title: "Sweden".to_string(),
+                name: "ABC FHD SE".to_string(),
+                url: "http://abc.xyz:8080/user/pass/360".to_string()
+            }
         );
+    }
+
+    #[test]
+    fn test_parse_playlist_entry_without_xui_id() {
+        let test_channel = r#"
+#EXTINF:-1 tvg-id="ABC.se" tvg-name="ABC FHD SE" tvg-logo="https://logo.com" group-title="Sweden",ABC FHD SE
+http://abc.xyz:8080/user/pass/360
+        "#;
+        assert_eq!(
+            PlaylistEntry::parse(1, test_channel.trim()).unwrap(),
+            PlaylistEntry {
+                duration: -1,
+                tvg_id: "ABC.se".to_string(),
+                tvg_name: "ABC FHD SE".to_string(),
+                tvg_logo: "https://logo.com".to_string(),
+                group_title: "Sweden".to_string(),
+                name: "ABC FHD SE".to_string(),
+                url: "http://abc.xyz:8080/user/pass/360".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_playlist_returns_error_instead_of_panicking() {
+        let invalid_playlist = "#EXTM3U\n<head><title>502 Bad Gateway</title></head>\n<body>";
+        let error = invalid_playlist.parse::<Playlist>().unwrap_err();
+        assert!(matches!(
+            error,
+            PlaylistParseError::MalformedEntry { entry_index: 1, .. }
+        ));
     }
 }

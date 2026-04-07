@@ -39,15 +39,33 @@ pub struct Programme {
 }
 
 impl Epg {
-    pub fn from_reader(reader: impl Read) -> Result<Epg, Box<dyn std::error::Error>> {
-        let epg: Epg = serde_xml_rs::from_reader(reader)?;
-        Ok(epg)
+    pub fn empty() -> Self {
+        Self {
+            channels: Vec::new(),
+            programmes: Vec::new(),
+        }
     }
 
-    pub async fn from_url(url: &str) -> Result<Epg, Box<dyn std::error::Error>> {
-        let response = reqwest::get(url).await?;
-        let body = response.text().await?;
-        Epg::from_reader(body.as_bytes())
+    pub fn from_reader(reader: impl Read) -> Result<Epg, Box<dyn std::error::Error>> {
+        let mut xml = String::new();
+        let mut reader = reader;
+        reader.read_to_string(&mut xml)?;
+        Self::from_xml_str(&xml)
+    }
+
+    pub fn from_xml_str(input: &str) -> Result<Epg, Box<dyn std::error::Error>> {
+        let input = strip_utf8_bom(input);
+        match serde_xml_rs::from_str(input) {
+            Ok(epg) => Ok(epg),
+            Err(original_error) => {
+                let sanitized = sanitize_epg_xml(input);
+                if sanitized == input {
+                    return Err(Box::new(original_error));
+                }
+
+                serde_xml_rs::from_str(&sanitized).map_err(|_| Box::new(original_error) as _)
+            }
+        }
     }
 
     pub fn channel_map(&self) -> HashMap<String, Channel> {
@@ -119,6 +137,129 @@ impl Epg {
     }
 }
 
+fn strip_utf8_bom(input: &str) -> &str {
+    input.strip_prefix('\u{feff}').unwrap_or(input)
+}
+
+fn sanitize_epg_xml(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut cursor = 0;
+
+    while let Some(relative_start) = input[cursor..].find('<') {
+        let start = cursor + relative_start;
+        output.push_str(&input[cursor..start]);
+
+        let Some(end) = find_tag_end(input, start) else {
+            output.push_str(&input[start..]);
+            return output;
+        };
+
+        let tag = &input[start..=end];
+        output.push_str(&sanitize_tag(tag));
+        cursor = end + 1;
+    }
+
+    output.push_str(&input[cursor..]);
+    output
+}
+
+fn find_tag_end(input: &str, start: usize) -> Option<usize> {
+    let mut in_quotes = false;
+    let mut quote_char = '\0';
+
+    for (offset, ch) in input[start..].char_indices() {
+        match ch {
+            '"' | '\'' => {
+                if in_quotes && ch == quote_char {
+                    in_quotes = false;
+                    quote_char = '\0';
+                } else if !in_quotes {
+                    in_quotes = true;
+                    quote_char = ch;
+                }
+            }
+            '>' if !in_quotes => return Some(start + offset),
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn sanitize_tag(tag: &str) -> String {
+    if tag.len() < 3
+        || tag.starts_with("</")
+        || tag.starts_with("<?")
+        || tag.starts_with("<!")
+    {
+        return tag.to_string();
+    }
+
+    let inner = &tag[1..tag.len() - 1];
+    let trimmed = inner.trim();
+    let self_closing = trimmed.ends_with('/');
+    let content = if self_closing {
+        trimmed[..trimmed.len() - 1].trim_end()
+    } else {
+        trimmed
+    };
+
+    let Some(name_end) = content.find(char::is_whitespace) else {
+        return tag.to_string();
+    };
+    let tag_name = &content[..name_end];
+    let attrs = &content[name_end..];
+
+    match sanitize_attributes(attrs) {
+        Some(sanitized_attrs) => {
+            let mut rebuilt = String::from("<");
+            rebuilt.push_str(tag_name);
+            if !sanitized_attrs.is_empty() {
+                rebuilt.push(' ');
+                rebuilt.push_str(&sanitized_attrs);
+            }
+            if self_closing {
+                rebuilt.push_str("/>");
+            } else {
+                rebuilt.push('>');
+            }
+            rebuilt
+        }
+        None => tag.to_string(),
+    }
+}
+
+fn sanitize_attributes(input: &str) -> Option<String> {
+    let mut rest = input.trim();
+    let mut seen = HashSet::new();
+    let mut attributes = Vec::new();
+
+    while !rest.is_empty() {
+        let eq_index = rest.find('=')?;
+        let key = rest[..eq_index].trim();
+        if key.is_empty() {
+            return None;
+        }
+
+        let mut value_rest = rest[eq_index + 1..].trim_start();
+        let quote = value_rest.chars().next()?;
+        if quote != '"' && quote != '\'' {
+            return None;
+        }
+        value_rest = &value_rest[quote.len_utf8()..];
+        let end_quote = value_rest.find(quote)?;
+        let value = &value_rest[..end_quote];
+
+        if seen.insert(key.to_string()) {
+            attributes.push(format!(r#"{key}={quote}{value}{quote}"#));
+        }
+
+        rest = value_rest[end_quote + quote.len_utf8()..].trim_start();
+    }
+
+    Some(attributes.join(" "))
+}
+
 fn escape_xml(s: &str) -> String {
     s.replace("&", "&amp;")
         .replace("<", "&lt;")
@@ -137,14 +278,24 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::fs::File;
-
     use super::*;
+
+    const SAMPLE_EPG: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE tv SYSTEM "xmltv.dtd">
+<tv generator-info-name="NXT" generator-info-url="nxtplay.xyz">
+    <channel id="example.com">
+        <display-name>Example Channel</display-name>
+        <icon src="https://example.com/logo.png"/>
+    </channel>
+    <programme start="20241017130900 +0100" stop="20241017140000 +0100" channel="example.com">
+        <title>Test Programme</title>
+        <desc>Test Description</desc>
+    </programme>
+</tv>"#;
 
     #[test]
     fn test_parse_epg() -> Result<(), Box<dyn std::error::Error>> {
-        let file = File::open("examples/mini-epg.xml")?;
-        let _ = Epg::from_reader(file)?;
+        let _ = Epg::from_reader(SAMPLE_EPG.as_bytes())?;
         Ok(())
     }
 
@@ -164,9 +315,29 @@ mod tests {
 
     #[test]
     fn test_to_xml() -> Result<(), Box<dyn std::error::Error>> {
-        let file = File::open("examples/mini-epg.xml")?;
-        let epg = Epg::from_reader(file)?;
+        let epg = Epg::from_reader(SAMPLE_EPG.as_bytes())?;
         let _ = epg.to_xml()?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_epg_repairs_duplicate_programme_attributes() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let malformed = r#"<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE tv SYSTEM "xmltv.dtd">
+<tv generator-info-name="NXT" generator-info-url="nxtplay.bz">
+    <channel id="example.com">
+        <display-name>Example Channel</display-name>
+    </channel>
+    <programme start="20241017130900 +0100" stop="20241017140000 +0100" stop="20241017150000 +0100" channel="example.com">
+        <title>Test Programme</title>
+        <desc>Test Description</desc>
+    </programme>
+</tv>"#;
+
+        let epg = Epg::from_xml_str(malformed)?;
+        assert_eq!(epg.programmes.len(), 1);
+        assert_eq!(epg.programmes[0].stop.to_rfc3339(), "2024-10-17T14:00:00+01:00");
         Ok(())
     }
 }

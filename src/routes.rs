@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use axum::{
     extract::{Query, State},
@@ -10,7 +10,11 @@ use chrono::{DateTime, FixedOffset};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 
-use crate::{playlist::PlaylistEntry, AppState};
+use crate::{
+    epg::{Channel, Epg, Icon},
+    playlist::PlaylistEntry,
+    AppState,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct DownloadQuery {
@@ -27,10 +31,7 @@ pub async fn download_playlist(
 
     let playlist = app_state.fetch_playlist().await.map_err(|e| {
         tracing::error!("Failed to fetch playlist: {:?}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to fetch playlist",
-        )
+        (StatusCode::SERVICE_UNAVAILABLE, "Failed to fetch playlist")
     })?;
     let m3u = playlist.to_m3u();
 
@@ -50,17 +51,14 @@ pub async fn download_epg(
         return Err((StatusCode::UNAUTHORIZED, "Unauthorized"));
     }
 
-    let mut epg = app_state.fetch_epg().await.map_err(|e| {
-        tracing::error!("Failed to fetch EPG: {:?}", e);
-        (StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch EPG")
-    })?;
     let playlist = app_state.fetch_playlist().await.map_err(|e| {
         tracing::error!("Failed to fetch playlist: {:?}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to fetch playlist",
-        )
+        (StatusCode::SERVICE_UNAVAILABLE, "Failed to fetch playlist")
     })?;
+    let mut epg = app_state.fetch_epg().await.unwrap_or_else(|error| {
+        tracing::warn!(?error, "Failed to fetch EPG, serving playlist-only EPG response");
+        epg_from_playlist_entries(&playlist.filtered_entries)
+    });
 
     let channels_to_keep: Vec<String> = playlist
         .filtered_entries
@@ -69,7 +67,13 @@ pub async fn download_epg(
         .collect();
     epg.filter_channels(&channels_to_keep);
 
-    let xml = epg.to_xml().unwrap();
+    let xml = epg.to_xml().map_err(|e| {
+        tracing::error!("Failed to render EPG XML: {:?}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to render EPG XML",
+        )
+    })?;
 
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -119,17 +123,14 @@ pub async fn search(
     }): Query<SearchQuery>,
     State(app_state): State<AppState>,
 ) -> Result<Json<SearchResult>, (StatusCode, &'static str)> {
-    let epg = app_state.fetch_epg().await.map_err(|e| {
-        tracing::error!("Failed to fetch EPG: {:?}", e);
-        (StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch EPG")
-    })?;
     let playlist = app_state.fetch_playlist().await.map_err(|e| {
         tracing::error!("Failed to fetch playlist: {:?}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to fetch playlist",
-        )
+        (StatusCode::SERVICE_UNAVAILABLE, "Failed to fetch playlist")
     })?;
+    let epg = app_state.fetch_epg().await.unwrap_or_else(|error| {
+        tracing::warn!(?error, "Failed to fetch EPG, serving channels-only search response");
+        Epg::empty()
+    });
     let playlist_entries = if let Some(true) = include_hidden {
         playlist.entries.clone()
     } else {
@@ -190,4 +191,68 @@ pub async fn search(
         programmes: programme_results,
         channels,
     }))
+}
+
+fn epg_from_playlist_entries(entries: &[PlaylistEntry]) -> Epg {
+    let mut seen = HashSet::new();
+    let channels = entries
+        .iter()
+        .filter_map(|entry| {
+            if entry.tvg_id.is_empty() || !seen.insert(entry.tvg_id.clone()) {
+                return None;
+            }
+
+            Some(Channel {
+                id: entry.tvg_id.clone(),
+                display_name: if entry.tvg_name.is_empty() {
+                    entry.name.clone()
+                } else {
+                    entry.tvg_name.clone()
+                },
+                icon: (!entry.tvg_logo.is_empty()).then(|| Icon {
+                    src: entry.tvg_logo.clone(),
+                }),
+            })
+        })
+        .collect();
+
+    Epg {
+        channels,
+        programmes: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_epg_from_playlist_entries_deduplicates_channels() {
+        let entries = vec![
+            PlaylistEntry {
+                duration: -1,
+                tvg_id: "svt1.se".to_string(),
+                tvg_name: "SVT1".to_string(),
+                tvg_logo: "https://example.com/svt1.png".to_string(),
+                group_title: "Sweden".to_string(),
+                name: "SVT1 FHD SE".to_string(),
+                url: "http://example.com/1".to_string(),
+            },
+            PlaylistEntry {
+                duration: -1,
+                tvg_id: "svt1.se".to_string(),
+                tvg_name: "SVT1".to_string(),
+                tvg_logo: "https://example.com/svt1.png".to_string(),
+                group_title: "Sweden".to_string(),
+                name: "SVT1 Backup".to_string(),
+                url: "http://example.com/2".to_string(),
+            },
+        ];
+
+        let epg = epg_from_playlist_entries(&entries);
+        assert_eq!(epg.channels.len(), 1);
+        assert_eq!(epg.channels[0].id, "svt1.se");
+        assert_eq!(epg.channels[0].display_name, "SVT1");
+        assert!(epg.programmes.is_empty());
+    }
 }
