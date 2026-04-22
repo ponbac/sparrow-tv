@@ -17,6 +17,7 @@ const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30000;
 const STALL_THRESHOLD_MS = 8000; // detect potential stall after 8s of no progress
 const HARD_STALL_MS = 25000; // only reconnect if stall persists for 25s
+const STABLE_PLAYBACK_MS = 30000;
 
 export const TvPlayer = (props: { url: string; onClose?: () => void }) => {
   const [isPlaying, setIsPlaying] = useState(false);
@@ -31,6 +32,7 @@ export const TvPlayer = (props: { url: string; onClose?: () => void }) => {
   const stallIntervalRef = useRef<number | null>(null);
   const lastPlaybackTimeRef = useRef(0);
   const lastProgressAtRef = useRef<number>(Date.now());
+  const playerStartedAtRef = useRef<number>(Date.now());
   const stallSinceRef = useRef<number | null>(null);
   // Backoff timer presence is used to dedupe reconnect attempts
 
@@ -109,8 +111,9 @@ export const TvPlayer = (props: { url: string; onClose?: () => void }) => {
     videoRef.current.muted = isMuted;
 
     // Reset progress trackers; keep retry attempts until we see progress
+    playerStartedAtRef.current = Date.now();
     lastPlaybackTimeRef.current = 0;
-    lastProgressAtRef.current = Date.now();
+    lastProgressAtRef.current = playerStartedAtRef.current;
     stallSinceRef.current = null;
 
     // Wire player error handling
@@ -233,8 +236,12 @@ export const TvPlayer = (props: { url: string; onClose?: () => void }) => {
             if (t > lastPlaybackTimeRef.current + 0.05) {
               lastPlaybackTimeRef.current = t;
               lastProgressAtRef.current = Date.now();
-              // Reset attempts on healthy progress
-              reconnectAttemptsRef.current = 0;
+              if (
+                Date.now() - playerStartedAtRef.current >
+                STABLE_PLAYBACK_MS
+              ) {
+                reconnectAttemptsRef.current = 0;
+              }
             }
           }}
           onStalled={() => {
@@ -255,7 +262,6 @@ export const TvPlayer = (props: { url: string; onClose?: () => void }) => {
             scheduleReconnect("video error event");
           }}
         >
-          <source src={props.url} type="application/x-mpegURL" />
           Your browser does not support the video tag.
         </video>
 

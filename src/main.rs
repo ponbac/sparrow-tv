@@ -69,6 +69,7 @@ struct AppState {
     playlist_refresh_lock: Arc<Mutex<()>>,
     epg_refresh_lock: Arc<Mutex<()>>,
     client: Client,
+    stream_client: Client,
 }
 
 impl AppState {
@@ -79,6 +80,12 @@ impl AppState {
             .connect_timeout(CONNECT_TIMEOUT)
             .build()
             .expect("failed to build HTTP client");
+
+        let stream_client = Client::builder()
+            .user_agent(APP_USER_AGENT)
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()
+            .expect("failed to build stream HTTP client");
 
         #[cfg(debug_assertions)]
         let (cached_playlist, cached_epg) = {
@@ -113,6 +120,7 @@ impl AppState {
             playlist_refresh_lock: Arc::new(Mutex::new(())),
             epg_refresh_lock: Arc::new(Mutex::new(())),
             client,
+            stream_client,
         }
     }
 
@@ -435,7 +443,7 @@ async fn proxy_stream(
     axum::extract::State(app_state): axum::extract::State<AppState>,
 ) -> Result<Response<Body>, (axum::http::StatusCode, String)> {
     let response = app_state
-        .client
+        .stream_client
         .get(&stream_path)
         .send()
         .await
@@ -454,7 +462,7 @@ async fn proxy_stream(
 
     let mut builder = Response::builder().status(status);
     for (name, value) in headers.iter() {
-        if name != "transfer-encoding" {
+        if should_forward_proxy_response_header(name) {
             builder = builder.header(name, value);
         }
     }
@@ -471,6 +479,20 @@ async fn proxy_stream(
     })?;
 
     Ok(response)
+}
+
+fn should_forward_proxy_response_header(name: &HeaderName) -> bool {
+    !matches!(
+        name.as_str(),
+        "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+    )
 }
 
 fn strip_utf8_bom(input: &str) -> &str {
