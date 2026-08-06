@@ -1,0 +1,22 @@
+{
+  "name": "sparrow-direct-playback-prototype",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc && vite build",
+    "dev": "vite",
+    "prototype": "tauri dev",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-http": "2.5.9",
+    "mpegts.js": "1.8.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
+    "typescript": "5.9.2",
+    "vite": "7.1.1"
+  }
+}

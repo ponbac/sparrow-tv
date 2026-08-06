@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Sparrow playback probe",
+  "version": "0.1.0",
+  "identifier": "dev.sparrowtv.playbackprobe",
+  "build": {
+    "beforeDevCommand": "bun run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "bun run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Sparrow direct playback prototype",
+        "width": 1200,
+        "height": 820
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "android": {
+      "minSdkVersion": 24
+    }
+  }
+}
