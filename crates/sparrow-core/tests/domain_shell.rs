@@ -1,5 +1,6 @@
 use sparrow_core::{
-    ChannelId, CoreError, InputField, InputReason, PageLimit, SourceConfigurationInput, SparrowCore,
+    ChannelId, CoreError, InputField, InputReason, PageLimit, SearchTerm, SourceConfigurationInput,
+    SparrowCore,
 };
 
 #[test]
@@ -83,4 +84,36 @@ fn page_limits_are_refined_at_the_public_boundary() {
             .get(),
         PageLimit::MAX
     );
+}
+
+#[test]
+fn search_terms_are_bounded_and_canonical_at_the_public_boundary() {
+    let term = SearchTerm::parse("  ＮEWS\u{a0}\tCaFÉ  ").expect("fixture term is valid");
+    assert_eq!(term.as_str(), "news café");
+    assert_eq!(format!("{term:?}"), "SearchTerm(<redacted>)");
+
+    for blank in ["", "   \n\t", "\u{a0}"] {
+        assert!(matches!(
+            SearchTerm::parse(blank),
+            Err(CoreError::InvalidInput {
+                field: InputField::SearchTerm,
+                reason: InputReason::Required,
+            })
+        ));
+    }
+
+    assert_eq!(
+        SearchTerm::parse("a".repeat(256))
+            .expect("the maximum decoded byte length is valid")
+            .as_str()
+            .len(),
+        256
+    );
+    assert!(matches!(
+        SearchTerm::parse("a".repeat(257)),
+        Err(CoreError::InvalidInput {
+            field: InputField::SearchTerm,
+            reason: InputReason::TooLong { max_bytes: 256 },
+        })
+    ));
 }

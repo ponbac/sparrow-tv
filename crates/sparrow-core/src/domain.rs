@@ -9,6 +9,7 @@ use std::{
 use blake3::Hasher;
 use chrono::{DateTime, Utc};
 use thiserror::Error;
+use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
 const MAX_SOURCE_LOCATION_BYTES: usize = 16 * 1024;
@@ -16,6 +17,7 @@ const PAGE_CURSOR_PREFIX: &str = "pc1";
 const CATALOG_GENERATION_DOMAIN: &[u8] = b"sparrow-catalog-generation-v1\0";
 pub(crate) const CHANNEL_ID_PREFIX: &str = "ch1_";
 const CHANNEL_ID_DIGEST_HEX_BYTES: usize = 64;
+const MAX_SEARCH_TERM_BYTES: usize = 256;
 
 /// Untrusted source locations as entered at a configuration boundary.
 ///
@@ -261,6 +263,7 @@ pub enum InputField {
     M3u,
     Epg,
     ChannelId,
+    SearchTerm,
     PageLimit,
     PageCursor,
 }
@@ -271,6 +274,7 @@ impl Display for InputField {
             InputField::M3u => "m3u",
             InputField::Epg => "epg",
             InputField::ChannelId => "channel ID",
+            InputField::SearchTerm => "search term",
             InputField::PageLimit => "page limit",
             InputField::PageCursor => "page cursor",
         })
@@ -552,6 +556,72 @@ impl Debug for ChannelId {
     }
 }
 
+/// A bounded canonical search term shared by Channel and Programme search.
+///
+/// Incoming text is compatibility-normalized, lowercased, and has runs of
+/// Unicode whitespace collapsed. The canonical value is intentionally omitted
+/// from diagnostics because callers may accidentally submit private text.
+#[derive(Clone, Eq, Hash, PartialEq)]
+pub struct SearchTerm(Arc<str>);
+
+impl SearchTerm {
+    /// Refines untrusted decoded text into a non-empty canonical search term.
+    pub fn parse(value: impl Into<String>) -> Result<Self, CoreError> {
+        let value = value.into();
+        if value.len() > MAX_SEARCH_TERM_BYTES {
+            return Err(CoreError::InvalidInput {
+                field: InputField::SearchTerm,
+                reason: InputReason::TooLong {
+                    max_bytes: MAX_SEARCH_TERM_BYTES,
+                },
+            });
+        }
+
+        let normalized = normalize_search_text(&value);
+        if normalized.is_empty() {
+            return Err(CoreError::InvalidInput {
+                field: InputField::SearchTerm,
+                reason: InputReason::Required,
+            });
+        }
+        if normalized.len() > MAX_SEARCH_TERM_BYTES {
+            return Err(CoreError::InvalidInput {
+                field: InputField::SearchTerm,
+                reason: InputReason::TooLong {
+                    max_bytes: MAX_SEARCH_TERM_BYTES,
+                },
+            });
+        }
+
+        Ok(Self(Arc::from(normalized)))
+    }
+
+    /// Returns the canonical term for an explicit transport projection.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Debug for SearchTerm {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SearchTerm(<redacted>)")
+    }
+}
+
+pub(crate) fn normalize_search_text(value: &str) -> String {
+    let compatibility_normalized = value.nfkc().collect::<String>();
+    let mut normalized = String::with_capacity(compatibility_normalized.len());
+
+    for (index, word) in compatibility_normalized.split_whitespace().enumerate() {
+        if index != 0 {
+            normalized.push(' ');
+        }
+        normalized.extend(word.chars().flat_map(char::to_lowercase));
+    }
+
+    normalized
+}
+
 /// One source-derived Channel Group and the number of Channels it contains.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChannelGroupView {
@@ -695,6 +765,36 @@ pub struct ScheduleQuery {
     page: PageRequest,
 }
 
+/// Selects independently bounded Channel and Programme search pages.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchRequest {
+    term: SearchTerm,
+    channels: PageRequest,
+    programmes: PageRequest,
+}
+
+impl SearchRequest {
+    pub const fn new(term: SearchTerm, channels: PageRequest, programmes: PageRequest) -> Self {
+        Self {
+            term,
+            channels,
+            programmes,
+        }
+    }
+
+    pub const fn term(&self) -> &SearchTerm {
+        &self.term
+    }
+
+    pub const fn channels(&self) -> &PageRequest {
+        &self.channels
+    }
+
+    pub const fn programmes(&self) -> &PageRequest {
+        &self.programmes
+    }
+}
+
 impl ScheduleQuery {
     /// Creates a bounded schedule query for one parsed Channel Identifier.
     pub const fn new(channel_id: ChannelId, page: PageRequest) -> Self {
@@ -756,39 +856,43 @@ impl<T> Page<T> {
         debug_assert!(collection.start <= collection.end);
         debug_assert!(collection.end <= items.len());
 
-        let offset = match request.cursor() {
-            None => 0,
-            Some(cursor) if cursor.generation != generation => {
-                return Err(CoreError::StaleCursor {
-                    current: generation,
-                });
-            }
-            Some(cursor) if cursor.query != query => {
-                return Err(CoreError::InvalidInput {
-                    field: InputField::PageCursor,
-                    reason: InputReason::CursorQueryMismatch,
-                });
-            }
-            Some(cursor) => cursor.offset,
-        };
-        let collection_len = collection.len();
-        if offset > 0 && offset >= collection_len {
-            return Err(CoreError::InvalidInput {
-                field: InputField::PageCursor,
-                reason: InputReason::CursorPositionOutOfRange,
-            });
-        }
-        let end = offset
-            .saturating_add(usize::from(request.limit().get()))
-            .min(collection_len);
-        let range = (collection.start + offset)..(collection.start + end);
-        let next = (end < collection_len).then(|| PageCursor::generated(generation, end, query));
+        let window = page_window(generation, collection.len(), request, query)?;
+        let range = (collection.start + window.range.start)..(collection.start + window.range.end);
 
         Ok(Self {
             generation,
             items,
             range,
-            next,
+            next: window.next,
+        })
+    }
+
+    /// Builds a page by shallow-cloning only the selected bounded window.
+    pub(crate) fn from_selection(
+        generation: CatalogGeneration,
+        source: &[T],
+        selection: &[usize],
+        request: &PageRequest,
+        query: CursorQueryHash,
+    ) -> Result<Self, CoreError>
+    where
+        T: Clone,
+    {
+        debug_assert!(selection.iter().all(|index| *index < source.len()));
+        let window = page_window(generation, selection.len(), request, query)?;
+        let items: Arc<[T]> = Arc::from(
+            selection[window.range]
+                .iter()
+                .map(|index| source[*index].clone())
+                .collect::<Vec<_>>(),
+        );
+        let range = 0..items.len();
+
+        Ok(Self {
+            generation,
+            items,
+            range,
+            next: window.next,
         })
     }
 
@@ -808,6 +912,49 @@ impl<T> Page<T> {
     }
 }
 
+struct PageWindow {
+    range: Range<usize>,
+    next: Option<PageCursor>,
+}
+
+fn page_window(
+    generation: CatalogGeneration,
+    collection_len: usize,
+    request: &PageRequest,
+    query: CursorQueryHash,
+) -> Result<PageWindow, CoreError> {
+    let offset = match request.cursor() {
+        None => 0,
+        Some(cursor) if cursor.generation != generation => {
+            return Err(CoreError::StaleCursor {
+                current: generation,
+            });
+        }
+        Some(cursor) if cursor.query != query => {
+            return Err(CoreError::InvalidInput {
+                field: InputField::PageCursor,
+                reason: InputReason::CursorQueryMismatch,
+            });
+        }
+        Some(cursor) => cursor.offset,
+    };
+    if offset > 0 && offset >= collection_len {
+        return Err(CoreError::InvalidInput {
+            field: InputField::PageCursor,
+            reason: InputReason::CursorPositionOutOfRange,
+        });
+    }
+    let end = offset
+        .saturating_add(usize::from(request.limit().get()))
+        .min(collection_len);
+    let next = (end < collection_len).then(|| PageCursor::generated(generation, end, query));
+
+    Ok(PageWindow {
+        range: offset..end,
+        next,
+    })
+}
+
 impl<T: Debug> Debug for Page<T> {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter
@@ -816,6 +963,36 @@ impl<T: Debug> Debug for Page<T> {
             .field("items", &self.items())
             .field("next", &self.next)
             .finish()
+    }
+}
+
+/// Independently paginated Channel and Programme matches from one generation.
+#[derive(Clone, Debug)]
+pub struct SearchResults {
+    channels: Page<ChannelSummary>,
+    programmes: Page<ProgrammeSummary>,
+}
+
+impl SearchResults {
+    pub(crate) fn new(channels: Page<ChannelSummary>, programmes: Page<ProgrammeSummary>) -> Self {
+        debug_assert_eq!(channels.generation(), programmes.generation());
+        Self {
+            channels,
+            programmes,
+        }
+    }
+
+    /// Returns the immutable catalog generation shared by both result pages.
+    pub fn generation(&self) -> CatalogGeneration {
+        self.channels.generation()
+    }
+
+    pub const fn channels(&self) -> &Page<ChannelSummary> {
+        &self.channels
+    }
+
+    pub const fn programmes(&self) -> &Page<ProgrammeSummary> {
+        &self.programmes
     }
 }
 

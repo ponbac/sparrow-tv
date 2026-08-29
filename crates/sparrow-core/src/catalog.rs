@@ -12,7 +12,8 @@ use crate::{
     domain::{
         CatalogGeneration, ChannelDetails, ChannelGroupView, ChannelId, ChannelQuery,
         ChannelSummary, CoreError, CursorQueryHash, Page, PageRequest, ProgrammeSummary,
-        ScheduleQuery, SourceConfiguration,
+        ScheduleQuery, SearchRequest, SearchResults, SearchTerm, SourceConfiguration,
+        normalize_search_text,
     },
     identity,
     m3u::ParsedChannel,
@@ -24,6 +25,8 @@ const GROUPS_QUERY_TAG: u8 = 0;
 const ALL_CHANNELS_QUERY_TAG: u8 = 1;
 const GROUP_CHANNELS_QUERY_TAG: u8 = 2;
 const SCHEDULE_QUERY_TAG: u8 = 3;
+const CHANNEL_SEARCH_QUERY_TAG: u8 = 4;
+const PROGRAMME_SEARCH_QUERY_TAG: u8 = 5;
 
 pub(crate) struct ChannelCatalog {
     generation: CatalogGeneration,
@@ -31,6 +34,8 @@ pub(crate) struct ChannelCatalog {
     summaries: Arc<[ChannelSummary]>,
     programmes: Arc<[ProgrammeSummary]>,
     records: Vec<ChannelRecord>,
+    channel_search: Box<[SearchDocument]>,
+    programme_search: Box<[SearchDocument]>,
     group_ranges: HashMap<Arc<str>, Range<usize>>,
     schedule_ranges: HashMap<ChannelId, Range<usize>>,
     by_id: HashMap<ChannelId, usize>,
@@ -112,12 +117,23 @@ impl ChannelCatalog {
             group_start = group_end;
         }
 
+        let channel_search = summaries
+            .iter()
+            .map(|channel| SearchDocument::new(channel.name(), Some(channel.group())))
+            .collect();
+        let programme_search = programmes
+            .iter()
+            .map(|programme| SearchDocument::new(programme.title(), programme.description()))
+            .collect();
+
         Self {
             generation,
             groups: Arc::from(groups),
             summaries: Arc::from(summaries),
             programmes,
             records,
+            channel_search,
+            programme_search,
             group_ranges,
             schedule_ranges,
             by_id,
@@ -193,6 +209,102 @@ impl ChannelCatalog {
             query_hash(SCHEDULE_QUERY_TAG, Some(query.channel_id().as_str())),
         )
     }
+
+    pub(crate) fn search(&self, request: &SearchRequest) -> Result<SearchResults, CoreError> {
+        // Ranking allocates one small index record per match. Page construction
+        // shallow-clones at most PageLimit read models, whose strings remain
+        // shared with the immutable catalog through Arc.
+        let channel_matches = ranked_indices(&self.channel_search, request.term());
+        let channel_page = Page::from_selection(
+            self.generation,
+            &self.summaries,
+            &channel_matches,
+            request.channels(),
+            query_hash(CHANNEL_SEARCH_QUERY_TAG, Some(request.term().as_str())),
+        )?;
+
+        let programme_matches = ranked_indices(&self.programme_search, request.term());
+        let programme_page = Page::from_selection(
+            self.generation,
+            &self.programmes,
+            &programme_matches,
+            request.programmes(),
+            query_hash(PROGRAMME_SEARCH_QUERY_TAG, Some(request.term().as_str())),
+        )?;
+
+        Ok(SearchResults::new(channel_page, programme_page))
+    }
+}
+
+struct SearchDocument {
+    primary: String,
+    secondary: Option<String>,
+}
+
+impl SearchDocument {
+    fn new(primary: &str, secondary: Option<&str>) -> Self {
+        Self {
+            primary: normalize_search_text(primary),
+            secondary: secondary.map(normalize_search_text),
+        }
+    }
+
+    fn rank(&self, term: &SearchTerm) -> Option<SearchRank> {
+        std::iter::once(self.primary.as_str())
+            .chain(self.secondary.as_deref())
+            .enumerate()
+            .filter_map(|(field_index, field)| {
+                field_rank(field, term.as_str()).map(|category| SearchRank {
+                    category,
+                    field_index,
+                })
+            })
+            .min()
+    }
+}
+
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+struct SearchRank {
+    category: MatchCategory,
+    field_index: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum MatchCategory {
+    Exact,
+    Prefix,
+    Token,
+    Substring,
+}
+
+fn ranked_indices(documents: &[SearchDocument], term: &SearchTerm) -> Vec<usize> {
+    let mut ranked = documents
+        .iter()
+        .enumerate()
+        .filter_map(|(item_index, document)| document.rank(term).map(|rank| (rank, item_index)))
+        .collect::<Vec<_>>();
+    // The deterministic catalog item index is the final total-order tie breaker.
+    ranked.sort_unstable();
+    ranked
+        .into_iter()
+        .map(|(_, item_index)| item_index)
+        .collect()
+}
+
+fn field_rank(field: &str, term: &str) -> Option<MatchCategory> {
+    if field == term {
+        return Some(MatchCategory::Exact);
+    }
+    if field.starts_with(term) {
+        return Some(MatchCategory::Prefix);
+    }
+    if term
+        .split(' ')
+        .all(|query_token| field.split(' ').any(|token| token == query_token))
+    {
+        return Some(MatchCategory::Token);
+    }
+    field.contains(term).then_some(MatchCategory::Substring)
 }
 
 struct PendingChannel {
@@ -214,13 +326,13 @@ fn compare_channels(left: &PendingChannel, right: &PendingChannel) -> Ordering {
         .then_with(|| left.id.as_str().cmp(right.id.as_str()))
 }
 
-fn query_hash(tag: u8, group: Option<&str>) -> CursorQueryHash {
+fn query_hash(tag: u8, discriminator: Option<&str>) -> CursorQueryHash {
     let mut hasher = blake3::Hasher::new();
     hasher.update(CURSOR_QUERY_DOMAIN);
     hasher.update(&[tag]);
-    if let Some(group) = group {
-        hasher.update(&(group.len() as u64).to_le_bytes());
-        hasher.update(group.as_bytes());
+    if let Some(discriminator) = discriminator {
+        hasher.update(&(discriminator.len() as u64).to_le_bytes());
+        hasher.update(discriminator.as_bytes());
     }
     CursorQueryHash::new(*hasher.finalize().as_bytes())
 }
@@ -379,7 +491,7 @@ mod tests {
     use crate::{
         domain::{
             CatalogGeneration, ChannelQuery, CoreError, PageCursor, PageLimit, PageRequest,
-            SourceConfiguration, SourceConfigurationInput,
+            SearchRequest, SearchTerm, SourceConfiguration, SourceConfigurationInput,
         },
         m3u::ParsedChannel,
     };
@@ -423,6 +535,59 @@ mod tests {
                     .expect("generated cursors round-trip through their transport form");
                 request = PageRequest::after(
                     parsed,
+                    PageLimit::new(limit).expect("generated limit is valid"),
+                );
+            }
+
+            prop_assert_eq!(observed, expected);
+        }
+
+        #[test]
+        fn search_cursor_round_trips_visit_every_ranked_channel_once(
+            channel_count in 1_usize..300,
+            limit in 1_u16..=100,
+        ) {
+            let catalog = catalog(
+                unique_channels(channel_count, false),
+                generation(1),
+            );
+            let expected = catalog
+                .summaries
+                .iter()
+                .map(|channel| channel.id().as_str().to_owned())
+                .collect::<Vec<_>>();
+            let term = SearchTerm::parse("channel").expect("fixture term is valid");
+            let programme_page = PageRequest::first(
+                PageLimit::new(100).expect("fixture limit is valid"),
+            );
+            let mut channel_page = PageRequest::first(
+                PageLimit::new(limit).expect("generated limit is valid"),
+            );
+            let mut observed = Vec::new();
+
+            loop {
+                let results = catalog
+                    .search(&SearchRequest::new(
+                        term.clone(),
+                        channel_page,
+                        programme_page.clone(),
+                    ))
+                    .expect("generated search request is valid");
+                prop_assert!(results.channels().items().len() <= usize::from(limit));
+                prop_assert!(results.programmes().items().is_empty());
+                observed.extend(
+                    results
+                        .channels()
+                        .items()
+                        .iter()
+                        .map(|channel| channel.id().as_str().to_owned()),
+                );
+                let Some(next) = results.channels().next() else {
+                    break;
+                };
+                channel_page = PageRequest::after(
+                    PageCursor::parse(next.as_str())
+                        .expect("generated cursor round-trips through transport"),
                     PageLimit::new(limit).expect("generated limit is valid"),
                 );
             }
@@ -527,6 +692,24 @@ mod tests {
             other_configuration.catalog_generation(&[1; 32], None)
         );
         assert_ne!(baseline.get(), 0);
+    }
+
+    #[test]
+    fn search_ranking_is_exact_then_prefix_then_token_then_substring() {
+        use super::MatchCategory::{Exact, Prefix, Substring, Token};
+
+        assert_eq!(super::field_rank("news", "news"), Some(Exact));
+        assert_eq!(super::field_rank("news tonight", "news"), Some(Prefix));
+        assert_eq!(super::field_rank("newsroom evening", "news"), Some(Prefix));
+        assert_eq!(
+            super::field_rank("evening news bulletin", "news"),
+            Some(Token)
+        );
+        assert_eq!(
+            super::field_rank("goodnews bulletin", "news"),
+            Some(Substring)
+        );
+        assert_eq!(super::field_rank("weather bulletin", "news"), None);
     }
 
     fn catalog(parsed: Vec<ParsedChannel>, generation: CatalogGeneration) -> ChannelCatalog {
