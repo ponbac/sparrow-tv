@@ -76,6 +76,13 @@ impl SourceRequest {
         }
     }
 
+    pub(crate) fn epg(configuration: &SourceConfiguration) -> Option<Self> {
+        configuration.epg.as_ref().map(|source| Self {
+            kind: SourceKind::Epg,
+            location: source.location().clone(),
+        })
+    }
+
     pub fn kind(&self) -> SourceKind {
         self.kind
     }
@@ -152,6 +159,13 @@ impl SnapshotSource {
             kind: SourceKind::M3u,
             key: SourceKey::from_fingerprint(configuration.m3u.fingerprint()),
         }
+    }
+
+    pub(crate) fn epg(configuration: &SourceConfiguration) -> Option<Self> {
+        configuration.epg.as_ref().map(|source| Self {
+            kind: SourceKind::Epg,
+            key: SourceKey::from_fingerprint(source.fingerprint()),
+        })
     }
 
     pub fn kind(&self) -> SourceKind {
@@ -300,6 +314,42 @@ mod tests {
         assert_ne!(
             SnapshotSource::m3u(&first).key(),
             SnapshotSource::m3u(&changed_m3u).key()
+        );
+    }
+
+    #[test]
+    fn epg_snapshot_identity_is_independent_of_the_m3u_source() {
+        let first = SourceConfiguration::parse(SourceConfigurationInput::new(
+            "https://provider.fixture.invalid/channels.m3u",
+            Some("https://provider.fixture.invalid/guide.xml"),
+        ))
+        .expect("first Source Configuration is valid");
+        let changed_m3u = SourceConfiguration::parse(SourceConfigurationInput::new(
+            "https://provider.fixture.invalid/other.m3u",
+            Some("https://provider.fixture.invalid/guide.xml"),
+        ))
+        .expect("changed M3U Source Configuration is valid");
+        let changed_epg = SourceConfiguration::parse(SourceConfigurationInput::new(
+            "https://provider.fixture.invalid/channels.m3u",
+            Some("https://provider.fixture.invalid/other.xml"),
+        ))
+        .expect("changed EPG Source Configuration is valid");
+
+        assert_eq!(
+            SnapshotSource::epg(&first)
+                .expect("the first EPG Source is configured")
+                .key(),
+            SnapshotSource::epg(&changed_m3u)
+                .expect("the unchanged EPG Source is configured")
+                .key()
+        );
+        assert_ne!(
+            SnapshotSource::epg(&first)
+                .expect("the first EPG Source is configured")
+                .key(),
+            SnapshotSource::epg(&changed_epg)
+                .expect("the changed EPG Source is configured")
+                .key()
         );
     }
 }

@@ -628,11 +628,88 @@ impl ChannelDetails {
     }
 }
 
+/// One source-derived Programme associated with a Channel in this catalog generation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProgrammeSummary {
+    channel_id: ChannelId,
+    title: Arc<str>,
+    description: Option<Arc<str>>,
+    starts_at: DateTime<Utc>,
+    ends_at: DateTime<Utc>,
+}
+
+impl ProgrammeSummary {
+    pub(crate) fn new(
+        channel_id: ChannelId,
+        title: Arc<str>,
+        description: Option<Arc<str>>,
+        starts_at: DateTime<Utc>,
+        ends_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            channel_id,
+            title,
+            description,
+            starts_at,
+            ends_at,
+        }
+    }
+
+    /// Returns the opaque Channel Identifier associated with this Programme.
+    pub fn channel_id(&self) -> &ChannelId {
+        &self.channel_id
+    }
+
+    /// Returns the normalized Programme title supplied by the EPG Source.
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    /// Returns the optional normalized Programme description.
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+
+    /// Returns the Programme start instant normalized to UTC.
+    pub const fn starts_at(&self) -> DateTime<Utc> {
+        self.starts_at
+    }
+
+    /// Returns the Programme end instant normalized to UTC.
+    pub const fn ends_at(&self) -> DateTime<Utc> {
+        self.ends_at
+    }
+}
+
 /// Selects all Channels or the Channels in one exact source-derived group.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChannelQuery {
     group: Option<Arc<str>>,
     page: PageRequest,
+}
+
+/// Selects one Channel's deterministic, paginated Programme schedule.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScheduleQuery {
+    channel_id: ChannelId,
+    page: PageRequest,
+}
+
+impl ScheduleQuery {
+    /// Creates a bounded schedule query for one parsed Channel Identifier.
+    pub const fn new(channel_id: ChannelId, page: PageRequest) -> Self {
+        Self { channel_id, page }
+    }
+
+    /// Returns the Channel whose Programme schedule is requested.
+    pub const fn channel_id(&self) -> &ChannelId {
+        &self.channel_id
+    }
+
+    /// Returns this query's bounded page request.
+    pub const fn page(&self) -> &PageRequest {
+        &self.page
+    }
 }
 
 impl ChannelQuery {
@@ -775,6 +852,7 @@ pub enum SourceState {
 pub struct CatalogStatus {
     generation: Option<CatalogGeneration>,
     m3u: SourceState,
+    epg: Option<SourceState>,
     configuration: RedactedSourceConfiguration,
 }
 
@@ -783,6 +861,7 @@ impl CatalogStatus {
         Self {
             generation: None,
             m3u: SourceState::Unavailable { failure: None },
+            epg: None,
             configuration: RedactedSourceConfiguration::not_configured(),
         }
     }
@@ -794,6 +873,9 @@ impl CatalogStatus {
         Self {
             generation: None,
             m3u: SourceState::Unavailable { failure },
+            epg: configuration
+                .has_epg()
+                .then_some(SourceState::Unavailable { failure: None }),
             configuration,
         }
     }
@@ -801,11 +883,15 @@ impl CatalogStatus {
     pub(crate) fn fresh(
         generation: CatalogGeneration,
         configuration: RedactedSourceConfiguration,
-        validated_at: DateTime<Utc>,
+        m3u_validated_at: DateTime<Utc>,
+        epg: Option<SourceState>,
     ) -> Self {
         Self {
             generation: Some(generation),
-            m3u: SourceState::Fresh { validated_at },
+            m3u: SourceState::Fresh {
+                validated_at: m3u_validated_at,
+            },
+            epg,
             configuration,
         }
     }
@@ -816,6 +902,11 @@ impl CatalogStatus {
 
     pub fn m3u(&self) -> &SourceState {
         &self.m3u
+    }
+
+    /// Returns independent EPG Source status, or `None` when no EPG Source is configured.
+    pub fn epg(&self) -> Option<&SourceState> {
+        self.epg.as_ref()
     }
 
     pub fn configuration(&self) -> RedactedSourceConfiguration {
@@ -872,21 +963,33 @@ pub enum M3uFailureKind {
     UnsupportedPlaybackSource,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EpgFailureKind {
+    MalformedXml,
+}
+
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum SafeFailure {
     #[error("source access failed")]
-    SourceAccess { reason: SourceAccessError },
+    SourceAccess {
+        kind: SourceKind,
+        reason: SourceAccessError,
+    },
     #[error("source reading failed")]
-    SourceRead { reason: SourceReadError },
+    SourceRead {
+        kind: SourceKind,
+        reason: SourceReadError,
+    },
     #[error("snapshot operation failed")]
     Snapshot {
+        kind: SourceKind,
         operation: SnapshotOperation,
         reason: StoreError,
     },
-    #[error("decoded M3U input exceeds the {limit_bytes}-byte limit")]
-    DecodedLimitExceeded { limit_bytes: u64 },
-    #[error("M3U input is not valid UTF-8")]
-    InvalidEncoding,
+    #[error("decoded source input exceeds the {limit_bytes}-byte limit")]
+    DecodedLimitExceeded { kind: SourceKind, limit_bytes: u64 },
+    #[error("source input is not valid UTF-8")]
+    InvalidEncoding { kind: SourceKind },
     #[error("M3U input has an invalid format")]
     InvalidFormat {
         entry: Option<u32>,
@@ -894,6 +997,10 @@ pub enum SafeFailure {
     },
     #[error("M3U input contains no playable Channels")]
     NoPlayableChannels,
+    #[error("EPG input has an invalid format")]
+    InvalidEpgFormat { reason: EpgFailureKind },
+    #[error("EPG input contains no Channel records")]
+    NoEpgChannels,
 }
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]

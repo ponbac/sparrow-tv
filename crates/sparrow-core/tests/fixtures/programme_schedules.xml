@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE tv SYSTEM "xmltv.dtd">
+<tv generator-info-name="sanitized fixture">
+  <channel id=" exact.id ">
+    <display-name>Exact Official</display-name>
+  </channel>
+  <channel id="decoy.id">
+    <display-name>Misleading Name</display-name>
+  </channel>
+  <channel id="fallback.id">
+    <display-name> fallback one </display-name>
+  </channel>
+  <channel id="playlist-ambiguous.id">
+    <display-name>Ambiguous Playlist</display-name>
+  </channel>
+  <channel id="guide-ambiguous-a.id">
+    <display-name>Ambiguous Guide</display-name>
+  </channel>
+  <channel id="guide-ambiguous-b.id">
+    <display-name> ambiguous   guide </display-name>
+  </channel>
+  <channel id="name-only.id">
+    <display-name>Present Id Must Not Fallback</display-name>
+  </channel>
+  <channel id="unassociated.id">
+    <display-name>Guide Only</display-name>
+  </channel>
+
+  <programme start="20260829120000 +0200" stop="20260829130000 +0200" channel="exact.id">
+    <title>Later Programme</title>
+  </programme>
+  <programme start="20260829090000 +0200" stop="20260829100000 +0200" channel="exact.id">
+    <title>Earlier &amp; First</title>
+    <desc><![CDATA[  A   normalized description  ]]></desc>
+  </programme>
+  <programme start="20260829110000" stop="20260829120000" channel="fallback.id">
+    <title>Fallback Programme</title>
+  </programme>
+  <programme start="20260829130000 +0000" stop="20260829140000 +0000" channel="playlist-ambiguous.id">
+    <title>Must Not Match Duplicate M3U Names</title>
+  </programme>
+  <programme start="20260829140000 +0000" stop="20260829150000 +0000" channel="guide-ambiguous-a.id">
+    <title>Must Not Match Ambiguous Guide Names A</title>
+  </programme>
+  <programme start="20260829150000 +0000" stop="20260829160000 +0000" channel="guide-ambiguous-b.id">
+    <title>Must Not Match Ambiguous Guide Names B</title>
+  </programme>
+  <programme start="20260829160000 +0000" stop="20260829170000 +0000" channel="name-only.id">
+    <title>Must Not Override Present M3U Id</title>
+  </programme>
+  <programme start="20260829170000 +0000" stop="20260829180000 +0000" channel="unassociated.id">
+    <title>Unassociated Programme</title>
+  </programme>
+  <programme start="20260829180000 +0000" stop="20260829190000 +0000" channel="missing-channel-record.id">
+    <title>Orphan Programme</title>
+  </programme>
+</tv>

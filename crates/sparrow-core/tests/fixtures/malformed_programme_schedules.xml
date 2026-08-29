@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tv>
+  <channel id="broken.id"><display-name>Broken</display-name></channel>
+  <programme start="20260829120000 +0000" stop="20260829130000 +0000" channel="broken.id">
+    <title>Truncated Programme</title>

@@ -15,8 +15,8 @@ use chrono::{DateTime, Utc};
 use futures_util::stream;
 use sparrow_core::{
     Clock, CoreAdapters, SnapshotSource, SnapshotStage, SnapshotStore, SourceAccess,
-    SourceAccessError, SourceByteStream, SourceReadError, SourceRequest, SourceResponse,
-    StoreError, ValidatedStage,
+    SourceAccessError, SourceByteStream, SourceKind, SourceReadError, SourceRequest,
+    SourceResponse, StoreError, ValidatedStage,
 };
 
 #[derive(Clone)]
@@ -25,10 +25,14 @@ pub struct ScriptedSource {
 }
 
 struct SourceState {
+    scripts: HashMap<SourceKind, SourceScript>,
+    opens: HashMap<SourceKind, usize>,
+    request_debug: HashMap<SourceKind, String>,
+}
+
+struct SourceScript {
     chunks: Vec<Result<Bytes, SourceReadError>>,
     declared_length: Option<u64>,
-    opens: usize,
-    request_debug: Option<String>,
 }
 
 impl ScriptedSource {
@@ -43,36 +47,89 @@ impl ScriptedSource {
     ) -> Self {
         Self {
             state: Arc::new(Mutex::new(SourceState {
-                declared_length,
-                chunks,
-                opens: 0,
-                request_debug: None,
+                scripts: HashMap::from([(
+                    SourceKind::M3u,
+                    SourceScript {
+                        chunks,
+                        declared_length,
+                    },
+                )]),
+                opens: HashMap::new(),
+                request_debug: HashMap::new(),
             })),
         }
     }
 
+    pub fn with_epg_bytes(self, bytes: impl Into<Bytes>) -> Self {
+        let bytes = bytes.into();
+        self.with_epg_chunks(vec![Ok(bytes.clone())], Some(bytes.len() as u64))
+    }
+
+    pub fn with_epg_chunks(
+        self,
+        chunks: Vec<Result<Bytes, SourceReadError>>,
+        declared_length: Option<u64>,
+    ) -> Self {
+        self.state
+            .lock()
+            .expect("source state poisoned")
+            .scripts
+            .insert(
+                SourceKind::Epg,
+                SourceScript {
+                    chunks,
+                    declared_length,
+                },
+            );
+        self
+    }
+
     pub fn open_count(&self) -> usize {
-        self.state.lock().expect("source state poisoned").opens
+        self.state
+            .lock()
+            .expect("source state poisoned")
+            .opens
+            .values()
+            .sum()
+    }
+
+    pub fn open_count_for(&self, kind: SourceKind) -> usize {
+        self.state
+            .lock()
+            .expect("source state poisoned")
+            .opens
+            .get(&kind)
+            .copied()
+            .unwrap_or_default()
     }
 
     pub fn request_debug(&self) -> Option<String> {
+        self.request_debug_for(SourceKind::M3u)
+    }
+
+    pub fn request_debug_for(&self, kind: SourceKind) -> Option<String> {
         self.state
             .lock()
             .expect("source state poisoned")
             .request_debug
-            .clone()
+            .get(&kind)
+            .cloned()
     }
 }
 
 #[async_trait]
 impl SourceAccess for ScriptedSource {
     async fn open(&self, request: SourceRequest) -> Result<SourceResponse, SourceAccessError> {
-        assert_eq!(request.kind(), sparrow_core::SourceKind::M3u);
+        let kind = request.kind();
         let mut state = self.state.lock().expect("source state poisoned");
-        state.opens += 1;
-        state.request_debug = Some(format!("{request:?}"));
-        let chunks = state.chunks.clone();
-        let declared_length = state.declared_length;
+        *state.opens.entry(kind).or_default() += 1;
+        state.request_debug.insert(kind, format!("{request:?}"));
+        let script = state
+            .scripts
+            .get(&kind)
+            .ok_or(SourceAccessError::Unavailable)?;
+        let chunks = script.chunks.clone();
+        let declared_length = script.declared_length;
         let body: SourceByteStream = Box::pin(stream::iter(chunks));
         Ok(SourceResponse::new(declared_length, body))
     }
