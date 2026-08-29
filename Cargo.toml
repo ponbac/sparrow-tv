@@ -1,5 +1,9 @@
 [workspace]
-members = ["crates/sparrow-core", "crates/sparrow-snapshot-store"]
+members = [
+  "crates/sparrow-core",
+  "crates/sparrow-snapshot-store",
+  "crates/sparrow-source-http",
+]
 resolver = "3"
 
 [workspace.package]

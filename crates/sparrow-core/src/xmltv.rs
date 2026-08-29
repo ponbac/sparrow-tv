@@ -1,4 +1,4 @@
-use std::io::BufRead;
+use std::{io::BufRead, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use quick_xml::{
@@ -18,14 +18,14 @@ pub(crate) struct ParsedGuide {
 }
 
 pub(crate) struct ParsedGuideChannel {
-    pub(crate) id: String,
-    pub(crate) display_names: Vec<String>,
+    pub(crate) id: Arc<str>,
+    pub(crate) display_names: Vec<Arc<str>>,
 }
 
 pub(crate) struct ParsedProgramme {
-    pub(crate) guide_channel_id: String,
-    pub(crate) title: String,
-    pub(crate) description: Option<String>,
+    pub(crate) guide_channel_id: Arc<str>,
+    pub(crate) title: Arc<str>,
+    pub(crate) description: Option<Arc<str>>,
     pub(crate) starts_at: DateTime<Utc>,
     pub(crate) ends_at: DateTime<Utc>,
 }
@@ -253,8 +253,8 @@ impl GuideParser {
             PendingRecord::Channel(channel) => {
                 if let Some(id) = channel.id {
                     self.channels.push(ParsedGuideChannel {
-                        id,
-                        display_names: channel.display_names,
+                        id: Arc::from(id),
+                        display_names: channel.display_names.into_iter().map(Arc::from).collect(),
                     });
                 }
             }
@@ -275,9 +275,9 @@ impl GuideParser {
                     return Ok(());
                 }
                 self.programmes.push(ParsedProgramme {
-                    guide_channel_id,
-                    title,
-                    description: programme.description,
+                    guide_channel_id: Arc::from(guide_channel_id),
+                    title: Arc::from(title),
+                    description: programme.description.map(Arc::from),
                     starts_at,
                     ends_at,
                 });

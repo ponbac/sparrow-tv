@@ -117,8 +117,8 @@ async fn old_exact_deadline_and_future_snapshots_are_stale_but_remain_usable() {
             recovered.status().m3u(),
             SourceState::Stale {
                 validated_at: actual,
-                next_attempt_at: None,
-            } if *actual == utc(validated_at)
+                next_attempt_at: Some(next_attempt_at),
+            } if *actual == utc(validated_at) && *next_attempt_at == utc(now)
         ));
         assert_eq!(channel_names(&recovered), ["Beta", "Alpha"]);
     }

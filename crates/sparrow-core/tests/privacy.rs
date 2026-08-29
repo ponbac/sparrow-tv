@@ -3,8 +3,8 @@ mod support;
 use static_assertions::assert_not_impl_any;
 
 use sparrow_core::{
-    ChannelId, ChannelQuery, PageLimit, PageRequest, ScheduleQuery, SearchRequest, SearchTerm,
-    SourceConfigurationInput, SourceKind, SourceResponse, SparrowCore,
+    ChannelId, ChannelQuery, CoreEvent, PageLimit, PageRequest, RefreshTrigger, ScheduleQuery,
+    SearchRequest, SearchTerm, SourceConfigurationInput, SourceKind, SourceResponse, SparrowCore,
 };
 use support::{MemorySnapshotStore, ScriptedSource, adapters};
 
@@ -93,6 +93,17 @@ https://playback-user:playback-secret@private-media.fixture.invalid/live?token=p
         SearchTerm::parse("configuration-secret")
             .expect("the private canary is a syntactically valid search term")
     ));
+
+    let mut events = core.subscribe();
+    let refresh = core.refresh(RefreshTrigger::Manual).await;
+    assert_private_markers_absent(&format!("{refresh:?}"));
+    loop {
+        let event = events.recv().await.expect("the refresh event feed is open");
+        assert_private_markers_absent(&format!("{event:?}"));
+        if matches!(event, CoreEvent::RefreshCompleted { .. }) {
+            break;
+        }
+    }
 
     let malformed = b"#EXTM3U\n#EXTINF:-1,payload-canary\nhttps://playback-user:playback-secret@private-media.fixture.invalid/live\n#EXTINF:-1,broken";
     let failing_configuration =

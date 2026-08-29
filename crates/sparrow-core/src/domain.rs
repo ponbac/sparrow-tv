@@ -4,6 +4,7 @@ use std::{
     num::NonZeroU64,
     ops::Range,
     sync::Arc,
+    time::Duration,
 };
 
 use blake3::Hasher;
@@ -1031,6 +1032,19 @@ pub enum SourceState {
     Unavailable {
         failure: Option<SafeFailure>,
     },
+    Refreshing {
+        validated_at: Option<DateTime<Utc>>,
+        started_at: DateTime<Utc>,
+    },
+    Deferred {
+        validated_at: Option<DateTime<Utc>>,
+        deferred_at: DateTime<Utc>,
+    },
+    Failed {
+        validated_at: Option<DateTime<Utc>>,
+        failure: SafeFailure,
+        next_attempt_at: DateTime<Utc>,
+    },
 }
 
 /// Bounded safe evidence produced while recovering one Source Snapshot.
@@ -1151,6 +1165,21 @@ impl CatalogStatus {
             SourceKind::Epg => self.epg_recovery = diagnostic,
         }
     }
+
+    pub(crate) fn set_source_state(&mut self, kind: SourceKind, state: SourceState) {
+        match kind {
+            SourceKind::M3u => self.m3u = state,
+            SourceKind::Epg => {
+                if self.configuration.has_epg() {
+                    self.epg = Some(state);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn set_generation(&mut self, generation: Option<CatalogGeneration>) {
+        self.generation = generation;
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
@@ -1161,6 +1190,48 @@ pub enum SourceAccessError {
     Rejected,
     #[error("source access timed out")]
     TimedOut,
+    #[error("the source returned an invalid response")]
+    InvalidResponse,
+}
+
+/// A safe source-access failure plus an optional parsed retry delay.
+///
+/// Raw headers never cross the source-access seam.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[error("{reason}")]
+pub struct SourceAccessFailure {
+    reason: SourceAccessError,
+    retry_after: Option<Duration>,
+}
+
+impl SourceAccessFailure {
+    pub const fn new(reason: SourceAccessError) -> Self {
+        Self {
+            reason,
+            retry_after: None,
+        }
+    }
+
+    pub const fn with_retry_after(reason: SourceAccessError, delay: Duration) -> Self {
+        Self {
+            reason,
+            retry_after: Some(delay),
+        }
+    }
+
+    pub const fn reason(self) -> SourceAccessError {
+        self.reason
+    }
+
+    pub const fn retry_after(self) -> Option<Duration> {
+        self.retry_after
+    }
+}
+
+impl From<SourceAccessError> for SourceAccessFailure {
+    fn from(reason: SourceAccessError) -> Self {
+        Self::new(reason)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
@@ -1229,6 +1300,7 @@ pub enum SafeFailure {
     SourceAccess {
         kind: SourceKind,
         reason: SourceAccessError,
+        retry_after: Option<Duration>,
     },
     #[error("source reading failed")]
     SourceRead {
@@ -1278,4 +1350,118 @@ pub enum CoreError {
     ChannelNotFound { id: ChannelId },
     #[error("the page cursor is stale")]
     StaleCursor { current: CatalogGeneration },
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum RefreshTrigger {
+    Startup,
+    Resume,
+    FreshnessDeadline,
+    Manual,
+}
+
+impl RefreshTrigger {
+    pub(crate) const fn is_manual(self) -> bool {
+        matches!(self, Self::Manual)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum LifecycleSignal {
+    Started,
+    Resumed,
+    Suspended,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum RefreshSkipReason {
+    Fresh,
+    Backoff,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RefreshOutcome {
+    NotConfigured,
+    Updated {
+        validated_at: DateTime<Utc>,
+    },
+    NotModified {
+        validated_at: DateTime<Utc>,
+    },
+    Skipped {
+        reason: RefreshSkipReason,
+        next_attempt_at: DateTime<Utc>,
+    },
+    Failed {
+        failure: SafeFailure,
+        next_attempt_at: DateTime<Utc>,
+    },
+}
+
+impl RefreshOutcome {
+    pub fn next_attempt_at(&self) -> Option<DateTime<Utc>> {
+        match self {
+            Self::Skipped {
+                next_attempt_at, ..
+            }
+            | Self::Failed {
+                next_attempt_at, ..
+            } => Some(*next_attempt_at),
+            Self::NotConfigured | Self::Updated { .. } | Self::NotModified { .. } => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RefreshReport {
+    trigger: RefreshTrigger,
+    m3u: RefreshOutcome,
+    epg: Option<RefreshOutcome>,
+    status: CatalogStatus,
+}
+
+impl RefreshReport {
+    pub(crate) fn new(
+        trigger: RefreshTrigger,
+        m3u: RefreshOutcome,
+        epg: Option<RefreshOutcome>,
+        status: CatalogStatus,
+    ) -> Self {
+        Self {
+            trigger,
+            m3u,
+            epg,
+            status,
+        }
+    }
+
+    pub const fn trigger(&self) -> RefreshTrigger {
+        self.trigger
+    }
+
+    pub const fn m3u(&self) -> &RefreshOutcome {
+        &self.m3u
+    }
+
+    pub const fn epg(&self) -> Option<&RefreshOutcome> {
+        self.epg.as_ref()
+    }
+
+    pub const fn status(&self) -> &CatalogStatus {
+        &self.status
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CoreEvent {
+    CatalogStatusChanged {
+        status: CatalogStatus,
+    },
+    CatalogPublished {
+        generation: CatalogGeneration,
+    },
+    RefreshCompleted {
+        kind: SourceKind,
+        outcome: RefreshOutcome,
+    },
 }

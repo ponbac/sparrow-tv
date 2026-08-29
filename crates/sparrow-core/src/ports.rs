@@ -3,6 +3,7 @@ use std::{
     io::BufRead,
     pin::Pin,
     sync::Arc,
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -12,22 +13,42 @@ use futures_core::Stream;
 use thiserror::Error;
 
 use crate::domain::{
-    SecretSourceLocation, SnapshotRecoveryReason, SourceAccessError, SourceConfiguration,
+    SecretSourceLocation, SnapshotRecoveryReason, SourceAccessFailure, SourceConfiguration,
     SourceFingerprint, SourceKind, SourceReadError, StoreError,
 };
 
 pub type SourceByteStream =
     Pin<Box<dyn Stream<Item = Result<Bytes, SourceReadError>> + Send + 'static>>;
 
+#[async_trait]
 pub trait Clock: Send + Sync {
     fn now(&self) -> DateTime<Utc>;
+
+    /// Waits until this clock reaches `deadline`.
+    async fn wait_until(&self, deadline: DateTime<Utc>);
 }
 
 pub struct SystemClock;
 
+const MAX_SYSTEM_CLOCK_WAIT: Duration = Duration::from_secs(60 * 60);
+
+#[async_trait]
 impl Clock for SystemClock {
     fn now(&self) -> DateTime<Utc> {
         Utc::now()
+    }
+
+    async fn wait_until(&self, deadline: DateTime<Utc>) {
+        loop {
+            let delay = deadline
+                .signed_duration_since(Utc::now())
+                .to_std()
+                .unwrap_or(Duration::ZERO);
+            if delay.is_zero() {
+                return;
+            }
+            tokio::time::sleep(delay.min(MAX_SYSTEM_CLOCK_WAIT)).await;
+        }
     }
 }
 
@@ -62,25 +83,38 @@ impl CoreAdapters {
     pub(crate) fn clock(&self) -> &dyn Clock {
         self.clock.as_ref()
     }
+
+    pub(crate) fn clock_arc(&self) -> Arc<dyn Clock> {
+        Arc::clone(&self.clock)
+    }
 }
 
 pub struct SourceRequest {
     kind: SourceKind,
     location: SecretSourceLocation,
+    validators: PrivateSourceValidators,
 }
 
 impl SourceRequest {
-    pub(crate) fn m3u(configuration: &SourceConfiguration) -> Self {
+    pub(crate) fn m3u(
+        configuration: &SourceConfiguration,
+        validators: PrivateSourceValidators,
+    ) -> Self {
         Self {
             kind: SourceKind::M3u,
             location: configuration.m3u.location().clone(),
+            validators,
         }
     }
 
-    pub(crate) fn epg(configuration: &SourceConfiguration) -> Option<Self> {
+    pub(crate) fn epg(
+        configuration: &SourceConfiguration,
+        validators: PrivateSourceValidators,
+    ) -> Option<Self> {
         configuration.epg.as_ref().map(|source| Self {
             kind: SourceKind::Epg,
             location: source.location().clone(),
+            validators,
         })
     }
 
@@ -93,6 +127,11 @@ impl SourceRequest {
     pub fn expose_location_for_access(&self) -> &str {
         self.location.expose_for_access()
     }
+
+    /// Exposes conditional validators only to the privileged source adapter.
+    pub fn validators(&self) -> &PrivateSourceValidators {
+        &self.validators
+    }
 }
 
 impl Debug for SourceRequest {
@@ -101,49 +140,73 @@ impl Debug for SourceRequest {
             .debug_struct("SourceRequest")
             .field("kind", &self.kind)
             .field("location", &"<redacted>")
+            .field("validators", &self.validators)
             .finish()
     }
 }
 
 pub struct SourceResponse {
-    declared_decoded_length: Option<u64>,
-    decoded_body: SourceByteStream,
-    validators: PrivateSourceValidators,
+    inner: SourceResponseInner,
 }
 
 impl SourceResponse {
     pub fn new(declared_decoded_length: Option<u64>, decoded_body: SourceByteStream) -> Self {
-        Self {
+        Self::modified(
             declared_decoded_length,
             decoded_body,
-            validators: PrivateSourceValidators::default(),
-        }
+            PrivateSourceValidators::default(),
+        )
     }
 
+    /// Compatibility constructor for a modified response with validators.
     pub fn with_validators(
         declared_decoded_length: Option<u64>,
         decoded_body: SourceByteStream,
         validators: PrivateSourceValidators,
     ) -> Self {
+        Self::modified(declared_decoded_length, decoded_body, validators)
+    }
+
+    pub fn modified(
+        declared_decoded_length: Option<u64>,
+        decoded_body: SourceByteStream,
+        validators: PrivateSourceValidators,
+    ) -> Self {
         Self {
-            declared_decoded_length,
-            decoded_body,
-            validators,
+            inner: SourceResponseInner::Modified {
+                declared_decoded_length,
+                decoded_body,
+                validators,
+            },
         }
     }
 
-    pub(crate) fn into_parts(self) -> (Option<u64>, SourceByteStream, PrivateSourceValidators) {
-        (
-            self.declared_decoded_length,
-            self.decoded_body,
-            self.validators,
-        )
+    /// Constructs a not-modified response. A body is impossible by construction.
+    pub fn not_modified(validators: PrivateSourceValidators) -> Self {
+        Self {
+            inner: SourceResponseInner::NotModified { validators },
+        }
     }
+
+    pub(crate) fn into_inner(self) -> SourceResponseInner {
+        self.inner
+    }
+}
+
+pub(crate) enum SourceResponseInner {
+    Modified {
+        declared_decoded_length: Option<u64>,
+        decoded_body: SourceByteStream,
+        validators: PrivateSourceValidators,
+    },
+    NotModified {
+        validators: PrivateSourceValidators,
+    },
 }
 
 #[async_trait]
 pub trait SourceAccess: Send + Sync {
-    async fn open(&self, request: SourceRequest) -> Result<SourceResponse, SourceAccessError>;
+    async fn open(&self, request: SourceRequest) -> Result<SourceResponse, SourceAccessFailure>;
 }
 
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
@@ -213,6 +276,18 @@ impl PrivateSourceValidators {
 
     pub fn is_empty(&self) -> bool {
         self.etag.is_none() && self.last_modified.is_none()
+    }
+
+    /// Applies validators from a not-modified response without clearing values
+    /// merely because a provider omitted their headers on that response.
+    pub(crate) fn merged_with(&self, update: &Self) -> Self {
+        Self {
+            etag: update.etag.clone().or_else(|| self.etag.clone()),
+            last_modified: update
+                .last_modified
+                .clone()
+                .or_else(|| self.last_modified.clone()),
+        }
     }
 }
 
@@ -479,6 +554,38 @@ pub struct SnapshotStage {
     source: SnapshotSource,
 }
 
+/// Names the exact last-known-good candidate that an inactive stage must not
+/// replace while a refresh is being validated.
+#[derive(Clone, Eq, PartialEq)]
+pub struct SnapshotStageRequest {
+    source: SnapshotSource,
+    protected: Option<SnapshotCandidate>,
+}
+
+impl SnapshotStageRequest {
+    pub fn new(source: SnapshotSource, protected: Option<SnapshotCandidate>) -> Self {
+        Self { source, protected }
+    }
+
+    pub fn source(&self) -> SnapshotSource {
+        self.source
+    }
+
+    pub fn protected(&self) -> Option<&SnapshotCandidate> {
+        self.protected.as_ref()
+    }
+}
+
+impl Debug for SnapshotStageRequest {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SnapshotStageRequest")
+            .field("kind", &self.source.kind())
+            .field("protected", &self.protected)
+            .finish()
+    }
+}
+
 impl SnapshotStage {
     pub fn new(token: u64, source: SnapshotSource) -> Self {
         Self { token, source }
@@ -591,6 +698,8 @@ pub trait SnapshotStore: Send + Sync {
     }
 
     /// Repairs the active pointer after the core accepts a fallback candidate.
+    /// The returned handle must preserve the candidate token and metadata and
+    /// differ only by no longer requiring adoption.
     async fn adopt_candidate(
         &self,
         _candidate: &SnapshotCandidate,
@@ -599,6 +708,9 @@ pub trait SnapshotStore: Send + Sync {
     }
 
     /// Atomically touches manifest freshness without replacing payload bytes.
+    /// The returned handle must identify the same candidate and preserve its
+    /// source, length, checksum, and adoption state while applying exactly the
+    /// supplied validation time and validators.
     async fn revalidate_candidate(
         &self,
         _candidate: &SnapshotCandidate,
@@ -608,7 +720,7 @@ pub trait SnapshotStore: Send + Sync {
     }
 
     /// Reserves an inactive stage before the core crosses another await point.
-    fn begin_stage(&self, source: SnapshotSource) -> Result<SnapshotStage, StoreError>;
+    fn begin_stage(&self, request: SnapshotStageRequest) -> Result<SnapshotStage, StoreError>;
     async fn append(&self, stage: &SnapshotStage, chunk: Bytes) -> Result<(), StoreError>;
     async fn open_staged(
         &self,
@@ -617,6 +729,8 @@ pub trait SnapshotStore: Send + Sync {
     /// Flushes and prepares a validated stage without changing the active slot.
     async fn prepare_activation(&self, validated: &ValidatedStage) -> Result<(), StoreError>;
     /// Atomically makes a prepared stage active without crossing an await point.
+    /// The returned active candidate must contain exactly the validated stage
+    /// metadata and must not require adoption.
     fn activate(&self, validated: &ValidatedStage) -> Result<SnapshotCandidate, StoreError>;
     /// Immediately makes an inactive stage ineligible for activation.
     ///

@@ -1,4 +1,4 @@
-use std::io::BufRead;
+use std::{io::BufRead, sync::Arc};
 
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
@@ -6,10 +6,10 @@ use url::Url;
 use crate::domain::{M3uFailureKind, SafeFailure, SnapshotOperation, SourceKind, StoreError};
 
 pub(crate) struct ParsedChannel {
-    pub(crate) tvg_id: String,
-    pub(crate) name: String,
-    pub(crate) group: String,
-    pub(crate) playback: Url,
+    pub(crate) tvg_id: Arc<str>,
+    pub(crate) name: Arc<str>,
+    pub(crate) group: Arc<str>,
+    pub(crate) playback: Arc<Url>,
 }
 
 struct PendingEntry {
@@ -104,10 +104,10 @@ pub(crate) fn parse(reader: &mut dyn BufRead) -> Result<Vec<ParsedChannel>, Safe
         })?;
         let playback = parse_playback(line, entry.number)?;
         channels.push(ParsedChannel {
-            tvg_id: entry.tvg_id,
-            name: entry.name,
-            group: entry.group,
-            playback,
+            tvg_id: Arc::from(entry.tvg_id),
+            name: Arc::from(entry.name),
+            group: Arc::from(entry.group),
+            playback: Arc::new(playback),
         });
     }
 

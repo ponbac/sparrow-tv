@@ -91,9 +91,10 @@ pub(crate) struct DiskStore {
     faults: Arc<dyn FaultInjector>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct StageRecord {
     source: DiskSource,
+    protected: Option<DiskCandidate>,
     phase: StagePhase,
 }
 
@@ -145,9 +146,16 @@ impl DiskStore {
         })
     }
 
-    pub(crate) fn begin_stage(&self, source: DiskSource) -> Result<u64, DiskError> {
+    pub(crate) fn begin_stage(
+        &self,
+        source: DiskSource,
+        protected: Option<&DiskCandidate>,
+    ) -> Result<u64, DiskError> {
         loop {
             self.finish_pending_discard(source.kind)?;
+            if let Some(candidate) = protected {
+                self.target_opposite_protected(source, candidate)?;
+            }
             let token = self.next_token();
             {
                 let mut registry = self.registry();
@@ -161,6 +169,7 @@ impl DiskStore {
                     token,
                     StageRecord {
                         source,
+                        protected: protected.cloned(),
                         phase: StagePhase::Staged,
                     },
                 );
@@ -252,7 +261,7 @@ impl DiskStore {
             .sync_all()
             .map_err(map_io)?;
 
-        let target = self.inactive_slot_for_prepare(metadata.source)?;
+        let target = self.target_for_prepare(token, metadata.source)?;
 
         let manifest_bytes = encode_manifest(metadata).map_err(map_manifest)?;
         if manifest_bytes.len() as u64 > MAX_MANIFEST_BYTES {
@@ -360,10 +369,17 @@ impl DiskStore {
             registry.remove(&token);
             slot
         };
-        self.faults
-            .check(FileOperation::SyncActivatedDirectory)
-            .map_err(map_io)?;
-        sync_directory(&self.layout.source_dir(metadata.source.kind))?;
+
+        // The pointer rename is the in-process linearization point. Returning
+        // an error after it succeeds would make the core retain its old view
+        // even though this process now observes the new active candidate.
+        // Still attempt the directory sync for crash durability; a crash may
+        // then reveal either complete pointer, while this live process must
+        // publish the candidate it just activated.
+        self.best_effort_sync_after_rename(
+            metadata.source.kind,
+            FileOperation::SyncActivatedDirectory,
+        );
         Ok(DiskCandidate {
             slot,
             metadata: metadata.clone(),
@@ -437,7 +453,7 @@ impl DiskStore {
         // The tombstone stays visible until every logical and physical cleanup
         // step succeeds.
         let mut registry = self.registry();
-        let target = match registry.get(&token).copied() {
+        let target = match registry.get(&token).cloned() {
             Some(record) if record.source != source => return Err(DiskError::Corrupt),
             Some(StageRecord {
                 phase: StagePhase::Discarding { target },
@@ -514,6 +530,43 @@ impl DiskStore {
             Err(error) => return Err(error),
         };
         Ok(protected.map_or(Slot::A, Slot::other))
+    }
+
+    fn target_opposite_protected(
+        &self,
+        source: DiskSource,
+        protected: &DiskCandidate,
+    ) -> Result<Slot, DiskError> {
+        if protected.metadata.source != source {
+            return Err(DiskError::Corrupt);
+        }
+        let manifest = self.layout.manifest(source.kind, protected.slot);
+        let payload = self.layout.payload(source.kind, protected.slot);
+        if !path_presence(&manifest)? || !path_presence(&payload)? {
+            return Err(DiskError::Corrupt);
+        }
+        self.verify_candidate(protected.slot, &protected.metadata)?;
+        validate_payload(
+            &payload,
+            protected.metadata.decoded_bytes,
+            &protected.metadata.checksum,
+        )?;
+        Ok(protected.slot.other())
+    }
+
+    fn target_for_prepare(&self, token: u64, source: DiskSource) -> Result<Slot, DiskError> {
+        let protected = {
+            let registry = self.registry();
+            let record = registry.get(&token).ok_or(DiskError::Corrupt)?;
+            if record.source != source || !matches!(record.phase, StagePhase::Preparing) {
+                return Err(DiskError::Corrupt);
+            }
+            record.protected.clone()
+        };
+        protected.map_or_else(
+            || self.inactive_slot_for_prepare(source),
+            |candidate| self.target_opposite_protected(source, &candidate),
+        )
     }
 
     pub(crate) fn scan(&self, source: DiskSource) -> Result<DiskScan, DiskError> {
@@ -681,7 +734,7 @@ impl DiskStore {
         let kind = metadata.source.kind;
         let token = self.next_token();
         let temp = self.layout.revalidate_temp(kind, token);
-        let result = (|| {
+        let installation = (|| {
             write_synced_temp(
                 &temp,
                 &bytes,
@@ -692,19 +745,28 @@ impl DiskStore {
             self.faults
                 .check(FileOperation::InstallRevalidation)
                 .map_err(map_io)?;
-            fs::rename(&temp, self.layout.manifest(kind, candidate.slot)).map_err(map_io)?;
-            self.faults
-                .check(FileOperation::SyncRevalidatedDirectory)
-                .map_err(map_io)?;
-            sync_directory(&self.layout.source_dir(kind))
+            fs::rename(&temp, self.layout.manifest(kind, candidate.slot)).map_err(map_io)
         })();
         let _ = remove_file_if_present(&temp);
-        result?;
+        installation?;
+
+        // As with activation, the rename is the in-process linearization
+        // point. Both possible post-crash manifests describe the same
+        // already-validated payload.
+        self.best_effort_sync_after_rename(kind, FileOperation::SyncRevalidatedDirectory);
         Ok(DiskCandidate {
             slot: candidate.slot,
             metadata,
             requires_adoption: candidate.requires_adoption,
         })
+    }
+
+    fn best_effort_sync_after_rename(&self, kind: DiskKind, operation: FileOperation) {
+        let _sync_result = self
+            .faults
+            .check(operation)
+            .map_err(map_io)
+            .and_then(|()| sync_directory(&self.layout.source_dir(kind)));
     }
 
     fn inspect_slot(&self, source: DiskSource, slot: Slot) -> Result<SlotInspection, DiskError> {
@@ -1043,6 +1105,16 @@ mod tests {
                 operations: Mutex::new(VecDeque::from([(operation, kind)])),
             })
         }
+
+        fn assert_consumed(&self) {
+            assert!(
+                self.operations
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_empty(),
+                "every planned filesystem operation was reached"
+            );
+        }
     }
 
     impl FaultInjector for PlannedFaults {
@@ -1219,7 +1291,7 @@ mod tests {
                 let barrier = Arc::clone(&barrier);
                 thread::spawn(move || {
                     barrier.wait();
-                    store.begin_stage(source)
+                    store.begin_stage(source, None)
                 })
             })
             .collect::<Vec<_>>();
@@ -1340,6 +1412,176 @@ mod tests {
     }
 
     #[test]
+    fn protected_refresh_preserves_the_core_validated_fallback_when_adoption_failed() {
+        for fault in [
+            FileOperation::WritePointer,
+            FileOperation::ActivatePointer,
+            FileOperation::SyncActivatedDirectory,
+        ] {
+            let directory = TempDir::new().expect("temporary directory");
+            let source = source(DiskKind::M3u, 39);
+            let initial = DiskStore::open(directory.path()).expect("store opens");
+            let fallback = activate_payload(
+                &initial,
+                source,
+                b"#EXTM3U\n#EXTINF:-1,Valid\nhttps://media.invalid/valid\n",
+                instant(1),
+            );
+            let invalid_active = activate_payload(
+                &initial,
+                source,
+                b"checksum-valid but not an m3u document",
+                instant(2),
+            );
+            assert_eq!(fallback.slot.other(), invalid_active.slot);
+            drop(initial);
+
+            // Model the core parsing the pointer-selected candidate, rejecting
+            // it, accepting the fallback, and then being unable to repair the
+            // pointer. Refresh must trust that semantic decision instead of
+            // protecting the merely checksum-valid pointer selection.
+            let faults = Arc::new(PlannedFaults {
+                operations: Mutex::new(VecDeque::from([
+                    (FileOperation::AdoptPointer, io::ErrorKind::Other),
+                    (fault, io::ErrorKind::Other),
+                ])),
+            });
+            let store =
+                DiskStore::open_with_faults(directory.path(), faults).expect("faulted store opens");
+            let scan = store.scan(source).expect("snapshot scan succeeds");
+            let retained = scan
+                .candidates
+                .iter()
+                .find(|candidate| candidate.slot == fallback.slot)
+                .expect("parse-valid fallback remains eligible")
+                .clone();
+            assert!(retained.requires_adoption);
+            assert!(matches!(
+                store.adopt(&retained),
+                Err(DiskError::Unavailable)
+            ));
+
+            let token = store
+                .begin_stage(source, Some(&retained))
+                .expect("protected refresh begins");
+            let replacement = b"#EXTM3U\n#EXTINF:-1,Replacement\nhttps://media.invalid/new\n";
+            store
+                .append(token, source, replacement)
+                .expect("replacement appends");
+            let metadata = metadata(source, replacement, instant(3));
+            match fault {
+                FileOperation::WritePointer => {
+                    assert_eq!(store.prepare(token, &metadata), Err(DiskError::Unavailable));
+                }
+                FileOperation::ActivatePointer => {
+                    store.prepare(token, &metadata).expect("refresh prepares");
+                    assert!(matches!(
+                        store.activate(token, &metadata),
+                        Err(DiskError::Unavailable)
+                    ));
+                }
+                FileOperation::SyncActivatedDirectory => {
+                    store.prepare(token, &metadata).expect("refresh prepares");
+                    let activated = store
+                        .activate(token, &metadata)
+                        .expect("pointer rename completes activation before directory sync");
+                    assert!(activated.metadata == metadata);
+                }
+                _ => unreachable!("the fixture covers prepare and activation faults"),
+            }
+            store
+                .discard(token, source)
+                .expect("refresh cleanup is idempotent");
+
+            let restarted = DiskStore::open(directory.path()).expect("store restarts");
+            let recovered = restarted.scan(source).expect("snapshot scan succeeds");
+            let retained = recovered
+                .candidates
+                .iter()
+                .find(|candidate| candidate.slot == fallback.slot)
+                .expect("core-validated fallback survives the refresh fault");
+            assert_eq!(
+                read_candidate(&restarted, retained),
+                b"#EXTM3U\n#EXTINF:-1,Valid\nhttps://media.invalid/valid\n"
+            );
+        }
+    }
+
+    #[test]
+    fn protected_stage_fails_closed_for_a_different_or_stale_source_candidate() {
+        let directory = TempDir::new().expect("temporary directory");
+        let store = DiskStore::open(directory.path()).expect("store opens");
+        let expected_source = source(DiskKind::M3u, 40);
+        let retained = activate_payload(&store, expected_source, b"retained", instant(1));
+
+        let different_source = source(DiskKind::M3u, 41);
+        assert_eq!(
+            store.begin_stage(different_source, Some(&retained)),
+            Err(DiskError::Corrupt)
+        );
+
+        let mut stale = retained.clone();
+        stale.metadata.validated_at = instant(2);
+        assert_eq!(
+            store.begin_stage(expected_source, Some(&stale)),
+            Err(DiskError::Corrupt)
+        );
+
+        let token = store
+            .begin_stage(expected_source, Some(&retained))
+            .expect("the exact retained candidate protects its slot");
+        store
+            .discard(token, expected_source)
+            .expect("stage discards");
+
+        fs::remove_file(store.layout().manifest(expected_source.kind, retained.slot))
+            .expect("retained manifest removes");
+        assert_eq!(
+            store.begin_stage(expected_source, Some(&retained)),
+            Err(DiskError::Corrupt)
+        );
+    }
+
+    #[test]
+    fn protected_candidate_is_reverified_immediately_before_slot_installation() {
+        for change_manifest in [false, true] {
+            let directory = TempDir::new().expect("temporary directory");
+            let store = DiskStore::open(directory.path()).expect("store opens");
+            let source = source(DiskKind::M3u, 42);
+            let retained = activate_payload(&store, source, b"retained", instant(1));
+            let token = store
+                .begin_stage(source, Some(&retained))
+                .expect("protected refresh begins");
+            store
+                .append(token, source, b"replacement")
+                .expect("replacement appends");
+
+            if change_manifest {
+                store
+                    .revalidate(
+                        &retained,
+                        instant(2),
+                        DiskValidators::new(Some("changed".to_owned()), None)
+                            .expect("validator is valid"),
+                    )
+                    .expect("manifest changes after reservation");
+            } else {
+                fs::write(
+                    store.layout().payload(source.kind, retained.slot),
+                    b"corrupt!",
+                )
+                .expect("protected payload changes after reservation");
+            }
+
+            let replacement = metadata(source, b"replacement", instant(3));
+            assert_eq!(store.prepare(token, &replacement), Err(DiskError::Corrupt));
+            store
+                .discard(token, source)
+                .expect("failed protected stage discards");
+        }
+    }
+
+    #[test]
     fn preinstall_failure_preserves_both_existing_complete_slots() {
         let directory = TempDir::new().expect("temporary directory");
         let source = source(DiskKind::M3u, 34);
@@ -1408,7 +1650,7 @@ mod tests {
         assert_eq!(read_candidate(&store, &tombstoned.candidates[0]), b"active");
 
         let next = store
-            .begin_stage(source)
+            .begin_stage(source, None)
             .expect("next stage retries the one-shot discard failure");
         let cleaned = store.scan(source).expect("snapshot scan succeeds");
         assert_eq!(cleaned.candidates.len(), 1);
@@ -1479,36 +1721,76 @@ mod tests {
     }
 
     #[test]
-    fn activation_fault_exposes_only_an_old_or_new_complete_snapshot() {
-        for operation in [
-            FileOperation::ActivatePointer,
-            FileOperation::SyncActivatedDirectory,
-        ] {
-            let directory = TempDir::new().expect("temporary directory");
-            let source = source(DiskKind::M3u, 7);
-            activate_payload(
-                &DiskStore::open(directory.path()).expect("store opens"),
-                source,
-                b"old",
-                instant(1),
-            );
-            let faults = PlannedFaults::one(operation, io::ErrorKind::Other);
-            let store =
-                DiskStore::open_with_faults(directory.path(), faults).expect("faulted store opens");
-            let token = stage_payload(&store, source, b"new");
-            let metadata = metadata(source, b"new", instant(2));
-            store.prepare(token, &metadata).expect("candidate prepares");
-            assert!(store.activate(token, &metadata).is_err());
-            store.discard(token, source).expect("discard is idempotent");
+    fn activation_failure_before_pointer_rename_preserves_the_old_active_snapshot() {
+        let directory = TempDir::new().expect("temporary directory");
+        let source = source(DiskKind::M3u, 7);
+        activate_payload(
+            &DiskStore::open(directory.path()).expect("store opens"),
+            source,
+            b"old",
+            instant(1),
+        );
+        let faults = PlannedFaults::one(FileOperation::ActivatePointer, io::ErrorKind::Other);
+        let store = DiskStore::open_with_faults(directory.path(), faults.clone())
+            .expect("faulted store opens");
+        let token = stage_payload(&store, source, b"new");
+        let metadata = metadata(source, b"new", instant(2));
+        store.prepare(token, &metadata).expect("candidate prepares");
 
-            let restarted = DiskStore::open(directory.path()).expect("store restarts");
-            let scan = restarted.scan(source).expect("snapshot scan succeeds");
-            let active = read_candidate(&restarted, &scan.candidates[0]);
-            assert!(active == b"old" || active == b"new", "{operation:?}");
-            for candidate in &scan.candidates {
-                assert!(restarted.open_candidate(candidate).is_ok());
-            }
-        }
+        assert!(matches!(
+            store.activate(token, &metadata),
+            Err(DiskError::Unavailable)
+        ));
+        faults.assert_consumed();
+        store
+            .discard(token, source)
+            .expect("failed activation discards");
+
+        let restarted = DiskStore::open(directory.path()).expect("store restarts");
+        let scan = restarted.scan(source).expect("snapshot scan succeeds");
+        assert_eq!(read_candidate(&restarted, &scan.candidates[0]), b"old");
+        assert!(
+            scan.candidates
+                .iter()
+                .all(|candidate| restarted.open_candidate(candidate).is_ok())
+        );
+    }
+
+    #[test]
+    fn activation_reports_success_after_pointer_rename_when_directory_sync_fails() {
+        let directory = TempDir::new().expect("temporary directory");
+        let source = source(DiskKind::M3u, 43);
+        activate_payload(
+            &DiskStore::open(directory.path()).expect("store opens"),
+            source,
+            b"old",
+            instant(1),
+        );
+        let faults =
+            PlannedFaults::one(FileOperation::SyncActivatedDirectory, io::ErrorKind::Other);
+        let store = DiskStore::open_with_faults(directory.path(), faults.clone())
+            .expect("faulted store opens");
+        let token = stage_payload(&store, source, b"new");
+        let metadata = metadata(source, b"new", instant(2));
+        store.prepare(token, &metadata).expect("candidate prepares");
+
+        let activated = store
+            .activate(token, &metadata)
+            .expect("pointer rename is the activation linearization point");
+        faults.assert_consumed();
+        assert_eq!(activated.slot, Slot::B);
+        assert!(activated.metadata == metadata);
+        assert!(!activated.requires_adoption);
+        let next = store
+            .begin_stage(source, Some(&activated))
+            .expect("returned activation handle matches the installed candidate");
+        store
+            .discard(next, source)
+            .expect("follow-up protected stage discards");
+
+        let scan = store.scan(source).expect("snapshot scan succeeds");
+        assert_eq!(read_candidate(&store, &scan.candidates[0]), b"new");
+        assert!(!scan.candidates[0].requires_adoption);
     }
 
     #[test]
@@ -1524,7 +1806,7 @@ mod tests {
         let faults = PlannedFaults::one(FileOperation::AppendStage, io::ErrorKind::WriteZero);
         let store =
             DiskStore::open_with_faults(directory.path(), faults).expect("faulted store opens");
-        let token = store.begin_stage(source).expect("stage begins");
+        let token = store.begin_stage(source, None).expect("stage begins");
         assert_eq!(
             store.append(token, source, b"new"),
             Err(DiskError::Capacity)
@@ -1571,14 +1853,15 @@ mod tests {
                 DiskValidators::new(Some("new-validator".to_owned()), None)
                     .expect("validator is valid"),
             );
-            if fault.is_none() {
-                assert_eq!(
-                    updated
-                        .expect("revalidation succeeds")
-                        .metadata
-                        .validated_at,
-                    instant(2)
-                );
+            if fault.is_none() || fault == Some(FileOperation::SyncRevalidatedDirectory) {
+                let updated = updated.expect("revalidation succeeds");
+                assert_eq!(updated.metadata.validated_at, instant(2));
+                let token = store
+                    .begin_stage(source, Some(&updated))
+                    .expect("the returned exact handle protects the revalidated slot");
+                store
+                    .discard(token, source)
+                    .expect("protected stage discards");
             } else {
                 assert!(updated.is_err());
             }
@@ -1704,7 +1987,7 @@ mod tests {
     }
 
     fn stage_payload(store: &DiskStore, source: DiskSource, payload: &[u8]) -> u64 {
-        let token = store.begin_stage(source).expect("stage begins");
+        let token = store.begin_stage(source, None).expect("stage begins");
         for chunk in payload.chunks(2) {
             store.append(token, source, chunk).expect("chunk appends");
         }
