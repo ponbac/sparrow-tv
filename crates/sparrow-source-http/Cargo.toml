@@ -1,0 +1,18 @@
+[package]
+name = "sparrow-source-http"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait = "0.1"
+futures-util = "0.3"
+httpdate = "1"
+reqwest = { version = "0.13.4", features = ["brotli", "deflate", "gzip", "stream", "zstd"] }
+sparrow-core = { path = "../sparrow-core" }
+thiserror = "2"
+
+[dev-dependencies]
+flate2 = "1"
+static_assertions = "1"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }

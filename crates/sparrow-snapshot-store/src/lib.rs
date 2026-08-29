@@ -16,8 +16,8 @@ use layout::{DiskKind, Slot};
 use manifest::{DiskMetadata, DiskSource, DiskValidators};
 use sparrow_core::{
     PrivateSourceValidators, SnapshotCandidate, SnapshotMetadata, SnapshotRevalidation,
-    SnapshotScan, SnapshotSource, SnapshotStage, SnapshotStore, SourceKind, StoreError,
-    ValidatedStage,
+    SnapshotScan, SnapshotSource, SnapshotStage, SnapshotStageRequest, SnapshotStore, SourceKind,
+    StoreError, ValidatedStage,
 };
 
 /// A two-slot, crash-safe Source Snapshot store rooted in private app data.
@@ -93,9 +93,11 @@ impl SnapshotStore for AtomicFileSnapshotStore {
         candidate_to_core(updated, candidate.metadata().source())
     }
 
-    fn begin_stage(&self, source: SnapshotSource) -> Result<SnapshotStage, StoreError> {
+    fn begin_stage(&self, request: SnapshotStageRequest) -> Result<SnapshotStage, StoreError> {
+        let source = request.source();
+        let protected = request.protected().map(candidate_from_core).transpose()?;
         self.disk
-            .begin_stage(source_to_disk(source))
+            .begin_stage(source_to_disk(source), protected.as_ref())
             .map(|token| SnapshotStage::new(token, source))
             .map_err(store_error)
     }

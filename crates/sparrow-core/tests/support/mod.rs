@@ -16,8 +16,9 @@ use futures_util::stream;
 use sparrow_core::{
     Clock, CoreAdapters, PrivateSourceValidators, SnapshotCandidate, SnapshotMetadata,
     SnapshotRecoveryReason, SnapshotRevalidation, SnapshotScan, SnapshotSource, SnapshotStage,
-    SnapshotStore, SourceAccess, SourceAccessError, SourceByteStream, SourceKind, SourceReadError,
-    SourceRequest, SourceResponse, StoreError, ValidatedStage,
+    SnapshotStageRequest, SnapshotStore, SourceAccess, SourceAccessError, SourceAccessFailure,
+    SourceByteStream, SourceKind, SourceReadError, SourceRequest, SourceResponse, StoreError,
+    ValidatedStage,
 };
 
 #[derive(Clone)]
@@ -144,7 +145,7 @@ impl ScriptedSource {
 
 #[async_trait]
 impl SourceAccess for ScriptedSource {
-    async fn open(&self, request: SourceRequest) -> Result<SourceResponse, SourceAccessError> {
+    async fn open(&self, request: SourceRequest) -> Result<SourceResponse, SourceAccessFailure> {
         let kind = request.kind();
         let mut state = self.state.lock().expect("source state poisoned");
         *state.opens.entry(kind).or_default() += 1;
@@ -152,7 +153,7 @@ impl SourceAccess for ScriptedSource {
         let script = state
             .scripts
             .get(&kind)
-            .ok_or(SourceAccessError::Unavailable)?;
+            .ok_or_else(|| SourceAccessFailure::new(SourceAccessError::Unavailable))?;
         let chunks = script.chunks.clone();
         let declared_length = script.declared_length;
         let body: SourceByteStream = Box::pin(stream::iter(chunks));
@@ -201,8 +202,8 @@ impl PendingActivationSnapshotStore {
 
 #[async_trait]
 impl SnapshotStore for PendingActivationSnapshotStore {
-    fn begin_stage(&self, source: SnapshotSource) -> Result<SnapshotStage, StoreError> {
-        self.inner.begin_stage(source)
+    fn begin_stage(&self, request: SnapshotStageRequest) -> Result<SnapshotStage, StoreError> {
+        self.inner.begin_stage(request)
     }
 
     async fn append(&self, stage: &SnapshotStage, chunk: Bytes) -> Result<(), StoreError> {
@@ -254,12 +255,12 @@ impl PendingAppendSnapshotStore {
 
 #[async_trait]
 impl SnapshotStore for PendingAppendSnapshotStore {
-    fn begin_stage(&self, source: SnapshotSource) -> Result<SnapshotStage, StoreError> {
+    fn begin_stage(&self, request: SnapshotStageRequest) -> Result<SnapshotStage, StoreError> {
         self.state
             .lock()
             .expect("pending snapshot state poisoned")
             .stage_active = true;
-        Ok(SnapshotStage::new(0, source))
+        Ok(SnapshotStage::new(0, request.source()))
     }
 
     async fn append(&self, _stage: &SnapshotStage, _chunk: Bytes) -> Result<(), StoreError> {
@@ -316,12 +317,12 @@ impl CountingSnapshotStore {
 
 #[async_trait]
 impl SnapshotStore for CountingSnapshotStore {
-    fn begin_stage(&self, source: SnapshotSource) -> Result<SnapshotStage, StoreError> {
+    fn begin_stage(&self, request: SnapshotStageRequest) -> Result<SnapshotStage, StoreError> {
         self.state
             .lock()
             .expect("counting snapshot state poisoned")
             .stage_active = true;
-        Ok(SnapshotStage::new(0, source))
+        Ok(SnapshotStage::new(0, request.source()))
     }
 
     async fn append(&self, _stage: &SnapshotStage, _chunk: Bytes) -> Result<(), StoreError> {
@@ -629,8 +630,20 @@ impl SnapshotStore for MemorySnapshotStore {
         ))
     }
 
-    fn begin_stage(&self, source: SnapshotSource) -> Result<SnapshotStage, StoreError> {
+    fn begin_stage(&self, request: SnapshotStageRequest) -> Result<SnapshotStage, StoreError> {
         let mut state = self.state.lock().expect("snapshot state poisoned");
+        let source = request.source();
+        if let Some(protected) = request.protected()
+            && (protected.metadata().source() != source
+                || !state
+                    .retained
+                    .get(&source)
+                    .into_iter()
+                    .flatten()
+                    .any(|snapshot| snapshot.token == protected.token()))
+        {
+            return Err(StoreError::Corrupt);
+        }
         let token = state.next_token;
         state.next_token += 1;
         state.staged.insert(token, Vec::new());
@@ -741,9 +754,14 @@ impl FixedClock {
     }
 }
 
+#[async_trait]
 impl Clock for FixedClock {
     fn now(&self) -> DateTime<Utc> {
         self.0
+    }
+
+    async fn wait_until(&self, _deadline: DateTime<Utc>) {
+        std::future::pending().await
     }
 }
 

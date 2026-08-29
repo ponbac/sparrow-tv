@@ -44,8 +44,8 @@ pub(crate) struct ChannelCatalog {
 impl ChannelCatalog {
     pub(crate) fn from_parsed(
         configuration: &SourceConfiguration,
-        parsed: Vec<ParsedChannel>,
-        guide: Option<ParsedGuide>,
+        parsed: &[ParsedChannel],
+        guide: Option<&ParsedGuide>,
         generation: CatalogGeneration,
     ) -> Self {
         let mut occurrences = HashMap::<[u8; 32], u32>::new();
@@ -57,16 +57,16 @@ impl ChannelCatalog {
             let id = identity::channel_id(&configuration.fingerprint, &seed, *occurrence);
             *occurrence = occurrence.saturating_add(1);
 
-            let name: Arc<str> = Arc::from(channel.name);
-            let group: Arc<str> = Arc::from(channel.group);
+            let name = Arc::clone(&channel.name);
+            let group = Arc::clone(&channel.group);
             pending.push(PendingChannel {
                 group_order: identity::normalize_identity_field(&group),
                 name_order: identity::normalize_identity_field(&name),
-                tvg_id: channel.tvg_id,
+                tvg_id: Arc::clone(&channel.tvg_id),
                 id,
                 name,
                 group,
-                playback: SecretPlaybackLocation(channel.playback),
+                playback: SecretPlaybackLocation(Arc::clone(&channel.playback)),
             });
         }
 
@@ -310,7 +310,7 @@ fn field_rank(field: &str, term: &str) -> Option<MatchCategory> {
 struct PendingChannel {
     group_order: String,
     name_order: String,
-    tvg_id: String,
+    tvg_id: Arc<str>,
     id: ChannelId,
     name: Arc<str>,
     group: Arc<str>,
@@ -339,28 +339,28 @@ fn query_hash(tag: u8, discriminator: Option<&str>) -> CursorQueryHash {
 
 fn build_programmes(
     channels: &[PendingChannel],
-    guide: Option<ParsedGuide>,
+    guide: Option<&ParsedGuide>,
 ) -> (Arc<[ProgrammeSummary]>, HashMap<ChannelId, Range<usize>>) {
     let Some(guide) = guide else {
         return (Arc::from([]), HashMap::new());
     };
     let mut guide_ids = HashSet::with_capacity(guide.channels.len());
-    let mut guide_names = HashMap::<String, Option<String>>::new();
-    for channel in guide.channels {
-        guide_ids.insert(channel.id.clone());
-        for display_name in channel.display_names {
-            let normalized = identity::normalize_identity_field(&display_name);
+    let mut guide_names = HashMap::<String, Option<Arc<str>>>::new();
+    for channel in &guide.channels {
+        guide_ids.insert(Arc::clone(&channel.id));
+        for display_name in &channel.display_names {
+            let normalized = identity::normalize_identity_field(display_name);
             if normalized.is_empty() {
                 continue;
             }
             guide_names
                 .entry(normalized)
                 .and_modify(|candidate| {
-                    if candidate.as_deref() != Some(channel.id.as_str()) {
+                    if candidate.as_deref() != Some(channel.id.as_ref()) {
                         *candidate = None;
                     }
                 })
-                .or_insert_with(|| Some(channel.id.clone()));
+                .or_insert_with(|| Some(Arc::clone(&channel.id)));
         }
     }
 
@@ -371,7 +371,7 @@ fn build_programmes(
             .or_default() += 1;
     }
 
-    let mut matched_channels = HashMap::<String, Vec<ChannelId>>::new();
+    let mut matched_channels = HashMap::<Arc<str>, Vec<ChannelId>>::new();
     for channel in channels {
         let exact_id = channel.tvg_id.trim();
         let guide_id = if exact_id.is_empty() {
@@ -379,7 +379,7 @@ fn build_programmes(
                 .then(|| guide_names.get(&channel.name_order).and_then(Clone::clone))
                 .flatten()
         } else {
-            guide_ids.contains(exact_id).then(|| exact_id.to_owned())
+            guide_ids.contains(exact_id).then(|| Arc::from(exact_id))
         };
         if let Some(guide_id) = guide_id {
             matched_channels
@@ -390,14 +390,14 @@ fn build_programmes(
     }
 
     let mut pending = Vec::new();
-    for (source_ordinal, programme) in guide.programmes.into_iter().enumerate() {
+    for (source_ordinal, programme) in guide.programmes.iter().enumerate() {
         let Some(channel_ids) = matched_channels.get(&programme.guide_channel_id) else {
             continue;
         };
         for channel_id in channel_ids {
             pending.push(PendingProgrammeSummary::new(
                 channel_id.clone(),
-                &programme,
+                programme,
                 source_ordinal,
             ));
         }
@@ -436,8 +436,8 @@ impl PendingProgrammeSummary {
     fn new(channel_id: ChannelId, programme: &ParsedProgramme, source_ordinal: usize) -> Self {
         Self {
             channel_id,
-            title: Arc::from(programme.title.as_str()),
-            description: programme.description.as_deref().map(Arc::<str>::from),
+            title: Arc::clone(&programme.title),
+            description: programme.description.as_ref().map(Arc::clone),
             starts_at: programme.starts_at,
             ends_at: programme.ends_at,
             source_ordinal,
@@ -471,7 +471,7 @@ struct ChannelRecord {
     _playback: SecretPlaybackLocation,
 }
 
-struct SecretPlaybackLocation(Url);
+struct SecretPlaybackLocation(Arc<Url>);
 
 impl fmt::Debug for SecretPlaybackLocation {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -482,7 +482,10 @@ impl fmt::Debug for SecretPlaybackLocation {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, HashSet};
+    use std::{
+        collections::{BTreeMap, HashSet},
+        sync::Arc,
+    };
 
     use proptest::prelude::*;
     use static_assertions::assert_not_impl_any;
@@ -713,7 +716,7 @@ mod tests {
     }
 
     fn catalog(parsed: Vec<ParsedChannel>, generation: CatalogGeneration) -> ChannelCatalog {
-        ChannelCatalog::from_parsed(&configuration(), parsed, None, generation)
+        ChannelCatalog::from_parsed(&configuration(), &parsed, None, generation)
     }
 
     fn generation(discriminator: u8) -> CatalogGeneration {
@@ -736,13 +739,15 @@ mod tests {
         };
         indices
             .map(|index| ParsedChannel {
-                tvg_id: String::new(),
-                name: format!("Channel {index:04}"),
-                group: format!("Group {:02}", index % 11),
-                playback: Url::parse(&format!(
-                    "https://media.fixture.invalid/channel/{index}?token=private-{index}"
-                ))
-                .expect("generated playback location is valid"),
+                tvg_id: Arc::from(""),
+                name: Arc::from(format!("Channel {index:04}")),
+                group: Arc::from(format!("Group {:02}", index % 11)),
+                playback: Arc::new(
+                    Url::parse(&format!(
+                        "https://media.fixture.invalid/channel/{index}?token=private-{index}"
+                    ))
+                    .expect("generated playback location is valid"),
+                ),
             })
             .collect()
     }
@@ -755,13 +760,15 @@ mod tests {
         };
         indices
             .map(|index| ParsedChannel {
-                tvg_id: String::new(),
-                name: "Duplicate".to_owned(),
-                group: "News".to_owned(),
-                playback: Url::parse(&format!(
-                    "https://media.fixture.invalid/backup/{index}?token=private-{index}"
-                ))
-                .expect("generated playback location is valid"),
+                tvg_id: Arc::from(""),
+                name: Arc::from("Duplicate"),
+                group: Arc::from("News"),
+                playback: Arc::new(
+                    Url::parse(&format!(
+                        "https://media.fixture.invalid/backup/{index}?token=private-{index}"
+                    ))
+                    .expect("generated playback location is valid"),
+                ),
             })
             .collect()
     }

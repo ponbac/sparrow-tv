@@ -81,11 +81,13 @@ async fn malformed_tail_never_publishes_or_activates_a_partial_catalog() {
     assert_eq!(core.status().generation(), None);
     assert!(matches!(
         core.status().m3u(),
-        SourceState::Unavailable {
-            failure: Some(SafeFailure::InvalidFormat {
+        SourceState::Failed {
+            validated_at: None,
+            failure: SafeFailure::InvalidFormat {
                 entry: Some(2),
                 reason: M3uFailureKind::IncompleteEntry,
-            }),
+            },
+            ..
         }
     ));
     assert!(matches!(
@@ -289,11 +291,15 @@ async fn rejected_inputs_return_closed_failures_without_a_catalog() {
             .expect("bootstrap remains usable after a rejected source");
 
         assert_eq!(core.status().generation(), None, "case: {name}");
-        assert_eq!(
-            core.status().m3u(),
-            &SourceState::Unavailable {
-                failure: Some(expected_failure),
-            },
+        assert!(
+            matches!(
+                core.status().m3u(),
+                SourceState::Failed {
+                    validated_at: None,
+                    failure,
+                    ..
+                } if failure == &expected_failure
+            ),
             "case: {name}",
         );
         assert_eq!(snapshots.activation_count(), 0, "case: {name}");
@@ -323,11 +329,13 @@ async fn streamed_input_cannot_bypass_the_decoded_size_limit() {
 
     assert!(matches!(
         core.status().m3u(),
-        SourceState::Unavailable {
-            failure: Some(SafeFailure::DecodedLimitExceeded {
+        SourceState::Failed {
+            validated_at: None,
+            failure: SafeFailure::DecodedLimitExceeded {
                 kind: SourceKind::M3u,
                 limit_bytes: 134_217_728,
-            }),
+            },
+            ..
         }
     ));
     assert_eq!(snapshots.append_count(), 128);
@@ -351,12 +359,14 @@ async fn activation_failure_never_publishes_the_completed_candidate() {
     assert_eq!(core.status().generation(), None);
     assert!(matches!(
         core.status().m3u(),
-        SourceState::Unavailable {
-            failure: Some(SafeFailure::Snapshot {
+        SourceState::Failed {
+            validated_at: None,
+            failure: SafeFailure::Snapshot {
                 kind: SourceKind::M3u,
                 operation: SnapshotOperation::Activate,
                 reason: StoreError::Capacity,
-            }),
+            },
+            ..
         }
     ));
     assert_eq!(snapshots.activation_count(), 0);

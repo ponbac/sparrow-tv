@@ -204,11 +204,14 @@ async fn missing_or_failed_epg_keeps_the_channel_catalog_usable() {
     assert!(failed.list_channels(first_channels()).is_ok());
     assert!(matches!(
         failed.status().epg(),
-        Some(SourceState::Unavailable {
-            failure: Some(SafeFailure::SourceAccess {
+        Some(SourceState::Failed {
+            validated_at: None,
+            failure: SafeFailure::SourceAccess {
                 kind: SourceKind::Epg,
                 reason: SourceAccessError::Unavailable,
-            }),
+                ..
+            },
+            ..
         })
     ));
     assert_eq!(failed_source.open_count_for(SourceKind::M3u), 1);
@@ -229,10 +232,12 @@ async fn malformed_or_oversized_epg_is_typed_and_never_invalidates_m3u() {
     assert!(malformed.list_channels(first_channels()).is_ok());
     assert!(matches!(
         malformed.status().epg(),
-        Some(SourceState::Unavailable {
-            failure: Some(SafeFailure::InvalidEpgFormat {
+        Some(SourceState::Failed {
+            validated_at: None,
+            failure: SafeFailure::InvalidEpgFormat {
                 reason: EpgFailureKind::MalformedXml,
-            }),
+            },
+            ..
         })
     ));
     assert_eq!(malformed_snapshots.activation_count(), 1);
@@ -252,11 +257,13 @@ async fn malformed_or_oversized_epg_is_typed_and_never_invalidates_m3u() {
     assert!(oversized.list_channels(first_channels()).is_ok());
     assert!(matches!(
         oversized.status().epg(),
-        Some(SourceState::Unavailable {
-            failure: Some(SafeFailure::DecodedLimitExceeded {
+        Some(SourceState::Failed {
+            validated_at: None,
+            failure: SafeFailure::DecodedLimitExceeded {
                 kind: SourceKind::Epg,
                 limit_bytes: 67_108_864,
-            }),
+            },
+            ..
         })
     ));
     assert_eq!(oversized_snapshots.activation_count(), 1);
@@ -283,10 +290,12 @@ async fn malformed_document_state_and_no_valid_channels_are_typed() {
         assert!(core.list_channels(first_channels()).is_ok());
         assert!(matches!(
             core.status().epg(),
-            Some(SourceState::Unavailable {
-                failure: Some(SafeFailure::InvalidEpgFormat {
+            Some(SourceState::Failed {
+                validated_at: None,
+                failure: SafeFailure::InvalidEpgFormat {
                     reason: EpgFailureKind::MalformedXml,
-                }),
+                },
+                ..
             })
         ));
         assert_eq!(snapshots.activation_count(), 1);
@@ -299,8 +308,10 @@ async fn malformed_document_state_and_no_valid_channels_are_typed() {
     assert!(no_valid_channels.list_channels(first_channels()).is_ok());
     assert!(matches!(
         no_valid_channels.status().epg(),
-        Some(SourceState::Unavailable {
-            failure: Some(SafeFailure::NoEpgChannels),
+        Some(SourceState::Failed {
+            validated_at: None,
+            failure: SafeFailure::NoEpgChannels,
+            ..
         })
     ));
     assert_eq!(snapshots.activation_count(), 1);
@@ -326,11 +337,13 @@ async fn streamed_epg_cannot_bypass_its_decoded_size_limit() {
     assert!(core.list_channels(first_channels()).is_ok());
     assert!(matches!(
         core.status().epg(),
-        Some(SourceState::Unavailable {
-            failure: Some(SafeFailure::DecodedLimitExceeded {
+        Some(SourceState::Failed {
+            validated_at: None,
+            failure: SafeFailure::DecodedLimitExceeded {
                 kind: SourceKind::Epg,
                 limit_bytes: 67_108_864,
-            }),
+            },
+            ..
         })
     ));
     assert_eq!(snapshots.activation_count(), 1);

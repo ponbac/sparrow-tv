@@ -1,32 +1,43 @@
 use arc_swap::ArcSwap;
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
 use std::{
     io::{self, BufRead, Read},
-    sync::Arc,
+    panic::{AssertUnwindSafe, resume_unwind},
+    sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
 };
+use tokio::sync::{Notify, broadcast, watch};
 
 use crate::{
     catalog::ChannelCatalog,
     domain::{
         CatalogStatus, ChannelDetails, ChannelGroupView, ChannelId, ChannelQuery, ChannelSummary,
-        CoreError, Page, PageRequest, ProgrammeSummary, SafeFailure, ScheduleQuery, SearchRequest,
-        SearchResults, SnapshotOperation, SnapshotRecoveryDiagnostic, SnapshotRecoveryReason,
+        CoreError, CoreEvent, LifecycleSignal, Page, PageRequest, ProgrammeSummary, RefreshOutcome,
+        RefreshReport, RefreshTrigger, SafeFailure, ScheduleQuery, SearchRequest, SearchResults,
+        SnapshotOperation, SnapshotRecoveryDiagnostic, SnapshotRecoveryReason, SourceAccessError,
         SourceConfiguration, SourceConfigurationInput, SourceKind, SourceState,
     },
     m3u,
     ports::{
-        CoreAdapters, SnapshotCandidate, SnapshotSource, SnapshotStage, SourceRequest,
-        ValidatedStage,
+        CoreAdapters, PrivateSourceValidators, SnapshotCandidate, SnapshotMetadata,
+        SnapshotRevalidation, SnapshotSource, SnapshotStage, SnapshotStageRequest, SourceRequest,
+        SourceResponseInner, ValidatedStage,
     },
     xmltv,
 };
 
 const M3U_DECODED_LIMIT: u64 = 128 * 1024 * 1024;
 const EPG_DECODED_LIMIT: u64 = 64 * 1024 * 1024;
+const FRESHNESS: chrono::Duration = chrono::Duration::hours(6);
+const EVENT_CAPACITY: usize = 32;
+const BACKOFF_MINUTES: [i64; 4] = [1, 5, 15, 60];
 
 /// The transport-neutral entry point for Sparrow catalog behavior.
+#[derive(Clone)]
 pub struct SparrowCore {
-    state: ArcSwap<CoreState>,
+    runtime: Arc<CoreRuntime>,
 }
 
 impl SparrowCore {
@@ -44,22 +55,18 @@ impl SparrowCore {
         adapters: CoreAdapters,
     ) -> Result<Self, CoreError> {
         let Some(configuration) = configuration else {
-            return Ok(Self {
-                state: ArcSwap::from_pointee(CoreState::NotConfigured(Box::new(
-                    CatalogStatus::not_configured(),
-                ))),
-            });
+            return Ok(Self::from_runtime(CoreRuntime::new(
+                None,
+                adapters,
+                CoreView::not_configured(),
+                BootstrapFailures::default(),
+            )));
         };
 
         let redacted = configuration.redacted();
-        let core = Self {
-            state: ArcSwap::from_pointee(CoreState::Unavailable(Box::new(
-                CatalogStatus::unavailable(redacted, None),
-            ))),
-        };
-
-        match load_catalog(&configuration, &adapters).await {
+        let (view, bootstrap_failures) = match load_catalog(&configuration, &adapters).await {
             Ok(loaded) => {
+                let bootstrap_failures = loaded.bootstrap_failures;
                 let status = CatalogStatus::published(
                     loaded.catalog.generation(),
                     redacted,
@@ -68,30 +75,53 @@ impl SparrowCore {
                     loaded.m3u_recovery,
                     loaded.epg_recovery,
                 );
-                core.state.store(Arc::new(CoreState::Published {
-                    status: Box::new(status),
-                    catalog: Arc::new(loaded.catalog),
-                    _snapshots: Box::new(loaded.snapshots),
-                }));
+                (
+                    CoreView {
+                        status,
+                        catalog: Some(Arc::new(loaded.catalog)),
+                        sources: loaded.sources,
+                    },
+                    bootstrap_failures,
+                )
             }
             Err(failure) => {
+                let bootstrap_failure = failure.failure.clone();
                 let mut status = CatalogStatus::unavailable(redacted, Some(failure.failure));
                 status.set_recovery(SourceKind::M3u, failure.m3u_recovery);
                 status.set_recovery(SourceKind::Epg, failure.epg_recovery);
-                core.state
-                    .store(Arc::new(CoreState::Unavailable(Box::new(status))));
+                (
+                    CoreView {
+                        status,
+                        catalog: None,
+                        sources: PublishedSources::default(),
+                    },
+                    BootstrapFailures {
+                        m3u: Some(bootstrap_failure),
+                        epg: None,
+                    },
+                )
             }
-        }
+        };
+
+        let core = Self::from_runtime(CoreRuntime::new(
+            Some(configuration),
+            adapters,
+            view,
+            bootstrap_failures,
+        ));
+        core.runtime.start_automation();
 
         Ok(core)
     }
 
-    pub fn status(&self) -> CatalogStatus {
-        match self.state.load().as_ref() {
-            CoreState::NotConfigured(status)
-            | CoreState::Unavailable(status)
-            | CoreState::Published { status, .. } => status.as_ref().clone(),
+    fn from_runtime(runtime: CoreRuntime) -> Self {
+        Self {
+            runtime: Arc::new(runtime),
         }
+    }
+
+    pub fn status(&self) -> CatalogStatus {
+        self.runtime.view.load().status.clone()
     }
 
     /// Returns a deterministic bounded page of source-derived Channel Groups.
@@ -118,29 +148,931 @@ impl SparrowCore {
         self.query_catalog(|catalog| catalog.search(&request))
     }
 
+    /// Refreshes configured Sources independently. Concurrent requests for one
+    /// Source share the same in-flight result.
+    pub async fn refresh(&self, trigger: RefreshTrigger) -> RefreshReport {
+        self.runtime.refresh(trigger).await
+    }
+
+    /// Reports lifecycle facts without moving refresh policy into a shell.
+    pub fn report_lifecycle(&self, signal: LifecycleSignal) {
+        let trigger = match signal {
+            LifecycleSignal::Started => Some(RefreshTrigger::Startup),
+            LifecycleSignal::Resumed => Some(RefreshTrigger::Resume),
+            LifecycleSignal::Suspended => None,
+        };
+        if let Some(trigger) = trigger {
+            self.runtime.spawn_refresh(trigger);
+        }
+    }
+
+    /// Defers automatic refresh work until the returned non-cloneable lease is dropped.
+    pub fn begin_playback_activity(&self) -> PlaybackActivityLease {
+        self.runtime.begin_playback();
+        PlaybackActivityLease {
+            runtime: Arc::clone(&self.runtime),
+        }
+    }
+
+    /// Subscribes to a bounded safe event feed. Slow consumers skip old events.
+    pub fn subscribe(&self) -> CoreEventStream {
+        CoreEventStream {
+            receiver: self.runtime.events.subscribe(),
+            runtime: Arc::downgrade(&self.runtime),
+        }
+    }
+
     fn query_catalog<T>(
         &self,
         query: impl FnOnce(&ChannelCatalog) -> Result<T, CoreError>,
     ) -> Result<T, CoreError> {
-        let state = self.state.load_full();
-        match state.as_ref() {
-            CoreState::NotConfigured(_) => Err(CoreError::NotConfigured),
-            CoreState::Unavailable(status) => Err(CoreError::CatalogUnavailable {
-                status: Box::new(status.as_ref().clone()),
+        let view = self.runtime.view.load_full();
+        if !view.status.configuration().is_configured() {
+            return Err(CoreError::NotConfigured);
+        }
+        match &view.catalog {
+            Some(catalog) => query(catalog),
+            None => Err(CoreError::CatalogUnavailable {
+                status: Box::new(view.status.clone()),
             }),
-            CoreState::Published { catalog, .. } => query(catalog),
         }
     }
 }
 
-enum CoreState {
-    NotConfigured(Box<CatalogStatus>),
-    Unavailable(Box<CatalogStatus>),
-    Published {
-        status: Box<CatalogStatus>,
-        catalog: Arc<ChannelCatalog>,
-        _snapshots: Box<PublishedSnapshots>,
-    },
+pub struct PlaybackActivityLease {
+    runtime: Arc<CoreRuntime>,
+}
+
+impl Drop for PlaybackActivityLease {
+    fn drop(&mut self) {
+        self.runtime.end_playback();
+    }
+}
+
+pub struct CoreEventStream {
+    receiver: broadcast::Receiver<CoreEvent>,
+    runtime: Weak<CoreRuntime>,
+}
+
+impl CoreEventStream {
+    pub async fn recv(&mut self) -> Option<CoreEvent> {
+        match self.receiver.recv().await {
+            Ok(event) => Some(event),
+            Err(broadcast::error::RecvError::Lagged(_)) => {
+                let runtime = self.runtime.upgrade()?;
+                let status = {
+                    let _publication = runtime
+                        .publication
+                        .lock()
+                        .expect("publication lock poisoned");
+                    self.receiver = runtime.events.subscribe();
+                    runtime.view.load().status.clone()
+                };
+                Some(CoreEvent::CatalogStatusChanged { status })
+            }
+            Err(broadcast::error::RecvError::Closed) => None,
+        }
+    }
+}
+
+struct CoreRuntime {
+    configuration: Option<SourceConfiguration>,
+    adapters: CoreAdapters,
+    view: ArcSwap<CoreView>,
+    publication: Mutex<()>,
+    m3u: SourceRefreshControl,
+    epg: SourceRefreshControl,
+    activity: Mutex<ActivityAdmission>,
+    activity_changed: watch::Sender<u64>,
+    shutdown: watch::Sender<bool>,
+    events: broadcast::Sender<CoreEvent>,
+}
+
+struct CoreView {
+    status: CatalogStatus,
+    catalog: Option<Arc<ChannelCatalog>>,
+    sources: PublishedSources,
+}
+
+#[derive(Default)]
+struct BootstrapFailures {
+    m3u: Option<SafeFailure>,
+    epg: Option<SafeFailure>,
+}
+
+impl CoreView {
+    fn not_configured() -> Self {
+        Self {
+            status: CatalogStatus::not_configured(),
+            catalog: None,
+            sources: PublishedSources::default(),
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct PublishedSources {
+    m3u: Option<SourceContribution<Vec<m3u::ParsedChannel>>>,
+    epg: Option<SourceContribution<xmltv::ParsedGuide>>,
+}
+
+struct SourceContribution<T> {
+    parsed: Arc<T>,
+    candidate: SnapshotCandidate,
+}
+
+impl<T> Clone for SourceContribution<T> {
+    fn clone(&self) -> Self {
+        Self {
+            parsed: Arc::clone(&self.parsed),
+            candidate: self.candidate.clone(),
+        }
+    }
+}
+
+struct SourceRefreshControl {
+    flight: Mutex<Option<Arc<RefreshFlight>>>,
+    policy: Mutex<RefreshPolicy>,
+    reschedule: Arc<Notify>,
+}
+
+impl Default for SourceRefreshControl {
+    fn default() -> Self {
+        Self {
+            flight: Mutex::new(None),
+            policy: Mutex::new(RefreshPolicy::default()),
+            reschedule: Arc::new(Notify::new()),
+        }
+    }
+}
+
+#[derive(Default)]
+struct RefreshPolicy {
+    consecutive_failures: usize,
+    next_attempt_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+struct RefreshFlight {
+    manual: AtomicBool,
+    decision: Mutex<FlightDecision>,
+    promoted: watch::Sender<bool>,
+    result: watch::Sender<Option<RefreshFlightResult>>,
+}
+
+#[derive(Clone)]
+enum RefreshFlightResult {
+    Completed(RefreshOutcome),
+    Panicked,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FlightDecision {
+    Pending,
+    Admitted,
+    Skipped,
+}
+
+#[derive(Default)]
+struct ActivityAdmission {
+    playback_leases: usize,
+    automatic_refreshes: usize,
+}
+
+struct AutomaticRefreshAdmission<'a> {
+    runtime: &'a CoreRuntime,
+}
+
+impl Drop for AutomaticRefreshAdmission<'_> {
+    fn drop(&mut self) {
+        let mut activity = self
+            .runtime
+            .activity
+            .lock()
+            .expect("activity admission poisoned");
+        activity.automatic_refreshes = activity
+            .automatic_refreshes
+            .checked_sub(1)
+            .expect("automatic refresh admission underflowed");
+        drop(activity);
+        self.runtime
+            .activity_changed
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
+}
+
+impl RefreshFlight {
+    fn new(manual: bool) -> Self {
+        Self {
+            manual: AtomicBool::new(manual),
+            decision: Mutex::new(FlightDecision::Pending),
+            promoted: watch::channel(manual).0,
+            result: watch::channel(None).0,
+        }
+    }
+
+    fn try_promote(&self) -> bool {
+        let decision = self.decision.lock().expect("refresh decision poisoned");
+        if *decision == FlightDecision::Skipped {
+            return false;
+        }
+        if !self.manual.swap(true, Ordering::AcqRel) {
+            self.promoted.send_replace(true);
+        }
+        true
+    }
+
+    fn try_commit_skip(&self) -> bool {
+        let mut decision = self.decision.lock().expect("refresh decision poisoned");
+        if self.manual.load(Ordering::Acquire) {
+            return false;
+        }
+        *decision = FlightDecision::Skipped;
+        true
+    }
+
+    fn admit(&self) {
+        let mut decision = self.decision.lock().expect("refresh decision poisoned");
+        if *decision == FlightDecision::Pending {
+            *decision = FlightDecision::Admitted;
+        }
+    }
+
+    async fn wait(&self) -> RefreshOutcome {
+        let mut result = self.result.subscribe();
+        loop {
+            if let Some(result) = result.borrow().clone() {
+                return match result {
+                    RefreshFlightResult::Completed(outcome) => outcome,
+                    RefreshFlightResult::Panicked => panic!("the shared refresh task panicked"),
+                };
+            }
+            result
+                .changed()
+                .await
+                .expect("refresh flight remains alive until completion");
+        }
+    }
+
+    fn complete(&self, result: RefreshOutcome) {
+        self.result
+            .send_replace(Some(RefreshFlightResult::Completed(result)));
+    }
+
+    fn fail_panicked(&self) {
+        self.result
+            .send_replace(Some(RefreshFlightResult::Panicked));
+    }
+}
+
+impl CoreRuntime {
+    fn new(
+        configuration: Option<SourceConfiguration>,
+        adapters: CoreAdapters,
+        view: CoreView,
+        bootstrap_failures: BootstrapFailures,
+    ) -> Self {
+        let (events, _) = broadcast::channel(EVENT_CAPACITY);
+        let runtime = Self {
+            configuration,
+            adapters,
+            view: ArcSwap::from_pointee(view),
+            publication: Mutex::new(()),
+            m3u: SourceRefreshControl::default(),
+            epg: SourceRefreshControl::default(),
+            activity: Mutex::new(ActivityAdmission::default()),
+            activity_changed: watch::channel(0).0,
+            shutdown: watch::channel(false).0,
+            events,
+        };
+        runtime.seed_bootstrap_failures(bootstrap_failures);
+        runtime
+    }
+
+    fn seed_bootstrap_failures(&self, failures: BootstrapFailures) {
+        for (kind, failure) in [
+            (SourceKind::M3u, failures.m3u),
+            (SourceKind::Epg, failures.epg),
+        ] {
+            let Some(failure) = failure else {
+                continue;
+            };
+            let next_attempt_at = self.record_failure(kind, &failure);
+            self.set_source_state(
+                kind,
+                SourceState::Failed {
+                    validated_at: self.current_validated_at(kind),
+                    failure,
+                    next_attempt_at,
+                },
+            );
+        }
+    }
+
+    fn control(&self, kind: SourceKind) -> &SourceRefreshControl {
+        match kind {
+            SourceKind::M3u => &self.m3u,
+            SourceKind::Epg => &self.epg,
+        }
+    }
+
+    fn begin_playback(&self) {
+        let mut activity = self.activity.lock().expect("activity admission poisoned");
+        activity.playback_leases = activity
+            .playback_leases
+            .checked_add(1)
+            .expect("playback activity lease count overflowed");
+        drop(activity);
+        self.activity_changed
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
+
+    fn end_playback(&self) {
+        let mut activity = self.activity.lock().expect("activity admission poisoned");
+        activity.playback_leases = activity
+            .playback_leases
+            .checked_sub(1)
+            .expect("playback activity lease count underflowed");
+        drop(activity);
+        self.activity_changed
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
+
+    fn try_admit_automatic(&self) -> Option<AutomaticRefreshAdmission<'_>> {
+        let mut activity = self.activity.lock().expect("activity admission poisoned");
+        if activity.playback_leases != 0 {
+            return None;
+        }
+        activity.automatic_refreshes = activity
+            .automatic_refreshes
+            .checked_add(1)
+            .expect("automatic refresh admission count overflowed");
+        Some(AutomaticRefreshAdmission { runtime: self })
+    }
+
+    fn source_is_configured(&self, kind: SourceKind) -> bool {
+        self.configuration
+            .as_ref()
+            .is_some_and(|configuration| kind == SourceKind::M3u || configuration.has_epg())
+    }
+
+    fn start_automation(self: &Arc<Self>) {
+        if self.configuration.is_none() || tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        self.spawn_scheduler(SourceKind::M3u);
+        if self.source_is_configured(SourceKind::Epg) {
+            self.spawn_scheduler(SourceKind::Epg);
+        }
+        self.spawn_refresh(RefreshTrigger::Startup);
+    }
+
+    fn spawn_refresh(self: &Arc<Self>, trigger: RefreshTrigger) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let runtime = Arc::clone(self);
+        handle.spawn(async move {
+            let _ = runtime.refresh(trigger).await;
+        });
+    }
+
+    fn spawn_scheduler(self: &Arc<Self>, kind: SourceKind) {
+        let weak = Arc::downgrade(self);
+        let clock = self.adapters.clock_arc();
+        let reschedule = Arc::clone(&self.control(kind).reschedule);
+        let mut shutdown = self.shutdown.subscribe();
+        tokio::spawn(async move {
+            loop {
+                let Some(runtime) = weak.upgrade() else {
+                    break;
+                };
+                let deadline = runtime.next_automatic_attempt(kind).0;
+                drop(runtime);
+
+                tokio::select! {
+                    () = clock.wait_until(deadline) => {
+                        let Some(runtime) = weak.upgrade() else {
+                            break;
+                        };
+                        let _ = runtime
+                            .refresh_source(kind, RefreshTrigger::FreshnessDeadline)
+                            .await;
+                    }
+                    () = reschedule.notified() => {}
+                    result = shutdown.changed() => {
+                        if result.is_err() || *shutdown.borrow() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    async fn refresh(self: &Arc<Self>, trigger: RefreshTrigger) -> RefreshReport {
+        if self.configuration.is_none() {
+            return RefreshReport::new(
+                trigger,
+                RefreshOutcome::NotConfigured,
+                None,
+                self.view.load().status.clone(),
+            );
+        }
+
+        let m3u = self.refresh_source(SourceKind::M3u, trigger);
+        let (m3u, epg) = if self.source_is_configured(SourceKind::Epg) {
+            let epg = self.refresh_source(SourceKind::Epg, trigger);
+            let (m3u, epg) = futures_util::future::join(m3u, epg).await;
+            (m3u, Some(epg))
+        } else {
+            (m3u.await, None)
+        };
+        RefreshReport::new(trigger, m3u, epg, self.view.load().status.clone())
+    }
+
+    async fn refresh_source(
+        self: &Arc<Self>,
+        kind: SourceKind,
+        trigger: RefreshTrigger,
+    ) -> RefreshOutcome {
+        if !self.source_is_configured(kind) {
+            return RefreshOutcome::NotConfigured;
+        }
+
+        let control = self.control(kind);
+        let (flight, leader) = loop {
+            let skipped = {
+                let mut current = control.flight.lock().expect("refresh flight poisoned");
+                if let Some(flight) = current.as_ref() {
+                    let flight = Arc::clone(flight);
+                    if trigger.is_manual() && !flight.try_promote() {
+                        Some(flight)
+                    } else {
+                        break (flight, false);
+                    }
+                } else {
+                    let flight = Arc::new(RefreshFlight::new(trigger.is_manual()));
+                    *current = Some(Arc::clone(&flight));
+                    break (flight, true);
+                }
+            };
+            let _ = skipped
+                .expect("only a committed automatic skip is retried")
+                .wait()
+                .await;
+        };
+
+        if leader {
+            let runtime = Arc::clone(self);
+            let task_flight = Arc::clone(&flight);
+            tokio::spawn(async move {
+                let result = AssertUnwindSafe(runtime.run_source_refresh(kind, &task_flight))
+                    .catch_unwind()
+                    .await;
+                let control = runtime.control(kind);
+                let mut current = control.flight.lock().expect("refresh flight poisoned");
+                if let Ok(outcome) = &result {
+                    let _ = runtime.events.send(CoreEvent::RefreshCompleted {
+                        kind,
+                        outcome: outcome.clone(),
+                    });
+                }
+                if current
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, &task_flight))
+                {
+                    *current = None;
+                }
+                drop(current);
+                control.reschedule.notify_one();
+                match result {
+                    Ok(outcome) => task_flight.complete(outcome),
+                    Err(payload) => {
+                        task_flight.fail_panicked();
+                        resume_unwind(payload);
+                    }
+                }
+            });
+        }
+
+        flight.wait().await
+    }
+
+    async fn run_source_refresh(
+        self: &Arc<Self>,
+        kind: SourceKind,
+        flight: &RefreshFlight,
+    ) -> RefreshOutcome {
+        let mut automatic_admission = None;
+        if !flight.manual.load(Ordering::Acquire) {
+            let (next_attempt_at, reason) = self.next_automatic_attempt(kind);
+            if self.adapters.clock().now() < next_attempt_at {
+                let skipped = RefreshOutcome::Skipped {
+                    reason,
+                    next_attempt_at,
+                };
+                if flight.try_commit_skip() {
+                    return skipped;
+                }
+            }
+
+            let mut reported_deferred = false;
+            loop {
+                let mut activity_changed = self.activity_changed.subscribe();
+                let mut promoted = flight.promoted.subscribe();
+                if flight.manual.load(Ordering::Acquire) {
+                    break;
+                }
+                if let Some(admission) = self.try_admit_automatic() {
+                    automatic_admission = Some(admission);
+                    break;
+                }
+                if !reported_deferred {
+                    self.set_source_state(
+                        kind,
+                        SourceState::Deferred {
+                            validated_at: self.current_validated_at(kind),
+                            deferred_at: self.adapters.clock().now(),
+                        },
+                    );
+                    reported_deferred = true;
+                }
+                tokio::select! {
+                    result = activity_changed.changed() => {
+                        result.expect("activity admission exists for the runtime");
+                    }
+                    result = promoted.changed() => {
+                        result.expect("refresh flight exists while it is pending");
+                    }
+                }
+            }
+        }
+        flight.admit();
+
+        self.set_source_state(
+            kind,
+            SourceState::Refreshing {
+                validated_at: self.current_validated_at(kind),
+                started_at: self.adapters.clock().now(),
+            },
+        );
+
+        let result = match kind {
+            SourceKind::M3u => self.refresh_m3u().await,
+            SourceKind::Epg => self.refresh_epg().await,
+        };
+        drop(automatic_admission);
+        match result {
+            Ok(outcome) => {
+                let control = self.control(kind);
+                let mut policy = control.policy.lock().expect("refresh policy poisoned");
+                policy.consecutive_failures = 0;
+                policy.next_attempt_at = None;
+                drop(policy);
+                control.reschedule.notify_one();
+                outcome
+            }
+            Err(failure) => {
+                let next_attempt_at = self.record_failure(kind, &failure);
+                self.set_source_state(
+                    kind,
+                    SourceState::Failed {
+                        validated_at: self.current_validated_at(kind),
+                        failure: failure.clone(),
+                        next_attempt_at,
+                    },
+                );
+                RefreshOutcome::Failed {
+                    failure,
+                    next_attempt_at,
+                }
+            }
+        }
+    }
+
+    async fn refresh_m3u(&self) -> Result<RefreshOutcome, SafeFailure> {
+        let configuration = self
+            .configuration
+            .as_ref()
+            .expect("a configured refresh has a Source Configuration");
+        let current = self.view.load().sources.m3u.clone();
+        let validators = current
+            .as_ref()
+            .map(|source| source.candidate.metadata().validators().clone())
+            .unwrap_or_default();
+        let protected = current.as_ref().map(|source| source.candidate.clone());
+        let fetched = fetch_source(
+            &self.adapters,
+            SourceRequest::m3u(configuration, validators),
+            SnapshotSource::m3u(configuration),
+            protected,
+            M3U_DECODED_LIMIT,
+            m3u::parse,
+        )
+        .await?;
+        match fetched {
+            FetchedSource::Modified(loaded) => {
+                let validated_at = loaded.validated_at;
+                self.publish_m3u(loaded);
+                Ok(RefreshOutcome::Updated { validated_at })
+            }
+            FetchedSource::NotModified {
+                candidate,
+                validated_at,
+            } => {
+                self.publish_revalidation(SourceKind::M3u, candidate, validated_at);
+                Ok(RefreshOutcome::NotModified { validated_at })
+            }
+        }
+    }
+
+    async fn refresh_epg(&self) -> Result<RefreshOutcome, SafeFailure> {
+        let configuration = self
+            .configuration
+            .as_ref()
+            .expect("a configured refresh has a Source Configuration");
+        let current = self.view.load().sources.epg.clone();
+        let validators = current
+            .as_ref()
+            .map(|source| source.candidate.metadata().validators().clone())
+            .unwrap_or_default();
+        let protected = current.as_ref().map(|source| source.candidate.clone());
+        let request = SourceRequest::epg(configuration, validators)
+            .expect("an EPG refresh only runs when EPG is configured");
+        let snapshot = SnapshotSource::epg(configuration)
+            .expect("an EPG refresh only runs when EPG is configured");
+        let fetched = fetch_source(
+            &self.adapters,
+            request,
+            snapshot,
+            protected,
+            EPG_DECODED_LIMIT,
+            xmltv::parse,
+        )
+        .await?;
+        match fetched {
+            FetchedSource::Modified(loaded) => {
+                let validated_at = loaded.validated_at;
+                self.publish_epg(loaded);
+                Ok(RefreshOutcome::Updated { validated_at })
+            }
+            FetchedSource::NotModified {
+                candidate,
+                validated_at,
+            } => {
+                self.publish_revalidation(SourceKind::Epg, candidate, validated_at);
+                Ok(RefreshOutcome::NotModified { validated_at })
+            }
+        }
+    }
+
+    fn publish_m3u(&self, loaded: LoadedSource<Vec<m3u::ParsedChannel>>) {
+        let _publication = self.publication.lock().expect("publication lock poisoned");
+        let current = self.view.load_full();
+        let mut sources = current.sources.clone();
+        let content_changed = sources.m3u.as_ref().is_none_or(|source| {
+            source.candidate.metadata().checksum() != loaded.candidate.metadata().checksum()
+        });
+        let parsed = if content_changed {
+            loaded.value
+        } else {
+            Arc::clone(
+                &sources
+                    .m3u
+                    .as_ref()
+                    .expect("unchanged content has a current contribution")
+                    .parsed,
+            )
+        };
+        sources.m3u = Some(SourceContribution {
+            parsed,
+            candidate: loaded.candidate,
+        });
+        self.publish_sources(
+            current.as_ref(),
+            sources,
+            SourceKind::M3u,
+            loaded.validated_at,
+            content_changed,
+        );
+    }
+
+    fn publish_epg(&self, loaded: LoadedSource<xmltv::ParsedGuide>) {
+        let _publication = self.publication.lock().expect("publication lock poisoned");
+        let current = self.view.load_full();
+        let mut sources = current.sources.clone();
+        let content_changed = sources.epg.as_ref().is_none_or(|source| {
+            source.candidate.metadata().checksum() != loaded.candidate.metadata().checksum()
+        });
+        let parsed = if content_changed {
+            loaded.value
+        } else {
+            Arc::clone(
+                &sources
+                    .epg
+                    .as_ref()
+                    .expect("unchanged content has a current contribution")
+                    .parsed,
+            )
+        };
+        sources.epg = Some(SourceContribution {
+            parsed,
+            candidate: loaded.candidate,
+        });
+        self.publish_sources(
+            current.as_ref(),
+            sources,
+            SourceKind::Epg,
+            loaded.validated_at,
+            content_changed,
+        );
+    }
+
+    fn publish_sources(
+        &self,
+        current: &CoreView,
+        sources: PublishedSources,
+        refreshed: SourceKind,
+        validated_at: chrono::DateTime<chrono::Utc>,
+        content_changed: bool,
+    ) {
+        let mut status = current.status.clone();
+        status.set_source_state(
+            refreshed,
+            source_state(validated_at, self.adapters.clock().now()),
+        );
+        let (catalog, generation) = self.build_catalog(&sources, current, content_changed);
+        status.set_generation(generation);
+        self.view.store(Arc::new(CoreView {
+            status: status.clone(),
+            catalog,
+            sources,
+        }));
+        let _ = self.events.send(CoreEvent::CatalogStatusChanged { status });
+        if content_changed && let Some(generation) = generation {
+            let _ = self.events.send(CoreEvent::CatalogPublished { generation });
+        }
+    }
+
+    fn build_catalog(
+        &self,
+        sources: &PublishedSources,
+        current: &CoreView,
+        content_changed: bool,
+    ) -> (
+        Option<Arc<ChannelCatalog>>,
+        Option<crate::domain::CatalogGeneration>,
+    ) {
+        let Some(m3u) = sources.m3u.as_ref() else {
+            return (None, None);
+        };
+        if !content_changed {
+            return (current.catalog.clone(), current.status.generation());
+        }
+        let configuration = self
+            .configuration
+            .as_ref()
+            .expect("published Sources have a Source Configuration");
+        let epg_checksum = sources
+            .epg
+            .as_ref()
+            .map(|source| source.candidate.metadata().checksum());
+        let generation =
+            configuration.catalog_generation(m3u.candidate.metadata().checksum(), epg_checksum);
+        let catalog = ChannelCatalog::from_parsed(
+            configuration,
+            m3u.parsed.as_slice(),
+            sources.epg.as_ref().map(|source| source.parsed.as_ref()),
+            generation,
+        );
+        (Some(Arc::new(catalog)), Some(generation))
+    }
+
+    fn publish_revalidation(
+        &self,
+        kind: SourceKind,
+        candidate: SnapshotCandidate,
+        validated_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        let _publication = self.publication.lock().expect("publication lock poisoned");
+        let current = self.view.load_full();
+        let mut sources = current.sources.clone();
+        match kind {
+            SourceKind::M3u => {
+                let source = sources
+                    .m3u
+                    .as_mut()
+                    .expect("not-modified M3U has a retained contribution");
+                source.candidate = candidate;
+            }
+            SourceKind::Epg => {
+                let source = sources
+                    .epg
+                    .as_mut()
+                    .expect("not-modified EPG has a retained contribution");
+                source.candidate = candidate;
+            }
+        }
+        let mut status = current.status.clone();
+        status.set_source_state(
+            kind,
+            source_state(validated_at, self.adapters.clock().now()),
+        );
+        self.view.store(Arc::new(CoreView {
+            status: status.clone(),
+            catalog: current.catalog.clone(),
+            sources,
+        }));
+        let _ = self.events.send(CoreEvent::CatalogStatusChanged { status });
+    }
+
+    fn set_source_state(&self, kind: SourceKind, state: SourceState) {
+        let _publication = self.publication.lock().expect("publication lock poisoned");
+        let current = self.view.load_full();
+        let mut status = current.status.clone();
+        status.set_source_state(kind, state);
+        self.view.store(Arc::new(CoreView {
+            status: status.clone(),
+            catalog: current.catalog.clone(),
+            sources: current.sources.clone(),
+        }));
+        let _ = self.events.send(CoreEvent::CatalogStatusChanged { status });
+    }
+
+    fn current_validated_at(&self, kind: SourceKind) -> Option<chrono::DateTime<chrono::Utc>> {
+        let view = self.view.load();
+        match kind {
+            SourceKind::M3u => view
+                .sources
+                .m3u
+                .as_ref()
+                .map(|source| source.candidate.metadata().validated_at()),
+            SourceKind::Epg => view
+                .sources
+                .epg
+                .as_ref()
+                .map(|source| source.candidate.metadata().validated_at()),
+        }
+    }
+
+    fn next_automatic_attempt(
+        &self,
+        kind: SourceKind,
+    ) -> (
+        chrono::DateTime<chrono::Utc>,
+        crate::domain::RefreshSkipReason,
+    ) {
+        let now = self.adapters.clock().now();
+        let freshness_at = self
+            .current_validated_at(kind)
+            .filter(|validated_at| *validated_at <= now)
+            .and_then(|validated_at| validated_at.checked_add_signed(FRESHNESS))
+            .unwrap_or(now);
+        let retry_at = self
+            .control(kind)
+            .policy
+            .lock()
+            .expect("refresh policy poisoned")
+            .next_attempt_at;
+        retry_at.map_or(
+            (freshness_at, crate::domain::RefreshSkipReason::Fresh),
+            |retry_at| (retry_at, crate::domain::RefreshSkipReason::Backoff),
+        )
+    }
+
+    fn record_failure(
+        &self,
+        kind: SourceKind,
+        failure: &SafeFailure,
+    ) -> chrono::DateTime<chrono::Utc> {
+        let control = self.control(kind);
+        let mut policy = control.policy.lock().expect("refresh policy poisoned");
+        let index = policy
+            .consecutive_failures
+            .min(BACKOFF_MINUTES.len().saturating_sub(1));
+        let base = std::time::Duration::from_secs(BACKOFF_MINUTES[index] as u64 * 60);
+        policy.consecutive_failures = policy.consecutive_failures.saturating_add(1);
+        let retry_after = match failure {
+            SafeFailure::SourceAccess { retry_after, .. } => *retry_after,
+            _ => None,
+        };
+        let delay = retry_after.map_or(base, |delay| delay.max(base));
+        let now = self.adapters.clock().now();
+        let next_attempt_at = chrono::Duration::from_std(delay)
+            .ok()
+            .and_then(|delay| now.checked_add_signed(delay))
+            .unwrap_or(chrono::DateTime::<chrono::Utc>::MAX_UTC);
+        policy.next_attempt_at = Some(next_attempt_at);
+        drop(policy);
+        control.reschedule.notify_one();
+        next_attempt_at
+    }
+}
+
+impl Drop for CoreRuntime {
+    fn drop(&mut self) {
+        self.shutdown.send_replace(true);
+    }
 }
 
 async fn load_catalog(
@@ -155,7 +1087,7 @@ async fn load_catalog(
         Some(loaded) => loaded,
         None => load_source(
             adapters,
-            SourceRequest::m3u(configuration),
+            SourceRequest::m3u(configuration, PrivateSourceValidators::default()),
             m3u_snapshot,
             M3U_DECODED_LIMIT,
             m3u::parse,
@@ -168,8 +1100,8 @@ async fn load_catalog(
         })?,
     };
 
-    let (guide, epg_checksum, epg, epg_recovery, epg_candidate) = match (
-        SourceRequest::epg(configuration),
+    let (guide, epg_checksum, epg, epg_recovery, epg_candidate, epg_bootstrap_failure) = match (
+        SourceRequest::epg(configuration, PrivateSourceValidators::default()),
         SnapshotSource::epg(configuration),
     ) {
         (Some(request), Some(snapshot)) => {
@@ -185,6 +1117,7 @@ async fn load_catalog(
                         Some(state),
                         recovery_diagnostic,
                         Some(loaded.candidate),
+                        None,
                     )
                 }
                 None if recovered_m3u => (
@@ -194,6 +1127,7 @@ async fn load_catalog(
                         failure: recovery.terminal_failure,
                     }),
                     recovery_diagnostic,
+                    None,
                     None,
                 ),
                 None => {
@@ -206,29 +1140,44 @@ async fn load_catalog(
                             Some(source_state(loaded.validated_at, adapters.clock().now())),
                             recovery_diagnostic,
                             Some(loaded.candidate),
-                        ),
-                        Err(failure) => (
-                            None,
-                            None,
-                            Some(SourceState::Unavailable {
-                                failure: Some(failure),
-                            }),
-                            recovery_diagnostic,
                             None,
                         ),
+                        Err(failure) => {
+                            let bootstrap_failure = failure.clone();
+                            (
+                                None,
+                                None,
+                                Some(SourceState::Unavailable {
+                                    failure: Some(failure),
+                                }),
+                                recovery_diagnostic,
+                                None,
+                                Some(bootstrap_failure),
+                            )
+                        }
                     }
                 }
             }
         }
-        (None, None) => (None, None, None, None, None),
+        (None, None) => (None, None, None, None, None, None),
         _ => unreachable!("EPG request and snapshot identity are derived together"),
     };
 
     let generation = configuration.catalog_generation(&m3u.checksum, epg_checksum.as_ref());
-    let catalog = ChannelCatalog::from_parsed(configuration, m3u.value, guide, generation);
-    let snapshots = PublishedSnapshots {
-        m3u: m3u.candidate,
-        epg: epg_candidate,
+    let catalog = ChannelCatalog::from_parsed(
+        configuration,
+        m3u.value.as_slice(),
+        guide.as_deref(),
+        generation,
+    );
+    let sources = PublishedSources {
+        m3u: Some(SourceContribution {
+            parsed: m3u.value,
+            candidate: m3u.candidate,
+        }),
+        epg: guide
+            .zip(epg_candidate)
+            .map(|(parsed, candidate)| SourceContribution { parsed, candidate }),
     };
     Ok(LoadedCatalog {
         catalog,
@@ -236,7 +1185,11 @@ async fn load_catalog(
         epg,
         m3u_recovery: m3u_diagnostic,
         epg_recovery,
-        snapshots,
+        sources,
+        bootstrap_failures: BootstrapFailures {
+            m3u: None,
+            epg: epg_bootstrap_failure,
+        },
     })
 }
 
@@ -246,14 +1199,8 @@ struct LoadedCatalog {
     epg: Option<SourceState>,
     m3u_recovery: Option<SnapshotRecoveryDiagnostic>,
     epg_recovery: Option<SnapshotRecoveryDiagnostic>,
-    snapshots: PublishedSnapshots,
-}
-
-struct PublishedSnapshots {
-    #[allow(dead_code)]
-    m3u: SnapshotCandidate,
-    #[allow(dead_code)]
-    epg: Option<SnapshotCandidate>,
+    sources: PublishedSources,
+    bootstrap_failures: BootstrapFailures,
 }
 
 struct CatalogLoadFailure {
@@ -263,7 +1210,7 @@ struct CatalogLoadFailure {
 }
 
 struct LoadedSource<T> {
-    value: T,
+    value: Arc<T>,
     checksum: [u8; 32],
     validated_at: chrono::DateTime<chrono::Utc>,
     candidate: SnapshotCandidate,
@@ -314,9 +1261,17 @@ async fn recover_source<T>(
             Ok(mut loaded) => {
                 let fallback_adopted = if candidate.requires_adoption() {
                     match store.adopt_candidate(&candidate).await {
-                        Ok(adopted) => {
+                        Ok(adopted) if valid_adoption(&candidate, &adopted) => {
                             loaded.candidate = adopted;
                             true
+                        }
+                        Ok(_) => {
+                            failures.push(SafeFailure::Snapshot {
+                                kind: source.kind(),
+                                operation: SnapshotOperation::AdoptCandidate,
+                                reason: crate::domain::StoreError::Corrupt,
+                            });
+                            false
                         }
                         Err(reason) => {
                             failures.push(SafeFailure::Snapshot {
@@ -408,7 +1363,7 @@ async fn recover_candidate<T>(
     let value = parsed?;
 
     Ok(LoadedSource {
-        value,
+        value: Arc::new(value),
         checksum: *metadata.checksum(),
         validated_at: metadata.validated_at(),
         candidate: candidate.clone(),
@@ -506,7 +1461,7 @@ fn source_state(
     } else {
         SourceState::Stale {
             validated_at,
-            next_attempt_at: None,
+            next_attempt_at: Some(now),
         }
     }
 }
@@ -518,17 +1473,91 @@ async fn load_source<T>(
     decoded_limit: u64,
     parse: SourceParser<T>,
 ) -> Result<LoadedSource<T>, SafeFailure> {
+    match fetch_source(adapters, request, snapshot, None, decoded_limit, parse).await? {
+        FetchedSource::Modified(loaded) => Ok(loaded),
+        FetchedSource::NotModified { .. } => Err(SafeFailure::SourceAccess {
+            kind: snapshot.kind(),
+            reason: SourceAccessError::InvalidResponse,
+            retry_after: None,
+        }),
+    }
+}
+
+enum FetchedSource<T> {
+    Modified(LoadedSource<T>),
+    NotModified {
+        candidate: SnapshotCandidate,
+        validated_at: chrono::DateTime<chrono::Utc>,
+    },
+}
+
+async fn fetch_source<T>(
+    adapters: &CoreAdapters,
+    request: SourceRequest,
+    snapshot: SnapshotSource,
+    protected: Option<SnapshotCandidate>,
+    decoded_limit: u64,
+    parse: SourceParser<T>,
+) -> Result<FetchedSource<T>, SafeFailure> {
     let source = request.kind();
     debug_assert_eq!(source, snapshot.kind());
     let response = adapters
         .source_access()
         .open(request)
         .await
-        .map_err(|reason| SafeFailure::SourceAccess {
+        .map_err(|failure| SafeFailure::SourceAccess {
             kind: source,
-            reason,
+            reason: failure.reason(),
+            retry_after: failure.retry_after(),
         })?;
-    let (declared_length, mut body, validators) = response.into_parts();
+    let (declared_length, mut body, validators) = match response.into_inner() {
+        SourceResponseInner::Modified {
+            declared_decoded_length,
+            decoded_body,
+            validators,
+        } => (declared_decoded_length, decoded_body, validators),
+        SourceResponseInner::NotModified { validators } => {
+            let Some(current) = protected else {
+                return Err(SafeFailure::SourceAccess {
+                    kind: source,
+                    reason: SourceAccessError::InvalidResponse,
+                    retry_after: None,
+                });
+            };
+            let validated_at = adapters.clock().now();
+            let validators = current.metadata().validators().merged_with(&validators);
+            let metadata = SnapshotMetadata::new(
+                snapshot,
+                current.metadata().decoded_bytes(),
+                *current.metadata().checksum(),
+                validated_at,
+                validators.clone(),
+            );
+            let expected =
+                SnapshotCandidate::new(current.token(), metadata, current.requires_adoption());
+            let revalidation = SnapshotRevalidation::new(validated_at, validators);
+            let candidate = adapters
+                .snapshot_store()
+                .revalidate_candidate(&current, &revalidation)
+                .await
+                .map_err(|reason| SafeFailure::Snapshot {
+                    kind: source,
+                    operation: SnapshotOperation::RevalidateCandidate,
+                    reason,
+                })?;
+            if candidate != expected {
+                return Err(SafeFailure::Snapshot {
+                    kind: source,
+                    operation: SnapshotOperation::RevalidateCandidate,
+                    reason: crate::domain::StoreError::Corrupt,
+                });
+            }
+            return Ok(FetchedSource::NotModified {
+                candidate,
+                validated_at,
+            });
+        }
+    };
 
     if declared_length.is_some_and(|length| length > decoded_limit) {
         return Err(SafeFailure::DecodedLimitExceeded {
@@ -539,7 +1568,7 @@ async fn load_source<T>(
 
     let store = adapters.snapshot_store();
     let stage = store
-        .begin_stage(snapshot)
+        .begin_stage(SnapshotStageRequest::new(snapshot, protected))
         .map_err(|reason| SafeFailure::Snapshot {
             kind: source,
             operation: SnapshotOperation::BeginStage,
@@ -607,6 +1636,7 @@ async fn load_source<T>(
             reason,
         }));
     }
+    let expected_metadata = validated.value().metadata();
     let candidate = match store.activate(validated.value()) {
         Ok(candidate) => candidate,
         Err(reason) => {
@@ -617,14 +1647,27 @@ async fn load_source<T>(
             }));
         }
     };
+    if candidate.metadata() != &expected_metadata || candidate.requires_adoption() {
+        return Err(validated.reject(SafeFailure::Snapshot {
+            kind: source,
+            operation: SnapshotOperation::Activate,
+            reason: crate::domain::StoreError::Corrupt,
+        }));
+    }
     validated.commit();
 
-    Ok(LoadedSource {
-        value,
+    Ok(FetchedSource::Modified(LoadedSource {
+        value: Arc::new(value),
         checksum,
         validated_at,
         candidate,
-    })
+    }))
+}
+
+fn valid_adoption(before: &SnapshotCandidate, after: &SnapshotCandidate) -> bool {
+    before.token() == after.token()
+        && before.metadata() == after.metadata()
+        && !after.requires_adoption()
 }
 
 fn discard_after(
@@ -725,5 +1768,39 @@ impl Drop for ValidatedCandidate<'_> {
         if let Some(validated) = self.validated.take() {
             let _ = self.store.discard(validated.into_stage());
         }
+    }
+}
+
+#[cfg(test)]
+mod refresh_concurrency_tests {
+    use std::sync::atomic::Ordering;
+
+    use super::{FlightDecision, RefreshFlight};
+
+    #[test]
+    fn manual_promotion_and_automatic_skip_have_one_linearized_winner() {
+        let promoted_first = RefreshFlight::new(false);
+        assert!(promoted_first.try_promote());
+        assert!(!promoted_first.try_commit_skip());
+        assert!(promoted_first.manual.load(Ordering::Acquire));
+
+        let skipped_first = RefreshFlight::new(false);
+        assert!(skipped_first.try_commit_skip());
+        assert!(!skipped_first.try_promote());
+        assert_eq!(
+            *skipped_first
+                .decision
+                .lock()
+                .expect("refresh decision remains available"),
+            FlightDecision::Skipped
+        );
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "the shared refresh task panicked")]
+    async fn a_panicked_shared_task_wakes_waiters_instead_of_hanging() {
+        let flight = RefreshFlight::new(false);
+        flight.fail_panicked();
+        let _ = flight.wait().await;
     }
 }
