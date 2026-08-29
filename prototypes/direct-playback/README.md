@@ -8,7 +8,7 @@ Which shortlisted path can play the owner's live IPTV feeds directly—without a
 
 The probe keeps channel URLs only in memory and shows a redacted host in its state panel. Its **Copy probe state** action copies the complete redacted evidence JSON for sharing. It compares ordinary WebView video, browser-transport `mpegts.js`, Tauri-native-transport `mpegts.js`, and an external mpv 0.41 Wayland baseline. The media surface requires a WebView, so the pure playback state reducer is driven by this deliberately plain Tauri shell instead of the Prototype skill's usual terminal shell.
 
-The test build intentionally permits any HTTP/HTTPS playback host and Android cleartext traffic. Those broad permissions are acceptable only on this throwaway branch.
+The test build intentionally permits any HTTP/HTTPS playback host on any port and Android cleartext traffic. Those broad permissions are acceptable only on this throwaway branch.
 
 ## Run on Linux
 
