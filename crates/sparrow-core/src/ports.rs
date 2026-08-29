@@ -9,10 +9,11 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use futures_core::Stream;
+use thiserror::Error;
 
 use crate::domain::{
-    SecretSourceLocation, SourceAccessError, SourceConfiguration, SourceFingerprint, SourceKind,
-    SourceReadError, StoreError,
+    SecretSourceLocation, SnapshotRecoveryReason, SourceAccessError, SourceConfiguration,
+    SourceFingerprint, SourceKind, SourceReadError, StoreError,
 };
 
 pub type SourceByteStream =
@@ -107,6 +108,7 @@ impl Debug for SourceRequest {
 pub struct SourceResponse {
     declared_decoded_length: Option<u64>,
     decoded_body: SourceByteStream,
+    validators: PrivateSourceValidators,
 }
 
 impl SourceResponse {
@@ -114,11 +116,28 @@ impl SourceResponse {
         Self {
             declared_decoded_length,
             decoded_body,
+            validators: PrivateSourceValidators::default(),
         }
     }
 
-    pub(crate) fn into_parts(self) -> (Option<u64>, SourceByteStream) {
-        (self.declared_decoded_length, self.decoded_body)
+    pub fn with_validators(
+        declared_decoded_length: Option<u64>,
+        decoded_body: SourceByteStream,
+        validators: PrivateSourceValidators,
+    ) -> Self {
+        Self {
+            declared_decoded_length,
+            decoded_body,
+            validators,
+        }
+    }
+
+    pub(crate) fn into_parts(self) -> (Option<u64>, SourceByteStream, PrivateSourceValidators) {
+        (
+            self.declared_decoded_length,
+            self.decoded_body,
+            self.validators,
+        )
     }
 }
 
@@ -147,10 +166,287 @@ impl Debug for SourceKey {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub struct SnapshotSource {
     kind: SourceKind,
     key: SourceKey,
+}
+
+impl Debug for SnapshotSource {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SnapshotSource")
+            .field("kind", &self.kind)
+            .finish_non_exhaustive()
+    }
+}
+
+const MAX_PRIVATE_VALIDATOR_BYTES: usize = 8 * 1024;
+
+/// Bounded HTTP validators retained privately alongside one Source Snapshot.
+#[derive(Clone, Default, Eq, PartialEq)]
+pub struct PrivateSourceValidators {
+    etag: Option<Arc<str>>,
+    last_modified: Option<Arc<str>>,
+}
+
+impl PrivateSourceValidators {
+    pub fn parse(
+        etag: Option<String>,
+        last_modified: Option<String>,
+    ) -> Result<Self, PrivateValidatorError> {
+        Ok(Self {
+            etag: refine_validator(etag)?,
+            last_modified: refine_validator(last_modified)?,
+        })
+    }
+
+    /// Exposes the ETag only to privileged provider and snapshot adapters.
+    pub fn expose_etag(&self) -> Option<&str> {
+        self.etag.as_deref()
+    }
+
+    /// Exposes Last-Modified only to privileged provider and snapshot adapters.
+    pub fn expose_last_modified(&self) -> Option<&str> {
+        self.last_modified.as_deref()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.etag.is_none() && self.last_modified.is_none()
+    }
+}
+
+impl Debug for PrivateSourceValidators {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PrivateSourceValidators(<redacted>)")
+    }
+}
+
+fn refine_validator(value: Option<String>) -> Result<Option<Arc<str>>, PrivateValidatorError> {
+    let Some(value) = value.filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if value.len() > MAX_PRIVATE_VALIDATOR_BYTES {
+        return Err(PrivateValidatorError::TooLong {
+            max_bytes: MAX_PRIVATE_VALIDATOR_BYTES,
+        });
+    }
+    if value.chars().any(char::is_control) {
+        return Err(PrivateValidatorError::ContainsControlCharacter);
+    }
+    Ok(Some(Arc::from(value)))
+}
+
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum PrivateValidatorError {
+    #[error("the validator exceeds the {max_bytes}-byte limit")]
+    TooLong { max_bytes: usize },
+    #[error("control characters are not allowed in validators")]
+    ContainsControlCharacter,
+}
+
+/// Safe manifest metadata for one independently recoverable Source Snapshot.
+#[derive(Clone, Eq, PartialEq)]
+pub struct SnapshotMetadata {
+    source: SnapshotSource,
+    decoded_bytes: u64,
+    checksum: [u8; 32],
+    validated_at: DateTime<Utc>,
+    validators: PrivateSourceValidators,
+}
+
+impl SnapshotMetadata {
+    pub fn new(
+        source: SnapshotSource,
+        decoded_bytes: u64,
+        checksum: [u8; 32],
+        validated_at: DateTime<Utc>,
+        validators: PrivateSourceValidators,
+    ) -> Self {
+        Self {
+            source,
+            decoded_bytes,
+            checksum,
+            validated_at,
+            validators,
+        }
+    }
+
+    pub fn source(&self) -> SnapshotSource {
+        self.source
+    }
+
+    pub fn decoded_bytes(&self) -> u64 {
+        self.decoded_bytes
+    }
+
+    pub fn checksum(&self) -> &[u8; 32] {
+        &self.checksum
+    }
+
+    pub fn validated_at(&self) -> DateTime<Utc> {
+        self.validated_at
+    }
+
+    pub fn validators(&self) -> &PrivateSourceValidators {
+        &self.validators
+    }
+}
+
+impl Debug for SnapshotMetadata {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SnapshotMetadata")
+            .field("kind", &self.source.kind())
+            .field("decoded_bytes", &self.decoded_bytes)
+            .field("checksum", &"<redacted>")
+            .field("validated_at", &self.validated_at)
+            .field("validators", &self.validators)
+            .finish()
+    }
+}
+
+/// An opaque adapter-owned candidate and its bounded manifest metadata.
+#[derive(Clone, Eq, PartialEq)]
+pub struct SnapshotCandidate {
+    token: u64,
+    metadata: SnapshotMetadata,
+    requires_adoption: bool,
+}
+
+impl SnapshotCandidate {
+    pub fn new(token: u64, metadata: SnapshotMetadata, requires_adoption: bool) -> Self {
+        Self {
+            token,
+            metadata,
+            requires_adoption,
+        }
+    }
+
+    /// Returns the opaque token only for use by the owning snapshot adapter.
+    pub fn token(&self) -> u64 {
+        self.token
+    }
+
+    pub fn metadata(&self) -> &SnapshotMetadata {
+        &self.metadata
+    }
+
+    pub fn requires_adoption(&self) -> bool {
+        self.requires_adoption
+    }
+}
+
+impl Debug for SnapshotCandidate {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SnapshotCandidate")
+            .field("metadata", &self.metadata)
+            .field("requires_adoption", &self.requires_adoption)
+            .finish()
+    }
+}
+
+/// At most the active and alternate candidates, in adapter preference order.
+#[derive(Debug, Default)]
+pub struct SnapshotCandidates(Box<[SnapshotCandidate]>);
+
+impl SnapshotCandidates {
+    pub const MAX: usize = 2;
+
+    pub fn new(candidates: Vec<SnapshotCandidate>) -> Result<Self, StoreError> {
+        if candidates.len() > Self::MAX {
+            return Err(StoreError::Corrupt);
+        }
+        Ok(Self(candidates.into_boxed_slice()))
+    }
+
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &SnapshotCandidate> {
+        self.0.iter()
+    }
+}
+
+/// One bounded adapter scan: ordered candidates plus safe slot diagnostics.
+#[derive(Debug, Default)]
+pub struct SnapshotScan {
+    candidates: SnapshotCandidates,
+    diagnostics: Box<[SnapshotRecoveryReason]>,
+}
+
+impl SnapshotScan {
+    pub const MAX_DIAGNOSTICS: usize = 4;
+
+    pub fn new(
+        candidates: Vec<SnapshotCandidate>,
+        diagnostics: Vec<SnapshotRecoveryReason>,
+    ) -> Result<Self, StoreError> {
+        if diagnostics.len() > Self::MAX_DIAGNOSTICS {
+            return Err(StoreError::Corrupt);
+        }
+        Ok(Self {
+            candidates: SnapshotCandidates::new(candidates)?,
+            diagnostics: diagnostics.into_boxed_slice(),
+        })
+    }
+
+    pub fn candidates(&self) -> impl Iterator<Item = &SnapshotCandidate> {
+        self.candidates.iter()
+    }
+
+    pub fn diagnostics(&self) -> &[SnapshotRecoveryReason] {
+        &self.diagnostics
+    }
+
+    pub fn into_candidates(self) -> impl Iterator<Item = SnapshotCandidate> {
+        self.candidates.into_iter()
+    }
+}
+
+impl IntoIterator for SnapshotCandidates {
+    type Item = SnapshotCandidate;
+    type IntoIter = std::vec::IntoIter<SnapshotCandidate>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_vec().into_iter()
+    }
+}
+
+/// A manifest-only freshness update that never changes snapshot payload bytes.
+#[derive(Clone, Eq, PartialEq)]
+pub struct SnapshotRevalidation {
+    validated_at: DateTime<Utc>,
+    validators: PrivateSourceValidators,
+}
+
+impl SnapshotRevalidation {
+    pub fn new(validated_at: DateTime<Utc>, validators: PrivateSourceValidators) -> Self {
+        Self {
+            validated_at,
+            validators,
+        }
+    }
+
+    pub fn validated_at(&self) -> DateTime<Utc> {
+        self.validated_at
+    }
+
+    pub fn validators(&self) -> &PrivateSourceValidators {
+        &self.validators
+    }
+}
+
+impl Debug for SnapshotRevalidation {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SnapshotRevalidation")
+            .field("validated_at", &self.validated_at)
+            .field("validators", &self.validators)
+            .finish()
+    }
 }
 
 impl SnapshotSource {
@@ -212,6 +508,7 @@ pub struct ValidatedStage {
     decoded_bytes: u64,
     checksum: [u8; 32],
     validated_at: DateTime<Utc>,
+    validators: PrivateSourceValidators,
 }
 
 impl ValidatedStage {
@@ -220,12 +517,14 @@ impl ValidatedStage {
         decoded_bytes: u64,
         checksum: [u8; 32],
         validated_at: DateTime<Utc>,
+        validators: PrivateSourceValidators,
     ) -> Self {
         Self {
             stage,
             decoded_bytes,
             checksum,
             validated_at,
+            validators,
         }
     }
 
@@ -245,6 +544,20 @@ impl ValidatedStage {
         self.validated_at
     }
 
+    pub fn validators(&self) -> &PrivateSourceValidators {
+        &self.validators
+    }
+
+    pub fn metadata(&self) -> SnapshotMetadata {
+        SnapshotMetadata::new(
+            self.stage.source(),
+            self.decoded_bytes,
+            self.checksum,
+            self.validated_at,
+            self.validators.clone(),
+        )
+    }
+
     pub fn into_stage(self) -> SnapshotStage {
         self.stage
     }
@@ -258,12 +571,42 @@ impl Debug for ValidatedStage {
             .field("decoded_bytes", &self.decoded_bytes)
             .field("checksum", &"<redacted>")
             .field("validated_at", &self.validated_at)
+            .field("validators", &self.validators)
             .finish()
     }
 }
 
 #[async_trait]
 pub trait SnapshotStore: Send + Sync {
+    /// Returns at most two candidates in adapter preference order.
+    async fn scan_candidates(&self, _source: SnapshotSource) -> Result<SnapshotScan, StoreError> {
+        Ok(SnapshotScan::default())
+    }
+
+    async fn open_candidate(
+        &self,
+        _candidate: &SnapshotCandidate,
+    ) -> Result<Box<dyn BufRead + Send>, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    /// Repairs the active pointer after the core accepts a fallback candidate.
+    async fn adopt_candidate(
+        &self,
+        _candidate: &SnapshotCandidate,
+    ) -> Result<SnapshotCandidate, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    /// Atomically touches manifest freshness without replacing payload bytes.
+    async fn revalidate_candidate(
+        &self,
+        _candidate: &SnapshotCandidate,
+        _revalidation: &SnapshotRevalidation,
+    ) -> Result<SnapshotCandidate, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
     /// Reserves an inactive stage before the core crosses another await point.
     fn begin_stage(&self, source: SnapshotSource) -> Result<SnapshotStage, StoreError>;
     async fn append(&self, stage: &SnapshotStage, chunk: Bytes) -> Result<(), StoreError>;
@@ -274,7 +617,7 @@ pub trait SnapshotStore: Send + Sync {
     /// Flushes and prepares a validated stage without changing the active slot.
     async fn prepare_activation(&self, validated: &ValidatedStage) -> Result<(), StoreError>;
     /// Atomically makes a prepared stage active without crossing an await point.
-    fn activate(&self, validated: &ValidatedStage) -> Result<(), StoreError>;
+    fn activate(&self, validated: &ValidatedStage) -> Result<SnapshotCandidate, StoreError>;
     /// Immediately makes an inactive stage ineligible for activation.
     ///
     /// Implementations must be idempotent and keep this operation bounded so
@@ -285,9 +628,15 @@ pub trait SnapshotStore: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use crate::domain::{SourceConfiguration, SourceConfigurationInput};
+    use chrono::{TimeZone, Utc};
 
-    use super::SnapshotSource;
+    use crate::domain::{
+        SnapshotRecoveryReason, SourceConfiguration, SourceConfigurationInput, StoreError,
+    };
+
+    use super::{
+        PrivateSourceValidators, SnapshotCandidate, SnapshotMetadata, SnapshotScan, SnapshotSource,
+    };
 
     #[test]
     fn m3u_snapshot_identity_is_independent_of_the_epg_source() {
@@ -351,5 +700,60 @@ mod tests {
                 .expect("the changed EPG Source is configured")
                 .key()
         );
+    }
+
+    #[test]
+    fn snapshot_handles_metadata_and_validators_have_safe_diagnostics() {
+        let configuration = SourceConfiguration::parse(SourceConfigurationInput::new(
+            "https://private-user:private-secret@provider.invalid/channels.m3u",
+            None::<String>,
+        ))
+        .expect("fixture Source Configuration is valid");
+        let source = SnapshotSource::m3u(&configuration);
+        let validators = PrivateSourceValidators::parse(
+            Some("private-etag-canary".to_owned()),
+            Some("private-last-modified-canary".to_owned()),
+        )
+        .expect("fixture validators are valid");
+        let metadata = SnapshotMetadata::new(
+            source,
+            42,
+            [0xab; 32],
+            Utc.with_ymd_and_hms(2026, 8, 29, 12, 0, 0)
+                .single()
+                .expect("fixture timestamp is valid"),
+            validators.clone(),
+        );
+        let candidate = SnapshotCandidate::new(9_876_543_210, metadata.clone(), true);
+        let debug = format!("{source:?} {validators:?} {metadata:?} {candidate:?}");
+
+        for private in [
+            "private-user",
+            "private-secret",
+            "private-etag-canary",
+            "private-last-modified-canary",
+            "9876543210",
+            &"ab".repeat(32),
+        ] {
+            assert!(!debug.contains(private), "private marker leaked: {private}");
+        }
+        assert_eq!(validators.expose_etag(), Some("private-etag-canary"));
+        assert_eq!(
+            validators.expose_last_modified(),
+            Some("private-last-modified-canary")
+        );
+    }
+
+    #[test]
+    fn validator_and_scan_bounds_are_closed_and_typed() {
+        assert!(PrivateSourceValidators::parse(Some("x".repeat(8 * 1024)), None).is_ok());
+        assert!(PrivateSourceValidators::parse(Some("x".repeat(8 * 1024 + 1)), None).is_err());
+        assert!(PrivateSourceValidators::parse(Some("bad\nvalue".to_owned()), None).is_err());
+
+        let diagnostics = vec![SnapshotRecoveryReason::CorruptManifest; 5];
+        assert!(matches!(
+            SnapshotScan::new(Vec::new(), diagnostics),
+            Err(StoreError::Corrupt)
+        ));
     }
 }
