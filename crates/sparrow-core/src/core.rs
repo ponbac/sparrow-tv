@@ -4,8 +4,8 @@ use futures_util::StreamExt;
 use crate::{
     catalog::ChannelCatalog,
     domain::{
-        CatalogGeneration, CatalogStatus, ChannelDetails, ChannelId, ChannelSummary, CoreError,
-        Page, PageLimit, SafeFailure, SnapshotOperation, SourceConfiguration,
+        CatalogStatus, ChannelDetails, ChannelGroupView, ChannelId, ChannelQuery, ChannelSummary,
+        CoreError, Page, PageRequest, SafeFailure, SnapshotOperation, SourceConfiguration,
         SourceConfigurationInput,
     },
     m3u,
@@ -50,8 +50,7 @@ impl SparrowCore {
 
         match load_catalog(&configuration, &adapters).await {
             Ok((catalog, validated_at)) => {
-                let status =
-                    CatalogStatus::fresh(CatalogGeneration::initial(), redacted, validated_at);
+                let status = CatalogStatus::fresh(catalog.generation(), redacted, validated_at);
                 core.state.store(std::sync::Arc::new(CoreState::Published {
                     status,
                     catalog,
@@ -75,8 +74,14 @@ impl SparrowCore {
         }
     }
 
-    pub fn list_channels(&self, limit: PageLimit) -> Result<Page<ChannelSummary>, CoreError> {
-        self.query_catalog(|catalog| Ok(catalog.first_page(limit)))
+    /// Returns a deterministic bounded page of source-derived Channel Groups.
+    pub fn list_groups(&self, request: PageRequest) -> Result<Page<ChannelGroupView>, CoreError> {
+        self.query_catalog(|catalog| catalog.groups_page(&request))
+    }
+
+    /// Returns a deterministic bounded page of all Channels or one exact group.
+    pub fn list_channels(&self, query: ChannelQuery) -> Result<Page<ChannelSummary>, CoreError> {
+        self.query_catalog(|catalog| catalog.channels_page(&query))
     }
 
     pub fn channel(&self, id: &ChannelId) -> Result<ChannelDetails, CoreError> {
@@ -177,10 +182,11 @@ async fn load_catalog(
     };
     drop(reader);
 
-    let generation = CatalogGeneration::initial();
+    let m3u_checksum = *checksum.finalize().as_bytes();
+    let generation = configuration.catalog_generation(&m3u_checksum, None);
     let catalog = ChannelCatalog::from_parsed(configuration, parsed, generation);
     let validated_at = adapters.clock().now();
-    let validated = staged.validate(decoded_bytes, *checksum.finalize().as_bytes(), validated_at);
+    let validated = staged.validate(decoded_bytes, m3u_checksum, validated_at);
     if let Err(reason) = store.prepare_activation(validated.value()).await {
         return Err(validated.reject(SafeFailure::Snapshot {
             operation: SnapshotOperation::PrepareActivation,

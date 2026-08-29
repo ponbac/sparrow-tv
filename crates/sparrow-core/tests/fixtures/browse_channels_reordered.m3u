@@ -1,0 +1,17 @@
+#EXTM3U
+#EXTINF:-1 group-title=" kids ", JUNIOR
+https://changed-user:changed-secret@changed-media.fixture.invalid/kids?token=changed-canary
+#EXTINF:-1 tvg-id=" NEWS.ALPHA " group-title=" news ", ALPHA
+https://changed-media.fixture.invalid/news/alpha?token=changed-canary
+#EXTINF:-1,  UNGROUPED
+https://changed-media.fixture.invalid/ungrouped?token=changed-canary
+#EXTINF:-1 group-title="News",Daily
+https://changed-media.fixture.invalid/news/backup?token=changed-canary
+#EXTINF:-1 tvg-id="SPORTS.TWO" group-title="SPORTS",ARENA TWO
+https://changed-media.fixture.invalid/sports/two?token=changed-canary
+#EXTINF:-1 tvg-id="culture.one" group-title="Culture",Museum
+https://changed-media.fixture.invalid/culture?token=changed-canary
+#EXTINF:-1 group-title="news",daily
+https://changed-media.fixture.invalid/news/primary?token=changed-canary
+#EXTINF:-1 group-title="SPORTS",ARENA
+https://changed-media.fixture.invalid/sports/arena?token=changed-canary

@@ -1,5 +1,5 @@
 use sparrow_core::{
-    CoreError, InputField, InputReason, PageLimit, SourceConfigurationInput, SparrowCore,
+    ChannelId, CoreError, InputField, InputReason, PageLimit, SourceConfigurationInput, SparrowCore,
 };
 
 #[test]
@@ -16,6 +16,33 @@ fn blank_m3u_source_is_rejected_with_a_safe_typed_error() {
             reason: InputReason::Required,
         })
     ));
+}
+
+#[test]
+fn channel_identifiers_are_parsed_canonically_at_the_public_boundary() {
+    let canonical = format!("ch1_{}", "0a".repeat(32));
+    let parsed = ChannelId::parse(canonical.clone()).expect("canonical Channel ID is valid");
+
+    assert_eq!(parsed.as_str(), canonical);
+    assert_eq!(format!("{parsed:?}"), "ChannelId(<redacted>)");
+
+    for malformed in [
+        String::new(),
+        format!("ch1_{}", "a".repeat(63)),
+        format!("ch1_{}", "a".repeat(65)),
+        format!("CH1_{}", "a".repeat(64)),
+        format!("ch1_{}A", "a".repeat(63)),
+        format!("ch1_{}g", "a".repeat(63)),
+        format!(" ch1_{}", "a".repeat(64)),
+    ] {
+        assert!(matches!(
+            ChannelId::parse(malformed),
+            Err(CoreError::InvalidInput {
+                field: InputField::ChannelId,
+                reason: InputReason::InvalidFormat,
+            })
+        ));
+    }
 }
 
 #[test]

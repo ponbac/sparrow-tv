@@ -1,11 +1,10 @@
 use blake3::Hasher;
 use unicode_normalization::UnicodeNormalization;
 
-use crate::domain::{ChannelId, SourceConfigurationFingerprint};
+use crate::domain::{CHANNEL_ID_PREFIX, ChannelId, SourceConfigurationFingerprint};
 
 const SEED_DOMAIN: &[u8] = b"sparrow-channel-identity-seed-v1\0";
 const CHANNEL_ID_DOMAIN: &[u8] = b"sparrow-channel-identifier-v1\0";
-const CHANNEL_ID_PREFIX: &str = "ch1_";
 
 /// Builds the playback-independent identity shared by recognizable entries.
 pub(crate) fn seed(tvg_id: &str, name: &str, group: &str) -> [u8; 32] {
@@ -46,7 +45,8 @@ fn hash_field(hasher: &mut Hasher, value: &[u8]) {
     hasher.update(value);
 }
 
-fn normalize_identity_field(value: &str) -> String {
+/// Returns the canonical comparison key used by identity and browse ordering.
+pub(crate) fn normalize_identity_field(value: &str) -> String {
     let compatibility_normalized = value.nfkc().collect::<String>();
     let mut normalized = String::with_capacity(compatibility_normalized.len());
 

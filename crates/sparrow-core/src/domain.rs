@@ -1,5 +1,7 @@
 use std::{
     fmt::{self, Debug, Display, Formatter},
+    mem::size_of,
+    num::NonZeroU64,
     ops::Range,
     sync::Arc,
 };
@@ -10,6 +12,10 @@ use thiserror::Error;
 use url::Url;
 
 const MAX_SOURCE_LOCATION_BYTES: usize = 16 * 1024;
+const PAGE_CURSOR_PREFIX: &str = "pc1";
+const CATALOG_GENERATION_DOMAIN: &[u8] = b"sparrow-catalog-generation-v1\0";
+pub(crate) const CHANNEL_ID_PREFIX: &str = "ch1_";
+const CHANNEL_ID_DIGEST_HEX_BYTES: usize = 64;
 
 /// Untrusted source locations as entered at a configuration boundary.
 ///
@@ -59,6 +65,16 @@ impl SourceConfiguration {
             configured: true,
             epg_configured: self.has_epg(),
         }
+    }
+
+    /// Derives a restart-stable generation from every input that contributes
+    /// to one immutable Channel Catalog.
+    pub(crate) fn catalog_generation(
+        &self,
+        m3u_checksum: &[u8; 32],
+        epg_checksum: Option<&[u8; 32]>,
+    ) -> CatalogGeneration {
+        CatalogGeneration::for_content(&self.fingerprint, m3u_checksum, epg_checksum)
     }
 }
 
@@ -244,7 +260,9 @@ impl Debug for Redacted {
 pub enum InputField {
     M3u,
     Epg,
+    ChannelId,
     PageLimit,
+    PageCursor,
 }
 
 impl Display for InputField {
@@ -252,7 +270,9 @@ impl Display for InputField {
         formatter.write_str(match self {
             InputField::M3u => "m3u",
             InputField::Epg => "epg",
+            InputField::ChannelId => "channel ID",
             InputField::PageLimit => "page limit",
+            InputField::PageCursor => "page cursor",
         })
     }
 }
@@ -269,6 +289,12 @@ pub enum InputReason {
     UnsupportedLocation,
     #[error("the value is outside the supported range")]
     OutOfRange,
+    #[error("the value has an invalid format")]
+    InvalidFormat,
+    #[error("the cursor belongs to a different query")]
+    CursorQueryMismatch,
+    #[error("the cursor position is outside the result set")]
+    CursorPositionOutOfRange,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -278,15 +304,45 @@ pub enum SourceKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct CatalogGeneration(u64);
+pub struct CatalogGeneration(NonZeroU64);
 
 impl CatalogGeneration {
-    pub(crate) const fn initial() -> Self {
-        Self(1)
+    fn for_content(
+        configuration: &SourceConfigurationFingerprint,
+        m3u_checksum: &[u8; 32],
+        epg_checksum: Option<&[u8; 32]>,
+    ) -> Self {
+        let mut hasher = Hasher::new();
+        hasher.update(CATALOG_GENERATION_DOMAIN);
+        hash_field(&mut hasher, configuration.as_bytes());
+        hasher.update(b"m3u\0");
+        hash_field(&mut hasher, m3u_checksum);
+        hasher.update(b"epg\0");
+        match epg_checksum {
+            Some(checksum) => {
+                hasher.update(&[1]);
+                hash_field(&mut hasher, checksum);
+            }
+            None => {
+                hasher.update(&[0]);
+            }
+        }
+        let digest = hasher.finalize();
+        let mut encoded = [0_u8; size_of::<u64>()];
+        encoded.copy_from_slice(&digest.as_bytes()[..size_of::<u64>()]);
+        let value = NonZeroU64::new(u64::from_le_bytes(encoded)).unwrap_or(NonZeroU64::MIN);
+        Self(value)
+    }
+
+    const fn from_cursor(value: u64) -> Option<Self> {
+        match NonZeroU64::new(value) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
     }
 
     pub const fn get(self) -> u64 {
-        self.0
+        self.0.get()
     }
 }
 
@@ -311,12 +367,168 @@ impl PageLimit {
     }
 }
 
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+pub(crate) struct CursorQueryHash([u8; 32]);
+
+impl CursorQueryHash {
+    pub(crate) const fn new(value: [u8; 32]) -> Self {
+        Self(value)
+    }
+
+    fn encode(self) -> String {
+        blake3::Hash::from_bytes(self.0).to_hex().to_string()
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        blake3::Hash::from_hex(value)
+            .ok()
+            .map(|hash| Self(*hash.as_bytes()))
+    }
+}
+
+/// An opaque continuation token for one catalog generation and query shape.
+///
+/// The token contains no source data. Transport adapters should parse incoming
+/// strings with [`PageCursor::parse`] and project outgoing values explicitly
+/// with [`PageCursor::as_str`].
+#[derive(Clone, Eq, Hash, PartialEq)]
+pub struct PageCursor {
+    value: Arc<str>,
+    generation: CatalogGeneration,
+    offset: usize,
+    query: CursorQueryHash,
+}
+
+impl PageCursor {
+    pub(crate) fn generated(
+        generation: CatalogGeneration,
+        offset: usize,
+        query: CursorQueryHash,
+    ) -> Self {
+        debug_assert!(offset > 0);
+        let value = Self::encode(generation, offset, query);
+        Self {
+            value: Arc::from(value),
+            generation,
+            offset,
+            query,
+        }
+    }
+
+    /// Parses an untrusted transport value into a canonical opaque cursor.
+    pub fn parse(value: impl Into<String>) -> Result<Self, CoreError> {
+        let value = value.into();
+        let invalid = || CoreError::InvalidInput {
+            field: InputField::PageCursor,
+            reason: InputReason::InvalidFormat,
+        };
+        let mut fields = value.split('.');
+        let prefix = fields.next().ok_or_else(invalid)?;
+        let generation = fields
+            .next()
+            .and_then(|field| field.parse::<u64>().ok())
+            .and_then(CatalogGeneration::from_cursor)
+            .ok_or_else(invalid)?;
+        let offset = fields
+            .next()
+            .and_then(|field| field.parse::<u64>().ok())
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .ok_or_else(invalid)?;
+        let query = fields
+            .next()
+            .and_then(CursorQueryHash::parse)
+            .ok_or_else(invalid)?;
+        if prefix != PAGE_CURSOR_PREFIX || fields.next().is_some() {
+            return Err(invalid());
+        }
+        let canonical = Self::encode(generation, offset, query);
+        if value != canonical {
+            return Err(invalid());
+        }
+
+        Ok(Self {
+            value: Arc::from(value),
+            generation,
+            offset,
+            query,
+        })
+    }
+
+    /// Returns the opaque value for an explicit transport projection.
+    pub fn as_str(&self) -> &str {
+        &self.value
+    }
+
+    fn encode(generation: CatalogGeneration, offset: usize, query: CursorQueryHash) -> String {
+        format!(
+            "{PAGE_CURSOR_PREFIX}.{}.{}.{}",
+            generation.get(),
+            offset,
+            query.encode()
+        )
+    }
+}
+
+impl Debug for PageCursor {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PageCursor(<opaque>)")
+    }
+}
+
+/// A bounded request for the first or a subsequent page of one query.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PageRequest {
+    cursor: Option<PageCursor>,
+    limit: PageLimit,
+}
+
+impl PageRequest {
+    /// Creates a page request from an optional parsed cursor and bounded limit.
+    pub const fn new(cursor: Option<PageCursor>, limit: PageLimit) -> Self {
+        Self { cursor, limit }
+    }
+
+    /// Creates a request for the first page.
+    pub const fn first(limit: PageLimit) -> Self {
+        Self::new(None, limit)
+    }
+
+    /// Creates a request continuing after a cursor returned by an earlier page.
+    pub const fn after(cursor: PageCursor, limit: PageLimit) -> Self {
+        Self::new(Some(cursor), limit)
+    }
+
+    /// Returns the continuation cursor, when this is not a first-page request.
+    pub const fn cursor(&self) -> Option<&PageCursor> {
+        self.cursor.as_ref()
+    }
+
+    /// Returns the bounded maximum number of items requested.
+    pub const fn limit(&self) -> PageLimit {
+        self.limit
+    }
+}
+
 #[derive(Clone, Eq, Hash, PartialEq)]
 pub struct ChannelId(Arc<str>);
 
 impl ChannelId {
     pub(crate) fn generated(value: String) -> Self {
+        debug_assert!(is_canonical_channel_id(&value));
         Self(Arc::from(value))
+    }
+
+    /// Parses an untrusted transport value into a canonical opaque identifier.
+    pub fn parse(value: impl Into<String>) -> Result<Self, CoreError> {
+        let value = value.into();
+        if !is_canonical_channel_id(&value) {
+            return Err(CoreError::InvalidInput {
+                field: InputField::ChannelId,
+                reason: InputReason::InvalidFormat,
+            });
+        }
+        Ok(Self(Arc::from(value)))
     }
 
     /// Returns the opaque value for an explicit transport projection.
@@ -325,9 +537,44 @@ impl ChannelId {
     }
 }
 
+fn is_canonical_channel_id(value: &str) -> bool {
+    value.strip_prefix(CHANNEL_ID_PREFIX).is_some_and(|digest| {
+        digest.len() == CHANNEL_ID_DIGEST_HEX_BYTES
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
 impl Debug for ChannelId {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str("ChannelId(<redacted>)")
+    }
+}
+
+/// One source-derived Channel Group and the number of Channels it contains.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChannelGroupView {
+    name: Arc<str>,
+    channel_count: u32,
+}
+
+impl ChannelGroupView {
+    pub(crate) fn new(name: Arc<str>, channel_count: u32) -> Self {
+        Self {
+            name,
+            channel_count,
+        }
+    }
+
+    /// Returns the normalized presentation name from the M3U Source.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the number of Channels in this group for the page generation.
+    pub const fn channel_count(&self) -> u32 {
+        self.channel_count
     }
 }
 
@@ -381,29 +628,106 @@ impl ChannelDetails {
     }
 }
 
+/// Selects all Channels or the Channels in one exact source-derived group.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChannelQuery {
+    group: Option<Arc<str>>,
+    page: PageRequest,
+}
+
+impl ChannelQuery {
+    /// Creates a paginated query across every Channel.
+    pub const fn all(page: PageRequest) -> Self {
+        Self { group: None, page }
+    }
+
+    /// Creates a paginated query for an exact Channel Group name.
+    pub fn in_group(group: impl Into<String>, page: PageRequest) -> Self {
+        Self {
+            group: Some(Arc::from(group.into())),
+            page,
+        }
+    }
+
+    /// Returns the exact Channel Group filter, when present.
+    pub fn group(&self) -> Option<&str> {
+        self.group.as_deref()
+    }
+
+    /// Returns this query's bounded page request.
+    pub const fn page(&self) -> &PageRequest {
+        &self.page
+    }
+}
+
 #[derive(Clone)]
 pub struct Page<T> {
     generation: CatalogGeneration,
     items: Arc<[T]>,
     range: Range<usize>,
+    next: Option<PageCursor>,
 }
 
 impl<T> Page<T> {
-    pub(crate) fn first(generation: CatalogGeneration, items: Arc<[T]>, limit: PageLimit) -> Self {
-        let range = 0..items.len().min(usize::from(limit.get()));
-        Self {
+    pub(crate) fn from_request(
+        generation: CatalogGeneration,
+        items: Arc<[T]>,
+        collection: Range<usize>,
+        request: &PageRequest,
+        query: CursorQueryHash,
+    ) -> Result<Self, CoreError> {
+        debug_assert!(collection.start <= collection.end);
+        debug_assert!(collection.end <= items.len());
+
+        let offset = match request.cursor() {
+            None => 0,
+            Some(cursor) if cursor.generation != generation => {
+                return Err(CoreError::StaleCursor {
+                    current: generation,
+                });
+            }
+            Some(cursor) if cursor.query != query => {
+                return Err(CoreError::InvalidInput {
+                    field: InputField::PageCursor,
+                    reason: InputReason::CursorQueryMismatch,
+                });
+            }
+            Some(cursor) => cursor.offset,
+        };
+        let collection_len = collection.len();
+        if offset > 0 && offset >= collection_len {
+            return Err(CoreError::InvalidInput {
+                field: InputField::PageCursor,
+                reason: InputReason::CursorPositionOutOfRange,
+            });
+        }
+        let end = offset
+            .saturating_add(usize::from(request.limit().get()))
+            .min(collection_len);
+        let range = (collection.start + offset)..(collection.start + end);
+        let next = (end < collection_len).then(|| PageCursor::generated(generation, end, query));
+
+        Ok(Self {
             generation,
             items,
             range,
-        }
+            next,
+        })
     }
 
+    /// Returns the immutable catalog generation backing this page.
     pub fn generation(&self) -> CatalogGeneration {
         self.generation
     }
 
+    /// Returns the items in this bounded page without cloning the catalog.
     pub fn items(&self) -> &[T] {
         &self.items[self.range.clone()]
+    }
+
+    /// Returns the opaque continuation cursor when more items remain.
+    pub const fn next(&self) -> Option<&PageCursor> {
+        self.next.as_ref()
     }
 }
 
@@ -413,6 +737,7 @@ impl<T: Debug> Debug for Page<T> {
             .debug_struct("Page")
             .field("generation", &self.generation)
             .field("items", &self.items())
+            .field("next", &self.next)
             .finish()
     }
 }
@@ -584,4 +909,6 @@ pub enum CoreError {
     CatalogUnavailable { status: CatalogStatus },
     #[error("the Channel was not found")]
     ChannelNotFound { id: ChannelId },
+    #[error("the page cursor is stale")]
+    StaleCursor { current: CatalogGeneration },
 }
