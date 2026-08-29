@@ -46,7 +46,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <div class="shell">
     <div class="eyebrow">Throwaway prototype · Wayfinder playback proof</div>
     <h1>Direct live playback probe</h1>
-    <p class="lede">Paste one direct channel URL. Nothing is persisted; exported evidence contains only the source label and redacted host.</p>
+    <p class="lede">Paste one direct channel URL. Nothing is persisted; copied evidence contains only the source label and redacted host.</p>
     <div class="grid">
       <section class="panel">
         <div class="controls">
@@ -72,7 +72,13 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         </div>
       </section>
       <aside class="panel">
-        <div class="state-head"><strong>Complete probe state</strong><button id="export">Export redacted JSON</button></div>
+        <div class="state-head">
+          <strong>Complete probe state</strong>
+          <div class="copy-state">
+            <button id="copy-state">Copy probe state</button>
+            <span id="copy-feedback" role="status" aria-live="polite"></span>
+          </div>
+        </div>
         <pre id="state" class="state"></pre>
       </aside>
     </div>
@@ -85,11 +91,13 @@ const sourceLabel = document.querySelector<HTMLInputElement>("#source-label")!;
 const stateView = document.querySelector<HTMLPreElement>("#state")!;
 const runtimeStatus = document.querySelector<HTMLSpanElement>("#runtime-status")!;
 const candidateRow = document.querySelector<HTMLDivElement>("#candidates")!;
+const copyFeedback = document.querySelector<HTMLSpanElement>("#copy-feedback")!;
 
 let selectedCandidate: Candidate = "direct-video";
 let state: ProbeState = initialProbeState;
 let player: MpegtsPlayer | null = null;
 let suppressVideoErrors = false;
+let copyFeedbackTimer: number | undefined;
 
 function dispatch(action: ProbeAction): void {
   state = reduceProbe(state, action);
@@ -257,6 +265,39 @@ function applyMpvSnapshot(snapshot: MpvSnapshot): void {
   if (snapshot.paused !== null) dispatch({ type: "status", status: snapshot.paused ? "paused" : "playing" });
 }
 
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const buffer = document.createElement("textarea");
+    buffer.value = text;
+    buffer.readOnly = true;
+    buffer.style.position = "fixed";
+    buffer.style.inset = "0 auto auto 0";
+    buffer.style.opacity = "0";
+    buffer.style.pointerEvents = "none";
+    document.body.append(buffer);
+    buffer.select();
+    buffer.setSelectionRange(0, buffer.value.length);
+    try {
+      return document.execCommand("copy");
+    } finally {
+      buffer.remove();
+    }
+  }
+}
+
+function showCopyFeedback(message: string, failed = false): void {
+  window.clearTimeout(copyFeedbackTimer);
+  copyFeedback.textContent = message;
+  copyFeedback.dataset.failed = String(failed);
+  copyFeedbackTimer = window.setTimeout(() => {
+    copyFeedback.textContent = "";
+    delete copyFeedback.dataset.failed;
+  }, 3_000);
+}
+
 async function sampleNow(): Promise<void> {
   try {
     if (state.candidate === "mpv") {
@@ -299,13 +340,9 @@ document.querySelector<HTMLButtonElement>("#fullscreen")!.addEventListener("clic
     dispatch({ type: "error", detail: error instanceof Error ? error.message : String(error) });
   }
 });
-document.querySelector<HTMLButtonElement>("#export")!.addEventListener("click", () => {
-  const blob = new Blob([JSON.stringify(exportableState(state), null, 2)], { type: "application/json" });
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
-  link.download = `sparrow-playback-${state.candidate ?? "idle"}-${Date.now()}.json`;
-  link.click();
-  URL.revokeObjectURL(link.href);
+document.querySelector<HTMLButtonElement>("#copy-state")!.addEventListener("click", async () => {
+  const copied = await copyText(JSON.stringify(exportableState(state), null, 2));
+  showCopyFeedback(copied ? "Copied" : "Copy failed", !copied);
 });
 
 window.setInterval(() => {

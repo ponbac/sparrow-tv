@@ -29,6 +29,10 @@ video { width: 100%; height: 100%; object-fit: contain; background: #000; }
 .watermark { position: absolute; top: 10px; left: 10px; padding: 5px 8px; border-radius: 6px; color: #1c1917; background: #f59e0bcc; font-size: 11px; font-weight: 900; letter-spacing: .08em; }
 .state-head { display: flex; align-items: center; justify-content: space-between; padding: 11px 12px; border-bottom: 1px solid #292524; }
 .state-head strong { color: #f59e0b; }
+.copy-state { display: flex; align-items: center; gap: 8px; }
+.copy-state button { min-height: 40px; }
+.copy-state span { min-width: 64px; color: #86efac; font-size: 12px; font-weight: 800; }
+.copy-state span[data-failed="true"] { color: #fca5a5; }
 .state { margin: 0; padding: 12px; min-height: 540px; overflow: auto; color: #d6d3d1; font: 12px/1.52 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
 .hint { color: #78716c; font-size: 12px; }
 .status { color: #a8a29e; font-size: 12px; margin-left: auto; }
@@ -37,5 +41,8 @@ video { width: 100%; height: 100%; object-fit: contain; background: #000; }
   .shell { padding: 12px; }
   .grid { grid-template-columns: 1fr; }
   .source-row { grid-template-columns: 1fr; }
+  .state-head { align-items: flex-start; flex-direction: column; gap: 10px; }
+  .copy-state { width: 100%; }
+  .copy-state button { flex: 1; }
   .state { min-height: 360px; }
 }
