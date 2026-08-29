@@ -32,6 +32,10 @@ _Avoid_: Playlist, channel list, media library
 A playable live television entry in the Channel Catalog.
 _Avoid_: Stream, station, media
 
+**Channel Identifier**:
+The opaque, Source Configuration-scoped identity of a Channel, retained across Source Snapshot refreshes while that Channel remains recognizable.
+_Avoid_: Channel URL, tvg-id, stream ID
+
 **Channel Group**:
 A category from the M3U Source used to organize Channels in the Channel Catalog.
 _Avoid_: Category, folder, bouquet
