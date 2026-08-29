@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{BufRead, Cursor},
     sync::{
         Arc, Mutex,
@@ -14,9 +14,10 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use futures_util::stream;
 use sparrow_core::{
-    Clock, CoreAdapters, SnapshotSource, SnapshotStage, SnapshotStore, SourceAccess,
-    SourceAccessError, SourceByteStream, SourceKind, SourceReadError, SourceRequest,
-    SourceResponse, StoreError, ValidatedStage,
+    Clock, CoreAdapters, PrivateSourceValidators, SnapshotCandidate, SnapshotMetadata,
+    SnapshotRecoveryReason, SnapshotRevalidation, SnapshotScan, SnapshotSource, SnapshotStage,
+    SnapshotStore, SourceAccess, SourceAccessError, SourceByteStream, SourceKind, SourceReadError,
+    SourceRequest, SourceResponse, StoreError, ValidatedStage,
 };
 
 #[derive(Clone)]
@@ -33,6 +34,7 @@ struct SourceState {
 struct SourceScript {
     chunks: Vec<Result<Bytes, SourceReadError>>,
     declared_length: Option<u64>,
+    validators: PrivateSourceValidators,
 }
 
 impl ScriptedSource {
@@ -52,6 +54,7 @@ impl ScriptedSource {
                     SourceScript {
                         chunks,
                         declared_length,
+                        validators: PrivateSourceValidators::default(),
                     },
                 )]),
                 opens: HashMap::new(),
@@ -79,9 +82,31 @@ impl ScriptedSource {
                 SourceScript {
                     chunks,
                     declared_length,
+                    validators: PrivateSourceValidators::default(),
                 },
             );
         self
+    }
+
+    pub fn with_m3u_validators(self, validators: PrivateSourceValidators) -> Self {
+        self.state
+            .lock()
+            .expect("source state poisoned")
+            .scripts
+            .get_mut(&SourceKind::M3u)
+            .expect("M3U source script exists")
+            .validators = validators;
+        self
+    }
+
+    pub fn unavailable() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(SourceState {
+                scripts: HashMap::new(),
+                opens: HashMap::new(),
+                request_debug: HashMap::new(),
+            })),
+        }
     }
 
     pub fn open_count(&self) -> usize {
@@ -131,7 +156,11 @@ impl SourceAccess for ScriptedSource {
         let chunks = script.chunks.clone();
         let declared_length = script.declared_length;
         let body: SourceByteStream = Box::pin(stream::iter(chunks));
-        Ok(SourceResponse::new(declared_length, body))
+        Ok(SourceResponse::with_validators(
+            declared_length,
+            body,
+            script.validators.clone(),
+        ))
     }
 }
 
@@ -192,7 +221,7 @@ impl SnapshotStore for PendingActivationSnapshotStore {
         std::future::pending().await
     }
 
-    fn activate(&self, validated: &ValidatedStage) -> Result<(), StoreError> {
+    fn activate(&self, validated: &ValidatedStage) -> Result<SnapshotCandidate, StoreError> {
         self.inner.activate(validated)
     }
 
@@ -248,7 +277,7 @@ impl SnapshotStore for PendingAppendSnapshotStore {
         Err(StoreError::Unavailable)
     }
 
-    fn activate(&self, _validated: &ValidatedStage) -> Result<(), StoreError> {
+    fn activate(&self, _validated: &ValidatedStage) -> Result<SnapshotCandidate, StoreError> {
         Err(StoreError::Unavailable)
     }
 
@@ -314,7 +343,7 @@ impl SnapshotStore for CountingSnapshotStore {
         Err(StoreError::Unavailable)
     }
 
-    fn activate(&self, _validated: &ValidatedStage) -> Result<(), StoreError> {
+    fn activate(&self, _validated: &ValidatedStage) -> Result<SnapshotCandidate, StoreError> {
         Err(StoreError::Unavailable)
     }
 
@@ -332,9 +361,22 @@ impl SnapshotStore for CountingSnapshotStore {
 struct SnapshotState {
     next_token: u64,
     staged: HashMap<u64, Vec<u8>>,
+    retained: HashMap<SnapshotSource, Vec<StoredSnapshot>>,
+    scan_diagnostics: HashMap<SourceKind, Vec<SnapshotRecoveryReason>>,
+    open_failures: HashSet<u64>,
     activations: usize,
+    adoptions: usize,
     discards: usize,
     activation_failure: Option<StoreError>,
+    adoption_failure: Option<StoreError>,
+}
+
+#[derive(Clone)]
+struct StoredSnapshot {
+    token: u64,
+    metadata: SnapshotMetadata,
+    bytes: Vec<u8>,
+    active: bool,
 }
 
 impl MemorySnapshotStore {
@@ -357,10 +399,236 @@ impl MemorySnapshotStore {
     pub fn discard_count(&self) -> usize {
         self.state.lock().expect("snapshot state poisoned").discards
     }
+
+    pub fn adoption_count(&self) -> usize {
+        self.state
+            .lock()
+            .expect("snapshot state poisoned")
+            .adoptions
+    }
+
+    pub fn duplicate_active_as_fallback(&self, kind: SourceKind) {
+        let mut state = self.state.lock().expect("snapshot state poisoned");
+        let token = state.next_token;
+        state.next_token += 1;
+        let snapshots = state
+            .retained
+            .values_mut()
+            .find(|snapshots| {
+                snapshots
+                    .first()
+                    .is_some_and(|snapshot| snapshot.metadata.source().kind() == kind)
+            })
+            .expect("active fixture snapshot exists");
+        let mut fallback = snapshots
+            .first()
+            .expect("active fixture snapshot exists")
+            .clone();
+        fallback.token = token;
+        fallback.active = false;
+        snapshots.push(fallback);
+        snapshots.truncate(2);
+    }
+
+    pub fn corrupt_active_payload(&self, kind: SourceKind) {
+        let mut state = self.state.lock().expect("snapshot state poisoned");
+        let snapshot = active_snapshot_mut(&mut state, kind);
+        snapshot.bytes.push(b'!');
+    }
+
+    pub fn replace_active_payload(&self, kind: SourceKind, bytes: Vec<u8>) {
+        let mut state = self.state.lock().expect("snapshot state poisoned");
+        let snapshot = active_snapshot_mut(&mut state, kind);
+        let checksum = *blake3::hash(&bytes).as_bytes();
+        snapshot.metadata = SnapshotMetadata::new(
+            snapshot.metadata.source(),
+            bytes.len() as u64,
+            checksum,
+            snapshot.metadata.validated_at(),
+            snapshot.metadata.validators().clone(),
+        );
+        snapshot.bytes = bytes;
+    }
+
+    pub fn set_active_length(&self, kind: SourceKind, decoded_bytes: u64) {
+        let mut state = self.state.lock().expect("snapshot state poisoned");
+        let snapshot = active_snapshot_mut(&mut state, kind);
+        snapshot.metadata = SnapshotMetadata::new(
+            snapshot.metadata.source(),
+            decoded_bytes,
+            *snapshot.metadata.checksum(),
+            snapshot.metadata.validated_at(),
+            snapshot.metadata.validators().clone(),
+        );
+    }
+
+    pub fn set_active_checksum(&self, kind: SourceKind, checksum: [u8; 32]) {
+        let mut state = self.state.lock().expect("snapshot state poisoned");
+        let snapshot = active_snapshot_mut(&mut state, kind);
+        snapshot.metadata = SnapshotMetadata::new(
+            snapshot.metadata.source(),
+            snapshot.metadata.decoded_bytes(),
+            checksum,
+            snapshot.metadata.validated_at(),
+            snapshot.metadata.validators().clone(),
+        );
+    }
+
+    pub fn set_active_validated_at(&self, kind: SourceKind, validated_at: DateTime<Utc>) {
+        let mut state = self.state.lock().expect("snapshot state poisoned");
+        let snapshot = active_snapshot_mut(&mut state, kind);
+        snapshot.metadata = SnapshotMetadata::new(
+            snapshot.metadata.source(),
+            snapshot.metadata.decoded_bytes(),
+            *snapshot.metadata.checksum(),
+            validated_at,
+            snapshot.metadata.validators().clone(),
+        );
+    }
+
+    pub fn with_scan_diagnostic(self, kind: SourceKind, reason: SnapshotRecoveryReason) -> Self {
+        self.state
+            .lock()
+            .expect("snapshot state poisoned")
+            .scan_diagnostics
+            .entry(kind)
+            .or_default()
+            .push(reason);
+        self
+    }
+
+    pub fn fail_active_open(&self, kind: SourceKind) {
+        let mut state = self.state.lock().expect("snapshot state poisoned");
+        let token = active_snapshot_mut(&mut state, kind).token;
+        state.open_failures.insert(token);
+    }
+
+    pub fn fail_adoption(&self, reason: StoreError) {
+        self.state
+            .lock()
+            .expect("snapshot state poisoned")
+            .adoption_failure = Some(reason);
+    }
+
+    pub fn active_validators(&self, kind: SourceKind) -> PrivateSourceValidators {
+        let state = self.state.lock().expect("snapshot state poisoned");
+        state
+            .retained
+            .values()
+            .flat_map(|snapshots| snapshots.iter())
+            .find(|snapshot| snapshot.active && snapshot.metadata.source().kind() == kind)
+            .expect("active fixture snapshot exists")
+            .metadata
+            .validators()
+            .clone()
+    }
+}
+
+fn active_snapshot_mut(state: &mut SnapshotState, kind: SourceKind) -> &mut StoredSnapshot {
+    state
+        .retained
+        .values_mut()
+        .flat_map(|snapshots| snapshots.iter_mut())
+        .find(|snapshot| snapshot.active && snapshot.metadata.source().kind() == kind)
+        .expect("active fixture snapshot exists")
 }
 
 #[async_trait]
 impl SnapshotStore for MemorySnapshotStore {
+    async fn scan_candidates(&self, source: SnapshotSource) -> Result<SnapshotScan, StoreError> {
+        let state = self.state.lock().expect("snapshot state poisoned");
+        let candidates = state
+            .retained
+            .get(&source)
+            .into_iter()
+            .flatten()
+            .map(|snapshot| {
+                SnapshotCandidate::new(snapshot.token, snapshot.metadata.clone(), !snapshot.active)
+            })
+            .collect();
+        let diagnostics = state
+            .scan_diagnostics
+            .get(&source.kind())
+            .cloned()
+            .unwrap_or_default();
+        SnapshotScan::new(candidates, diagnostics)
+    }
+
+    async fn open_candidate(
+        &self,
+        candidate: &SnapshotCandidate,
+    ) -> Result<Box<dyn BufRead + Send>, StoreError> {
+        let state = self.state.lock().expect("snapshot state poisoned");
+        if state.open_failures.contains(&candidate.token()) {
+            return Err(StoreError::Unavailable);
+        }
+        let bytes = state
+            .retained
+            .values()
+            .flat_map(|snapshots| snapshots.iter())
+            .find(|snapshot| snapshot.token == candidate.token())
+            .ok_or(StoreError::Unavailable)?
+            .bytes
+            .clone();
+        Ok(Box::new(Cursor::new(bytes)))
+    }
+
+    async fn adopt_candidate(
+        &self,
+        candidate: &SnapshotCandidate,
+    ) -> Result<SnapshotCandidate, StoreError> {
+        let mut state = self.state.lock().expect("snapshot state poisoned");
+        if let Some(reason) = state.adoption_failure {
+            return Err(reason);
+        }
+        let snapshots = state
+            .retained
+            .get_mut(&candidate.metadata().source())
+            .ok_or(StoreError::Unavailable)?;
+        if !snapshots
+            .iter()
+            .any(|snapshot| snapshot.token == candidate.token())
+        {
+            return Err(StoreError::Unavailable);
+        }
+        for snapshot in snapshots.iter_mut() {
+            snapshot.active = snapshot.token == candidate.token();
+        }
+        snapshots.sort_by_key(|snapshot| !snapshot.active);
+        state.adoptions += 1;
+        Ok(SnapshotCandidate::new(
+            candidate.token(),
+            candidate.metadata().clone(),
+            false,
+        ))
+    }
+
+    async fn revalidate_candidate(
+        &self,
+        candidate: &SnapshotCandidate,
+        revalidation: &SnapshotRevalidation,
+    ) -> Result<SnapshotCandidate, StoreError> {
+        let mut state = self.state.lock().expect("snapshot state poisoned");
+        let snapshot = state
+            .retained
+            .values_mut()
+            .flat_map(|snapshots| snapshots.iter_mut())
+            .find(|snapshot| snapshot.token == candidate.token())
+            .ok_or(StoreError::Unavailable)?;
+        snapshot.metadata = SnapshotMetadata::new(
+            snapshot.metadata.source(),
+            snapshot.metadata.decoded_bytes(),
+            *snapshot.metadata.checksum(),
+            revalidation.validated_at(),
+            revalidation.validators().clone(),
+        );
+        Ok(SnapshotCandidate::new(
+            snapshot.token,
+            snapshot.metadata.clone(),
+            !snapshot.active,
+        ))
+    }
+
     fn begin_stage(&self, source: SnapshotSource) -> Result<SnapshotStage, StoreError> {
         let mut state = self.state.lock().expect("snapshot state poisoned");
         let token = state.next_token;
@@ -409,17 +677,36 @@ impl SnapshotStore for MemorySnapshotStore {
         }
     }
 
-    fn activate(&self, validated: &ValidatedStage) -> Result<(), StoreError> {
+    fn activate(&self, validated: &ValidatedStage) -> Result<SnapshotCandidate, StoreError> {
         let mut state = self.state.lock().expect("snapshot state poisoned");
         if let Some(reason) = state.activation_failure {
             return Err(reason);
         }
-        state
+        let bytes = state
             .staged
             .remove(&validated.stage().token())
             .ok_or(StoreError::Unavailable)?;
+        let source = validated.stage().source();
+        let snapshots = state.retained.entry(source).or_default();
+        for snapshot in snapshots.iter_mut() {
+            snapshot.active = false;
+        }
+        snapshots.insert(
+            0,
+            StoredSnapshot {
+                token: validated.stage().token(),
+                metadata: validated.metadata(),
+                bytes,
+                active: true,
+            },
+        );
+        snapshots.truncate(2);
         state.activations += 1;
-        Ok(())
+        Ok(SnapshotCandidate::new(
+            validated.stage().token(),
+            validated.metadata(),
+            false,
+        ))
     }
 
     fn discard(&self, stage: SnapshotStage) -> Result<(), StoreError> {
@@ -444,6 +731,16 @@ impl Default for FixedClock {
     }
 }
 
+impl FixedClock {
+    pub fn at(value: &str) -> Self {
+        Self(
+            DateTime::parse_from_rfc3339(value)
+                .expect("valid fixed timestamp")
+                .with_timezone(&Utc),
+        )
+    }
+}
+
 impl Clock for FixedClock {
     fn now(&self) -> DateTime<Utc> {
         self.0
@@ -455,6 +752,18 @@ pub fn adapters(source: ScriptedSource, snapshots: MemorySnapshotStore) -> CoreA
         Arc::new(source),
         Arc::new(snapshots),
         Arc::new(FixedClock::default()),
+    )
+}
+
+pub fn adapters_at(
+    source: ScriptedSource,
+    snapshots: MemorySnapshotStore,
+    now: &str,
+) -> CoreAdapters {
+    CoreAdapters::new(
+        Arc::new(source),
+        Arc::new(snapshots),
+        Arc::new(FixedClock::at(now)),
     )
 }
 

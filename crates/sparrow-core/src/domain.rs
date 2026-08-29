@@ -1021,8 +1021,43 @@ impl RedactedSourceConfiguration {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SourceState {
-    Fresh { validated_at: DateTime<Utc> },
-    Unavailable { failure: Option<SafeFailure> },
+    Fresh {
+        validated_at: DateTime<Utc>,
+    },
+    Stale {
+        validated_at: DateTime<Utc>,
+        next_attempt_at: Option<DateTime<Utc>>,
+    },
+    Unavailable {
+        failure: Option<SafeFailure>,
+    },
+}
+
+/// Bounded safe evidence produced while recovering one Source Snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SnapshotRecoveryDiagnostic {
+    rejected: Arc<[SafeFailure]>,
+    fallback_adopted: bool,
+}
+
+impl SnapshotRecoveryDiagnostic {
+    pub(crate) const MAX_FAILURES: usize = 8;
+
+    pub(crate) fn new(mut rejected: Vec<SafeFailure>, fallback_adopted: bool) -> Option<Self> {
+        rejected.truncate(Self::MAX_FAILURES);
+        (!rejected.is_empty() || fallback_adopted).then(|| Self {
+            rejected: Arc::from(rejected),
+            fallback_adopted,
+        })
+    }
+
+    pub fn rejected(&self) -> &[SafeFailure] {
+        &self.rejected
+    }
+
+    pub fn fallback_adopted(&self) -> bool {
+        self.fallback_adopted
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1030,6 +1065,8 @@ pub struct CatalogStatus {
     generation: Option<CatalogGeneration>,
     m3u: SourceState,
     epg: Option<SourceState>,
+    m3u_recovery: Option<SnapshotRecoveryDiagnostic>,
+    epg_recovery: Option<SnapshotRecoveryDiagnostic>,
     configuration: RedactedSourceConfiguration,
 }
 
@@ -1039,6 +1076,8 @@ impl CatalogStatus {
             generation: None,
             m3u: SourceState::Unavailable { failure: None },
             epg: None,
+            m3u_recovery: None,
+            epg_recovery: None,
             configuration: RedactedSourceConfiguration::not_configured(),
         }
     }
@@ -1053,22 +1092,26 @@ impl CatalogStatus {
             epg: configuration
                 .has_epg()
                 .then_some(SourceState::Unavailable { failure: None }),
+            m3u_recovery: None,
+            epg_recovery: None,
             configuration,
         }
     }
 
-    pub(crate) fn fresh(
+    pub(crate) fn published(
         generation: CatalogGeneration,
         configuration: RedactedSourceConfiguration,
-        m3u_validated_at: DateTime<Utc>,
+        m3u: SourceState,
         epg: Option<SourceState>,
+        m3u_recovery: Option<SnapshotRecoveryDiagnostic>,
+        epg_recovery: Option<SnapshotRecoveryDiagnostic>,
     ) -> Self {
         Self {
             generation: Some(generation),
-            m3u: SourceState::Fresh {
-                validated_at: m3u_validated_at,
-            },
+            m3u,
             epg,
+            m3u_recovery,
+            epg_recovery,
             configuration,
         }
     }
@@ -1088,6 +1131,25 @@ impl CatalogStatus {
 
     pub fn configuration(&self) -> RedactedSourceConfiguration {
         self.configuration
+    }
+
+    /// Returns bounded safe Snapshot recovery evidence for one Source.
+    pub fn recovery(&self, kind: SourceKind) -> Option<&SnapshotRecoveryDiagnostic> {
+        match kind {
+            SourceKind::M3u => self.m3u_recovery.as_ref(),
+            SourceKind::Epg => self.epg_recovery.as_ref(),
+        }
+    }
+
+    pub(crate) fn set_recovery(
+        &mut self,
+        kind: SourceKind,
+        diagnostic: Option<SnapshotRecoveryDiagnostic>,
+    ) {
+        match kind {
+            SourceKind::M3u => self.m3u_recovery = diagnostic,
+            SourceKind::Epg => self.epg_recovery = diagnostic,
+        }
     }
 }
 
@@ -1121,12 +1183,28 @@ pub enum StoreError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SnapshotOperation {
+    ScanCandidates,
+    OpenCandidate,
+    AdoptCandidate,
+    RevalidateCandidate,
     BeginStage,
     WriteStage,
     ReadStage,
     PrepareActivation,
     Activate,
     Discard,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SnapshotRecoveryReason {
+    MissingActivePointer,
+    CorruptActivePointer,
+    MissingManifest,
+    CorruptManifest,
+    MissingPayload,
+    SourceMismatch,
+    LengthMismatch,
+    ChecksumMismatch,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1163,6 +1241,11 @@ pub enum SafeFailure {
         operation: SnapshotOperation,
         reason: StoreError,
     },
+    #[error("snapshot recovery rejected a candidate")]
+    SnapshotRecovery {
+        kind: SourceKind,
+        reason: SnapshotRecoveryReason,
+    },
     #[error("decoded source input exceeds the {limit_bytes}-byte limit")]
     DecodedLimitExceeded { kind: SourceKind, limit_bytes: u64 },
     #[error("source input is not valid UTF-8")]
@@ -1190,7 +1273,7 @@ pub enum CoreError {
     #[error("a Source Configuration is required")]
     NotConfigured,
     #[error("the Channel Catalog is unavailable")]
-    CatalogUnavailable { status: CatalogStatus },
+    CatalogUnavailable { status: Box<CatalogStatus> },
     #[error("the Channel was not found")]
     ChannelNotFound { id: ChannelId },
     #[error("the page cursor is stale")]
