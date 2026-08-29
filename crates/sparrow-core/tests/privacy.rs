@@ -3,14 +3,15 @@ mod support;
 use static_assertions::assert_not_impl_any;
 
 use sparrow_core::{
-    ChannelId, ChannelQuery, PageLimit, PageRequest, ScheduleQuery, SourceConfigurationInput,
-    SourceKind, SourceResponse, SparrowCore,
+    ChannelId, ChannelQuery, PageLimit, PageRequest, ScheduleQuery, SearchRequest, SearchTerm,
+    SourceConfigurationInput, SourceKind, SourceResponse, SparrowCore,
 };
 use support::{MemorySnapshotStore, ScriptedSource, adapters};
 
 assert_not_impl_any!(SourceConfigurationInput: std::fmt::Debug, std::fmt::Display);
 assert_not_impl_any!(SourceResponse: std::fmt::Debug, std::fmt::Display);
 assert_not_impl_any!(ChannelId: std::fmt::Display);
+assert_not_impl_any!(SearchTerm: std::fmt::Display);
 
 const PRIVATE_MARKERS: [&str; 11] = [
     "configuration-user",
@@ -79,6 +80,19 @@ https://playback-user:playback-secret@private-media.fixture.invalid/live?token=p
         ))
         .expect("the Programme schedule is available");
     assert_private_markers_absent(&format!("{schedule:?}"));
+    let search = core
+        .search(SearchRequest::new(
+            SearchTerm::parse("Safe").expect("the fixture search term is valid"),
+            PageRequest::first(PageLimit::new(10).expect("valid page limit")),
+            PageRequest::first(PageLimit::new(10).expect("valid page limit")),
+        ))
+        .expect("the catalog is searchable");
+    assert_private_markers_absent(&format!("{search:?}"));
+    assert_private_markers_absent(&format!(
+        "{:?}",
+        SearchTerm::parse("configuration-secret")
+            .expect("the private canary is a syntactically valid search term")
+    ));
 
     let malformed = b"#EXTM3U\n#EXTINF:-1,payload-canary\nhttps://playback-user:playback-secret@private-media.fixture.invalid/live\n#EXTINF:-1,broken";
     let failing_configuration =

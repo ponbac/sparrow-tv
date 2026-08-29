@@ -6,8 +6,9 @@ use crate::{
     catalog::ChannelCatalog,
     domain::{
         CatalogStatus, ChannelDetails, ChannelGroupView, ChannelId, ChannelQuery, ChannelSummary,
-        CoreError, Page, PageRequest, ProgrammeSummary, SafeFailure, ScheduleQuery,
-        SnapshotOperation, SourceConfiguration, SourceConfigurationInput, SourceState,
+        CoreError, Page, PageRequest, ProgrammeSummary, SafeFailure, ScheduleQuery, SearchRequest,
+        SearchResults, SnapshotOperation, SourceConfiguration, SourceConfigurationInput,
+        SourceState,
     },
     m3u,
     ports::{CoreAdapters, SnapshotSource, SnapshotStage, SourceRequest, ValidatedStage},
@@ -99,6 +100,11 @@ impl SparrowCore {
     /// Returns a deterministic bounded Programme page for one Channel.
     pub fn schedule(&self, query: ScheduleQuery) -> Result<Page<ProgrammeSummary>, CoreError> {
         self.query_catalog(|catalog| catalog.schedule(&query))
+    }
+
+    /// Searches Channels and Programmes without reparsing the active Sources.
+    pub fn search(&self, request: SearchRequest) -> Result<SearchResults, CoreError> {
+        self.query_catalog(|catalog| catalog.search(&request))
     }
 
     fn query_catalog<T>(
