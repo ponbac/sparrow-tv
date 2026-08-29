@@ -18,6 +18,8 @@ bun install
 bun run prototype
 ```
 
+The launcher disables WebKitGTK's DMA-BUF renderer. On the target Arch/Hyprland host it fails GBM buffer allocation and leaves the whole WebView black; the software renderer keeps the native Wayland window and video surface visible. Treat this as a target-host prototype workaround to revisit during production packaging.
+
 Paste a direct channel URL, select a candidate, and press **Start**. Use **Pause/resume**, **Restart**, **Fullscreen**, and **Stop** while watching the complete state panel. mpv is Linux-only and uses a private JSON IPC socket; the URL is sent over IPC rather than exposed in the process command line.
 
 ## Build and run on the Android emulator

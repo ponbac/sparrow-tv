@@ -263,7 +263,11 @@ function applyMpvSnapshot(snapshot: MpvSnapshot, recordSampleEvent = false): voi
     currentTime: snapshot.timePosition ?? undefined,
     droppedFrames: snapshot.droppedFrames ?? undefined,
   });
-  if (snapshot.paused !== null) dispatch({ type: "status", status: snapshot.paused ? "paused" : "playing" });
+  if (snapshot.paused === true) {
+    dispatch({ type: "status", status: "paused" });
+  } else if (snapshot.paused === false && state.firstFrameMs !== null && state.status !== "playing") {
+    dispatch({ type: "status", status: "playing" });
+  }
 }
 
 async function copyText(text: string): Promise<boolean> {

@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc && vite build",
     "dev": "vite",
-    "prototype": "tauri dev",
+    "prototype": "WEBKIT_DISABLE_DMABUF_RENDERER=1 tauri dev",
     "tauri": "tauri"
   },
   "dependencies": {

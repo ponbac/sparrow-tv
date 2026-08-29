@@ -45,13 +45,12 @@ mod desktop_mpv {
                 "sparrow-playback-probe-{}-{nonce}.sock",
                 std::process::id()
             ));
-            let child = Command::new("mpv")
+            let mut child = Command::new("mpv")
                 .arg("--no-config")
                 .arg("--idle=yes")
                 .arg("--force-window=yes")
                 .arg("--terminal=no")
-                .arg("--input-ipc-server")
-                .arg(&socket)
+                .arg(format!("--input-ipc-server={}", socket.display()))
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -66,9 +65,19 @@ mod desktop_mpv {
                         next_request_id: 1,
                     });
                 }
+                if let Some(status) = child
+                    .try_wait()
+                    .map_err(|error| format!("could not inspect mpv process: {error}"))?
+                {
+                    return Err(format!(
+                        "mpv exited before creating its IPC socket ({status})"
+                    ));
+                }
                 thread::sleep(Duration::from_millis(50));
             }
 
+            let _ = child.kill();
+            let _ = child.wait();
             Err("mpv did not create its IPC socket within 2.5 seconds".into())
         }
 
@@ -100,7 +109,10 @@ mod desktop_mpv {
                     }
                     return Err(format!(
                         "mpv command failed: {}",
-                        value.get("error").and_then(Value::as_str).unwrap_or("unknown error")
+                        value
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown error")
                     ));
                 }
             }
@@ -123,7 +135,9 @@ mod desktop_mpv {
                 dropped_frames: self
                     .property("decoder-frame-drop-count")
                     .and_then(|value| value.as_u64()),
-                estimated_fps: self.property("estimated-vf-fps").and_then(|value| value.as_f64()),
+                estimated_fps: self
+                    .property("estimated-vf-fps")
+                    .and_then(|value| value.as_f64()),
             }
         }
 
@@ -210,9 +224,7 @@ fn mpv_command(_command: String) -> Result<MpvSnapshot, String> {
 
 #[cfg(desktop)]
 #[tauri::command]
-fn mpv_snapshot(
-    state: tauri::State<'_, desktop_mpv::MpvState>,
-) -> Result<MpvSnapshot, String> {
+fn mpv_snapshot(state: tauri::State<'_, desktop_mpv::MpvState>) -> Result<MpvSnapshot, String> {
     desktop_mpv::snapshot(&state)
 }
 
