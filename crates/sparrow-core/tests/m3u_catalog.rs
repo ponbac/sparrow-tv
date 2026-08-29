@@ -8,8 +8,9 @@ use std::{
 
 use bytes::Bytes;
 use sparrow_core::{
-    CoreError, M3uFailureKind, PageLimit, SafeFailure, SnapshotOperation, SourceConfigurationInput,
-    SourceReadError, SourceState, SparrowCore, StoreError,
+    ChannelId, ChannelQuery, CoreError, M3uFailureKind, PageLimit, PageRequest, SafeFailure,
+    SnapshotOperation, SourceConfigurationInput, SourceReadError, SourceState, SparrowCore,
+    StoreError,
 };
 use support::{
     CountingSnapshotStore, MemorySnapshotStore, PendingActivationSnapshotStore,
@@ -37,22 +38,26 @@ async fn valid_m3u_is_activated_and_published_as_a_queryable_catalog() {
     .await
     .expect("bootstrap remains usable");
     let page = core
-        .list_channels(PageLimit::new(10).expect("valid page limit"))
+        .list_channels(first_channels(10))
         .expect("catalog is available");
 
-    assert_eq!(page.generation().get(), 1);
+    assert_ne!(page.generation().get(), 0);
+    assert_eq!(core.status().generation(), Some(page.generation()));
     assert_eq!(page.items().len(), 2);
-    assert_eq!(page.items()[0].name(), "News One");
-    assert_eq!(page.items()[0].group(), "News");
+    assert_eq!(page.items()[0].name(), "Culture One");
+    assert_eq!(page.items()[0].group(), "Culture");
+    let parsed_id = ChannelId::parse(page.items()[0].id().as_str())
+        .expect("a generated Channel Identifier round-trips at the public boundary");
+    assert_eq!(&parsed_id, page.items()[0].id());
 
     let details = core
         .channel(page.items()[0].id())
         .expect("listed Channel is queryable");
     let repeated_page = core
-        .list_channels(PageLimit::new(10).expect("valid page limit"))
+        .list_channels(first_channels(10))
         .expect("catalog remains available");
-    assert_eq!(details.name(), "News One");
-    assert_eq!(details.group(), "News");
+    assert_eq!(details.name(), "Culture One");
+    assert_eq!(details.group(), "Culture");
     assert_eq!(page.items().as_ptr(), repeated_page.items().as_ptr());
     assert_eq!(source.open_count(), 1);
     assert_eq!(snapshots.activation_count(), 1);
@@ -84,7 +89,7 @@ async fn malformed_tail_never_publishes_or_activates_a_partial_catalog() {
         }
     ));
     assert!(matches!(
-        core.list_channels(PageLimit::new(10).expect("valid page limit")),
+        core.list_channels(first_channels(10)),
         Err(CoreError::CatalogUnavailable { .. })
     ));
     assert_eq!(snapshots.activation_count(), 0);
@@ -112,7 +117,7 @@ https://media.fixture.invalid/live/world?token=provider-quirk-canary\r\n",
         .await
         .expect("bootstrap remains usable");
     let page = core
-        .list_channels(PageLimit::new(10).expect("valid page limit"))
+        .list_channels(first_channels(10))
         .expect("catalog is available");
 
     assert_eq!(page.items().len(), 1);
@@ -421,7 +426,7 @@ async fn channel_ids_by_name(source_location: &str, m3u: &[u8]) -> BTreeMap<Stri
         .await
         .expect("bootstrap remains usable");
     let page = core
-        .list_channels(PageLimit::new(100).expect("valid page limit"))
+        .list_channels(first_channels(100))
         .expect("catalog is available");
 
     let mut by_name = BTreeMap::<String, Vec<String>>::new();
@@ -432,4 +437,10 @@ async fn channel_ids_by_name(source_location: &str, m3u: &[u8]) -> BTreeMap<Stri
             .push(channel.id().as_str().to_owned());
     }
     by_name
+}
+
+fn first_channels(limit: u16) -> ChannelQuery {
+    ChannelQuery::all(PageRequest::first(
+        PageLimit::new(limit).expect("valid page limit"),
+    ))
 }

@@ -2,7 +2,10 @@ mod support;
 
 use static_assertions::assert_not_impl_any;
 
-use sparrow_core::{ChannelId, PageLimit, SourceConfigurationInput, SourceResponse, SparrowCore};
+use sparrow_core::{
+    ChannelId, ChannelQuery, PageLimit, PageRequest, SourceConfigurationInput, SourceResponse,
+    SparrowCore,
+};
 use support::{MemorySnapshotStore, ScriptedSource, adapters};
 
 assert_not_impl_any!(SourceConfigurationInput: std::fmt::Debug, std::fmt::Display);
@@ -41,7 +44,9 @@ https://playback-user:playback-secret@private-media.fixture.invalid/live?token=p
     .await
     .expect("bootstrap remains usable");
     let page = core
-        .list_channels(PageLimit::new(10).expect("valid page limit"))
+        .list_channels(ChannelQuery::all(PageRequest::first(
+            PageLimit::new(10).expect("valid page limit"),
+        )))
         .expect("catalog is available");
 
     assert_private_markers_absent(&format!("{:?}", core.status()));
@@ -71,7 +76,9 @@ https://playback-user:playback-secret@private-media.fixture.invalid/live?token=p
     .await
     .expect("bootstrap remains usable after malformed input");
     let error = failing_core
-        .list_channels(PageLimit::new(10).expect("valid page limit"))
+        .list_channels(ChannelQuery::all(PageRequest::first(
+            PageLimit::new(10).expect("valid page limit"),
+        )))
         .expect_err("catalog is unavailable");
 
     assert_private_markers_absent(&format!("{error}"));

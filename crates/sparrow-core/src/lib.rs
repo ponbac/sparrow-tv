@@ -7,10 +7,11 @@ mod ports;
 
 pub use core::SparrowCore;
 pub use domain::{
-    CatalogGeneration, CatalogStatus, ChannelDetails, ChannelId, ChannelSummary, CoreError,
-    InputField, InputReason, M3uFailureKind, Page, PageLimit, RedactedSourceConfiguration,
-    SafeFailure, SnapshotOperation, SourceAccessError, SourceConfiguration,
-    SourceConfigurationInput, SourceKind, SourceReadError, SourceState, StoreError,
+    CatalogGeneration, CatalogStatus, ChannelDetails, ChannelGroupView, ChannelId, ChannelQuery,
+    ChannelSummary, CoreError, InputField, InputReason, M3uFailureKind, Page, PageCursor,
+    PageLimit, PageRequest, RedactedSourceConfiguration, SafeFailure, SnapshotOperation,
+    SourceAccessError, SourceConfiguration, SourceConfigurationInput, SourceKind, SourceReadError,
+    SourceState, StoreError,
 };
 pub use ports::{
     Clock, CoreAdapters, SnapshotSource, SnapshotStage, SnapshotStore, SourceAccess,

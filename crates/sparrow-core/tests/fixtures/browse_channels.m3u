@@ -1,0 +1,17 @@
+#EXTM3U
+#EXTINF:-1 group-title="Sports",Arena
+https://playback-user:playback-secret@private-media.fixture.invalid/sports/arena?token=browse-canary
+#EXTINF:-1 group-title="News",Daily
+https://private-media.fixture.invalid/news/daily-primary?token=browse-canary
+#EXTINF:-1 group-title="News",Daily
+https://private-media.fixture.invalid/news/daily-backup?token=browse-canary
+#EXTINF:-1 tvg-id="culture.one" group-title="Culture",Museum
+https://private-media.fixture.invalid/culture/museum?token=browse-canary
+#EXTINF:-1 tvg-id="news.alpha" group-title="News",Alpha
+https://private-media.fixture.invalid/news/alpha?token=browse-canary
+#EXTINF:-1 tvg-id="sports.two" group-title="Sports",Arena Two
+https://private-media.fixture.invalid/sports/arena-two?token=browse-canary
+#EXTINF:-1,Ungrouped
+https://private-media.fixture.invalid/ungrouped?token=browse-canary
+#EXTINF:-1 group-title="Kids",Junior
+https://private-media.fixture.invalid/kids/junior?token=browse-canary
