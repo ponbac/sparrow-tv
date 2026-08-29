@@ -30,7 +30,7 @@ export interface ProbeState {
   nativeBytes: number;
   decodedFrames: number | null;
   droppedFrames: number | null;
-  speedKbps: number | null;
+  speedKBps: number | null;
   videoCodec: string | null;
   audioCodec: string | null;
   resolution: string | null;
@@ -53,7 +53,8 @@ export type ProbeAction =
       bufferedSeconds?: number;
       decodedFrames?: number;
       droppedFrames?: number;
-      speedKbps?: number;
+      speedKBps?: number;
+      recordEvent?: boolean;
     }
   | { type: "error"; detail: string }
   | { type: "stop" };
@@ -73,7 +74,7 @@ export const initialProbeState: ProbeState = {
   nativeBytes: 0,
   decodedFrames: null,
   droppedFrames: null,
-  speedKbps: null,
+  speedKBps: null,
   videoCodec: null,
   audioCodec: null,
   resolution: null,
@@ -86,8 +87,17 @@ export const initialProbeState: ProbeState = {
 const event = (state: ProbeState, kind: string, detail?: string): ProbeState => ({
   ...state,
   lastEvent: detail ? `${kind}: ${detail}` : kind,
-  events: [...state.events, { at: new Date().toISOString(), kind, detail }].slice(-80),
+  events: [...state.events, { at: new Date().toISOString(), kind, detail }].slice(-120),
 });
+
+const sampleDetail = (state: ProbeState): string => [
+  `elapsed=${state.elapsedSeconds}s`,
+  state.currentTime === null ? null : `position=${state.currentTime.toFixed(1)}s`,
+  state.bufferedSeconds === null ? null : `buffer=${state.bufferedSeconds.toFixed(1)}s`,
+  state.decodedFrames === null ? null : `decoded=${state.decodedFrames}`,
+  state.droppedFrames === null ? null : `dropped=${state.droppedFrames}`,
+  state.speedKBps === null ? null : `speed=${state.speedKBps.toFixed(1)} KB/s`,
+].filter((part): part is string => part !== null).join(" · ");
 
 export function reduceProbe(state: ProbeState, action: ProbeAction): ProbeState {
   switch (action.type) {
@@ -103,10 +113,10 @@ export function reduceProbe(state: ProbeState, action: ProbeAction): ProbeState 
           status: "starting",
           sessionStartedAt: new Date().toISOString(),
           switches: state.switches + (switched ? 1 : 0),
-          restarts: state.restarts,
-          stalls: state.stalls,
-          errors: state.errors,
-          events: state.events,
+          restarts: switched ? 0 : state.restarts,
+          stalls: switched ? 0 : state.stalls,
+          errors: switched ? 0 : state.errors,
+          events: switched ? [] : state.events,
         },
         "start",
         `${action.candidate} · ${action.sourceLabel}`,
@@ -148,18 +158,18 @@ export function reduceProbe(state: ProbeState, action: ProbeAction): ProbeState 
       );
     case "sample": {
       const sessionStarted = state.sessionStartedAt ? Date.parse(state.sessionStartedAt) : Date.now();
-      return event(
-        {
-          ...state,
-          elapsedSeconds: Math.round((Date.now() - sessionStarted) / 1000),
-          currentTime: action.currentTime ?? state.currentTime,
-          bufferedSeconds: action.bufferedSeconds ?? state.bufferedSeconds,
-          decodedFrames: action.decodedFrames ?? state.decodedFrames,
-          droppedFrames: action.droppedFrames ?? state.droppedFrames,
-          speedKbps: action.speedKbps ?? state.speedKbps,
-        },
-        "sample",
-      );
+      const sampledState = {
+        ...state,
+        elapsedSeconds: Math.round((Date.now() - sessionStarted) / 1000),
+        currentTime: action.currentTime ?? state.currentTime,
+        bufferedSeconds: action.bufferedSeconds ?? state.bufferedSeconds,
+        decodedFrames: action.decodedFrames ?? state.decodedFrames,
+        droppedFrames: action.droppedFrames ?? state.droppedFrames,
+        speedKBps: action.speedKBps ?? state.speedKBps,
+      };
+      return action.recordEvent
+        ? event(sampledState, "sample", sampleDetail(sampledState))
+        : sampledState;
     }
     case "error":
       return event(

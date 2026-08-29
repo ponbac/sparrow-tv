@@ -187,7 +187,7 @@ function wireMpegts(nextPlayer: MpegtsPlayer): void {
       type: "sample",
       decodedFrames: statistics.decodedFrames,
       droppedFrames: statistics.droppedFrames,
-      speedKbps: statistics.speed,
+      speedKBps: statistics.speed,
       ...videoSample(),
     });
   });
@@ -252,13 +252,14 @@ function videoSample(): Partial<Extract<ProbeAction, { type: "sample" }>> {
   };
 }
 
-function applyMpvSnapshot(snapshot: MpvSnapshot): void {
+function applyMpvSnapshot(snapshot: MpvSnapshot, recordSampleEvent = false): void {
   if (snapshot.videoCodec || snapshot.audioCodec) {
     dispatch({ type: "media-info", videoCodec: snapshot.videoCodec ?? undefined, audioCodec: snapshot.audioCodec ?? undefined });
   }
   if (snapshot.timePosition !== null && snapshot.timePosition >= 0) dispatch({ type: "first-frame" });
   dispatch({
     type: "sample",
+    recordEvent: recordSampleEvent,
     currentTime: snapshot.timePosition ?? undefined,
     droppedFrames: snapshot.droppedFrames ?? undefined,
   });
@@ -298,12 +299,12 @@ function showCopyFeedback(message: string, failed = false): void {
   }, 3_000);
 }
 
-async function sampleNow(): Promise<void> {
+async function sampleNow(recordEvent = false): Promise<void> {
   try {
     if (state.candidate === "mpv") {
-      applyMpvSnapshot(await invoke<MpvSnapshot>("mpv_snapshot"));
+      applyMpvSnapshot(await invoke<MpvSnapshot>("mpv_snapshot"), recordEvent);
     } else {
-      dispatch({ type: "sample", ...videoSample() });
+      dispatch({ type: "sample", recordEvent, ...videoSample() });
     }
   } catch (error) {
     dispatch({ type: "error", detail: error instanceof Error ? error.message : String(error) });
@@ -313,7 +314,7 @@ async function sampleNow(): Promise<void> {
 document.querySelector<HTMLButtonElement>("#start")!.addEventListener("click", () => void startCandidate());
 document.querySelector<HTMLButtonElement>("#restart")!.addEventListener("click", () => void startCandidate(true));
 document.querySelector<HTMLButtonElement>("#stop")!.addEventListener("click", () => void cleanup(true));
-document.querySelector<HTMLButtonElement>("#sample")!.addEventListener("click", () => void sampleNow());
+document.querySelector<HTMLButtonElement>("#sample")!.addEventListener("click", () => void sampleNow(true));
 document.querySelector<HTMLButtonElement>("#pause")!.addEventListener("click", async () => {
   try {
     if (state.candidate === "mpv") {
@@ -346,7 +347,7 @@ document.querySelector<HTMLButtonElement>("#copy-state")!.addEventListener("clic
 });
 
 window.setInterval(() => {
-  if (["starting", "playing", "paused", "stalled"].includes(state.status)) void sampleNow();
+  if (["starting", "playing", "paused", "stalled"].includes(state.status)) void sampleNow(true);
 }, 60_000);
 window.setInterval(() => {
   if (state.candidate === "mpv" && state.status === "starting") void sampleNow();

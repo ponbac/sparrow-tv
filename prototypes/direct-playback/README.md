@@ -56,7 +56,7 @@ For each applicable candidate and representative feed:
 2. Rotate among representative feeds 30 times; confirm each old connection is released.
 3. Remove networking for 30 seconds three times; record whether playback recovers within 30 seconds.
 4. Exercise pause/resume and fullscreen on Linux, and rotation/background/foreground/lock on Android ten times.
-5. Soak the representative HD feed for 90 minutes. Use the one-minute samples in the state/event panel to inspect decoded/dropped frames, speed, stalls, errors, and reconnects.
-6. Export the redacted JSON evidence. Add physical-device make/model, Android version, WebView version, and candidate verdict to the Wayfinder ticket; never add source URLs.
+5. Soak the representative HD feed for 90 minutes. Automatic library statistics update the current metrics without flooding the event history; use the detailed one-minute samples to inspect decoded/dropped frames, speed in KB/s, stalls, errors, and reconnects.
+6. Copy the redacted JSON evidence. Add physical-device make/model, Android version, WebView version, and candidate verdict to the Wayfinder ticket; never add source URLs.
 
 The Android Media3 native baseline is deliberately staged after these shared-path probes: it should be built if the WebView candidates fail or are materially unstable on the physical device. The emulator cannot establish actual-device codec or hardware-decoder reliability.
