@@ -1,0 +1,4 @@
+#EXTM3U
+#EXTINF:-1 tvg-id="news.one" group-title="News",News One
+https://media.fixture.invalid/live/news?token=must-not-leak
+#EXTINF:-1 tvg-id="broken.one" group-title="News",Broken Channel

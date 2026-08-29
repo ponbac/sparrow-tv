@@ -1,0 +1,5 @@
+#EXTM3U
+#EXTINF:-1 tvg-id="news.one" tvg-name="News One" group-title="News",News One
+https://viewer:playback-canary@media.fixture.invalid/live/news?token=secret-one
+#EXTINF:-1 tvg-id="culture.one" tvg-name="Culture One" group-title="Culture",Culture One
+https://media.fixture.invalid/live/culture?token=secret-two
