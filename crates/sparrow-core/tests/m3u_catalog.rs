@@ -9,8 +9,8 @@ use std::{
 use bytes::Bytes;
 use sparrow_core::{
     ChannelId, ChannelQuery, CoreError, M3uFailureKind, PageLimit, PageRequest, SafeFailure,
-    SnapshotOperation, SourceConfigurationInput, SourceReadError, SourceState, SparrowCore,
-    StoreError,
+    SnapshotOperation, SourceConfigurationInput, SourceKind, SourceReadError, SourceState,
+    SparrowCore, StoreError,
 };
 use support::{
     CountingSnapshotStore, MemorySnapshotStore, PendingActivationSnapshotStore,
@@ -224,7 +224,9 @@ async fn rejected_inputs_return_closed_failures_without_a_catalog() {
         (
             "invalid-utf8",
             ScriptedSource::from_bytes(Bytes::from_static(b"#EXTM3U\n\xff\n")),
-            SafeFailure::InvalidEncoding,
+            SafeFailure::InvalidEncoding {
+                kind: SourceKind::M3u,
+            },
         ),
         (
             "unsupported-playback",
@@ -253,6 +255,7 @@ async fn rejected_inputs_return_closed_failures_without_a_catalog() {
                 Some(128 * 1024 * 1024 + 1),
             ),
             SafeFailure::DecodedLimitExceeded {
+                kind: SourceKind::M3u,
                 limit_bytes: 128 * 1024 * 1024,
             },
         ),
@@ -268,6 +271,7 @@ async fn rejected_inputs_return_closed_failures_without_a_catalog() {
                 None,
             ),
             SafeFailure::SourceRead {
+                kind: SourceKind::M3u,
                 reason: SourceReadError::Interrupted,
             },
         ),
@@ -321,6 +325,7 @@ async fn streamed_input_cannot_bypass_the_decoded_size_limit() {
         core.status().m3u(),
         SourceState::Unavailable {
             failure: Some(SafeFailure::DecodedLimitExceeded {
+                kind: SourceKind::M3u,
                 limit_bytes: 134_217_728,
             }),
         }
@@ -348,6 +353,7 @@ async fn activation_failure_never_publishes_the_completed_candidate() {
         core.status().m3u(),
         SourceState::Unavailable {
             failure: Some(SafeFailure::Snapshot {
+                kind: SourceKind::M3u,
                 operation: SnapshotOperation::Activate,
                 reason: StoreError::Capacity,
             }),

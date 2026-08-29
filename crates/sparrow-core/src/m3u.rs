@@ -3,7 +3,7 @@ use std::io::BufRead;
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
-use crate::domain::{M3uFailureKind, SafeFailure, SnapshotOperation, StoreError};
+use crate::domain::{M3uFailureKind, SafeFailure, SnapshotOperation, SourceKind, StoreError};
 
 pub(crate) struct ParsedChannel {
     pub(crate) tvg_id: String,
@@ -39,6 +39,7 @@ pub(crate) fn parse(reader: &mut dyn BufRead) -> Result<Vec<ParsedChannel>, Safe
             reader
                 .read_until(b'\n', &mut line_bytes)
                 .map_err(|_| SafeFailure::Snapshot {
+                    kind: SourceKind::M3u,
                     operation: SnapshotOperation::ReadStage,
                     reason: StoreError::Unavailable,
                 })?;
@@ -55,7 +56,9 @@ pub(crate) fn parse(reader: &mut dyn BufRead) -> Result<Vec<ParsedChannel>, Safe
             &line_bytes
         };
         let line = std::str::from_utf8(encoded_line)
-            .map_err(|_| SafeFailure::InvalidEncoding)?
+            .map_err(|_| SafeFailure::InvalidEncoding {
+                kind: SourceKind::M3u,
+            })?
             .trim();
 
         if !header_seen {
@@ -370,7 +373,7 @@ fn character_at(input: &str, cursor: usize) -> Option<char> {
     input.get(cursor..)?.chars().next()
 }
 
-fn normalize_presentation(value: &str) -> String {
+pub(crate) fn normalize_presentation(value: &str) -> String {
     let mut normalized = String::new();
     let mut whitespace_pending = false;
 

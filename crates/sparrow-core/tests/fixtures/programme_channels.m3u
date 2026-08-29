@@ -1,0 +1,15 @@
+#EXTM3U
+#EXTINF:-1 tvg-id=" exact.id " group-title="News",Misleading Name
+https://media.fixture.invalid/exact?token=exact-private
+#EXTINF:-1 group-title="News",  FALLBACK   Ｏne
+https://media.fixture.invalid/fallback?token=fallback-private
+#EXTINF:-1 group-title="News",Ambiguous Playlist
+https://media.fixture.invalid/ambiguous-playlist-a
+#EXTINF:-1 group-title="Backup", ambiguous   playlist
+https://media.fixture.invalid/ambiguous-playlist-b
+#EXTINF:-1 group-title="News",Ambiguous Guide
+https://media.fixture.invalid/ambiguous-guide
+#EXTINF:-1 tvg-id="missing.id" group-title="News",Present Id Must Not Fallback
+https://media.fixture.invalid/present-unmatched-id
+#EXTINF:-1 group-title="News",Unmatched Channel
+https://media.fixture.invalid/unmatched

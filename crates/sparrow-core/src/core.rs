@@ -1,18 +1,21 @@
 use arc_swap::ArcSwap;
 use futures_util::StreamExt;
+use std::sync::Arc;
 
 use crate::{
     catalog::ChannelCatalog,
     domain::{
         CatalogStatus, ChannelDetails, ChannelGroupView, ChannelId, ChannelQuery, ChannelSummary,
-        CoreError, Page, PageRequest, SafeFailure, SnapshotOperation, SourceConfiguration,
-        SourceConfigurationInput,
+        CoreError, Page, PageRequest, ProgrammeSummary, SafeFailure, ScheduleQuery,
+        SnapshotOperation, SourceConfiguration, SourceConfigurationInput, SourceState,
     },
     m3u,
     ports::{CoreAdapters, SnapshotSource, SnapshotStage, SourceRequest, ValidatedStage},
+    xmltv,
 };
 
 const M3U_DECODED_LIMIT: u64 = 128 * 1024 * 1024;
+const EPG_DECODED_LIMIT: u64 = 64 * 1024 * 1024;
 
 /// The transport-neutral entry point for Sparrow catalog behavior.
 pub struct SparrowCore {
@@ -27,8 +30,8 @@ impl SparrowCore {
         SourceConfiguration::parse(input)
     }
 
-    /// Builds a usable core and publishes a catalog only after its complete M3U
-    /// Source Snapshot has been validated and activated.
+    /// Builds a usable core after independently validating the required M3U and
+    /// optional EPG Source Snapshots. EPG failure yields a Channel-only catalog.
     pub async fn bootstrap(
         configuration: Option<SourceConfiguration>,
         adapters: CoreAdapters,
@@ -49,15 +52,20 @@ impl SparrowCore {
         };
 
         match load_catalog(&configuration, &adapters).await {
-            Ok((catalog, validated_at)) => {
-                let status = CatalogStatus::fresh(catalog.generation(), redacted, validated_at);
-                core.state.store(std::sync::Arc::new(CoreState::Published {
+            Ok(loaded) => {
+                let status = CatalogStatus::fresh(
+                    loaded.catalog.generation(),
+                    redacted,
+                    loaded.m3u_validated_at,
+                    loaded.epg,
+                );
+                core.state.store(Arc::new(CoreState::Published {
                     status,
-                    catalog,
+                    catalog: Arc::new(loaded.catalog),
                 }));
             }
             Err(failure) => {
-                core.state.store(std::sync::Arc::new(CoreState::Unavailable(
+                core.state.store(Arc::new(CoreState::Unavailable(
                     CatalogStatus::unavailable(redacted, Some(failure)),
                 )));
             }
@@ -88,6 +96,11 @@ impl SparrowCore {
         self.query_catalog(|catalog| catalog.channel(id))
     }
 
+    /// Returns a deterministic bounded Programme page for one Channel.
+    pub fn schedule(&self, query: ScheduleQuery) -> Result<Page<ProgrammeSummary>, CoreError> {
+        self.query_catalog(|catalog| catalog.schedule(&query))
+    }
+
     fn query_catalog<T>(
         &self,
         query: impl FnOnce(&ChannelCatalog) -> Result<T, CoreError>,
@@ -108,31 +121,100 @@ enum CoreState {
     Unavailable(CatalogStatus),
     Published {
         status: CatalogStatus,
-        catalog: ChannelCatalog,
+        catalog: Arc<ChannelCatalog>,
     },
 }
 
 async fn load_catalog(
     configuration: &SourceConfiguration,
     adapters: &CoreAdapters,
-) -> Result<(ChannelCatalog, chrono::DateTime<chrono::Utc>), SafeFailure> {
+) -> Result<LoadedCatalog, SafeFailure> {
+    let m3u = load_source(
+        adapters,
+        SourceRequest::m3u(configuration),
+        SnapshotSource::m3u(configuration),
+        M3U_DECODED_LIMIT,
+        m3u::parse,
+    )
+    .await?;
+
+    let (guide, epg_checksum, epg) = match (
+        SourceRequest::epg(configuration),
+        SnapshotSource::epg(configuration),
+    ) {
+        (Some(request), Some(snapshot)) => {
+            match load_source(adapters, request, snapshot, EPG_DECODED_LIMIT, xmltv::parse).await {
+                Ok(loaded) => {
+                    let state = SourceState::Fresh {
+                        validated_at: loaded.validated_at,
+                    };
+                    (Some(loaded.value), Some(loaded.checksum), Some(state))
+                }
+                Err(failure) => (
+                    None,
+                    None,
+                    Some(SourceState::Unavailable {
+                        failure: Some(failure),
+                    }),
+                ),
+            }
+        }
+        (None, None) => (None, None, None),
+        _ => unreachable!("EPG request and snapshot identity are derived together"),
+    };
+
+    let generation = configuration.catalog_generation(&m3u.checksum, epg_checksum.as_ref());
+    let catalog = ChannelCatalog::from_parsed(configuration, m3u.value, guide, generation);
+    Ok(LoadedCatalog {
+        catalog,
+        m3u_validated_at: m3u.validated_at,
+        epg,
+    })
+}
+
+struct LoadedCatalog {
+    catalog: ChannelCatalog,
+    m3u_validated_at: chrono::DateTime<chrono::Utc>,
+    epg: Option<SourceState>,
+}
+
+struct LoadedSource<T> {
+    value: T,
+    checksum: [u8; 32],
+    validated_at: chrono::DateTime<chrono::Utc>,
+}
+
+async fn load_source<T>(
+    adapters: &CoreAdapters,
+    request: SourceRequest,
+    snapshot: SnapshotSource,
+    decoded_limit: u64,
+    parse: impl FnOnce(&mut dyn std::io::BufRead) -> Result<T, SafeFailure>,
+) -> Result<LoadedSource<T>, SafeFailure> {
+    let source = request.kind();
+    debug_assert_eq!(source, snapshot.kind());
     let response = adapters
         .source_access()
-        .open(SourceRequest::m3u(configuration))
+        .open(request)
         .await
-        .map_err(|reason| SafeFailure::SourceAccess { reason })?;
+        .map_err(|reason| SafeFailure::SourceAccess {
+            kind: source,
+            reason,
+        })?;
     let (declared_length, mut body) = response.into_parts();
 
-    if declared_length.is_some_and(|length| length > M3U_DECODED_LIMIT) {
+    if declared_length.is_some_and(|length| length > decoded_limit) {
         return Err(SafeFailure::DecodedLimitExceeded {
-            limit_bytes: M3U_DECODED_LIMIT,
+            kind: source,
+            limit_bytes: decoded_limit,
         });
     }
 
     let store = adapters.snapshot_store();
     let stage = store
-        .begin_stage(SnapshotSource::m3u(configuration))
+        .begin_stage(snapshot)
         .map_err(|reason| SafeFailure::Snapshot {
+            kind: source,
             operation: SnapshotOperation::BeginStage,
             reason,
         })?;
@@ -144,20 +226,25 @@ async fn load_catalog(
         let chunk = match next {
             Ok(chunk) => chunk,
             Err(reason) => {
-                return Err(staged.reject(SafeFailure::SourceRead { reason }));
+                return Err(staged.reject(SafeFailure::SourceRead {
+                    kind: source,
+                    reason,
+                }));
             }
         };
         decoded_bytes = match decoded_bytes.checked_add(chunk.len() as u64) {
-            Some(length) if length <= M3U_DECODED_LIMIT => length,
+            Some(length) if length <= decoded_limit => length,
             _ => {
                 return Err(staged.reject(SafeFailure::DecodedLimitExceeded {
-                    limit_bytes: M3U_DECODED_LIMIT,
+                    kind: source,
+                    limit_bytes: decoded_limit,
                 }));
             }
         };
         checksum.update(&chunk);
         if let Err(reason) = store.append(staged.stage(), chunk).await {
             return Err(staged.reject(SafeFailure::Snapshot {
+                kind: source,
                 operation: SnapshotOperation::WriteStage,
                 reason,
             }));
@@ -168,13 +255,14 @@ async fn load_catalog(
         Ok(reader) => reader,
         Err(reason) => {
             return Err(staged.reject(SafeFailure::Snapshot {
+                kind: source,
                 operation: SnapshotOperation::ReadStage,
                 reason,
             }));
         }
     };
-    let parsed = match m3u::parse(reader.as_mut()) {
-        Ok(parsed) => parsed,
+    let value = match parse(reader.as_mut()) {
+        Ok(value) => value,
         Err(failure) => {
             drop(reader);
             return Err(staged.reject(failure));
@@ -182,26 +270,30 @@ async fn load_catalog(
     };
     drop(reader);
 
-    let m3u_checksum = *checksum.finalize().as_bytes();
-    let generation = configuration.catalog_generation(&m3u_checksum, None);
-    let catalog = ChannelCatalog::from_parsed(configuration, parsed, generation);
+    let checksum = *checksum.finalize().as_bytes();
     let validated_at = adapters.clock().now();
-    let validated = staged.validate(decoded_bytes, m3u_checksum, validated_at);
+    let validated = staged.validate(decoded_bytes, checksum, validated_at);
     if let Err(reason) = store.prepare_activation(validated.value()).await {
         return Err(validated.reject(SafeFailure::Snapshot {
+            kind: source,
             operation: SnapshotOperation::PrepareActivation,
             reason,
         }));
     }
     if let Err(reason) = store.activate(validated.value()) {
         return Err(validated.reject(SafeFailure::Snapshot {
+            kind: source,
             operation: SnapshotOperation::Activate,
             reason,
         }));
     }
     validated.commit();
 
-    Ok((catalog, validated_at))
+    Ok(LoadedSource {
+        value,
+        checksum,
+        validated_at,
+    })
 }
 
 fn discard_after(
@@ -209,9 +301,11 @@ fn discard_after(
     stage: SnapshotStage,
     original: SafeFailure,
 ) -> SafeFailure {
+    let source = stage.source().kind();
     match store.discard(stage) {
         Ok(()) => original,
         Err(reason) => SafeFailure::Snapshot {
+            kind: source,
             operation: SnapshotOperation::Discard,
             reason,
         },

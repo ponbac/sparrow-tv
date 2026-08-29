@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tv>
+  <channel>
+    <display-name>Invalid channel record</display-name>
+  </channel>
+  <channel id="exact.id">
+    <display-name>Misleading Name</display-name>
+  </channel>
+  <programme start="20260829070000 +0000" stop="20260829080000 +0000" channel="exact.id">
+    <title>Valid Before</title>
+  </programme>
+  <programme start="20260829080000 +0000" stop="20260829080000 +0000" channel="exact.id">
+    <title>Zero Length</title>
+  </programme>
+  <programme start="20260829090000 +0000" stop="20260829100000 +0000" channel="exact.id">
+    <title>   </title>
+  </programme>
+  <programme start="20260829100000 +0000" stop="20260829110000 +0000">
+    <title>Missing Channel</title>
+  </programme>
+  <programme start="not-a-time" stop="20260829110000 +0000" channel="exact.id">
+    <title>Invalid Time</title>
+  </programme>
+  <programme start="20260829110000 +0000" stop="20260829100000 +0000" channel="exact.id">
+    <title>Negative Length</title>
+  </programme>
+  <programme start="20260829110000 +0000" stop="20260829120000 +0000" channel="exact.id">
+    <title>Valid After</title>
+  </programme>
+</tv>

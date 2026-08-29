@@ -1,27 +1,38 @@
-use std::{cmp::Ordering, collections::HashMap, fmt, ops::Range, sync::Arc};
+use std::{
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+    fmt,
+    ops::Range,
+    sync::Arc,
+};
 
 use url::Url;
 
 use crate::{
     domain::{
         CatalogGeneration, ChannelDetails, ChannelGroupView, ChannelId, ChannelQuery,
-        ChannelSummary, CoreError, CursorQueryHash, Page, PageRequest, SourceConfiguration,
+        ChannelSummary, CoreError, CursorQueryHash, Page, PageRequest, ProgrammeSummary,
+        ScheduleQuery, SourceConfiguration,
     },
     identity,
     m3u::ParsedChannel,
+    xmltv::{ParsedGuide, ParsedProgramme},
 };
 
 const CURSOR_QUERY_DOMAIN: &[u8] = b"sparrow-page-query-v1\0";
 const GROUPS_QUERY_TAG: u8 = 0;
 const ALL_CHANNELS_QUERY_TAG: u8 = 1;
 const GROUP_CHANNELS_QUERY_TAG: u8 = 2;
+const SCHEDULE_QUERY_TAG: u8 = 3;
 
 pub(crate) struct ChannelCatalog {
     generation: CatalogGeneration,
     groups: Arc<[ChannelGroupView]>,
     summaries: Arc<[ChannelSummary]>,
+    programmes: Arc<[ProgrammeSummary]>,
     records: Vec<ChannelRecord>,
     group_ranges: HashMap<Arc<str>, Range<usize>>,
+    schedule_ranges: HashMap<ChannelId, Range<usize>>,
     by_id: HashMap<ChannelId, usize>,
 }
 
@@ -29,6 +40,7 @@ impl ChannelCatalog {
     pub(crate) fn from_parsed(
         configuration: &SourceConfiguration,
         parsed: Vec<ParsedChannel>,
+        guide: Option<ParsedGuide>,
         generation: CatalogGeneration,
     ) -> Self {
         let mut occurrences = HashMap::<[u8; 32], u32>::new();
@@ -45,6 +57,7 @@ impl ChannelCatalog {
             pending.push(PendingChannel {
                 group_order: identity::normalize_identity_field(&group),
                 name_order: identity::normalize_identity_field(&name),
+                tvg_id: channel.tvg_id,
                 id,
                 name,
                 group,
@@ -53,6 +66,8 @@ impl ChannelCatalog {
         }
 
         pending.sort_unstable_by(compare_channels);
+
+        let (programmes, schedule_ranges) = build_programmes(&pending, guide);
 
         let mut summaries = Vec::with_capacity(pending.len());
         let mut records = Vec::with_capacity(pending.len());
@@ -101,8 +116,10 @@ impl ChannelCatalog {
             generation,
             groups: Arc::from(groups),
             summaries: Arc::from(summaries),
+            programmes,
             records,
             group_ranges,
+            schedule_ranges,
             by_id,
         }
     }
@@ -153,11 +170,35 @@ impl ChannelCatalog {
             .map(|index| self.records[*index].details.clone())
             .ok_or_else(|| CoreError::ChannelNotFound { id: id.clone() })
     }
+
+    pub(crate) fn schedule(
+        &self,
+        query: &ScheduleQuery,
+    ) -> Result<Page<ProgrammeSummary>, CoreError> {
+        if !self.by_id.contains_key(query.channel_id()) {
+            return Err(CoreError::ChannelNotFound {
+                id: query.channel_id().clone(),
+            });
+        }
+        let collection = self
+            .schedule_ranges
+            .get(query.channel_id())
+            .cloned()
+            .unwrap_or(0..0);
+        Page::from_request(
+            self.generation,
+            Arc::clone(&self.programmes),
+            collection,
+            query.page(),
+            query_hash(SCHEDULE_QUERY_TAG, Some(query.channel_id().as_str())),
+        )
+    }
 }
 
 struct PendingChannel {
     group_order: String,
     name_order: String,
+    tvg_id: String,
     id: ChannelId,
     name: Arc<str>,
     group: Arc<str>,
@@ -182,6 +223,135 @@ fn query_hash(tag: u8, group: Option<&str>) -> CursorQueryHash {
         hasher.update(group.as_bytes());
     }
     CursorQueryHash::new(*hasher.finalize().as_bytes())
+}
+
+fn build_programmes(
+    channels: &[PendingChannel],
+    guide: Option<ParsedGuide>,
+) -> (Arc<[ProgrammeSummary]>, HashMap<ChannelId, Range<usize>>) {
+    let Some(guide) = guide else {
+        return (Arc::from([]), HashMap::new());
+    };
+    let mut guide_ids = HashSet::with_capacity(guide.channels.len());
+    let mut guide_names = HashMap::<String, Option<String>>::new();
+    for channel in guide.channels {
+        guide_ids.insert(channel.id.clone());
+        for display_name in channel.display_names {
+            let normalized = identity::normalize_identity_field(&display_name);
+            if normalized.is_empty() {
+                continue;
+            }
+            guide_names
+                .entry(normalized)
+                .and_modify(|candidate| {
+                    if candidate.as_deref() != Some(channel.id.as_str()) {
+                        *candidate = None;
+                    }
+                })
+                .or_insert_with(|| Some(channel.id.clone()));
+        }
+    }
+
+    let mut m3u_name_counts = HashMap::<String, usize>::new();
+    for channel in channels {
+        *m3u_name_counts
+            .entry(channel.name_order.clone())
+            .or_default() += 1;
+    }
+
+    let mut matched_channels = HashMap::<String, Vec<ChannelId>>::new();
+    for channel in channels {
+        let exact_id = channel.tvg_id.trim();
+        let guide_id = if exact_id.is_empty() {
+            (m3u_name_counts.get(&channel.name_order) == Some(&1))
+                .then(|| guide_names.get(&channel.name_order).and_then(Clone::clone))
+                .flatten()
+        } else {
+            guide_ids.contains(exact_id).then(|| exact_id.to_owned())
+        };
+        if let Some(guide_id) = guide_id {
+            matched_channels
+                .entry(guide_id)
+                .or_default()
+                .push(channel.id.clone());
+        }
+    }
+
+    let mut pending = Vec::new();
+    for (source_ordinal, programme) in guide.programmes.into_iter().enumerate() {
+        let Some(channel_ids) = matched_channels.get(&programme.guide_channel_id) else {
+            continue;
+        };
+        for channel_id in channel_ids {
+            pending.push(PendingProgrammeSummary::new(
+                channel_id.clone(),
+                &programme,
+                source_ordinal,
+            ));
+        }
+    }
+    pending.sort_unstable_by(compare_programmes);
+
+    let programmes = pending
+        .into_iter()
+        .map(PendingProgrammeSummary::into_summary)
+        .collect::<Vec<_>>();
+    let mut ranges = HashMap::new();
+    let mut start = 0;
+    while start < programmes.len() {
+        let channel_id = programmes[start].channel_id().clone();
+        let mut end = start + 1;
+        while end < programmes.len() && programmes[end].channel_id() == &channel_id {
+            end += 1;
+        }
+        debug_assert!(ranges.insert(channel_id, start..end).is_none());
+        start = end;
+    }
+
+    (Arc::from(programmes), ranges)
+}
+
+struct PendingProgrammeSummary {
+    channel_id: ChannelId,
+    title: Arc<str>,
+    description: Option<Arc<str>>,
+    starts_at: chrono::DateTime<chrono::Utc>,
+    ends_at: chrono::DateTime<chrono::Utc>,
+    source_ordinal: usize,
+}
+
+impl PendingProgrammeSummary {
+    fn new(channel_id: ChannelId, programme: &ParsedProgramme, source_ordinal: usize) -> Self {
+        Self {
+            channel_id,
+            title: Arc::from(programme.title.as_str()),
+            description: programme.description.as_deref().map(Arc::<str>::from),
+            starts_at: programme.starts_at,
+            ends_at: programme.ends_at,
+            source_ordinal,
+        }
+    }
+
+    fn into_summary(self) -> ProgrammeSummary {
+        ProgrammeSummary::new(
+            self.channel_id,
+            self.title,
+            self.description,
+            self.starts_at,
+            self.ends_at,
+        )
+    }
+}
+
+fn compare_programmes(left: &PendingProgrammeSummary, right: &PendingProgrammeSummary) -> Ordering {
+    left.channel_id
+        .as_str()
+        .cmp(right.channel_id.as_str())
+        .then_with(|| left.starts_at.cmp(&right.starts_at))
+        .then_with(|| left.ends_at.cmp(&right.ends_at))
+        .then_with(|| left.title.cmp(&right.title))
+        .then_with(|| left.description.cmp(&right.description))
+        .then_with(|| left.source_ordinal.cmp(&right.source_ordinal))
 }
 
 struct ChannelRecord {
@@ -360,7 +530,7 @@ mod tests {
     }
 
     fn catalog(parsed: Vec<ParsedChannel>, generation: CatalogGeneration) -> ChannelCatalog {
-        ChannelCatalog::from_parsed(&configuration(), parsed, generation)
+        ChannelCatalog::from_parsed(&configuration(), parsed, None, generation)
     }
 
     fn generation(discriminator: u8) -> CatalogGeneration {
