@@ -16,6 +16,14 @@ _Avoid_: Playlist URL, media source
 The optional configured location of schedule data used to enrich Channels with Programmes.
 _Avoid_: Guide URL, XMLTV link
 
+**Source Snapshot**:
+The last validated copy of an M3U Source or EPG Source retained on the device so its contribution to the Channel Catalog remains available without network access.
+_Avoid_: Cache entry, cached catalog, downloaded source
+
+**Stale Source Snapshot**:
+A Source Snapshot old enough to trigger a refresh attempt but still valid for building the Channel Catalog when refreshing fails.
+_Avoid_: Expired snapshot, invalid snapshot
+
 **Channel Catalog**:
 The on-device collection of Channels and Channel Groups derived from the M3U Source and optionally enriched with Programmes from the EPG Source.
 _Avoid_: Playlist, channel list, media library
