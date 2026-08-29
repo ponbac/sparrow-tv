@@ -133,7 +133,12 @@ export function reduceProbe(state: ProbeState, action: ProbeAction): ProbeState 
         action.detail,
       );
     case "first-frame": {
-      if (state.firstFrameMs !== null || state.sessionStartedAt === null) return state;
+      if (state.sessionStartedAt === null) return state;
+      if (state.firstFrameMs !== null) {
+        return state.status === "playing"
+          ? state
+          : event({ ...state, status: "playing" }, "playing", "video resumed");
+      }
       const firstFrameMs = Date.now() - Date.parse(state.sessionStartedAt);
       return event({ ...state, firstFrameMs, status: "playing" }, "first-frame", `${firstFrameMs} ms`);
     }
