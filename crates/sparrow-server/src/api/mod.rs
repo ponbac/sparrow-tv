@@ -2,6 +2,7 @@ mod bounded_blocking;
 mod browse;
 mod dto;
 mod error;
+mod playback;
 mod programmes;
 mod query;
 
@@ -12,6 +13,7 @@ use sparrow_core::{
     ChannelSummary, Page, PageRequest, ProgrammeSummary, SearchRequest, SearchResults, SearchTerm,
     SparrowCore,
 };
+use sparrow_source_http::HttpPlaybackAccess;
 
 use self::bounded_blocking::BoundedBlocking;
 
@@ -21,19 +23,25 @@ pub(crate) use error::{ApiError, ErrorEnvelope};
 #[derive(Clone)]
 pub(crate) struct AppState {
     core: Arc<SparrowCore>,
+    playback: HttpPlaybackAccess,
     searches: BoundedBlocking,
 }
 
 impl AppState {
-    pub(crate) fn new(core: Arc<SparrowCore>) -> Self {
+    pub(crate) fn new(core: Arc<SparrowCore>, playback: HttpPlaybackAccess) -> Self {
         Self {
             core,
+            playback,
             searches: BoundedBlocking::serial(),
         }
     }
 
     pub(crate) fn core(&self) -> &SparrowCore {
         &self.core
+    }
+
+    pub(crate) fn playback(&self) -> &HttpPlaybackAccess {
+        &self.playback
     }
 
     pub(crate) async fn search(&self, request: SearchRequest) -> Result<SearchResults, ApiError> {
@@ -86,6 +94,7 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/channels", get(browse::channels))
         .route("/channels/{channel_id}", get(browse::channel))
         .route("/channels/{channel_id}/schedule", get(programmes::schedule))
+        .route("/play/{channel_id}", get(playback::play))
         .route("/search", get(programmes::search))
         .route("/search/channels", get(programmes::search_channels))
         .route("/search/programmes", get(programmes::search_programmes))

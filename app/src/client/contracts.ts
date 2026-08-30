@@ -9,6 +9,11 @@ const channelIdSchema = z
   .min(1)
   .max(1024)
   .brand<"ChannelId">();
+const sameOriginPlaybackEndpointSchema = z
+  .string()
+  .max(4096)
+  .regex(/^\/api\/v1\/play\/[^/?#]+$/)
+  .brand<"SameOriginPlaybackEndpoint">();
 const catalogGenerationSchema = z
   .number()
   .int()
@@ -39,6 +44,11 @@ const channelGroupNameSchema = z
 
 /** An opaque, non-empty identifier assigned to a channel by the catalog. */
 export type ChannelId = z.output<typeof channelIdSchema>;
+
+/** A Sparrow-owned relative playback route that cannot name a provider. */
+export type SameOriginPlaybackEndpoint = z.output<
+  typeof sameOriginPlaybackEndpointSchema
+>;
 
 /** A positive, JavaScript-safe integer identifying one immutable catalog view. */
 export type CatalogGeneration = z.output<typeof catalogGenerationSchema>;
@@ -206,6 +216,17 @@ export interface SearchPageInput extends ClientRequestOptions {
   readonly previousCursors?: readonly PageCursor[];
 }
 
+/** Input for resolving a hosted playback route from an opaque Channel Identifier. */
+export interface StartPlaybackInput extends ClientRequestOptions {
+  readonly id: ChannelId;
+}
+
+/** The browser-safe transport needed to start one hosted live stream. */
+export interface PlaybackDescriptor {
+  readonly _tag: "same-origin-http";
+  readonly endpoint: SameOriginPlaybackEndpoint;
+}
+
 /** Independently paginated Channel and Programme matches from one catalog generation. */
 export interface SearchResults {
   readonly generation: CatalogGeneration;
@@ -257,6 +278,11 @@ export type ClientError =
   | {
       readonly _tag: "stale-cursor";
       readonly current: CatalogGeneration;
+    }
+  | {
+      readonly _tag: "playback-failed";
+      readonly reason: "rejected" | "timed-out" | "unavailable" | "invalid-response";
+      readonly retryable: boolean;
     }
   | {
       readonly _tag: "transport";
@@ -312,6 +338,11 @@ export interface SparrowClient {
   searchProgrammes(
     input: SearchPageInput,
   ): Promise<ClientResult<Page<ProgrammeSummary>>>;
+
+  /** Resolves a same-origin route; provider access starts only when the player consumes it. */
+  startPlayback(
+    input: StartPlaybackInput,
+  ): Promise<ClientResult<PlaybackDescriptor>>;
 }
 
 const capabilitiesSchema: z.ZodType<Capabilities> = z.strictObject({
@@ -408,6 +439,11 @@ const programmeSummarySchema: z.ZodType<ProgrammeSummary> = z
       Date.parse(programme.endsAt) > Date.parse(programme.startsAt),
     { message: "Programme end must follow its start." },
   );
+
+const playbackDescriptorSchema: z.ZodType<PlaybackDescriptor> = z.strictObject({
+  _tag: z.literal("same-origin-http"),
+  endpoint: sameOriginPlaybackEndpointSchema,
+});
 
 const pageSchema = <Item>(
   itemSchema: z.ZodType<Item>,
@@ -614,6 +650,11 @@ const serverClientErrorSchema: z.ZodType<ServerClientError> = z.discriminatedUni
     _tag: z.literal("stale-cursor"),
     current: catalogGenerationSchema,
   }),
+  z.strictObject({
+    _tag: z.literal("playback-failed"),
+    reason: z.enum(["rejected", "timed-out", "unavailable", "invalid-response"]),
+    retryable: z.boolean(),
+  }),
 ]);
 
 const clientErrorEnvelopeSchema: z.ZodType<{
@@ -636,5 +677,6 @@ export const clientSchemas = Object.freeze({
   searchResultsFor: searchResultsSchemaFor,
   searchChannelsPageFor: searchChannelsPageSchemaFor,
   searchProgrammesPageFor: searchProgrammesPageSchemaFor,
+  playbackDescriptor: playbackDescriptorSchema,
   errorEnvelope: clientErrorEnvelopeSchema,
 });

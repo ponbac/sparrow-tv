@@ -1,19 +1,16 @@
 use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
-    fmt,
     ops::Range,
     sync::Arc,
 };
-
-use url::Url;
 
 use crate::{
     domain::{
         CatalogGeneration, ChannelDetails, ChannelGroupView, ChannelId, ChannelQuery,
         ChannelSummary, CoreError, CursorQueryHash, Page, PageRequest, ProgrammeSummary,
-        ScheduleQuery, SearchRequest, SearchResults, SearchTerm, SourceConfiguration,
-        normalize_search_text,
+        ResolvedPlaybackSource, ScheduleQuery, SearchRequest, SearchResults, SearchTerm,
+        SecretPlaybackLocation, SourceConfiguration, normalize_search_text,
     },
     identity,
     m3u::ParsedChannel,
@@ -67,7 +64,7 @@ impl ChannelCatalog {
                 id,
                 name,
                 group,
-                playback: SecretPlaybackLocation(Arc::clone(&channel.playback)),
+                playback: SecretPlaybackLocation::new(Arc::clone(&channel.playback)),
             });
         }
 
@@ -90,7 +87,7 @@ impl ChannelCatalog {
             summaries.push(summary);
             records.push(ChannelRecord {
                 details,
-                _playback: channel.playback,
+                playback: channel.playback,
             });
         }
 
@@ -185,6 +182,16 @@ impl ChannelCatalog {
         self.by_id
             .get(id)
             .map(|index| self.records[*index].details.clone())
+            .ok_or_else(|| CoreError::ChannelNotFound { id: id.clone() })
+    }
+
+    pub(crate) fn resolve_playback(
+        &self,
+        id: &ChannelId,
+    ) -> Result<ResolvedPlaybackSource, CoreError> {
+        self.by_id
+            .get(id)
+            .map(|index| ResolvedPlaybackSource::new(self.records[*index].playback.clone()))
             .ok_or_else(|| CoreError::ChannelNotFound { id: id.clone() })
     }
 
@@ -653,16 +660,7 @@ fn compare_programmes(left: &PendingProgrammeSummary, right: &PendingProgrammeSu
 
 struct ChannelRecord {
     details: ChannelDetails,
-    _playback: SecretPlaybackLocation,
-}
-
-struct SecretPlaybackLocation(Arc<Url>);
-
-impl fmt::Debug for SecretPlaybackLocation {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _ = &self.0;
-        formatter.write_str("<redacted>")
-    }
+    playback: SecretPlaybackLocation,
 }
 
 #[cfg(test)]

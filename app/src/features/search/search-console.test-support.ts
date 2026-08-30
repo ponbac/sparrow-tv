@@ -14,12 +14,14 @@ import {
   type ClientError,
   type ClientResult,
   type Page,
+  type PlaybackDescriptor,
   type ProgrammeSummary,
   type ScheduleInput,
   type SearchInput,
   type SearchPageInput,
   type SearchResults,
   type SparrowClient,
+  type StartPlaybackInput,
 } from "../../client/contracts";
 import { SearchConsole } from "./search-console";
 
@@ -244,6 +246,19 @@ export class FakeSparrowClient implements SparrowClient {
       );
     }
     return success(parsed.data);
+  }
+
+  startPlayback(
+    input: StartPlaybackInput,
+  ): Promise<ClientResult<PlaybackDescriptor>> {
+    return Promise.resolve(
+      success(
+        clientSchemas.playbackDescriptor.parse({
+          _tag: "same-origin-http",
+          endpoint: `/api/v1/play/${encodeURIComponent(input.id)}`,
+        }),
+      ),
+    );
   }
 }
 

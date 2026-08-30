@@ -93,6 +93,11 @@ function searchErrorCopy(error: ClientError): {
         title: "A newer catalog is on air",
         detail: `Pagination moved to generation ${error.current}. Restart from its first page.`,
       };
+    case "playback-failed":
+      return {
+        title: "The live signal is unavailable",
+        detail: "Catalog search is still available. Choose another Channel or retry playback.",
+      };
     case "transport":
       return {
         title: "The hosted desk did not answer",

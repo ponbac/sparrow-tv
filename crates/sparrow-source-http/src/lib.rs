@@ -1,5 +1,7 @@
 //! Production HTTP adapter for Sparrow's private source-access seam.
 
+mod playback;
+
 use std::{
     error::Error as _,
     fmt::{self, Debug, Formatter},
@@ -22,6 +24,11 @@ use sparrow_core::{
     SourceByteStream, SourceReadError, SourceRequest, SourceResponse,
 };
 use thiserror::Error;
+
+pub use playback::{
+    HttpPlaybackAccess, HttpPlaybackAccessBuildError, PlaybackAccessError, PlaybackByteStream,
+    PlaybackReadError, PlaybackResponse,
+};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -135,20 +142,24 @@ fn production_client_builder() -> ClientBuilder {
         // and bounds a provider that stalls partway through a large source.
         .read_timeout(READ_TIMEOUT)
         .referer(false)
-        .redirect(redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() > MAX_REDIRECTS {
-                return attempt.error("redirect limit exceeded");
-            }
+        .redirect(private_redirect_policy())
+}
 
-            let Some(previous) = attempt.previous().last() else {
-                return attempt.stop();
-            };
-            if same_origin(previous, attempt.url()) {
-                attempt.follow()
-            } else {
-                attempt.stop()
-            }
-        }))
+fn private_redirect_policy() -> redirect::Policy {
+    redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() > MAX_REDIRECTS {
+            return attempt.error("redirect limit exceeded");
+        }
+
+        let Some(previous) = attempt.previous().last() else {
+            return attempt.stop();
+        };
+        if same_origin(previous, attempt.url()) {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
 }
 
 fn same_origin(left: &Url, right: &Url) -> bool {

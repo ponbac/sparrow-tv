@@ -1,6 +1,7 @@
 use axum::{Json, http::StatusCode, response::IntoResponse};
 use serde::Serialize;
 use sparrow_core::{CoreError, InputField, InputReason};
+use sparrow_source_http::PlaybackAccessError;
 
 use super::CatalogStatusDto;
 
@@ -36,6 +37,10 @@ enum ClientErrorDto {
     StaleCursor {
         current: u64,
     },
+    PlaybackFailed {
+        reason: &'static str,
+        retryable: bool,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,6 +66,29 @@ impl ApiError {
                 error: ClientErrorDto::ServiceUnavailable,
             }),
         }
+    }
+
+    fn playback_failed(error: PlaybackAccessError) -> Self {
+        Self {
+            status: match error {
+                PlaybackAccessError::TimedOut => StatusCode::GATEWAY_TIMEOUT,
+                PlaybackAccessError::Rejected => StatusCode::FAILED_DEPENDENCY,
+                PlaybackAccessError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+                PlaybackAccessError::InvalidResponse => StatusCode::BAD_GATEWAY,
+            },
+            body: Box::new(ErrorEnvelope {
+                error: ClientErrorDto::PlaybackFailed {
+                    reason: playback_reason(error),
+                    retryable: error.retryable(),
+                },
+            }),
+        }
+    }
+}
+
+impl From<PlaybackAccessError> for ApiError {
+    fn from(error: PlaybackAccessError) -> Self {
+        Self::playback_failed(error)
     }
 }
 
@@ -133,5 +161,14 @@ const fn input_reason(reason: InputReason) -> &'static str {
         InputReason::InvalidFormat => "invalid-format",
         InputReason::CursorQueryMismatch => "cursor-query-mismatch",
         InputReason::CursorPositionOutOfRange => "cursor-position-out-of-range",
+    }
+}
+
+const fn playback_reason(error: PlaybackAccessError) -> &'static str {
+    match error {
+        PlaybackAccessError::Rejected => "rejected",
+        PlaybackAccessError::TimedOut => "timed-out",
+        PlaybackAccessError::Unavailable => "unavailable",
+        PlaybackAccessError::InvalidResponse => "invalid-response",
     }
 }

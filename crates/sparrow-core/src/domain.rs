@@ -749,6 +749,54 @@ impl ChannelDetails {
     }
 }
 
+/// A private Playback Source resolved from one immutable Channel Catalog.
+///
+/// The value owns its source location so catalog publication cannot retarget an
+/// active Playback Session. It intentionally implements neither `Display` nor
+/// serialization. Its `Debug` projection is always redacted.
+pub struct ResolvedPlaybackSource {
+    location: SecretPlaybackLocation,
+}
+
+impl ResolvedPlaybackSource {
+    pub(crate) fn new(location: SecretPlaybackLocation) -> Self {
+        Self { location }
+    }
+
+    /// Exposes the private provider location only to a privileged Rust adapter.
+    ///
+    /// Callers must use this value solely to open playback. It must not cross an
+    /// HTTP or IPC boundary or enter logs, errors, metrics, or diagnostics.
+    pub fn location_for_adapter(&self) -> &Url {
+        self.location.expose_for_access()
+    }
+}
+
+impl Debug for ResolvedPlaybackSource {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ResolvedPlaybackSource(<redacted>)")
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct SecretPlaybackLocation(Arc<Url>);
+
+impl SecretPlaybackLocation {
+    pub(crate) fn new(location: Arc<Url>) -> Self {
+        Self(location)
+    }
+
+    fn expose_for_access(&self) -> &Url {
+        &self.0
+    }
+}
+
+impl Debug for SecretPlaybackLocation {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        Redacted.fmt(formatter)
+    }
+}
+
 /// One source-derived Programme associated with a Channel in this catalog generation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProgrammeSummary {

@@ -245,6 +245,11 @@ describe("hosted HTTP Sparrow client", () => {
       { _tag: "not-configured" },
       { _tag: "not-found", resource: "channel" },
       { _tag: "stale-cursor", current: 8 },
+      {
+        _tag: "playback-failed",
+        reason: "timed-out",
+        retryable: true,
+      },
     ];
     const http = createFakeHttp(
       errors.map((error) => ({ status: 400, body: { error } })),

@@ -100,6 +100,17 @@ impl ScriptedSource {
         self
     }
 
+    pub fn replace_bytes(&self, kind: SourceKind, bytes: impl Into<Bytes>) {
+        let bytes = bytes.into();
+        let mut state = self.state.lock().expect("source state poisoned");
+        let script = state
+            .scripts
+            .get_mut(&kind)
+            .expect("the source script exists");
+        script.chunks = vec![Ok(bytes.clone())];
+        script.declared_length = Some(bytes.len() as u64);
+    }
+
     pub fn unavailable() -> Self {
         Self {
             state: Arc::new(Mutex::new(SourceState {

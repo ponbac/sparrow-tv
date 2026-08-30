@@ -4,7 +4,9 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
+import type { HostedPlaybackEngine } from "../playback/mpegts-engine";
+import { PlaybackLoadBoundary } from "../playback/playback-load-boundary";
 import { SearchConsole } from "../search/search-console";
 import type {
   CatalogStatus,
@@ -23,16 +25,22 @@ import type {
 const GROUP_PAGE_SIZE = 100;
 const CHANNEL_PAGE_SIZE = 24;
 const FIRST_PAGE: PageCursor | null = null;
+const HostedPlayer = lazy(async () => {
+  const module = await import("../playback/hosted-player");
+  return { default: module.HostedPlayer };
+});
 
 interface CatalogBrowserProps {
   readonly client: SparrowClient;
+  readonly playbackEngine?: HostedPlaybackEngine;
 }
 
 /** Browses generation-bound Channel Groups and Channels through a Sparrow client. */
-export function CatalogBrowser({ client }: CatalogBrowserProps) {
+export function CatalogBrowser({ client, playbackEngine }: CatalogBrowserProps) {
   const queryClient = useQueryClient();
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
   const [selectedChannel, setSelectedChannel] = useState<ChannelId | null>(null);
+  const [playbackChannel, setPlaybackChannel] = useState<ChannelId | null>(null);
 
   const capabilitiesQuery = useQuery({
     queryKey: ["catalog", "capabilities"],
@@ -99,6 +107,11 @@ export function CatalogBrowser({ client }: CatalogBrowserProps) {
   const selectGroup = (group: string | null) => {
     setActiveGroup(group);
     setSelectedChannel(null);
+    setPlaybackChannel(null);
+  };
+  const selectChannel = (id: ChannelId) => {
+    setSelectedChannel(id);
+    setPlaybackChannel(id);
   };
   const retryCatalog = () => {
     queryClient
@@ -158,9 +171,33 @@ export function CatalogBrowser({ client }: CatalogBrowserProps) {
         selectedChannel={selectedChannel}
         selectedDetails={channelQuery.data}
         selectedLoading={channelQuery.isPending && selectedChannel !== null}
-        onSelectChannel={setSelectedChannel}
+        onSelectChannel={selectChannel}
         onRetrySelectedDetails={retrySelectedDetails}
       />
+
+      {playbackChannel === null ? null : (
+        <PlaybackLoadBoundary
+          resetKey={playbackChannel}
+          onStop={() => setPlaybackChannel(null)}
+          onReload={reloadSparrow}
+        >
+          <Suspense fallback={<InlineLoading label="Preparing live player" />}>
+            <HostedPlayer
+              channel={{
+                id: playbackChannel,
+                name: playbackChannelName(
+                  playbackChannel,
+                  channels,
+                  channelQuery.data,
+                ),
+              }}
+              client={client}
+              onStop={() => setPlaybackChannel(null)}
+              {...(playbackEngine === undefined ? {} : { engine: playbackEngine })}
+            />
+          </Suspense>
+        </PlaybackLoadBoundary>
+      )}
 
       <main className="catalog-frame">
         <GroupRail
@@ -200,7 +237,7 @@ export function CatalogBrowser({ client }: CatalogBrowserProps) {
                   channel={channel}
                   index={index}
                   selected={selectedChannel === channel.id}
-                  onSelect={setSelectedChannel}
+                  onSelect={selectChannel}
                 />
               ))}
             </div>
@@ -525,6 +562,17 @@ function groupHeading(group: string | null): string {
   return group === "" ? "Ungrouped" : group;
 }
 
+function playbackChannelName(
+  id: ChannelId,
+  loaded: readonly ChannelSummary[],
+  details: ClientResult<ChannelDetails> | undefined,
+): string {
+  if (details?.ok === true && details.value.id === id) {
+    return details.value.name;
+  }
+  return loaded.find((channel) => channel.id === id)?.name ?? "Selected Channel";
+}
+
 function abbreviateId(id: ChannelId): string {
   return `${id.slice(0, 12)}…${id.slice(-8)}`;
 }
@@ -569,6 +617,11 @@ function errorCopy(error: ClientError): {
         title: "A newer catalog is on air",
         detail: `Pagination moved to generation ${error.current}. Reload to continue from its first page.`,
       };
+    case "playback-failed":
+      return {
+        title: "The live signal is unavailable",
+        detail: "Browsing remains available. Choose another Channel or retry playback.",
+      };
     case "transport":
       return {
         title: "The hosted desk did not answer",
@@ -580,4 +633,8 @@ function errorCopy(error: ClientError): {
         detail: "No catalog state was changed. Retry when ready.",
       };
   }
+}
+
+function reloadSparrow(): void {
+  window.location.reload();
 }

@@ -15,13 +15,16 @@ export type {
   IsoInstant,
   Page,
   PageCursor,
+  PlaybackDescriptor,
   ProgrammeSummary,
   SafeFailure,
+  SameOriginPlaybackEndpoint,
   ScheduleInput,
   SearchInput,
   SearchPageInput,
   SearchResults,
   SourceState,
+  StartPlaybackInput,
   SparrowClient,
 } from "./contracts";
 export {
