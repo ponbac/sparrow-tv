@@ -18,6 +18,7 @@ const PAGE_CURSOR_PREFIX: &str = "pc1";
 const CATALOG_GENERATION_DOMAIN: &[u8] = b"sparrow-catalog-generation-v1\0";
 pub(crate) const CHANNEL_ID_PREFIX: &str = "ch1_";
 const CHANNEL_ID_DIGEST_HEX_BYTES: usize = 64;
+const MAX_CHANNEL_GROUP_FILTER_BYTES: usize = 1024;
 const MAX_SEARCH_TERM_BYTES: usize = 256;
 
 /// Untrusted source locations as entered at a configuration boundary.
@@ -264,6 +265,7 @@ pub enum InputField {
     M3u,
     Epg,
     ChannelId,
+    ChannelGroup,
     SearchTerm,
     PageLimit,
     PageCursor,
@@ -275,6 +277,7 @@ impl Display for InputField {
             InputField::M3u => "m3u",
             InputField::Epg => "epg",
             InputField::ChannelId => "channel ID",
+            InputField::ChannelGroup => "channel group",
             InputField::SearchTerm => "search term",
             InputField::PageLimit => "page limit",
             InputField::PageCursor => "page cursor",
@@ -308,10 +311,17 @@ pub enum SourceKind {
     Epg,
 }
 
+/// A restart-stable immutable catalog identity suitable for numeric JSON transport.
+///
+/// Every value is positive and no greater than JavaScript's maximum exactly
+/// representable integer (`2^53 - 1`).
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct CatalogGeneration(NonZeroU64);
 
 impl CatalogGeneration {
+    /// The largest generation value that every JavaScript runtime represents exactly.
+    pub const MAX_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
+
     fn for_content(
         configuration: &SourceConfigurationFingerprint,
         m3u_checksum: &[u8; 32],
@@ -335,11 +345,15 @@ impl CatalogGeneration {
         let digest = hasher.finalize();
         let mut encoded = [0_u8; size_of::<u64>()];
         encoded.copy_from_slice(&digest.as_bytes()[..size_of::<u64>()]);
-        let value = NonZeroU64::new(u64::from_le_bytes(encoded)).unwrap_or(NonZeroU64::MIN);
+        let transport_safe = u64::from_le_bytes(encoded) & Self::MAX_SAFE_INTEGER;
+        let value = NonZeroU64::new(transport_safe).unwrap_or(NonZeroU64::MIN);
         Self(value)
     }
 
     const fn from_cursor(value: u64) -> Option<Self> {
+        if value > Self::MAX_SAFE_INTEGER {
+            return None;
+        }
         match NonZeroU64::new(value) {
             Some(value) => Some(Self(value)),
             None => None,
@@ -609,6 +623,42 @@ impl Debug for SearchTerm {
     }
 }
 
+/// An exact, bounded Channel Group name refined from untrusted transport text.
+///
+/// Parsing performs no trimming or Unicode normalization because group lookup
+/// matches source-derived names exactly. The empty string intentionally selects
+/// Channels whose source group is empty.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ChannelGroupFilter(Arc<str>);
+
+impl ChannelGroupFilter {
+    /// Refines an exact decoded group name while bounding its transport cost.
+    pub fn parse(value: impl Into<String>) -> Result<Self, CoreError> {
+        let value = value.into();
+        if value.len() > MAX_CHANNEL_GROUP_FILTER_BYTES {
+            return Err(CoreError::InvalidInput {
+                field: InputField::ChannelGroup,
+                reason: InputReason::TooLong {
+                    max_bytes: MAX_CHANNEL_GROUP_FILTER_BYTES,
+                },
+            });
+        }
+        if value.chars().any(char::is_control) {
+            return Err(CoreError::InvalidInput {
+                field: InputField::ChannelGroup,
+                reason: InputReason::ContainsControlCharacter,
+            });
+        }
+
+        Ok(Self(Arc::from(value)))
+    }
+
+    /// Returns the exact group name for an explicit transport projection.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 pub(crate) fn normalize_search_text(value: &str) -> String {
     let compatibility_normalized = value.nfkc().collect::<String>();
     let mut normalized = String::with_capacity(compatibility_normalized.len());
@@ -755,7 +805,7 @@ impl ProgrammeSummary {
 /// Selects all Channels or the Channels in one exact source-derived group.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChannelQuery {
-    group: Option<Arc<str>>,
+    group: Option<ChannelGroupFilter>,
     page: PageRequest,
 }
 
@@ -820,16 +870,16 @@ impl ChannelQuery {
     }
 
     /// Creates a paginated query for an exact Channel Group name.
-    pub fn in_group(group: impl Into<String>, page: PageRequest) -> Self {
+    pub const fn in_group(group: ChannelGroupFilter, page: PageRequest) -> Self {
         Self {
-            group: Some(Arc::from(group.into())),
+            group: Some(group),
             page,
         }
     }
 
     /// Returns the exact Channel Group filter, when present.
     pub fn group(&self) -> Option<&str> {
-        self.group.as_deref()
+        self.group.as_ref().map(ChannelGroupFilter::as_str)
     }
 
     /// Returns this query's bounded page request.

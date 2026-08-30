@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/sparrow-core",
+  "crates/sparrow-server",
   "crates/sparrow-snapshot-store",
   "crates/sparrow-source-http",
 ]

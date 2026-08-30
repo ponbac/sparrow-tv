@@ -3,8 +3,8 @@ mod support;
 use std::collections::BTreeMap;
 
 use sparrow_core::{
-    ChannelQuery, CoreError, InputField, InputReason, PageCursor, PageLimit, PageRequest,
-    SourceConfigurationInput, SparrowCore,
+    CatalogGeneration, ChannelGroupFilter, ChannelQuery, CoreError, InputField, InputReason,
+    PageCursor, PageLimit, PageRequest, SourceConfigurationInput, SparrowCore,
 };
 use support::{MemorySnapshotStore, ScriptedSource, adapters};
 
@@ -21,6 +21,7 @@ async fn source_groups_are_deterministically_ordered_counted_and_bounded() {
 
     assert_eq!(group_observations(&first), [("", 1), ("Culture", 1)]);
     assert_ne!(first.generation().get(), 0);
+    assert!(first.generation().get() <= CatalogGeneration::MAX_SAFE_INTEGER);
     assert_eq!(core.status().generation(), Some(first.generation()));
     let second_cursor = round_trip(first.next().expect("more groups remain"));
     let second = core
@@ -81,7 +82,7 @@ async fn channel_pages_are_stable_filtered_and_cover_exact_boundaries() {
 
     let news = core
         .list_channels(ChannelQuery::in_group(
-            "News",
+            group_filter("News"),
             PageRequest::first(page_limit(10)),
         ))
         .expect("the News group is queryable");
@@ -94,14 +95,60 @@ async fn channel_pages_are_stable_filtered_and_cover_exact_boundaries() {
     );
     assert!(news.next().is_none());
 
+    let ungrouped = core
+        .list_channels(ChannelQuery::in_group(
+            group_filter(""),
+            PageRequest::first(page_limit(10)),
+        ))
+        .expect("the empty filter selects the ungrouped group");
+    assert_eq!(
+        ungrouped
+            .items()
+            .iter()
+            .map(|channel| channel.name())
+            .collect::<Vec<_>>(),
+        ["Ungrouped"]
+    );
+
     let missing = core
         .list_channels(ChannelQuery::in_group(
-            "Missing",
+            group_filter("Missing"),
             PageRequest::first(page_limit(10)),
         ))
         .expect("an unknown group has an empty result");
     assert!(missing.items().is_empty());
     assert!(missing.next().is_none());
+}
+
+#[tokio::test]
+async fn every_source_derived_group_is_safe_to_round_trip_as_an_exact_filter() {
+    let oversized_group = "x".repeat(1025);
+    let m3u = format!(
+        "#EXTM3U\n\
+         #EXTINF:-1 group-title=\"Valid\",Valid Channel\n\
+         https://media.fixture.invalid/valid.ts\n\
+         #EXTINF:-1 group-title=\"invalid\u{0007}control\",Control Group\n\
+         https://media.fixture.invalid/control.ts\n\
+         #EXTINF:-1 group-title=\"{oversized_group}\",Oversized Group\n\
+         https://media.fixture.invalid/oversized.ts\n"
+    );
+    let (core, _) = browse_core(m3u.as_bytes()).await;
+    let groups = core
+        .list_groups(PageRequest::first(page_limit(10)))
+        .expect("normalized source groups are available");
+
+    assert_eq!(group_observations(&groups), [("", 2), ("Valid", 1)]);
+    for group in groups.items() {
+        let filter = ChannelGroupFilter::parse(group.name().to_owned())
+            .expect("every emitted group round-trips through the query boundary");
+        let channels = core
+            .list_channels(ChannelQuery::in_group(
+                filter,
+                PageRequest::first(page_limit(10)),
+            ))
+            .expect("every emitted group remains browseable");
+        assert_eq!(channels.items().len(), group.channel_count() as usize);
+    }
 }
 
 #[tokio::test]
@@ -148,14 +195,14 @@ async fn cursors_are_scoped_to_their_query_shape_and_expose_no_source_data() {
 
     let news = core
         .list_channels(ChannelQuery::in_group(
-            "News",
+            group_filter("News"),
             PageRequest::first(page_limit(1)),
         ))
         .expect("News page is available");
     let news_cursor = round_trip(news.next().expect("more News Channels remain"));
     assert!(matches!(
         core.list_channels(ChannelQuery::in_group(
-            "Sports",
+            group_filter("Sports"),
             PageRequest::after(news_cursor, page_limit(1)),
         )),
         Err(CoreError::InvalidInput {
@@ -321,4 +368,8 @@ fn round_trip(cursor: &PageCursor) -> PageCursor {
 
 fn page_limit(value: u16) -> PageLimit {
     PageLimit::new(value).expect("fixture page limit is valid")
+}
+
+fn group_filter(value: &str) -> ChannelGroupFilter {
+    ChannelGroupFilter::parse(value).expect("fixture Channel Group filter is valid")
 }

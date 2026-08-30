@@ -11,4 +11,5 @@ check-rust:
 check-app:
     cd app && bun install --frozen-lockfile
     cd app && bun run lint
+    cd app && bun run test
     cd app && bun run build
