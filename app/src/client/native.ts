@@ -21,10 +21,12 @@ import {
   type PageCursor,
   type PlaybackDescriptor,
   type PlaybackSessionId,
+  type NativeStreamHandle,
   type ProgrammeSummary,
   type ReadPlaybackInput,
   type ReadInstalledPlaybackInput,
   type RefreshReport,
+  type RestartInstalledPlaybackInput,
   type ScheduleInput,
   type SearchInput,
   type SearchPageInput,
@@ -54,6 +56,7 @@ export const NATIVE_COMMANDS = Object.freeze({
   startPlayback: "playback_start",
   readPlayback: "playback_read",
   reopenPlayback: "playback_reopen",
+  restartPlayback: "playback_restart",
   suspendPlayback: "playback_suspend",
   stopPlayback: "playback_stop",
 } as const);
@@ -89,6 +92,13 @@ interface RuntimeParser<Value> {
 
 const subscriptionIdSchema = z.string().regex(/^sub1_[0-9a-f]{16}$/u);
 const voidResponseSchema = z.null().transform(() => undefined);
+const nativePlaybackIdentitySchema = z
+  .object({
+    _tag: z.literal("tauri-native-stream"),
+    sessionId: clientSchemas.playbackSessionId,
+    streamHandle: clientSchemas.nativeStreamHandle,
+  })
+  .passthrough();
 const MAX_NATIVE_CHUNK_BYTES = 64 * 1024;
 const SOURCE_LOCATION_MAX_UTF8_BYTES = 16_384;
 const sourceTextEncoder = new TextEncoder();
@@ -352,7 +362,12 @@ class TauriSparrowClient implements InstalledSparrowClient {
           },
         }),
       input.signal,
-      () => stopNativePlayback(this.#ipc, input.sessionId),
+      () =>
+        stopNativePlayback(
+          this.#ipc,
+          input.sessionId,
+          input.streamHandle,
+        ),
     );
     switch (outcome._tag) {
       case "cancelled":
@@ -374,7 +389,14 @@ class TauriSparrowClient implements InstalledSparrowClient {
   stopPlayback(input: StopPlaybackInput): Promise<ClientResult<void>> {
     return this.#request(
       NATIVE_COMMANDS.stopPlayback,
-      { input: { sessionId: input.sessionId } },
+      {
+        input: {
+          sessionId: input.sessionId,
+          ...(input.streamHandle === undefined
+            ? {}
+            : { streamHandle: input.streamHandle }),
+        },
+      },
       voidResponseSchema,
       input.signal,
     );
@@ -479,6 +501,7 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
   readonly #sessionId: PlaybackSessionId;
   #started = false;
   #stopped = false;
+  #streamHandle: NativeStreamHandle | null = null;
   #openSettlement: Promise<void> = Promise.resolve();
   #lateCleanup: Promise<ClientResult<void>> | null = null;
   #suspendFlight: Promise<ClientResult<void>> | null = null;
@@ -504,7 +527,7 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
     return this.#open(NATIVE_COMMANDS.startPlayback, {
       id: this.#channelId,
       sessionId: this.#sessionId,
-    }, options.signal);
+    }, options.signal, null, false);
   }
 
   async reopen(
@@ -528,6 +551,41 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
       NATIVE_COMMANDS.reopenPlayback,
       { sessionId: this.#sessionId },
       options.signal,
+      this.#streamHandle,
+      false,
+    );
+  }
+
+  async restart(
+    input: RestartInstalledPlaybackInput,
+  ): Promise<ClientResult<InstalledPlaybackTransport>> {
+    if (!this.#started || this.#stopped) {
+      return invalidNativeResponse();
+    }
+    await this.#openSettlement;
+    await Promise.resolve();
+    if (this.#lateCleanup !== null) {
+      await this.#lateCleanup;
+    }
+    if (this.#suspendFlight !== null) {
+      await this.#suspendFlight;
+    }
+    if (this.#stopped) {
+      return { ok: false, error: { _tag: "cancelled" } };
+    }
+    if (this.#streamHandle !== input.expectedStreamHandle) {
+      return { ok: false, error: { _tag: "cancelled" } };
+    }
+    return this.#open(
+      NATIVE_COMMANDS.restartPlayback,
+      {
+        sessionId: this.#sessionId,
+        expectedStreamHandle: input.expectedStreamHandle,
+        intent: input.intent,
+      },
+      input.signal,
+      input.expectedStreamHandle,
+      input.intent._tag === "select-audio",
     );
   }
 
@@ -535,6 +593,9 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
     input: ReadInstalledPlaybackInput,
   ): Promise<ClientResult<ArrayBuffer>> {
     if (this.#stopped) {
+      return { ok: false, error: { _tag: "cancelled" } };
+    }
+    if (input.streamHandle !== this.#streamHandle) {
       return { ok: false, error: { _tag: "cancelled" } };
     }
     const outcome = await invokeWithCancellation(
@@ -582,10 +643,16 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
       return this.#stopFlight;
     }
     this.#stopped = true;
+    const streamHandle = this.#streamHandle;
     this.#stopFlight = requestNative(
       this.#ipc,
       NATIVE_COMMANDS.stopPlayback,
-      { input: { sessionId: this.#sessionId } },
+      {
+        input: {
+          sessionId: this.#sessionId,
+          ...(streamHandle === null ? {} : { streamHandle }),
+        },
+      },
       voidResponseSchema,
       options.signal,
     );
@@ -593,15 +660,24 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
   }
 
   async #open(
-    command: typeof NATIVE_COMMANDS.startPlayback | typeof NATIVE_COMMANDS.reopenPlayback,
+    command:
+      | typeof NATIVE_COMMANDS.startPlayback
+      | typeof NATIVE_COMMANDS.reopenPlayback
+      | typeof NATIVE_COMMANDS.restartPlayback,
     input: Readonly<Record<string, unknown>>,
     signal: AbortSignal | undefined,
+    expectedStreamHandle: NativeStreamHandle | null,
+    requirePreferenceStatus: boolean,
   ): Promise<ClientResult<InstalledPlaybackTransport>> {
     if (this.#stopped) {
       return { ok: false, error: { _tag: "cancelled" } };
     }
     const parser = clientSchemas.nativePlaybackDescriptor.refine(
-      (descriptor) => descriptor.sessionId === this.#sessionId,
+      (descriptor) =>
+        descriptor.sessionId === this.#sessionId &&
+        (expectedStreamHandle === null ||
+          descriptor.streamHandle !== expectedStreamHandle) &&
+        (!requirePreferenceStatus || descriptor.preferenceStatus !== undefined),
     );
     let rawFlight: Promise<unknown> | null = null;
     const outcome = await invokeWithCancellation(
@@ -615,24 +691,44 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
       },
       signal,
       undefined,
-      () => {
+      (value) => {
+        const lateIdentity = nativePlaybackIdentitySchema.safeParse(value);
+        if (
+          lateIdentity.success &&
+          lateIdentity.data.sessionId === this.#sessionId
+        ) {
+          this.#streamHandle = lateIdentity.data.streamHandle;
+        }
         this.#lateCleanup = this.#stopped ? this.stop() : this.suspend();
       },
     );
     void rawFlight;
+    if (outcome._tag === "resolved") {
+      const identity = nativePlaybackIdentitySchema.safeParse(outcome.value);
+      if (identity.success && identity.data.sessionId === this.#sessionId) {
+        this.#streamHandle = identity.data.streamHandle;
+      }
+    }
     const result = parseNativeOutcome(outcome, parser);
     if (!result.ok && result.error._tag === "transport" && !result.error.retryable) {
       await this.stop();
     }
-    return result.ok
-      ? {
-          ok: true,
-          value: {
-            _tag: "tauri-native-stream",
-            streamHandle: result.value.streamHandle,
-          },
-        }
-      : result;
+    if (!result.ok) {
+      return result;
+    }
+    this.#streamHandle = result.value.streamHandle;
+    return {
+      ok: true,
+      value: {
+        _tag: "tauri-native-stream",
+        streamHandle: result.value.streamHandle,
+        tracks: result.value.tracks,
+        selection: result.value.selection,
+        ...(result.value.preferenceStatus === undefined
+          ? {}
+          : { preferenceStatus: result.value.preferenceStatus }),
+      },
+    };
   }
 }
 
@@ -781,10 +877,19 @@ function cancelNativeSearch(ipc: NativeIpc, requestId: string): void {
   }
 }
 
-function stopNativePlayback(ipc: NativeIpc, sessionId: PlaybackSessionId): void {
+function stopNativePlayback(
+  ipc: NativeIpc,
+  sessionId: PlaybackSessionId,
+  streamHandle?: NativeStreamHandle,
+): void {
   try {
     ipc
-      .invoke(NATIVE_COMMANDS.stopPlayback, { input: { sessionId } })
+      .invoke(NATIVE_COMMANDS.stopPlayback, {
+        input: {
+          sessionId,
+          ...(streamHandle === undefined ? {} : { streamHandle }),
+        },
+      })
       .catch(() => undefined);
   } catch {
     // The caller has already released ownership; native cleanup remains best effort.

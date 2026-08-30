@@ -7,9 +7,14 @@ import {
   useSyncExternalStore,
 } from "react";
 import type {
+  AudioCodec,
+  AudioPreferenceStatus,
+  AudioSelection,
+  AudioTrack,
   ChannelId,
   InstalledSparrowClient,
 } from "../../client/contracts";
+import { clientSchemas } from "../../client/contracts";
 import { createInstalledPlaybackRunner } from "./installed-playback-runner";
 import { installedPlayerState } from "./installed-playback-state";
 import {
@@ -92,7 +97,18 @@ export function InstalledPlayer({
   const canRestart =
     phase._tag !== "idle" &&
     phase._tag !== "stopping" &&
+    phase._tag !== "replacing-audio" &&
     !(phase._tag === "failed" && !phase.canRestart);
+  const selectedAudioTrack = state.audio.tracks.find((track) => track.selected);
+  const canSelectAudio =
+    state.audio.tracks.length > 1 &&
+    (phase._tag === "playing" || phase._tag === "autoplay-blocked");
+  const audioStatus = installedAudioStatus(
+    state.audio.discovered,
+    state.audio.tracks,
+    state.audio.selection,
+    state.audio.preferenceStatus,
+  );
 
   const copyDiagnostics = () => {
     const clipboard = navigator.clipboard;
@@ -129,6 +145,39 @@ export function InstalledPlayer({
       {...(overlayAction === undefined ? {} : { overlayAction })}
       additionalControls={
         <>
+          {state.audio.tracks.length === 0 ? null : (
+            <label className="hosted-player__audio-track">
+              <span>Audio</span>
+              <select
+                aria-label="Audio track"
+                value={selectedAudioTrack?.id ?? ""}
+                disabled={!canSelectAudio}
+                onChange={(event) => {
+                  const parsed = clientSchemas.audioTrackId.safeParse(
+                    event.currentTarget.value,
+                  );
+                  if (parsed.success) {
+                    void runner.selectAudio(parsed.data);
+                  }
+                }}
+              >
+                {state.audio.tracks.map((track, index) => (
+                  <option key={track.id} value={track.id}>
+                    {audioTrackLabel(track, index)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {audioStatus === null ? null : (
+            <span
+              className="hosted-player__audio-status"
+              data-fallback={state.audio.selection._tag === "fallback"}
+              role="status"
+            >
+              {audioStatus}
+            </span>
+          )}
           {canPause ? (
             <button type="button" onClick={() => void runner.pause()}>
               <Pause aria-hidden="true" />
@@ -167,4 +216,58 @@ export function InstalledPlayer({
       onAutoplayFailure={() => void runner.reportAutoplayFailure()}
     />
   );
+}
+
+function audioTrackLabel(track: AudioTrack, index: number): string {
+  const metadata = [track.label, track.language?.toUpperCase()].filter(
+    (value, position, values): value is string =>
+      value !== undefined && values.indexOf(value) === position,
+  );
+  return [
+    ...(metadata.length === 0 ? [`Audio ${index + 1}`] : metadata),
+    audioCodecLabel(track.codec),
+  ].join(" · ");
+}
+
+function audioCodecLabel(codec: AudioCodec): string {
+  switch (codec) {
+    case "mpeg-1-audio":
+      return "MPEG-1";
+    case "mpeg-2-audio":
+      return "MPEG-2";
+    case "aac-adts":
+      return "AAC";
+    case "aac-latm":
+      return "AAC LATM";
+    case "ac-3":
+      return "AC-3";
+  }
+}
+
+function installedAudioStatus(
+  discovered: boolean,
+  tracks: readonly AudioTrack[],
+  selection: AudioSelection,
+  preferenceStatus: AudioPreferenceStatus | null,
+): string | null {
+  if (selection._tag === "fallback") {
+    return selection.missing === "saved-preference"
+      ? "Saved audio is unavailable. Using the first compatible track."
+      : "Chosen audio is unavailable. Using the first compatible track.";
+  }
+  if (preferenceStatus === "not-saved") {
+    return "Audio changed, but the preference could not be saved.";
+  }
+  if (preferenceStatus === "saved") {
+    return "Audio preference saved for this channel.";
+  }
+  if (preferenceStatus === "unchanged") {
+    return "Saved audio preference is unchanged.";
+  }
+  if (selection._tag === "selected" && selection.reason === "saved-preference") {
+    return "Saved audio preference applied.";
+  }
+  return discovered && tracks.length === 0
+    ? "No compatible audio track was found."
+    : null;
 }

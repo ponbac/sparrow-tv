@@ -6,7 +6,10 @@ use sparrow_core::{
     RefreshSkipReason, SafeFailure, SearchResults, SourceKind, SourceState,
 };
 
-use crate::playback::{PlaybackManagerError, StartedPlayback};
+use crate::{
+    playback::{PlaybackManagerError, StartedPlayback},
+    selected_transport_stream::{AudioSelection, AudioTrack},
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,7 +25,7 @@ impl CapabilitiesDto {
         Self {
             source_configuration: "device-writable",
             playback_transport: "tauri-native-stream",
-            audio_track_selection: false,
+            audio_track_selection: true,
             mpv_failover: false,
         }
     }
@@ -35,6 +38,10 @@ pub(crate) struct PlaybackDescriptorDto {
     tag: &'static str,
     session_id: String,
     stream_handle: String,
+    tracks: Vec<AudioTrack>,
+    selection: AudioSelection,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preference_status: Option<crate::selected_transport_stream::PreferenceStatus>,
 }
 
 impl From<StartedPlayback> for PlaybackDescriptorDto {
@@ -43,6 +50,9 @@ impl From<StartedPlayback> for PlaybackDescriptorDto {
             tag: "tauri-native-stream",
             session_id: started.session_id().as_str().to_owned(),
             stream_handle: started.stream_handle().as_str().to_owned(),
+            tracks: started.tracks().to_vec(),
+            selection: started.selection().clone(),
+            preference_status: started.preference_status(),
         }
     }
 }
@@ -579,6 +589,10 @@ impl From<PlaybackManagerError> for ClientErrorDto {
                     retryable: true,
                 }
             }
+            PlaybackManagerError::TransportStream(error) => Self::PlaybackFailed {
+                reason: error.reason(),
+                retryable: error.retryable(),
+            },
             PlaybackManagerError::Cancelled => Self::Cancelled,
             PlaybackManagerError::Unavailable => Self::ServiceUnavailable,
         }
@@ -708,7 +722,7 @@ mod tests {
             json!({
                 "sourceConfiguration": "device-writable",
                 "playbackTransport": "tauri-native-stream",
-                "audioTrackSelection": false,
+                "audioTrackSelection": true,
                 "mpvFailover": false,
             })
         );
@@ -720,13 +734,18 @@ mod tests {
             tag: "tauri-native-stream",
             session_id: "play1_0123456789abcdef0123456789abcdef_a".to_owned(),
             stream_handle: "stream1_0123456789abcdef".to_owned(),
+            tracks: Vec::new(),
+            selection: AudioSelection::None,
+            preference_status: None,
         };
         assert_eq!(
             serde_json::to_value(descriptor).expect("descriptor serializes"),
             json!({
                 "_tag": "tauri-native-stream",
                 "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
-                "streamHandle": "stream1_0123456789abcdef"
+                "streamHandle": "stream1_0123456789abcdef",
+                "tracks": [],
+                "selection": { "_tag": "none" }
             })
         );
 

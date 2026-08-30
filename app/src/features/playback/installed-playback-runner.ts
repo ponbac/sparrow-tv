@@ -1,5 +1,7 @@
 import type {
+  AudioTrackId,
   InstalledPlaybackSession,
+  InstalledPlaybackTransport,
   InstalledSparrowClient,
 } from "../../client/contracts";
 import { clientPlaybackFailure } from "./playback-failure";
@@ -77,6 +79,7 @@ export class InstalledPlaybackRunner {
   #session: InstalledPlaybackSession | null = null;
   #video: HTMLVideoElement | null = null;
   #handle: HostedPlaybackHandle | null = null;
+  #transport: InstalledPlaybackTransport | null = null;
   #openController: AbortController | null = null;
   #cancelRetry: (() => void) | null = null;
   #cancelStableReset: (() => void) | null = null;
@@ -259,6 +262,114 @@ export class InstalledPlaybackRunner {
   }
 
   /**
+   * Atomically replaces the active native transport with one filtered to the
+   * requested Audio Track. The expected handle and both epochs make queued or
+   * late selections harmless after any competing lifecycle transition.
+   */
+  selectAudio(trackId: AudioTrackId): Promise<void> {
+    const session = this.#session;
+    const transport = this.#transport;
+    if (
+      session === null ||
+      transport === null ||
+      this.#cleanupBlocked ||
+      !this.#state.visible ||
+      !transport.tracks.some((track) => track.id === trackId) ||
+      transport.tracks.some(
+        (track) => track.id === trackId && track.selected,
+      )
+    ) {
+      return Promise.resolve();
+    }
+
+    const sessionEpoch = this.#sessionEpoch;
+    const transportEpoch = ++this.#transportEpoch;
+    const expectedStreamHandle = transport.streamHandle;
+    this.#cancelLocalTransport();
+    this.#dispatch({
+      _tag: "replacing-audio",
+      requestedTrackId: trackId,
+      transportEpoch,
+    });
+
+    return this.#enqueue(async () => {
+      if (
+        !this.#matchesTransport(sessionEpoch, transportEpoch, session) ||
+        this.#state.phase._tag !== "replacing-audio"
+      ) {
+        return;
+      }
+
+      const controller = new AbortController();
+      this.#openController = controller;
+      let result: Awaited<ReturnType<InstalledPlaybackSession["restart"]>>;
+      try {
+        result = await session.restart({
+          expectedStreamHandle,
+          intent: { _tag: "select-audio", audioTrackId: trackId },
+          signal: controller.signal,
+        });
+      } catch {
+        if (this.#openController === controller) {
+          this.#openController = null;
+        }
+        if (this.#matchesTransport(sessionEpoch, transportEpoch, session)) {
+          await this.#afterFailure(
+            sessionEpoch,
+            transportEpoch,
+            "source-unavailable",
+            true,
+          );
+        }
+        return;
+      }
+      if (this.#openController === controller) {
+        this.#openController = null;
+      }
+      if (!this.#matchesTransport(sessionEpoch, transportEpoch, session)) {
+        return;
+      }
+      if (!this.#state.visible) {
+        const suspended = await safeSuspend(session);
+        if (!this.#matchesTransport(sessionEpoch, transportEpoch, session)) {
+          return;
+        }
+        if (!suspended) {
+          this.#failCleanup();
+          return;
+        }
+        this.#dispatch({
+          _tag: "paused",
+          cause: "visibility",
+          resumeWhenVisible: true,
+        });
+        return;
+      }
+      if (!result.ok) {
+        const mapped =
+          result.error._tag === "cancelled"
+            ? { failure: "source-unavailable" as const, retryable: true }
+            : clientPlaybackFailure(result.error);
+        await this.#afterFailure(
+          sessionEpoch,
+          transportEpoch,
+          mapped.failure,
+          mapped.retryable,
+        );
+        return;
+      }
+
+      await this.#startTransport(
+        sessionEpoch,
+        transportEpoch,
+        session,
+        this.#video,
+        result.value,
+      );
+    });
+  }
+
+  /**
    * Final-stops the current resource exactly once. The result is false when the
    * installed shell does not confirm cleanup, in which case replacement blocks.
    */
@@ -300,6 +411,7 @@ export class InstalledPlaybackRunner {
         case "starting":
         case "playing":
         case "autoplay-blocked":
+        case "replacing-audio":
         case "recovering":
           return this.#suspendFor("visibility");
         case "idle":
@@ -555,6 +667,38 @@ export class InstalledPlaybackRunner {
       return;
     }
 
+    await this.#startTransport(
+      sessionEpoch,
+      transportEpoch,
+      session,
+      video,
+      result.value,
+    );
+  }
+
+  async #startTransport(
+    sessionEpoch: number,
+    transportEpoch: number,
+    session: InstalledPlaybackSession,
+    video: HTMLVideoElement | null,
+    transport: InstalledPlaybackTransport,
+  ): Promise<void> {
+    if (
+      video === null ||
+      video !== this.#video ||
+      !this.#matchesTransport(sessionEpoch, transportEpoch, session)
+    ) {
+      return;
+    }
+    this.#transport = transport;
+    this.#dispatch({
+      _tag: "transport-opened",
+      tracks: transport.tracks,
+      selection: transport.selection,
+      ...(transport.preferenceStatus === undefined
+        ? {}
+        : { preferenceStatus: transport.preferenceStatus }),
+    });
     this.#applyControls();
     let registered = false;
     const synchronousOutcome: {
@@ -566,7 +710,7 @@ export class InstalledPlaybackRunner {
     } = { autoplayBlocked: false };
     const started = this.#engine.start({
       session,
-      descriptor: result.value,
+      descriptor: transport,
       video,
       onFailure: (failure, retryable) => {
         if (!registered) {
@@ -767,6 +911,7 @@ export class InstalledPlaybackRunner {
   #cancelLocalTransport(): void {
     this.#openController?.abort();
     this.#openController = null;
+    this.#transport = null;
     const handle = this.#handle;
     this.#handle = null;
     if (handle !== null) {

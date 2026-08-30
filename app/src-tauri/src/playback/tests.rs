@@ -28,6 +28,7 @@ use sparrow_source_http::{
 use tempfile::TempDir;
 
 use super::*;
+use crate::selected_transport_stream::{AudioCodec, AudioSelectionReason, MissingAudioSelection};
 
 const PRIVATE_PLAYBACK_CANARY: &str =
     "http://subscriber:secret@provider.invalid/live.ts?token=private";
@@ -138,7 +139,10 @@ async fn initial_access_failure_retains_the_pinned_session_for_reopen() {
         b"recovered"
     );
     manager
-        .stop(reopened.session_id().clone())
+        .stop(
+            reopened.session_id().clone(),
+            Some(reopened.stream_handle().clone()),
+        )
         .await
         .expect("recovered session stops");
     assert!(pinned.upgrade().is_none());
@@ -207,7 +211,7 @@ async fn matching_stop_cancels_pending_headers_before_acknowledging() {
         () = wait_until(|| access.tracker.active() == 1) => {}
     }
     manager
-        .stop(session_id)
+        .stop(session_id, None)
         .await
         .expect("matching stop is acknowledged");
 
@@ -311,7 +315,7 @@ async fn stop_before_start_is_bounded_and_does_not_poison_later_sessions() {
 
     for sequence in 0..=MAX_STOP_TOMBSTONES {
         manager
-            .stop(session(sequence))
+            .stop(session(sequence), None)
             .await
             .expect("unknown stop remains idempotent");
     }
@@ -328,7 +332,10 @@ async fn stop_before_start_is_bounded_and_does_not_poison_later_sessions() {
     ));
     assert_eq!(access.open_count(), 1);
     manager
-        .stop(oldest.session_id().clone())
+        .stop(
+            oldest.session_id().clone(),
+            Some(oldest.stream_handle().clone()),
+        )
         .await
         .expect("active playback stops");
 }
@@ -400,7 +407,10 @@ async fn matching_stop_cancels_a_pending_read_and_releases_the_body() {
         () = wait_until(|| access.tracker.read_polls() > 0) => {}
     }
     manager
-        .stop(started.session_id().clone())
+        .stop(
+            started.session_id().clone(),
+            Some(started.stream_handle().clone()),
+        )
         .await
         .expect("stop cancels the read");
 
@@ -537,7 +547,10 @@ async fn replacement_and_stale_commands_never_overlap_or_retarget_streams() {
         Err(PlaybackManagerError::Cancelled)
     ));
     manager
-        .stop(first.session_id().clone())
+        .stop(
+            first.session_id().clone(),
+            Some(first.stream_handle().clone()),
+        )
         .await
         .expect("stale stop is harmless");
     manager
@@ -564,7 +577,10 @@ async fn replacement_and_stale_commands_never_overlap_or_retarget_streams() {
         b"new"
     );
     manager
-        .stop(second.session_id().clone())
+        .stop(
+            second.session_id().clone(),
+            Some(second.stream_handle().clone()),
+        )
         .await
         .expect("current stream stops");
     assert_eq!(access.tracker.active(), 0);
@@ -662,7 +678,7 @@ async fn stop_releases_dormant_sources_after_each_recoverable_failure() {
     ));
     let access_source = access_failure.source(0);
     access_manager
-        .stop(access_id)
+        .stop(access_id, None)
         .await
         .expect("access-failed session stops");
     assert!(access_source.upgrade().is_none());
@@ -681,7 +697,7 @@ async fn stop_releases_dormant_sources_after_each_recoverable_failure() {
     );
     let eof_source = eof_access.source(0);
     eof_manager
-        .stop(eof.session_id().clone())
+        .stop(eof.session_id().clone(), Some(eof.stream_handle().clone()))
         .await
         .expect("EOF session stops");
     assert!(eof_source.upgrade().is_none());
@@ -700,7 +716,10 @@ async fn stop_releases_dormant_sources_after_each_recoverable_failure() {
     ));
     let read_source = read_access.source(0);
     read_manager
-        .stop(failed.session_id().clone())
+        .stop(
+            failed.session_id().clone(),
+            Some(failed.stream_handle().clone()),
+        )
         .await
         .expect("read-failed session stops");
     assert!(read_source.upgrade().is_none());
@@ -728,7 +747,10 @@ async fn dropping_a_pending_read_cancels_the_body_without_shifting_bytes() {
         Err(PlaybackManagerError::Cancelled)
     ));
     manager
-        .stop(started.session_id().clone())
+        .stop(
+            started.session_id().clone(),
+            Some(started.stream_handle().clone()),
+        )
         .await
         .expect("failed Session stops");
 }
@@ -822,7 +844,10 @@ async fn active_transport_defers_background_refresh_then_dormant_reopen_uses_pin
     assert!(pinned_source.upgrade().is_none());
     assert_eq!(access.tracker.max_active(), 1);
     manager
-        .stop(second.session_id().clone())
+        .stop(
+            second.session_id().clone(),
+            Some(second.stream_handle().clone()),
+        )
         .await
         .expect("replacement stops");
     source_server.join().expect("source fixture exits");
@@ -851,6 +876,152 @@ async fn diagnostics_never_expose_provider_or_opaque_identifier_values() {
     assert!(!diagnostics.contains(&handle_value));
 }
 
+#[tokio::test]
+async fn audio_restart_is_handle_safe_serialized_and_persists_visible_fallback() {
+    let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
+    let preferences_root = TempDir::new().expect("temporary preference directory");
+    let preferences = AudioPreferenceStore::open(preferences_root.path());
+    let first_track = audio_track(1);
+    let second_track = audio_track(2);
+    let selector = Arc::new(FixturePlaybackTransportSelector::new([
+        first_track.clone(),
+        second_track.clone(),
+    ]));
+    let access = FakeAccess::new([
+        OpenPlan::Stream(vec![StreamStep::Pending]),
+        OpenPlan::Stream(vec![StreamStep::Pending]),
+        OpenPlan::Stream(vec![StreamStep::Pending]),
+    ]);
+    let manager = PlaybackManager::with_access_preferences_and_selector(
+        Arc::clone(&fixture.core),
+        access.clone(),
+        preferences.clone(),
+        selector.clone(),
+    );
+
+    let started = manager
+        .start(session(0xa0), fixture.channel.clone())
+        .await
+        .expect("initial track opens");
+    assert_eq!(started.tracks().len(), 2);
+    assert!(matches!(
+        started.selection(),
+        AudioSelection::Selected {
+            track_id,
+            reason: AudioSelectionReason::FirstAvailable,
+        } if track_id == &first_track
+    ));
+    assert_eq!(started.preference_status(), None);
+
+    assert!(matches!(
+        manager.stop(started.session_id().clone(), None).await,
+        Err(PlaybackManagerError::Cancelled)
+    ));
+    let stale_handle = NativeStreamHandle::parse("stream1_000000000000ffff".to_owned())
+        .expect("stale fixture handle parses");
+    assert!(matches!(
+        manager
+            .restart(
+                started.session_id().clone(),
+                stale_handle,
+                PlaybackRestartIntent::SelectAudio(second_track.clone()),
+            )
+            .await,
+        Err(PlaybackManagerError::Cancelled)
+    ));
+    assert_eq!(access.open_count(), 1);
+    assert_eq!(access.tracker.active(), 1);
+
+    let selected = manager
+        .restart(
+            started.session_id().clone(),
+            started.stream_handle().clone(),
+            PlaybackRestartIntent::SelectAudio(second_track.clone()),
+        )
+        .await
+        .expect("matching generation selects a track");
+    assert_ne!(selected.stream_handle(), started.stream_handle());
+    assert!(matches!(
+        selected.selection(),
+        AudioSelection::Selected {
+            track_id,
+            reason: AudioSelectionReason::Requested,
+        } if track_id == &second_track
+    ));
+    assert_eq!(selected.preference_status(), Some(PreferenceStatus::Saved));
+    assert_eq!(
+        preferences.preference(&fixture.channel),
+        Some(second_track.clone())
+    );
+    assert_eq!(access.tracker.max_active(), 1);
+
+    assert!(matches!(
+        manager
+            .stop(
+                selected.session_id().clone(),
+                Some(started.stream_handle().clone()),
+            )
+            .await,
+        Err(PlaybackManagerError::Cancelled)
+    ));
+    assert_eq!(access.tracker.active(), 1);
+
+    let reopened = manager
+        .reopen(selected.session_id().clone())
+        .await
+        .expect("current selection survives a fresh transport");
+    assert!(matches!(
+        reopened.selection(),
+        AudioSelection::Selected {
+            track_id,
+            reason: AudioSelectionReason::CurrentSession,
+        } if track_id == &second_track
+    ));
+    assert_eq!(access.tracker.max_active(), 1);
+    manager
+        .stop(
+            reopened.session_id().clone(),
+            Some(reopened.stream_handle().clone()),
+        )
+        .await
+        .expect("current generation stops");
+    assert_eq!(access.tracker.active(), 0);
+    drop(manager);
+
+    let fallback_selector = Arc::new(FixturePlaybackTransportSelector::new([first_track.clone()]));
+    let fallback_access = FakeAccess::new([OpenPlan::Stream(vec![StreamStep::Pending])]);
+    let fallback_manager = PlaybackManager::with_access_preferences_and_selector(
+        Arc::clone(&fixture.core),
+        fallback_access,
+        AudioPreferenceStore::open(preferences_root.path()),
+        fallback_selector,
+    );
+    let fallback = fallback_manager
+        .start(session(0xa1), fixture.channel.clone())
+        .await
+        .expect("missing saved track falls back visibly");
+    assert!(matches!(
+        fallback.selection(),
+        AudioSelection::Fallback {
+            track_id: Some(track_id),
+            missing: MissingAudioSelection::SavedPreference,
+        } if track_id == &first_track
+    ));
+    assert_eq!(fallback.preference_status(), None);
+    assert_eq!(
+        AudioPreferenceStore::open(preferences_root.path()).preference(&fixture.channel),
+        Some(second_track),
+        "fallback does not silently overwrite the saved preference"
+    );
+    fallback_manager
+        .stop(
+            fallback.session_id().clone(),
+            Some(fallback.stream_handle().clone()),
+        )
+        .await
+        .expect("fallback stream stops");
+}
+
 async fn read(
     manager: &PlaybackManager,
     started: &StartedPlayback,
@@ -868,6 +1039,10 @@ fn session(sequence: usize) -> PlaybackSessionId {
         "play1_0123456789abcdef0123456789abcdef_{sequence:x}"
     ))
     .expect("fixture session id is valid")
+}
+
+fn audio_track(sequence: u8) -> AudioTrackId {
+    AudioTrackId::parse(format!("atrk1_{sequence:032x}")).expect("fixture Audio Track ID is valid")
 }
 
 async fn wait_until(predicate: impl Fn() -> bool) {
@@ -1037,6 +1212,130 @@ struct FakeAccess {
     sources: Arc<Mutex<Vec<Weak<ResolvedPlaybackSource>>>>,
     prior_source_alive: Arc<Mutex<Vec<bool>>>,
     tracker: Arc<ConnectionTracker>,
+}
+
+struct FixturePlaybackTransportSelector {
+    available: Vec<AudioTrackId>,
+}
+
+impl FixturePlaybackTransportSelector {
+    fn new(available: impl IntoIterator<Item = AudioTrackId>) -> Self {
+        Self {
+            available: available.into_iter().collect(),
+        }
+    }
+}
+
+impl PlaybackTransportSelector for FixturePlaybackTransportSelector {
+    fn open(&self, body: PlaybackByteStream, request: SelectionRequest) -> TransportOpenFuture {
+        let available = self.available.clone();
+        Box::pin(async move {
+            let find =
+                |candidate: &AudioTrackId| available.iter().position(|track| track == candidate);
+            let (selected, selection) = if available.is_empty() {
+                (None, AudioSelection::None)
+            } else {
+                match request {
+                    SelectionRequest::Initial { saved: Some(saved) } => match find(&saved) {
+                        Some(index) => (
+                            Some(index),
+                            AudioSelection::Selected {
+                                track_id: saved,
+                                reason: AudioSelectionReason::SavedPreference,
+                            },
+                        ),
+                        None => (
+                            Some(0),
+                            AudioSelection::Fallback {
+                                track_id: Some(available[0].clone()),
+                                missing: MissingAudioSelection::SavedPreference,
+                            },
+                        ),
+                    },
+                    SelectionRequest::Initial { saved: None } => (
+                        Some(0),
+                        AudioSelection::Selected {
+                            track_id: available[0].clone(),
+                            reason: AudioSelectionReason::FirstAvailable,
+                        },
+                    ),
+                    SelectionRequest::Continue {
+                        current: Some(current),
+                        ..
+                    } if find(&current).is_some() => (
+                        find(&current),
+                        AudioSelection::Selected {
+                            track_id: current,
+                            reason: AudioSelectionReason::CurrentSession,
+                        },
+                    ),
+                    SelectionRequest::Continue {
+                        saved: Some(saved), ..
+                    } => match find(&saved) {
+                        Some(index) => (
+                            Some(index),
+                            AudioSelection::Selected {
+                                track_id: saved,
+                                reason: AudioSelectionReason::SavedPreference,
+                            },
+                        ),
+                        None => (
+                            Some(0),
+                            AudioSelection::Fallback {
+                                track_id: Some(available[0].clone()),
+                                missing: MissingAudioSelection::SavedPreference,
+                            },
+                        ),
+                    },
+                    SelectionRequest::Continue { saved: None, .. } => (
+                        Some(0),
+                        AudioSelection::Selected {
+                            track_id: available[0].clone(),
+                            reason: AudioSelectionReason::FirstAvailable,
+                        },
+                    ),
+                    SelectionRequest::Requested(requested) => match find(&requested) {
+                        Some(index) => (
+                            Some(index),
+                            AudioSelection::Selected {
+                                track_id: requested,
+                                reason: AudioSelectionReason::Requested,
+                            },
+                        ),
+                        None => (
+                            Some(0),
+                            AudioSelection::Fallback {
+                                track_id: Some(available[0].clone()),
+                                missing: MissingAudioSelection::Requested,
+                            },
+                        ),
+                    },
+                }
+            };
+            let tracks = available
+                .into_iter()
+                .enumerate()
+                .map(|(index, id)| {
+                    AudioTrack::fixture(
+                        id,
+                        (index == 0).then_some("eng"),
+                        (index == 0).then_some("Original"),
+                        if index == 0 {
+                            AudioCodec::AacAdts
+                        } else {
+                            AudioCodec::Mpeg2Audio
+                        },
+                        selected == Some(index),
+                    )
+                })
+                .collect();
+            Ok(PreparedPlaybackTransport {
+                body,
+                tracks,
+                selection,
+            })
+        })
+    }
 }
 
 impl FakeAccess {

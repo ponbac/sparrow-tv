@@ -44,6 +44,11 @@ export function installedPlaybackDiagnostics(
       muted: state.controls.muted,
       fullscreen: state.controls.fullscreen,
     },
+    audio: {
+      trackCount: boundedInteger(state.audio.tracks.length, 32),
+      selection: safeAudioSelection(state),
+      preferenceStatus: state.audio.preferenceStatus ?? "none",
+    },
     transitions: transitions.slice(-MAX_TRANSITIONS).map((transition) => ({
       from: transition.from,
       to: transition.to,
@@ -73,6 +78,8 @@ function safeIntent(phase: InstalledPlaybackPhase): string {
       return phase._tag;
     case "starting":
       return phase.reason;
+    case "replacing-audio":
+      return "audio-selection";
     case "suspending":
       return phase.next._tag;
     case "paused":
@@ -91,10 +98,22 @@ function safeFailure(phase: InstalledPlaybackPhase): InstalledPlaybackFailure | 
     case "starting":
     case "playing":
     case "autoplay-blocked":
+    case "replacing-audio":
     case "suspending":
     case "paused":
     case "stopping":
       return null;
+  }
+}
+
+function safeAudioSelection(state: InstalledPlaybackState): string {
+  switch (state.audio.selection._tag) {
+    case "none":
+      return "none";
+    case "selected":
+      return state.audio.selection.reason;
+    case "fallback":
+      return `${state.audio.selection.missing}-fallback`;
   }
 }
 

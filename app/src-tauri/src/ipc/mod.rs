@@ -17,8 +17,9 @@ use self::{
     },
     input::{
         ChannelInput, ListChannelsInput, ListGroupsInput, PlaybackReadInput, PlaybackReopenInput,
-        PlaybackStartInput, PlaybackStopInput, PlaybackSuspendInput, ScheduleInput,
-        SearchCancellationInput, SearchInput, SearchPageInput, SourceConfigurationInputDto,
+        PlaybackRestartInput, PlaybackStartInput, PlaybackStopInput, PlaybackSuspendInput,
+        ScheduleInput, SearchCancellationInput, SearchInput, SearchPageInput,
+        SourceConfigurationInputDto,
     },
 };
 
@@ -309,6 +310,27 @@ pub(crate) async fn reopen_playback(
 }
 
 #[tauri::command]
+pub(crate) async fn playback_restart(
+    slot: State<'_, InstalledRuntimeSlot>,
+    input: PlaybackRestartInput,
+) -> Result<PlaybackDescriptorDto, ClientErrorDto> {
+    let runtime = slot.wait().await;
+    restart_playback(runtime.as_ref(), input).await
+}
+
+pub(crate) async fn restart_playback(
+    state: &InstalledRuntime,
+    input: PlaybackRestartInput,
+) -> Result<PlaybackDescriptorDto, ClientErrorDto> {
+    let (session_id, expected_stream_handle, intent) = input.into_playback()?;
+    state
+        .restart_playback(session_id, expected_stream_handle, intent)
+        .await
+        .map(PlaybackDescriptorDto::from)
+        .map_err(ClientErrorDto::from)
+}
+
+#[tauri::command]
 pub(crate) async fn playback_stop(
     slot: State<'_, InstalledRuntimeSlot>,
     input: PlaybackStopInput,
@@ -321,8 +343,9 @@ pub(crate) async fn stop_playback(
     state: &InstalledRuntime,
     input: PlaybackStopInput,
 ) -> Result<(), ClientErrorDto> {
+    let (session_id, stream_handle) = input.into_playback()?;
     state
-        .stop_playback(input.into_session_id()?)
+        .stop_playback(session_id, stream_handle)
         .await
         .map_err(ClientErrorDto::from)
 }

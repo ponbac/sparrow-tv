@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
+mod audio_preferences;
 mod bounded_blocking;
 mod config_store;
 mod instance_lock;
 mod ipc;
 mod playback;
 mod runtime;
+mod selected_transport_stream;
 
 /// Runs the installed Sparrow shell.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -52,6 +54,7 @@ pub fn run() {
             ipc::playback_read,
             ipc::playback_suspend,
             ipc::playback_reopen,
+            ipc::playback_restart,
             ipc::playback_stop,
         ])
         .build(tauri::generate_context!())

@@ -19,6 +19,12 @@ import type {
 const CHANNEL_A = channel("channel-a", "Channel A");
 const CHANNEL_B = channel("channel-b", "Channel B");
 const CHANNEL_C = channel("channel-c", "Channel C");
+const ENGLISH_AUDIO_ID = clientSchemas.audioTrackId.parse(
+  `atrk1_${"a".repeat(32)}`,
+);
+const SPANISH_AUDIO_ID = clientSchemas.audioTrackId.parse(
+  `atrk1_${"b".repeat(32)}`,
+);
 
 describe("InstalledPlaybackRunner", () => {
   it("confirms suspend before pause/resume/restart and never overlaps engines", async () => {
@@ -63,6 +69,182 @@ describe("InstalledPlaybackRunner", () => {
     restartSuspend.resolve(success(undefined));
     await restarting;
     expect(session.reopen).toHaveBeenCalledTimes(2);
+    expect(engine.maximumActive).toBe(1);
+  });
+
+  it("replaces Audio Tracks through the exact active handle without overlapping engines", async () => {
+    const order: string[] = [];
+    const replacement = deferred<ClientResult<NativePlaybackDescriptor>>();
+    const session = sessionFixture(16, {
+      start: async () =>
+        success(
+          audioDescriptor(
+            16,
+            1,
+            ENGLISH_AUDIO_ID,
+            {
+              _tag: "selected",
+              trackId: ENGLISH_AUDIO_ID,
+              reason: "first-available",
+            },
+          ),
+        ),
+      restart: (input) => {
+        order.push("restart");
+        expect(input).toEqual({
+          expectedStreamHandle: descriptor(16, 1).streamHandle,
+          intent: {
+            _tag: "select-audio",
+            audioTrackId: SPANISH_AUDIO_ID,
+          },
+          signal: expect.any(AbortSignal),
+        });
+        return replacement.promise;
+      },
+    });
+    const engine = recordingEngine(order);
+    const runner = createInstalledPlaybackRunner({
+      client: clientFixture(() => session.value),
+      engine: engine.value,
+    });
+
+    await runner.select(CHANNEL_A, document.createElement("video"));
+    expect(runner.getSnapshot().audio.tracks).toHaveLength(2);
+    const selecting = runner.selectAudio(SPANISH_AUDIO_ID);
+    await until(() => session.restart.mock.calls.length === 1);
+    expect(order.slice(-2)).toEqual(["engine-stop:1", "restart"]);
+    expect(engine.maximumActive).toBe(1);
+
+    replacement.resolve(
+      success(
+        audioDescriptor(
+          16,
+          2,
+          SPANISH_AUDIO_ID,
+          {
+            _tag: "selected",
+            trackId: SPANISH_AUDIO_ID,
+            reason: "requested",
+          },
+          "saved",
+        ),
+      ),
+    );
+    await selecting;
+
+    expect(engine.maximumActive).toBe(1);
+    expect(runner.getSnapshot().audio).toMatchObject({
+      discovered: true,
+      selection: {
+        _tag: "selected",
+        trackId: SPANISH_AUDIO_ID,
+        reason: "requested",
+      },
+      preferenceStatus: "saved",
+    });
+    expect(
+      runner.getSnapshot().audio.tracks.find((track) => track.selected)?.id,
+    ).toBe(SPANISH_AUDIO_ID);
+  });
+
+  it("keeps a missing requested Audio Track fallback visible without persisting it", async () => {
+    const session = sessionFixture(17, {
+      start: async () =>
+        success(
+          audioDescriptor(
+            17,
+            1,
+            ENGLISH_AUDIO_ID,
+            {
+              _tag: "selected",
+              trackId: ENGLISH_AUDIO_ID,
+              reason: "saved-preference",
+            },
+          ),
+        ),
+      restart: async () =>
+        success({
+          ...descriptor(17, 2),
+          tracks: [audioTracks(ENGLISH_AUDIO_ID)[0]],
+          selection: {
+            _tag: "fallback" as const,
+            trackId: ENGLISH_AUDIO_ID,
+            missing: "requested" as const,
+          },
+          preferenceStatus: "not-saved" as const,
+        }),
+    });
+    const runner = createInstalledPlaybackRunner({
+      client: clientFixture(() => session.value),
+      engine: recordingEngine().value,
+    });
+
+    await runner.select(CHANNEL_A, document.createElement("video"));
+    await runner.selectAudio(SPANISH_AUDIO_ID);
+
+    expect(runner.getSnapshot().audio).toMatchObject({
+      selection: {
+        _tag: "fallback",
+        trackId: ENGLISH_AUDIO_ID,
+        missing: "requested",
+      },
+      preferenceStatus: "not-saved",
+    });
+  });
+
+  it("ignores a late Audio Track replacement after a Channel switch", async () => {
+    const replacement = deferred<ClientResult<NativePlaybackDescriptor>>();
+    const first = sessionFixture(18, {
+      start: async () =>
+        success(
+          audioDescriptor(
+            18,
+            1,
+            ENGLISH_AUDIO_ID,
+            {
+              _tag: "selected",
+              trackId: ENGLISH_AUDIO_ID,
+              reason: "first-available",
+            },
+          ),
+        ),
+      restart: () => replacement.promise,
+    });
+    const second = sessionFixture(19);
+    const engine = recordingEngine();
+    const runner = createInstalledPlaybackRunner({
+      client: clientFixture(({ id }) =>
+        id === CHANNEL_A.id ? first.value : second.value,
+      ),
+      engine: engine.value,
+    });
+    const video = document.createElement("video");
+    await runner.select(CHANNEL_A, video);
+    const selectingAudio = runner.selectAudio(SPANISH_AUDIO_ID);
+    await until(() => first.restart.mock.calls.length === 1);
+    const switching = runner.select(CHANNEL_B, video);
+
+    replacement.resolve(
+      success(
+        audioDescriptor(
+          18,
+          2,
+          SPANISH_AUDIO_ID,
+          {
+            _tag: "selected",
+            trackId: SPANISH_AUDIO_ID,
+            reason: "requested",
+          },
+          "saved",
+        ),
+      ),
+    );
+    await Promise.all([selectingAudio, switching]);
+
+    expect(first.stop).toHaveBeenCalledTimes(1);
+    expect(second.start).toHaveBeenCalledTimes(1);
+    expect(runner.getSnapshot().channel?.id).toBe(CHANNEL_B.id);
+    expect(runner.getSnapshot().audio.tracks).toEqual([]);
     expect(engine.maximumActive).toBe(1);
   });
 
@@ -441,6 +623,7 @@ describe("InstalledPlaybackRunner", () => {
 interface SessionOverrides {
   readonly start?: InstalledPlaybackSession["start"];
   readonly reopen?: InstalledPlaybackSession["reopen"];
+  readonly restart?: InstalledPlaybackSession["restart"];
   readonly suspend?: InstalledPlaybackSession["suspend"];
   readonly stop?: InstalledPlaybackSession["stop"];
 }
@@ -452,6 +635,7 @@ function sessionFixture(
   readonly value: InstalledPlaybackSession;
   readonly start: ReturnType<typeof vi.fn<InstalledPlaybackSession["start"]>>;
   readonly reopen: ReturnType<typeof vi.fn<InstalledPlaybackSession["reopen"]>>;
+  readonly restart: ReturnType<typeof vi.fn<InstalledPlaybackSession["restart"]>>;
   readonly suspend: ReturnType<typeof vi.fn<InstalledPlaybackSession["suspend"]>>;
   readonly stop: ReturnType<typeof vi.fn<InstalledPlaybackSession["stop"]>>;
 } {
@@ -460,6 +644,9 @@ function sessionFixture(
   );
   const reopen = vi.fn<InstalledPlaybackSession["reopen"]>(
     overrides.reopen ?? (async () => success(descriptor(sessionNumber, 2))),
+  );
+  const restart = vi.fn<InstalledPlaybackSession["restart"]>(
+    overrides.restart ?? (async () => success(descriptor(sessionNumber, 3))),
   );
   const suspend = vi.fn<InstalledPlaybackSession["suspend"]>(
     overrides.suspend ?? (async () => success(undefined)),
@@ -471,12 +658,14 @@ function sessionFixture(
     value: {
       start,
       reopen,
+      restart,
       read: vi.fn(async () => success(new ArrayBuffer(0))),
       suspend,
       stop,
     },
     start,
     reopen,
+    restart,
     suspend,
     stop,
   };
@@ -602,7 +791,42 @@ function descriptor(
     _tag: "tauri-native-stream",
     sessionId: `play1_${sessionHex}_1`,
     streamHandle: `stream1_${streamHex}`,
+    tracks: [],
+    selection: { _tag: "none" },
   });
+}
+
+function audioTracks(selected: typeof ENGLISH_AUDIO_ID) {
+  return [
+    {
+      id: ENGLISH_AUDIO_ID,
+      language: "eng",
+      label: "Original",
+      codec: "aac-adts" as const,
+      selected: selected === ENGLISH_AUDIO_ID,
+    },
+    {
+      id: SPANISH_AUDIO_ID,
+      language: "spa",
+      codec: "ac-3" as const,
+      selected: selected === SPANISH_AUDIO_ID,
+    },
+  ];
+}
+
+function audioDescriptor(
+  sessionNumber: number,
+  streamNumber: number,
+  selected: typeof ENGLISH_AUDIO_ID,
+  selection: NativePlaybackDescriptor["selection"],
+  preferenceStatus?: NativePlaybackDescriptor["preferenceStatus"],
+): NativePlaybackDescriptor {
+  return {
+    ...descriptor(sessionNumber, streamNumber),
+    tracks: audioTracks(selected),
+    selection,
+    ...(preferenceStatus === undefined ? {} : { preferenceStatus }),
+  };
 }
 
 function channel(id: string, name: string): {

@@ -20,6 +20,14 @@ use tokio::{
     task::JoinHandle,
 };
 
+use crate::{
+    audio_preferences::{AudioPreferenceStore, PreferenceWrite},
+    selected_transport_stream::{
+        AudioSelection, AudioTrack, AudioTrackId, PreferenceStatus, SelectedTransportStream,
+        SelectionRequest, TransportStreamError,
+    },
+};
+
 const COMMAND_CAPACITY: usize = 16;
 const READ_CAPACITY: usize = 16;
 const MAX_STOP_TOMBSTONES: usize = 64;
@@ -33,6 +41,15 @@ const STREAM_HANDLE_HEX_BYTES: usize = 16;
 
 type AccessOpenFuture =
     Pin<Box<dyn Future<Output = Result<PlaybackByteStream, PlaybackAccessError>> + Send + 'static>>;
+type TransportOpenFuture = Pin<
+    Box<
+        dyn Future<Output = Result<PreparedPlaybackTransport, TransportStreamError>>
+            + Send
+            + 'static,
+    >,
+>;
+type SelectedOpenFuture =
+    Pin<Box<dyn Future<Output = Result<OpenedPlayback, PendingOpenError>> + Send + 'static>>;
 type DescriptorReply = oneshot::Sender<Result<StartedPlayback, PlaybackManagerError>>;
 type UnitReply = oneshot::Sender<Result<(), PlaybackManagerError>>;
 
@@ -47,6 +64,41 @@ impl NativePlaybackAccess for HttpPlaybackAccess {
             HttpPlaybackAccess::open(&access, source.as_ref())
                 .await
                 .map(|response| response.into_body())
+        })
+    }
+}
+
+trait PlaybackTransportSelector: Send + Sync + 'static {
+    fn open(&self, body: PlaybackByteStream, request: SelectionRequest) -> TransportOpenFuture;
+}
+
+struct MpegTsPlaybackTransportSelector;
+
+impl PlaybackTransportSelector for MpegTsPlaybackTransportSelector {
+    fn open(&self, body: PlaybackByteStream, request: SelectionRequest) -> TransportOpenFuture {
+        Box::pin(async move {
+            let opened = SelectedTransportStream::open(body, request).await?;
+            Ok(PreparedPlaybackTransport {
+                body: Box::pin(opened.stream),
+                tracks: opened.tracks,
+                selection: opened.selection,
+            })
+        })
+    }
+}
+
+#[cfg(test)]
+struct PassthroughPlaybackTransportSelector;
+
+#[cfg(test)]
+impl PlaybackTransportSelector for PassthroughPlaybackTransportSelector {
+    fn open(&self, body: PlaybackByteStream, _request: SelectionRequest) -> TransportOpenFuture {
+        Box::pin(async move {
+            Ok(PreparedPlaybackTransport {
+                body,
+                tracks: Vec::new(),
+                selection: AudioSelection::None,
+            })
         })
     }
 }
@@ -126,6 +178,9 @@ fn is_lower_hex(byte: u8) -> bool {
 pub(crate) struct StartedPlayback {
     session_id: PlaybackSessionId,
     stream_handle: NativeStreamHandle,
+    tracks: Vec<AudioTrack>,
+    selection: AudioSelection,
+    preference_status: Option<PreferenceStatus>,
 }
 
 impl StartedPlayback {
@@ -136,6 +191,18 @@ impl StartedPlayback {
     pub(crate) fn stream_handle(&self) -> &NativeStreamHandle {
         &self.stream_handle
     }
+
+    pub(crate) fn tracks(&self) -> &[AudioTrack] {
+        &self.tracks
+    }
+
+    pub(crate) fn selection(&self) -> &AudioSelection {
+        &self.selection
+    }
+
+    pub(crate) const fn preference_status(&self) -> Option<PreferenceStatus> {
+        self.preference_status
+    }
 }
 
 impl Debug for StartedPlayback {
@@ -144,6 +211,9 @@ impl Debug for StartedPlayback {
             .debug_struct("StartedPlayback")
             .field("session_id", &self.session_id)
             .field("stream_handle", &self.stream_handle)
+            .field("tracks", &self.tracks)
+            .field("selection", &self.selection)
+            .field("preference_status", &self.preference_status)
             .finish()
     }
 }
@@ -158,10 +228,30 @@ pub(crate) enum PlaybackManagerError {
     Access(PlaybackAccessError),
     #[error("native playback failed while streaming")]
     Read(PlaybackReadError),
+    #[error("native transport stream inspection failed")]
+    TransportStream(TransportStreamError),
     #[error("the playback operation was cancelled")]
     Cancelled,
     #[error("native playback is unavailable")]
     Unavailable,
+}
+
+impl PlaybackManagerError {
+    fn retryable(&self) -> bool {
+        match self {
+            Self::Access(error) => error.retryable(),
+            Self::Read(_) => true,
+            Self::TransportStream(error) => error.retryable(),
+            Self::Core(_) | Self::Cancelled | Self::Unavailable => false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum PlaybackRestartIntent {
+    Retry,
+    Resume,
+    SelectAudio(AudioTrackId),
 }
 
 /// Owns the only native provider connection and serializes all stream lifecycle
@@ -173,15 +263,48 @@ pub(crate) struct PlaybackManager {
 }
 
 impl PlaybackManager {
-    pub(crate) fn new(core: Arc<SparrowCore>, access: HttpPlaybackAccess) -> Self {
-        Self::with_access(core, Arc::new(access))
+    pub(crate) fn new(
+        core: Arc<SparrowCore>,
+        access: HttpPlaybackAccess,
+        preferences: AudioPreferenceStore,
+    ) -> Self {
+        Self::with_access_preferences_and_selector(
+            core,
+            Arc::new(access),
+            preferences,
+            Arc::new(MpegTsPlaybackTransportSelector),
+        )
     }
 
+    #[cfg(test)]
     fn with_access(core: Arc<SparrowCore>, access: Arc<dyn NativePlaybackAccess>) -> Self {
+        Self::with_access_preferences_and_selector(
+            core,
+            access,
+            AudioPreferenceStore::disabled(),
+            Arc::new(PassthroughPlaybackTransportSelector),
+        )
+    }
+
+    fn with_access_preferences_and_selector(
+        core: Arc<SparrowCore>,
+        access: Arc<dyn NativePlaybackAccess>,
+        preferences: AudioPreferenceStore,
+        selector: Arc<dyn PlaybackTransportSelector>,
+    ) -> Self {
         let (controls, control_receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (reads, read_receiver) = mpsc::channel(READ_CAPACITY);
-        let actor =
-            tokio::spawn(PlaybackActor::new(core, access, control_receiver, read_receiver).run());
+        let actor = tokio::spawn(
+            PlaybackActor::new(
+                core,
+                access,
+                preferences,
+                selector,
+                control_receiver,
+                read_receiver,
+            )
+            .run(),
+        );
         Self {
             controls,
             reads,
@@ -255,13 +378,39 @@ impl PlaybackManager {
             .map_err(|_| PlaybackManagerError::Unavailable)?
     }
 
+    pub(crate) async fn restart(
+        &self,
+        session_id: PlaybackSessionId,
+        expected_stream_handle: NativeStreamHandle,
+        intent: PlaybackRestartIntent,
+    ) -> Result<StartedPlayback, PlaybackManagerError> {
+        let (reply, response) = oneshot::channel();
+        self.controls
+            .send(ControlCommand::Restart {
+                session_id,
+                expected_stream_handle,
+                intent,
+                reply,
+            })
+            .await
+            .map_err(|_| PlaybackManagerError::Unavailable)?;
+        response
+            .await
+            .map_err(|_| PlaybackManagerError::Unavailable)?
+    }
+
     pub(crate) async fn stop(
         &self,
         session_id: PlaybackSessionId,
+        stream_handle: Option<NativeStreamHandle>,
     ) -> Result<(), PlaybackManagerError> {
         let (reply, response) = oneshot::channel();
         self.controls
-            .send(ControlCommand::Stop { session_id, reply })
+            .send(ControlCommand::Stop {
+                session_id,
+                stream_handle,
+                reply,
+            })
             .await
             .map_err(|_| PlaybackManagerError::Unavailable)?;
         response
@@ -290,8 +439,15 @@ enum ControlCommand {
         session_id: PlaybackSessionId,
         reply: DescriptorReply,
     },
+    Restart {
+        session_id: PlaybackSessionId,
+        expected_stream_handle: NativeStreamHandle,
+        intent: PlaybackRestartIntent,
+        reply: DescriptorReply,
+    },
     Stop {
         session_id: PlaybackSessionId,
+        stream_handle: Option<NativeStreamHandle>,
         reply: UnitReply,
     },
 }
@@ -305,6 +461,8 @@ struct ReadCommand {
 struct PlaybackActor {
     core: Arc<SparrowCore>,
     access: Arc<dyn NativePlaybackAccess>,
+    preferences: AudioPreferenceStore,
+    selector: Arc<dyn PlaybackTransportSelector>,
     controls: mpsc::Receiver<ControlCommand>,
     reads: mpsc::Receiver<ReadCommand>,
     tombstones: VecDeque<PlaybackSessionId>,
@@ -316,12 +474,16 @@ impl PlaybackActor {
     fn new(
         core: Arc<SparrowCore>,
         access: Arc<dyn NativePlaybackAccess>,
+        preferences: AudioPreferenceStore,
+        selector: Arc<dyn PlaybackTransportSelector>,
         controls: mpsc::Receiver<ControlCommand>,
         reads: mpsc::Receiver<ReadCommand>,
     ) -> Self {
         Self {
             core,
             access,
+            preferences,
+            selector,
             controls,
             reads,
             tombstones: VecDeque::with_capacity(MAX_STOP_TOMBSTONES),
@@ -435,7 +597,13 @@ impl PlaybackActor {
                 let _ = reply.send(Err(PlaybackManagerError::Cancelled));
                 ActorState::Idle
             }
-            ControlCommand::Stop { session_id, reply } => {
+            ControlCommand::Restart { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Idle
+            }
+            ControlCommand::Stop {
+                session_id, reply, ..
+            } => {
                 self.retire(session_id);
                 let _ = reply.send(Ok(()));
                 ActorState::Idle
@@ -505,7 +673,36 @@ impl PlaybackActor {
                 let _ = reply.send(Err(PlaybackManagerError::Cancelled));
                 ActorState::Opening(opening)
             }
-            ControlCommand::Stop { session_id, reply } if session_id == opening.session.id => {
+            ControlCommand::Restart { reply, .. } if reply.is_closed() => {
+                ActorState::Opening(opening)
+            }
+            ControlCommand::Restart {
+                session_id,
+                expected_stream_handle,
+                intent,
+                reply,
+            } if session_id == opening.session.id
+                && opening.session.last_stream_handle.as_ref() == Some(&expected_stream_handle) =>
+            {
+                drop(opening.pending);
+                let _ = opening
+                    .reply
+                    .take()
+                    .expect("opening reply exists")
+                    .send(Err(PlaybackManagerError::Cancelled));
+                self.begin_restart(opening.session, intent, reply)
+            }
+            ControlCommand::Restart { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Opening(opening)
+            }
+            ControlCommand::Stop {
+                session_id,
+                stream_handle,
+                reply,
+            } if session_id == opening.session.id
+                && opening.session.last_stream_handle.as_ref() == stream_handle.as_ref() =>
+            {
                 drop(opening.pending);
                 let _ = opening
                     .reply
@@ -517,9 +714,15 @@ impl PlaybackActor {
                 let _ = reply.send(Ok(()));
                 ActorState::Idle
             }
-            ControlCommand::Stop { session_id, reply } => {
+            ControlCommand::Stop {
+                session_id, reply, ..
+            } if session_id != opening.session.id => {
                 self.retire(session_id);
                 let _ = reply.send(Ok(()));
+                ActorState::Opening(opening)
+            }
+            ControlCommand::Stop { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
                 ActorState::Opening(opening)
             }
         }
@@ -572,16 +775,46 @@ impl PlaybackActor {
                 let _ = reply.send(Err(PlaybackManagerError::Cancelled));
                 ActorState::Streaming(streaming)
             }
-            ControlCommand::Stop { session_id, reply } if session_id == streaming.session.id => {
+            ControlCommand::Restart { reply, .. } if reply.is_closed() => {
+                ActorState::Streaming(streaming)
+            }
+            ControlCommand::Restart {
+                session_id,
+                expected_stream_handle,
+                intent,
+                reply,
+            } if session_id == streaming.session.id
+                && expected_stream_handle == streaming.stream.handle =>
+            {
+                drop(streaming.stream);
+                self.begin_restart(streaming.session, intent, reply)
+            }
+            ControlCommand::Restart { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Streaming(streaming)
+            }
+            ControlCommand::Stop {
+                session_id,
+                stream_handle,
+                reply,
+            } if session_id == streaming.session.id
+                && stream_handle.as_ref() == Some(&streaming.stream.handle) =>
+            {
                 drop(streaming.stream);
                 drop(streaming.session);
                 self.retire(session_id);
                 let _ = reply.send(Ok(()));
                 ActorState::Idle
             }
-            ControlCommand::Stop { session_id, reply } => {
+            ControlCommand::Stop {
+                session_id, reply, ..
+            } if session_id != streaming.session.id => {
                 self.retire(session_id);
                 let _ = reply.send(Ok(()));
+                ActorState::Streaming(streaming)
+            }
+            ControlCommand::Stop { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
                 ActorState::Streaming(streaming)
             }
         }
@@ -633,7 +866,32 @@ impl PlaybackActor {
                 let _ = reply.send(Err(PlaybackManagerError::Cancelled));
                 ActorState::Reading(reading)
             }
-            ControlCommand::Stop { session_id, reply } if session_id == reading.session.id => {
+            ControlCommand::Restart { reply, .. } if reply.is_closed() => {
+                ActorState::Reading(reading)
+            }
+            ControlCommand::Restart {
+                session_id,
+                expected_stream_handle,
+                intent,
+                reply,
+            } if session_id == reading.session.id
+                && reading.session.last_stream_handle.as_ref() == Some(&expected_stream_handle) =>
+            {
+                drop(reading.pending);
+                let _ = reading.reply.send(Err(PlaybackManagerError::Cancelled));
+                self.begin_restart(reading.session, intent, reply)
+            }
+            ControlCommand::Restart { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Reading(reading)
+            }
+            ControlCommand::Stop {
+                session_id,
+                stream_handle,
+                reply,
+            } if session_id == reading.session.id
+                && reading.session.last_stream_handle.as_ref() == stream_handle.as_ref() =>
+            {
                 drop(reading.pending);
                 let _ = reading.reply.send(Err(PlaybackManagerError::Cancelled));
                 drop(reading.session);
@@ -641,9 +899,15 @@ impl PlaybackActor {
                 let _ = reply.send(Ok(()));
                 ActorState::Idle
             }
-            ControlCommand::Stop { session_id, reply } => {
+            ControlCommand::Stop {
+                session_id, reply, ..
+            } if session_id != reading.session.id => {
                 self.retire(session_id);
                 let _ = reply.send(Ok(()));
+                ActorState::Reading(reading)
+            }
+            ControlCommand::Stop { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
                 ActorState::Reading(reading)
             }
         }
@@ -689,15 +953,44 @@ impl PlaybackActor {
                 let _ = reply.send(Err(PlaybackManagerError::Cancelled));
                 ActorState::Dormant(session)
             }
-            ControlCommand::Stop { session_id, reply } if session_id == session.id => {
+            ControlCommand::Restart { reply, .. } if reply.is_closed() => {
+                ActorState::Dormant(session)
+            }
+            ControlCommand::Restart {
+                session_id,
+                expected_stream_handle,
+                intent,
+                reply,
+            } if session_id == session.id
+                && session.last_stream_handle.as_ref() == Some(&expected_stream_handle) =>
+            {
+                self.begin_restart(session, intent, reply)
+            }
+            ControlCommand::Restart { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Dormant(session)
+            }
+            ControlCommand::Stop {
+                session_id,
+                stream_handle,
+                reply,
+            } if session_id == session.id
+                && session.last_stream_handle.as_ref() == stream_handle.as_ref() =>
+            {
                 drop(session);
                 self.retire(session_id);
                 let _ = reply.send(Ok(()));
                 ActorState::Idle
             }
-            ControlCommand::Stop { session_id, reply } => {
+            ControlCommand::Stop {
+                session_id, reply, ..
+            } if session_id != session.id => {
                 self.retire(session_id);
                 let _ = reply.send(Ok(()));
+                ActorState::Dormant(session)
+            }
+            ControlCommand::Stop { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
                 ActorState::Dormant(session)
             }
         }
@@ -725,24 +1018,54 @@ impl PlaybackActor {
         };
         let session = Session {
             id: session_id,
+            channel_id: channel_id.clone(),
             source,
+            current_track: None,
+            last_stream_handle: None,
         };
         if self.take_suspend(&session.id) {
             drop(activity);
             return self.reply_with_dormant(reply, Err(PlaybackManagerError::Cancelled), session);
         }
-        self.begin_open(session, activity, reply)
+        let request = SelectionRequest::Initial {
+            saved: self.preferences.preference(&channel_id),
+        };
+        self.begin_open(session, activity, request, reply)
     }
 
     fn begin_reopen(&mut self, session: Session, reply: DescriptorReply) -> ActorState {
         let activity = self.core.begin_playback_activity();
-        self.begin_open(session, activity, reply)
+        let request = SelectionRequest::Continue {
+            current: session.current_track.clone(),
+            saved: self.preferences.preference(&session.channel_id),
+        };
+        self.begin_open(session, activity, request, reply)
+    }
+
+    fn begin_restart(
+        &mut self,
+        session: Session,
+        intent: PlaybackRestartIntent,
+        reply: DescriptorReply,
+    ) -> ActorState {
+        let request = match intent {
+            PlaybackRestartIntent::Retry | PlaybackRestartIntent::Resume => {
+                SelectionRequest::Continue {
+                    current: session.current_track.clone(),
+                    saved: self.preferences.preference(&session.channel_id),
+                }
+            }
+            PlaybackRestartIntent::SelectAudio(track_id) => SelectionRequest::Requested(track_id),
+        };
+        let activity = self.core.begin_playback_activity();
+        self.begin_open(session, activity, request, reply)
     }
 
     fn begin_open(
         &mut self,
         session: Session,
         activity: PlaybackActivityLease,
+        request: SelectionRequest,
         reply: DescriptorReply,
     ) -> ActorState {
         let stream_handle = match self.allocate_handle() {
@@ -756,7 +1079,36 @@ impl PlaybackActor {
                 );
             }
         };
-        let pending = PendingOpen::new(self.access.open(Arc::clone(&session.source)), activity);
+        let access = self.access.open(Arc::clone(&session.source));
+        let selector = Arc::clone(&self.selector);
+        let preferences = self.preferences.clone();
+        let channel_id = session.channel_id.clone();
+        let pending_request = request.clone();
+        let future = Box::pin(async move {
+            let body = access.await.map_err(PendingOpenError::Access)?;
+            let opened = selector
+                .open(body, pending_request.clone())
+                .await
+                .map_err(PendingOpenError::TransportStream)?;
+            let preference_status = match pending_request {
+                SelectionRequest::Requested(requested)
+                    if opened.selection.track_id() == Some(&requested) =>
+                {
+                    Some(match preferences.remember(channel_id, requested).await {
+                        PreferenceWrite::Saved => PreferenceStatus::Saved,
+                        PreferenceWrite::NotSaved => PreferenceStatus::NotSaved,
+                        PreferenceWrite::Unchanged => PreferenceStatus::Unchanged,
+                    })
+                }
+                SelectionRequest::Requested(_) => Some(PreferenceStatus::NotSaved),
+                SelectionRequest::Initial { .. } | SelectionRequest::Continue { .. } => None,
+            };
+            Ok(OpenedPlayback {
+                opened,
+                preference_status,
+            })
+        });
+        let pending = PendingOpen::new(future, activity);
         ActorState::Opening(OpeningState {
             pending: Box::pin(pending),
             session,
@@ -768,17 +1120,22 @@ impl PlaybackActor {
     fn finish_open(
         &mut self,
         mut opening: OpeningState,
-        result: Result<(PlaybackByteStream, PlaybackActivityLease), PlaybackAccessError>,
+        result: Result<(OpenedPlayback, PlaybackActivityLease), PendingOpenError>,
     ) -> ActorState {
         let reply = opening.reply.take().expect("opening reply exists");
         match result {
-            Ok((body, activity)) => {
+            Ok((opened, activity)) => {
+                opening.session.current_track = opened.opened.selection.track_id().cloned();
+                opening.session.last_stream_handle = Some(opening.stream_handle.clone());
                 let descriptor = StartedPlayback {
                     session_id: opening.session.id.clone(),
                     stream_handle: opening.stream_handle.clone(),
+                    tracks: opened.opened.tracks,
+                    selection: opened.opened.selection,
+                    preference_status: opened.preference_status,
                 };
                 let stream = StreamInstance {
-                    body,
+                    body: opened.opened.body,
                     remainder: Bytes::new(),
                     _activity: activity,
                     handle: opening.stream_handle,
@@ -794,11 +1151,20 @@ impl PlaybackActor {
                     }
                 }
             }
-            Err(error) => self.reply_with_dormant(
-                reply,
-                Err(PlaybackManagerError::Access(error)),
-                opening.session,
-            ),
+            Err(error) => {
+                let error = match error {
+                    PendingOpenError::Access(error) => PlaybackManagerError::Access(error),
+                    PendingOpenError::TransportStream(error) => {
+                        PlaybackManagerError::TransportStream(error)
+                    }
+                };
+                if error.retryable() {
+                    self.reply_with_dormant(reply, Err(error), opening.session)
+                } else {
+                    let _ = reply.send(Err(error));
+                    self.drop_session(opening.session)
+                }
+            }
         }
     }
 
@@ -961,7 +1327,10 @@ struct ReadingState {
 /// Pins one resolved source independently of its replaceable transport.
 struct Session {
     id: PlaybackSessionId,
+    channel_id: ChannelId,
     source: Arc<ResolvedPlaybackSource>,
+    current_track: Option<AudioTrackId>,
+    last_stream_handle: Option<NativeStreamHandle>,
 }
 
 struct StreamInstance {
@@ -974,12 +1343,12 @@ struct StreamInstance {
 
 struct PendingOpen {
     // Field order ensures a cancelled request drops before its activity lease.
-    future: AccessOpenFuture,
+    future: SelectedOpenFuture,
     activity: Option<PlaybackActivityLease>,
 }
 
 impl PendingOpen {
-    fn new(future: AccessOpenFuture, activity: PlaybackActivityLease) -> Self {
+    fn new(future: SelectedOpenFuture, activity: PlaybackActivityLease) -> Self {
         Self {
             future,
             activity: Some(activity),
@@ -988,7 +1357,7 @@ impl PendingOpen {
 }
 
 impl Future for PendingOpen {
-    type Output = Result<(PlaybackByteStream, PlaybackActivityLease), PlaybackAccessError>;
+    type Output = Result<(OpenedPlayback, PlaybackActivityLease), PendingOpenError>;
 
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let result = ready!(self.future.as_mut().poll(context));
@@ -1003,6 +1372,22 @@ impl Future for PendingOpen {
             }
         }
     }
+}
+
+struct OpenedPlayback {
+    opened: PreparedPlaybackTransport,
+    preference_status: Option<PreferenceStatus>,
+}
+
+struct PreparedPlaybackTransport {
+    body: PlaybackByteStream,
+    tracks: Vec<AudioTrack>,
+    selection: AudioSelection,
+}
+
+enum PendingOpenError {
+    Access(PlaybackAccessError),
+    TransportStream(TransportStreamError),
 }
 
 struct PendingRead {

@@ -16,6 +16,7 @@ use sparrow_source_http::HttpSourceAccess;
 use tokio::sync::{Mutex, watch};
 
 use crate::{
+    audio_preferences::AudioPreferenceStore,
     bounded_blocking::{BlockingTaskCancellation, BoundedBlocking},
     config_store::{
         ConfigurationStoreError, SourceConfigurationStore, StoredSourceConfiguration,
@@ -28,8 +29,8 @@ use crate::{
         subscriptions::SubscriptionRegistry,
     },
     playback::{
-        NativeStreamHandle, PlaybackManager, PlaybackManagerError, PlaybackSessionId,
-        StartedPlayback,
+        NativeStreamHandle, PlaybackManager, PlaybackManagerError, PlaybackRestartIntent,
+        PlaybackSessionId, StartedPlayback,
     },
 };
 
@@ -131,7 +132,8 @@ impl InstalledRuntime {
         );
         let playback_access =
             HttpPlaybackAccess::new().map_err(|_| InstalledStartupError::PlaybackAdapter)?;
-        let playback = PlaybackManager::new(Arc::clone(&core), playback_access);
+        let audio_preferences = AudioPreferenceStore::open(&private_root);
+        let playback = PlaybackManager::new(Arc::clone(&core), playback_access, audio_preferences);
 
         Ok(Self {
             playback,
@@ -295,11 +297,23 @@ impl InstalledRuntime {
         self.playback.reopen(session_id).await
     }
 
+    pub(crate) async fn restart_playback(
+        &self,
+        session_id: PlaybackSessionId,
+        expected_stream_handle: NativeStreamHandle,
+        intent: PlaybackRestartIntent,
+    ) -> Result<StartedPlayback, PlaybackManagerError> {
+        self.playback
+            .restart(session_id, expected_stream_handle, intent)
+            .await
+    }
+
     pub(crate) async fn stop_playback(
         &self,
         session_id: PlaybackSessionId,
+        stream_handle: Option<NativeStreamHandle>,
     ) -> Result<(), PlaybackManagerError> {
-        self.playback.stop(session_id).await
+        self.playback.stop(session_id, stream_handle).await
     }
 }
 

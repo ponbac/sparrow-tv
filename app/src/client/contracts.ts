@@ -23,6 +23,10 @@ const nativeStreamHandleSchema = z
   .string()
   .regex(/^stream1_[0-9a-f]{16}$/u)
   .brand<"NativeStreamHandle">();
+const audioTrackIdSchema = z
+  .string()
+  .regex(/^atrk1_[0-9a-f]{32}$/u)
+  .brand<"AudioTrackId">();
 const catalogGenerationSchema = z
   .number()
   .int()
@@ -65,6 +69,9 @@ export type PlaybackSessionId = z.output<typeof playbackSessionIdSchema>;
 /** An opaque identifier for one native transport generation within a session. */
 export type NativeStreamHandle = z.output<typeof nativeStreamHandleSchema>;
 
+/** An opaque stable identity for one compatible Audio Track rendition. */
+export type AudioTrackId = z.output<typeof audioTrackIdSchema>;
+
 /** A positive, JavaScript-safe integer identifying one immutable catalog view. */
 export type CatalogGeneration = z.output<typeof catalogGenerationSchema>;
 
@@ -86,9 +93,53 @@ export interface HostedCapabilities {
 export interface InstalledCapabilities {
   readonly sourceConfiguration: "device-writable";
   readonly playbackTransport: "tauri-native-stream";
-  readonly audioTrackSelection: false;
+  readonly audioTrackSelection: true;
   readonly mpvFailover: false;
 }
+
+/** Audio codecs that the native MPEG-TS selector can safely forward. */
+export type AudioCodec =
+  | "mpeg-1-audio"
+  | "mpeg-2-audio"
+  | "aac-adts"
+  | "aac-latm"
+  | "ac-3";
+
+/** Safe programme metadata for one compatible native Audio Track. */
+export interface AudioTrack {
+  readonly id: AudioTrackId;
+  readonly language?: string;
+  readonly label?: string;
+  readonly codec: AudioCodec;
+  readonly selected: boolean;
+}
+
+/** Why native playback selected or visibly fell back from one Audio Track. */
+export type AudioSelection =
+  | { readonly _tag: "none" }
+  | {
+      readonly _tag: "selected";
+      readonly trackId: AudioTrackId;
+      readonly reason:
+        | "requested"
+        | "saved-preference"
+        | "current-session"
+        | "first-available";
+    }
+  | {
+      readonly _tag: "fallback";
+      readonly trackId?: AudioTrackId;
+      readonly missing: "requested" | "saved-preference";
+    };
+
+/** Persistence outcome returned after an explicit Audio Track selection. */
+export type AudioPreferenceStatus = "saved" | "not-saved" | "unchanged";
+
+/** Native restart policy for a suspended, failed, or explicitly reselected transport. */
+export type PlaybackRestartIntent =
+  | { readonly _tag: "retry" }
+  | { readonly _tag: "resume" }
+  | { readonly _tag: "select-audio"; readonly audioTrackId: AudioTrackId };
 
 /** Deployment capabilities that determine which client controls may be offered. */
 export type Capabilities = HostedCapabilities | InstalledCapabilities;
@@ -353,6 +404,8 @@ export interface ReadPlaybackInput extends ClientRequestOptions {
 /** Input for stopping one installed Playback Session. */
 export interface StopPlaybackInput extends ClientRequestOptions {
   readonly sessionId: PlaybackSessionId;
+  /** Required after a descriptor was issued; omitted only while opening never succeeded. */
+  readonly streamHandle?: NativeStreamHandle;
 }
 
 /** Input for creating one installed Playback Session around a Channel intent. */
@@ -363,6 +416,12 @@ export interface CreatePlaybackSessionInput {
 /** Input for reading the current transport owned by one installed session. */
 export interface ReadInstalledPlaybackInput extends ClientRequestOptions {
   readonly streamHandle: NativeStreamHandle;
+}
+
+/** Input for atomically replacing the current transport of an installed session. */
+export interface RestartInstalledPlaybackInput extends ClientRequestOptions {
+  readonly expectedStreamHandle: NativeStreamHandle;
+  readonly intent: PlaybackRestartIntent;
 }
 
 /** Transient source locations accepted only by the installed configuration command. */
@@ -382,12 +441,18 @@ export interface NativePlaybackDescriptor {
   readonly _tag: "tauri-native-stream";
   readonly sessionId: PlaybackSessionId;
   readonly streamHandle: NativeStreamHandle;
+  readonly tracks: readonly AudioTrack[];
+  readonly selection: AudioSelection;
+  readonly preferenceStatus?: AudioPreferenceStatus;
 }
 
 /** Session-scoped installed transport projected without its private session identifier. */
 export interface InstalledPlaybackTransport {
   readonly _tag: "tauri-native-stream";
   readonly streamHandle: NativeStreamHandle;
+  readonly tracks: readonly AudioTrack[];
+  readonly selection: AudioSelection;
+  readonly preferenceStatus?: AudioPreferenceStatus;
 }
 
 /** A capability-selected playback transport that never contains a provider URL. */
@@ -531,9 +596,14 @@ export interface InstalledPlaybackSession {
     options?: ClientRequestOptions,
   ): Promise<ClientResult<InstalledPlaybackTransport>>;
 
-  /** Opens a fresh transport at the live edge for the already-pinned source. */
+  /** Reopens at the live edge, including recovery before any descriptor existed. */
   reopen(
     options?: ClientRequestOptions,
+  ): Promise<ClientResult<InstalledPlaybackTransport>>;
+
+  /** Atomically replaces the expected transport at the live edge without overlap. */
+  restart(
+    input: RestartInstalledPlaybackInput,
   ): Promise<ClientResult<InstalledPlaybackTransport>>;
 
   /** Pulls at most 64 KiB from the exact current native stream handle. */
@@ -578,7 +648,7 @@ const installedCapabilitiesSchema: z.ZodType<InstalledCapabilities> =
   z.strictObject({
     sourceConfiguration: z.literal("device-writable"),
     playbackTransport: z.literal("tauri-native-stream"),
-    audioTrackSelection: z.literal(false),
+    audioTrackSelection: z.literal(true),
     mpvFailover: z.literal(false),
   });
 const capabilitiesSchema: z.ZodType<Capabilities> = z.union([
@@ -840,11 +910,108 @@ const hostedPlaybackDescriptorSchema: z.ZodType<HostedPlaybackDescriptor> = z.st
   _tag: z.literal("same-origin-http"),
   endpoint: sameOriginPlaybackEndpointSchema,
 });
-const nativePlaybackDescriptorSchema: z.ZodType<NativePlaybackDescriptor> = z.strictObject({
-  _tag: z.literal("tauri-native-stream"),
-  sessionId: playbackSessionIdSchema,
-  streamHandle: nativeStreamHandleSchema,
+const audioMetadataSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(128)
+  .refine((value) => withinUtf8ByteLimit(value, 128), {
+    message: "Audio metadata cannot exceed 128 UTF-8 bytes.",
+  })
+  .refine((value) => !/\p{Cc}/u.test(value), {
+    message: "Audio metadata cannot contain control characters.",
+  });
+const audioCodecSchema: z.ZodType<AudioCodec> = z.enum([
+  "mpeg-1-audio",
+  "mpeg-2-audio",
+  "aac-adts",
+  "aac-latm",
+  "ac-3",
+]);
+const audioTrackSchema: z.ZodType<AudioTrack> = z.strictObject({
+  id: audioTrackIdSchema,
+  language: audioMetadataSchema.optional(),
+  label: audioMetadataSchema.optional(),
+  codec: audioCodecSchema,
+  selected: z.boolean(),
 });
+const audioSelectionSchema: z.ZodType<AudioSelection> = z.discriminatedUnion(
+  "_tag",
+  [
+    z.strictObject({ _tag: z.literal("none") }),
+    z.strictObject({
+      _tag: z.literal("selected"),
+      trackId: audioTrackIdSchema,
+      reason: z.enum([
+        "requested",
+        "saved-preference",
+        "current-session",
+        "first-available",
+      ]),
+    }),
+    z.strictObject({
+      _tag: z.literal("fallback"),
+      trackId: audioTrackIdSchema.optional(),
+      missing: z.enum(["requested", "saved-preference"]),
+    }),
+  ],
+);
+const audioPreferenceStatusSchema: z.ZodType<AudioPreferenceStatus> = z.enum([
+  "saved",
+  "not-saved",
+  "unchanged",
+]);
+const nativePlaybackDescriptorSchema: z.ZodType<NativePlaybackDescriptor> = z
+  .strictObject({
+    _tag: z.literal("tauri-native-stream"),
+    sessionId: playbackSessionIdSchema,
+    streamHandle: nativeStreamHandleSchema,
+    tracks: z.array(audioTrackSchema).max(32),
+    selection: audioSelectionSchema,
+    preferenceStatus: audioPreferenceStatusSchema.optional(),
+  })
+  .superRefine((descriptor, context) => {
+    const ids = new Set<AudioTrackId>();
+    for (const track of descriptor.tracks) {
+      if (ids.has(track.id)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Audio Track identifiers must be unique.",
+          path: ["tracks"],
+        });
+      }
+      ids.add(track.id);
+    }
+
+    const selectedId =
+      descriptor.selection._tag === "none"
+        ? undefined
+        : descriptor.selection.trackId;
+    const selectedTracks = descriptor.tracks.filter((track) => track.selected);
+    if (
+      (descriptor.selection._tag === "none" ||
+        (descriptor.selection._tag === "fallback" &&
+          descriptor.selection.trackId === undefined)) &&
+      descriptor.tracks.length !== 0
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Audio Tracks require one explicit selection.",
+        path: ["tracks"],
+      });
+    }
+    if (
+      (selectedId === undefined && selectedTracks.length !== 0) ||
+      (selectedId !== undefined &&
+        (selectedTracks.length !== 1 || selectedTracks[0]?.id !== selectedId))
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Audio selection must match exactly one selected track.",
+        path: ["selection"],
+      });
+    }
+  });
 const playbackDescriptorSchema: z.ZodType<PlaybackDescriptor> = z.union([
   hostedPlaybackDescriptorSchema,
   nativePlaybackDescriptorSchema,
@@ -1090,6 +1257,11 @@ export const clientSchemas = Object.freeze({
   searchProgrammesPageFor: searchProgrammesPageSchemaFor,
   playbackDescriptor: playbackDescriptorSchema,
   playbackSessionId: playbackSessionIdSchema,
+  nativeStreamHandle: nativeStreamHandleSchema,
+  audioTrackId: audioTrackIdSchema,
+  audioTrack: audioTrackSchema,
+  audioSelection: audioSelectionSchema,
+  audioPreferenceStatus: audioPreferenceStatusSchema,
   hostedPlaybackDescriptor: hostedPlaybackDescriptorSchema,
   nativePlaybackDescriptor: nativePlaybackDescriptorSchema,
   serverError: serverClientErrorSchema,
