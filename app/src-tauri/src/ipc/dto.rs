@@ -7,7 +7,7 @@ use sparrow_core::{
 };
 
 use crate::{
-    playback::{PlaybackManagerError, StartedPlayback},
+    playback::{MpvFallbackSession, PlaybackManagerError, StartedPlayback},
     selected_transport_stream::{AudioSelection, AudioTrack},
 };
 
@@ -26,7 +26,7 @@ impl CapabilitiesDto {
             source_configuration: "device-writable",
             playback_transport: "tauri-native-stream",
             audio_track_selection: true,
-            mpv_failover: false,
+            mpv_failover: cfg!(target_os = "linux"),
         }
     }
 }
@@ -53,6 +53,40 @@ impl From<StartedPlayback> for PlaybackDescriptorDto {
             tracks: started.tracks().to_vec(),
             selection: started.selection().clone(),
             preference_status: started.preference_status(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MpvFallbackPlayingDto {
+    #[serde(rename = "_tag")]
+    tag: &'static str,
+    session_id: String,
+}
+
+impl From<MpvFallbackSession> for MpvFallbackPlayingDto {
+    fn from(session: MpvFallbackSession) -> Self {
+        Self {
+            tag: "fallback-playing",
+            session_id: session.session_id().as_str().to_owned(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MpvFallbackStoppedDto {
+    #[serde(rename = "_tag")]
+    tag: &'static str,
+    session_id: String,
+}
+
+impl From<MpvFallbackSession> for MpvFallbackStoppedDto {
+    fn from(session: MpvFallbackSession) -> Self {
+        Self {
+            tag: "fallback-stopped",
+            session_id: session.session_id().as_str().to_owned(),
         }
     }
 }
@@ -567,6 +601,10 @@ pub(crate) enum ClientErrorDto {
         reason: &'static str,
         retryable: bool,
     },
+    FallbackFailed {
+        reason: &'static str,
+        retryable: bool,
+    },
     Cancelled,
 }
 
@@ -590,6 +628,10 @@ impl From<PlaybackManagerError> for ClientErrorDto {
                 }
             }
             PlaybackManagerError::TransportStream(error) => Self::PlaybackFailed {
+                reason: error.reason(),
+                retryable: error.retryable(),
+            },
+            PlaybackManagerError::Mpv(error) => Self::FallbackFailed {
                 reason: error.reason(),
                 retryable: error.retryable(),
             },
@@ -723,7 +765,7 @@ mod tests {
                 "sourceConfiguration": "device-writable",
                 "playbackTransport": "tauri-native-stream",
                 "audioTrackSelection": true,
-                "mpvFailover": false,
+                "mpvFailover": cfg!(target_os = "linux"),
             })
         );
     }
@@ -777,6 +819,14 @@ mod tests {
             (
                 PlaybackManagerError::Cancelled,
                 json!({ "_tag": "cancelled" }),
+            ),
+            (
+                PlaybackManagerError::Mpv(crate::playback::MpvFailure::NotInstalled),
+                json!({
+                    "_tag": "fallback-failed",
+                    "reason": "not-installed",
+                    "retryable": false
+                }),
             ),
         ] {
             assert_eq!(

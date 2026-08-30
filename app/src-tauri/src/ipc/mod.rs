@@ -12,14 +12,14 @@ use crate::runtime::{InstalledRuntime, InstalledRuntimeSlot};
 use self::{
     dto::{
         CapabilitiesDto, CatalogStatusDto, ChannelDetailsDto, ChannelGroupDto, ChannelSummaryDto,
-        ClientErrorDto, CoreEventDto, PageDto, PlaybackDescriptorDto, ProgrammeDto,
-        RefreshReportDto, SearchResultsDto,
+        ClientErrorDto, CoreEventDto, MpvFallbackPlayingDto, MpvFallbackStoppedDto, PageDto,
+        PlaybackDescriptorDto, ProgrammeDto, RefreshReportDto, SearchResultsDto,
     },
     input::{
-        ChannelInput, ListChannelsInput, ListGroupsInput, PlaybackActivityInput, PlaybackReadInput,
-        PlaybackReopenInput, PlaybackRestartInput, PlaybackStartInput, PlaybackStopInput,
-        PlaybackSuspendInput, ScheduleInput, SearchCancellationInput, SearchInput, SearchPageInput,
-        SourceConfigurationInputDto,
+        ChannelInput, ListChannelsInput, ListGroupsInput, PlaybackActivityInput, PlaybackMpvInput,
+        PlaybackReadInput, PlaybackReopenInput, PlaybackRestartInput, PlaybackStartInput,
+        PlaybackStopInput, PlaybackSuspendInput, ScheduleInput, SearchCancellationInput,
+        SearchInput, SearchPageInput, SourceConfigurationInputDto,
     },
 };
 
@@ -367,6 +367,46 @@ pub(crate) async fn stop_playback(
     state
         .stop_playback(session_id, stream_handle)
         .await
+        .map_err(ClientErrorDto::from)
+}
+
+#[tauri::command]
+pub(crate) async fn playback_mpv_start(
+    slot: State<'_, InstalledRuntimeSlot>,
+    input: PlaybackMpvInput,
+) -> Result<MpvFallbackPlayingDto, ClientErrorDto> {
+    let runtime = slot.wait().await;
+    start_mpv(runtime.as_ref(), input).await
+}
+
+pub(crate) async fn start_mpv(
+    state: &InstalledRuntime,
+    input: PlaybackMpvInput,
+) -> Result<MpvFallbackPlayingDto, ClientErrorDto> {
+    state
+        .start_mpv(input.into_session_id()?)
+        .await
+        .map(MpvFallbackPlayingDto::from)
+        .map_err(ClientErrorDto::from)
+}
+
+#[tauri::command]
+pub(crate) async fn playback_mpv_stop(
+    slot: State<'_, InstalledRuntimeSlot>,
+    input: PlaybackMpvInput,
+) -> Result<MpvFallbackStoppedDto, ClientErrorDto> {
+    let runtime = slot.wait().await;
+    stop_mpv(runtime.as_ref(), input).await
+}
+
+pub(crate) async fn stop_mpv(
+    state: &InstalledRuntime,
+    input: PlaybackMpvInput,
+) -> Result<MpvFallbackStoppedDto, ClientErrorDto> {
+    state
+        .stop_mpv(input.into_session_id()?)
+        .await
+        .map(MpvFallbackStoppedDto::from)
         .map_err(ClientErrorDto::from)
 }
 

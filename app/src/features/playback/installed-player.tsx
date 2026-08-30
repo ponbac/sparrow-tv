@@ -1,4 +1,4 @@
-import { Pause, Play, RotateCcw, ScrollText } from "lucide-react";
+import { MonitorPlay, Pause, Play, RotateCcw, ScrollText } from "lucide-react";
 import {
   useEffect,
   useMemo,
@@ -29,7 +29,10 @@ import { PlaybackSurface } from "./playback-surface";
 
 export interface InstalledPlayerProps {
   readonly channel: { readonly id: ChannelId; readonly name: string };
-  readonly client: Pick<InstalledSparrowClient, "createPlaybackSession">;
+  readonly client: Pick<
+    InstalledSparrowClient,
+    "capabilities" | "createPlaybackSession"
+  >;
   readonly onStop: () => void;
   readonly engine?: NativePlaybackEngine;
   readonly lifecycleEvents?: InstalledLifecycleEvents;
@@ -45,6 +48,7 @@ export function InstalledPlayer({
 }: InstalledPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  const [mpvFailoverAvailable, setMpvFailoverAvailable] = useState(false);
   const runner = useMemo(
     () =>
       createInstalledPlaybackRunner({
@@ -59,6 +63,27 @@ export function InstalledPlayer({
     runner.getSnapshot,
     runner.getSnapshot,
   );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void client.capabilities({ signal: controller.signal }).then(
+      (result) => {
+        if (!controller.signal.aborted) {
+          setMpvFailoverAvailable(
+            result.ok &&
+              result.value.playbackTransport === "tauri-native-stream" &&
+              result.value.mpvFailover,
+          );
+        }
+      },
+      () => {
+        if (!controller.signal.aborted) {
+          setMpvFailoverAvailable(false);
+        }
+      },
+    );
+    return () => controller.abort();
+  }, [client]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -116,6 +141,15 @@ export function InstalledPlayer({
   }, [runner]);
 
   const phase = state.phase;
+  const canOfferMpv =
+    mpvFailoverAvailable &&
+    ((phase._tag === "failed" && phase.canFailover) ||
+      (phase._tag === "primary-stopped" && phase.canFailover));
+  const fallbackPhase =
+    phase._tag === "fallback-starting" ||
+    phase._tag === "fallback-playing" ||
+    phase._tag === "fallback-stop-failed";
+  const primaryReleased = phase._tag === "failed" || phase._tag === "primary-stopped";
   const overlayAction =
     phase._tag === "paused"
       ? { label: "Resume live signal", onAction: () => void runner.resume() }
@@ -131,6 +165,7 @@ export function InstalledPlayer({
     phase._tag !== "idle" &&
     phase._tag !== "stopping" &&
     phase._tag !== "replacing-audio" &&
+    !fallbackPhase &&
     !(phase._tag === "failed" && !phase.canRestart);
   const selectedAudioTrack = state.audio.tracks.find((track) => track.selected);
   const canSelectAudio =
@@ -159,11 +194,18 @@ export function InstalledPlayer({
       );
   };
   const stop = () => {
-    void runner.stop().then((confirmed) => {
-      if (confirmed) {
-        onStop();
-      }
-    });
+    if (mpvFailoverAvailable && !primaryReleased && !fallbackPhase) {
+      void runner.stopPrimary();
+      return;
+    }
+    void runner
+      .stop()
+      .then((confirmed) => {
+        if (confirmed) {
+          onStop();
+        }
+      })
+      .catch(() => undefined);
   };
 
   return (
@@ -172,8 +214,12 @@ export function InstalledPlayer({
       state={installedPlayerState(state)}
       videoKey={channel.id}
       videoRef={videoRef}
-      transportLabel="native receiver"
-      privacyCopy="Provider details remain inside the installed receiver."
+      transportLabel={fallbackPhase ? "system mpv" : "native receiver"}
+      privacyCopy={
+        fallbackPhase
+          ? "Provider details pass directly from the installed receiver to mpv."
+          : "Provider details remain inside the installed receiver."
+      }
       onPlaying={() => undefined}
       {...(overlayAction === undefined ? {} : { overlayAction })}
       additionalControls={
@@ -228,6 +274,12 @@ export function InstalledPlayer({
               Restart
             </button>
           ) : null}
+          {canOfferMpv ? (
+            <button type="button" onClick={() => void runner.startMpvFallback()}>
+              <MonitorPlay aria-hidden="true" />
+              Open in mpv
+            </button>
+          ) : null}
           <button type="button" onClick={copyDiagnostics}>
             <ScrollText aria-hidden="true" />
             Copy diagnostics
@@ -245,6 +297,16 @@ export function InstalledPlayer({
       onVolumeChange={(volume) => runner.setVolume(volume)}
       onToggleMuted={() => runner.toggleMuted()}
       onRequestFullscreen={() => void runner.requestFullscreen()}
+      showMediaControls={!primaryReleased && !fallbackPhase}
+      stopLabel={
+        fallbackPhase
+          ? "Stop mpv"
+          : primaryReleased
+            ? "Close player"
+            : mpvFailoverAvailable
+              ? "Stop primary"
+              : "Stop stream"
+      }
       onStop={stop}
       onAutoplayFailure={() => void runner.reportAutoplayFailure()}
     />

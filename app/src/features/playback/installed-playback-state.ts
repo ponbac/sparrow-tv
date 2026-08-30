@@ -4,6 +4,7 @@ import type {
   AudioTrack,
   AudioTrackId,
   ChannelId,
+  ClientError,
 } from "../../client/contracts";
 import type { HostedPlaybackFailure } from "./mpegts-engine";
 import type { PlayerState } from "./playback-presentation";
@@ -34,6 +35,12 @@ export type InstalledPlaybackFailure =
   | HostedPlaybackFailure
   | "cleanup-unconfirmed";
 
+/** Safe typed mpv failure retained without native process or source details. */
+export type MpvFallbackFailure = Extract<
+  ClientError,
+  { readonly _tag: "fallback-failed" }
+>;
+
 /** Why a fresh native transport is being opened inside the current intent. */
 export type InstalledPlaybackStartReason =
   | "selection"
@@ -62,7 +69,8 @@ export type InstalledPlaybackPhase =
       readonly next:
         | { readonly _tag: "paused"; readonly cause: InstalledPlaybackPauseCause }
         | { readonly _tag: "recovering" }
-        | { readonly _tag: "restart" };
+        | { readonly _tag: "restart" }
+        | { readonly _tag: "primary-stopped" };
     }
   | {
       readonly _tag: "paused";
@@ -80,6 +88,18 @@ export type InstalledPlaybackPhase =
       readonly failure: InstalledPlaybackFailure;
       readonly attemptsUsed: number;
       readonly canRestart: boolean;
+      readonly canFailover: boolean;
+    }
+  | {
+      readonly _tag: "primary-stopped";
+      readonly fallbackFailure: MpvFallbackFailure | null;
+      readonly canFailover: boolean;
+    }
+  | { readonly _tag: "fallback-starting" }
+  | { readonly _tag: "fallback-playing" }
+  | {
+      readonly _tag: "fallback-stop-failed";
+      readonly failure: MpvFallbackFailure;
     }
   | {
       readonly _tag: "stopping";
@@ -151,6 +171,18 @@ export type InstalledPlaybackEvent =
       readonly failure: InstalledPlaybackFailure;
       readonly attemptsUsed: number;
       readonly canRestart: boolean;
+      readonly canFailover: boolean;
+    }
+  | {
+      readonly _tag: "primary-stopped";
+      readonly fallbackFailure: MpvFallbackFailure | null;
+      readonly canFailover: boolean;
+    }
+  | { readonly _tag: "fallback-starting" }
+  | { readonly _tag: "fallback-playing" }
+  | {
+      readonly _tag: "fallback-stop-failed";
+      readonly failure: MpvFallbackFailure;
     }
   | { readonly _tag: "stopped" }
   | { readonly _tag: "stable" }
@@ -284,7 +316,31 @@ export function reduceInstalledPlaybackState(
           failure: event.failure,
           attemptsUsed: event.attemptsUsed,
           canRestart: event.canRestart,
+          canFailover: event.canFailover,
         },
+      };
+    case "primary-stopped":
+      requireSelectedChannel(state);
+      return {
+        ...state,
+        phase: {
+          _tag: "primary-stopped",
+          fallbackFailure: event.fallbackFailure,
+          canFailover: event.canFailover,
+        },
+        controls: { ...state.controls, fullscreen: false },
+      };
+    case "fallback-starting":
+      requireSelectedChannel(state);
+      return { ...state, phase: { _tag: "fallback-starting" } };
+    case "fallback-playing":
+      requireSelectedChannel(state);
+      return { ...state, phase: { _tag: "fallback-playing" } };
+    case "fallback-stop-failed":
+      requireSelectedChannel(state);
+      return {
+        ...state,
+        phase: { _tag: "fallback-stop-failed", failure: event.failure },
       };
     case "stopped":
       return {
@@ -348,6 +404,20 @@ export function installedPlayerState(
         failure: state.phase.failure,
         retryable: state.phase.canRestart,
       };
+    case "primary-stopped":
+      return {
+        _tag: "primary-stopped",
+        failure: state.phase.fallbackFailure,
+      };
+    case "fallback-starting":
+      return { _tag: "fallback-starting" };
+    case "fallback-playing":
+      return { _tag: "fallback-playing" };
+    case "fallback-stop-failed":
+      return {
+        _tag: "fallback-stop-failed",
+        failure: state.phase.failure,
+      };
     case "stopping":
       return { _tag: "stopping" };
   }
@@ -368,4 +438,3 @@ function clampVolume(value: number): number {
   }
   return Math.min(1, Math.max(0, value));
 }
-

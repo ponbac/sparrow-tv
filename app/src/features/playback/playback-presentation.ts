@@ -1,4 +1,10 @@
+import type { ClientError } from "../../client/contracts";
 import type { HostedPlaybackFailure } from "./mpegts-engine";
+
+type MpvFallbackFailure = Extract<
+  ClientError,
+  { readonly _tag: "fallback-failed" }
+>;
 
 /** Safe failure vocabulary renderable by the shared playback chrome. */
 export type PlaybackFailure = HostedPlaybackFailure | "cleanup-unconfirmed";
@@ -16,6 +22,16 @@ export type PlayerState =
       readonly failure: HostedPlaybackFailure;
     }
   | { readonly _tag: "stopping" }
+  | {
+      readonly _tag: "primary-stopped";
+      readonly failure: MpvFallbackFailure | null;
+    }
+  | { readonly _tag: "fallback-starting" }
+  | { readonly _tag: "fallback-playing" }
+  | {
+      readonly _tag: "fallback-stop-failed";
+      readonly failure: MpvFallbackFailure;
+    }
   | {
       readonly _tag: "failed";
       readonly failure: PlaybackFailure;
@@ -71,8 +87,91 @@ export function playerPresentation(state: PlayerState): {
         title: "Closing the Playback Session",
         detail: "Sparrow is confirming final resource cleanup.",
       };
+    case "primary-stopped":
+      return state.failure === null
+        ? {
+            status: "PRIMARY STOPPED",
+            title: "The primary receiver is stopped",
+            detail: "Open this Channel in system mpv, or close the player.",
+          }
+        : fallbackFailurePresentation(state.failure);
+    case "fallback-starting":
+      return {
+        status: "OPENING MPV",
+        title: "Handing off to system mpv",
+        detail: "The primary request is released while mpv opens its own window.",
+      };
+    case "fallback-playing":
+      return {
+        status: "MPV ON AIR",
+        title: "Playing in system mpv",
+        detail: "Video, audio, and fullscreen controls are available in the mpv window.",
+      };
+    case "fallback-stop-failed":
+      return {
+        status: "CLEANUP NEEDED",
+        title: "mpv cleanup was not confirmed",
+        detail: "Try stopping mpv again before closing this Playback Session.",
+      };
     case "failed":
       return failurePresentation(state.failure, state.retryable);
+  }
+}
+
+function fallbackFailurePresentation(failure: MpvFallbackFailure): {
+  readonly status: string;
+  readonly title: string;
+  readonly detail: string;
+} {
+  switch (failure.reason) {
+    case "unsupported":
+      return {
+        status: "MPV UNAVAILABLE",
+        title: "mpv failover is unavailable here",
+        detail: "This installed platform does not support the system mpv handoff.",
+      };
+    case "not-installed":
+      return {
+        status: "MPV MISSING",
+        title: "System mpv is not installed",
+        detail: "Install mpv 0.41 or newer, then try this Channel again.",
+      };
+    case "incompatible":
+      return {
+        status: "MPV OUTDATED",
+        title: "The installed mpv is incompatible",
+        detail: "Update system mpv to version 0.41 or newer before retrying.",
+      };
+    case "primary-active":
+      return {
+        status: "PRIMARY ACTIVE",
+        title: "The primary receiver is still active",
+        detail: "Stop the primary signal completely before opening mpv.",
+      };
+    case "stale-session":
+      return {
+        status: "SESSION ENDED",
+        title: "This Playback Session has ended",
+        detail: "Select the Channel again before requesting mpv failover.",
+      };
+    case "launch-failed":
+      return {
+        status: "MPV NOT STARTED",
+        title: "System mpv did not start",
+        detail: "Try opening mpv again or close this player.",
+      };
+    case "control-unavailable":
+      return {
+        status: "MPV UNREACHABLE",
+        title: "Sparrow could not control mpv",
+        detail: "Try the handoff again after the previous process has cleared.",
+      };
+    case "terminated":
+      return {
+        status: "MPV CLOSED",
+        title: "System mpv exited",
+        detail: "Open the Channel in mpv again or close this player.",
+      };
   }
 }
 
