@@ -546,6 +546,19 @@ mod tests {
         }
 
         #[test]
+        fn catalog_generations_are_positive_javascript_safe_integers(
+            m3u_checksum in any::<[u8; 32]>(),
+            epg_checksum in prop::option::of(any::<[u8; 32]>()),
+        ) {
+            let generation = configuration().catalog_generation(
+                &m3u_checksum,
+                epg_checksum.as_ref(),
+            );
+
+            prop_assert!((1..=CatalogGeneration::MAX_SAFE_INTEGER).contains(&generation.get()));
+        }
+
+        #[test]
         fn search_cursor_round_trips_visit_every_ranked_channel_once(
             channel_count in 1_usize..300,
             limit in 1_u16..=100,
@@ -695,6 +708,7 @@ mod tests {
             other_configuration.catalog_generation(&[1; 32], None)
         );
         assert_ne!(baseline.get(), 0);
+        assert!(baseline.get() <= CatalogGeneration::MAX_SAFE_INTEGER);
     }
 
     #[test]

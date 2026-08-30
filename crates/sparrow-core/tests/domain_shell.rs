@@ -1,6 +1,6 @@
 use sparrow_core::{
-    ChannelId, CoreError, InputField, InputReason, PageLimit, SearchTerm, SourceConfigurationInput,
-    SparrowCore,
+    CatalogGeneration, ChannelGroupFilter, ChannelId, CoreError, InputField, InputReason,
+    PageCursor, PageLimit, SearchTerm, SourceConfigurationInput, SparrowCore,
 };
 
 #[test]
@@ -84,6 +84,57 @@ fn page_limits_are_refined_at_the_public_boundary() {
             .get(),
         PageLimit::MAX
     );
+}
+
+#[test]
+fn channel_group_filters_are_exact_bounded_and_control_free() {
+    for value in ["", "News", "  日本語 e\u{301}  "] {
+        assert_eq!(
+            ChannelGroupFilter::parse(value)
+                .expect("the exact fixture group is valid")
+                .as_str(),
+            value
+        );
+    }
+
+    assert_eq!(
+        ChannelGroupFilter::parse("é".repeat(512))
+            .expect("the maximum UTF-8 byte length is valid")
+            .as_str()
+            .len(),
+        1024
+    );
+    assert!(matches!(
+        ChannelGroupFilter::parse("a".repeat(1025)),
+        Err(CoreError::InvalidInput {
+            field: InputField::ChannelGroup,
+            reason: InputReason::TooLong { max_bytes: 1024 },
+        })
+    ));
+
+    for value in ["News\n", "News\u{7f}", "News\u{85}"] {
+        assert!(matches!(
+            ChannelGroupFilter::parse(value),
+            Err(CoreError::InvalidInput {
+                field: InputField::ChannelGroup,
+                reason: InputReason::ContainsControlCharacter,
+            })
+        ));
+    }
+}
+
+#[test]
+fn cursor_parsing_rejects_generations_outside_the_javascript_safe_range() {
+    let query_hash = "0".repeat(64);
+    for generation in [0_u64, CatalogGeneration::MAX_SAFE_INTEGER + 1, u64::MAX] {
+        assert!(matches!(
+            PageCursor::parse(format!("pc1.{generation}.1.{query_hash}")),
+            Err(CoreError::InvalidInput {
+                field: InputField::PageCursor,
+                reason: InputReason::InvalidFormat,
+            })
+        ));
+    }
 }
 
 #[test]

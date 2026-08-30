@@ -3,7 +3,9 @@ use std::{io::BufRead, sync::Arc};
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
-use crate::domain::{M3uFailureKind, SafeFailure, SnapshotOperation, SourceKind, StoreError};
+use crate::domain::{
+    ChannelGroupFilter, M3uFailureKind, SafeFailure, SnapshotOperation, SourceKind, StoreError,
+};
 
 pub(crate) struct ParsedChannel {
     pub(crate) tvg_id: Arc<str>,
@@ -191,7 +193,7 @@ fn parse_metadata(metadata: &str, entry: u32) -> Result<PendingEntry, SafeFailur
         group: attributes
             .group_title
             .as_deref()
-            .map(normalize_presentation)
+            .map(normalize_queryable_group)
             .unwrap_or_default(),
     })
 }
@@ -390,6 +392,13 @@ pub(crate) fn normalize_presentation(value: &str) -> String {
     }
 
     normalized
+}
+
+fn normalize_queryable_group(value: &str) -> String {
+    let normalized = normalize_presentation(value);
+    ChannelGroupFilter::parse(normalized)
+        .map(|group| group.as_str().to_owned())
+        .unwrap_or_default()
 }
 
 fn parse_playback(location: &str, entry: u32) -> Result<Url, SafeFailure> {
