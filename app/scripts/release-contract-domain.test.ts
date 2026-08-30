@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatAcceptanceManifest,
   formatChecksums,
+  formatWorkflowRunArtifactsEndpoint,
   parseApkBadging,
   parseApkSignerCertificate,
   parseAppImageReleaseContract,
@@ -34,6 +35,28 @@ const APPIMAGE_TOOL_NAMES = [
 ] as const;
 
 describe("release contract", () => {
+  it("uses the supported run artifact collection without an attempt-scoped route", () => {
+    const endpoint = formatWorkflowRunArtifactsEndpoint(
+      "ponbac/sparrow-tv",
+      "33311303581",
+    );
+    expect(endpoint).toEqual({
+      ok: true,
+      value:
+        "repos/ponbac/sparrow-tv/actions/runs/33311303581/artifacts?per_page=100",
+    });
+    if (endpoint.ok) expect(endpoint.value).not.toContain("/attempts/");
+    expect(
+      formatWorkflowRunArtifactsEndpoint("invalid", "33311303581").ok,
+    ).toBe(false);
+    expect(
+      formatWorkflowRunArtifactsEndpoint(
+        "ponbac/sparrow-tv",
+        "9007199254740992",
+      ).ok,
+    ).toBe(false);
+  });
+
   it("derives every candidate identity from one stable SemVer", () => {
     expect(parseProductVersion("0.11.4")).toEqual({
       ok: true,
@@ -48,7 +71,14 @@ describe("release contract", () => {
         apkName: "Sparrow_0.11.4_universal.apk",
       },
     });
-    for (const invalid of ["0.0.0", "1.2", "1.2.3-rc.1", "01.2.3", "1.1000.0", "latest"]) {
+    for (const invalid of [
+      "0.0.0",
+      "1.2",
+      "1.2.3-rc.1",
+      "01.2.3",
+      "1.1000.0",
+      "latest",
+    ]) {
       expect(parseProductVersion(invalid).ok).toBe(false);
     }
   });
@@ -102,7 +132,10 @@ describe("release contract", () => {
         commit: COMMIT,
         masterCommit: MASTER,
       }),
-    ).toMatchObject({ ok: true, value: { publishable: false, mode: "rehearsal" } });
+    ).toMatchObject({
+      ok: true,
+      value: { publishable: false, mode: "rehearsal" },
+    });
     expect(
       verifyReleasePreflight({
         mode: "rehearsal",
@@ -156,8 +189,12 @@ describe("release contract", () => {
       ok: true,
       value: { versionCode: 11_004, debuggable: false },
     });
-    expect(parseApkBadging(`${badging}\napplication-debuggable`, version).ok).toBe(false);
-    expect(parseApkBadging(badging.replace(" 'x86'", ""), version).ok).toBe(false);
+    expect(
+      parseApkBadging(`${badging}\napplication-debuggable`, version).ok,
+    ).toBe(false);
+    expect(parseApkBadging(badging.replace(" 'x86'", ""), version).ok).toBe(
+      false,
+    );
   });
 
   it("normalizes one configured signing certificate without accepting a sentinel", () => {
@@ -171,7 +208,9 @@ describe("release contract", () => {
       reason: "the Android release certificate SHA-256 is not configured",
     });
     expect(
-      parseApkSignerCertificate(`Signer #1 certificate SHA-256 digest: ${"ab".repeat(32)}`),
+      parseApkSignerCertificate(
+        `Signer #1 certificate SHA-256 digest: ${"ab".repeat(32)}`,
+      ),
     ).toEqual({ ok: true, value: "ab".repeat(32) });
     expect(
       parseApkSignerCertificate(
@@ -190,7 +229,10 @@ describe("release contract", () => {
     const formatted = formatChecksums(digests);
     expect(formatted.ok).toBe(true);
     if (!formatted.ok) return;
-    expect(parseChecksums(formatted.value, version)).toEqual({ ok: true, value: digests });
+    expect(parseChecksums(formatted.value, version)).toEqual({
+      ok: true,
+      value: digests,
+    });
     expect(parseChecksums(`${formatted.value}extra\n`, version).ok).toBe(false);
   });
 
@@ -200,8 +242,12 @@ describe("release contract", () => {
         "ci.yml": `steps:\n  - uses: actions/checkout@${COMMIT} # reviewed`,
       }),
     ).toEqual({ ok: true, value: true });
-    expect(verifyActionPins({ "ci.yml": "- uses: actions/checkout@v7" }).ok).toBe(false);
-    expect(verifyActionPins({ "ci.yml": "- uses: ./local-action" }).ok).toBe(false);
+    expect(
+      verifyActionPins({ "ci.yml": "- uses: actions/checkout@v7" }).ok,
+    ).toBe(false);
+    expect(verifyActionPins({ "ci.yml": "- uses: ./local-action" }).ok).toBe(
+      false,
+    );
   });
 
   it("keeps untrusted workflow preflight values out of generated shell source", () => {
@@ -209,9 +255,12 @@ describe("release contract", () => {
       "env:",
       "  REQUESTED_VERSION: ${{ inputs.version }}",
       "run: |",
-      "  bun run release:contract preflight --requested-version \"$REQUESTED_VERSION\"",
+      '  bun run release:contract preflight --requested-version "$REQUESTED_VERSION"',
     ].join("\n");
-    expect(verifyReleaseWorkflowPreflightBoundary(safe)).toEqual({ ok: true, value: true });
+    expect(verifyReleaseWorkflowPreflightBoundary(safe)).toEqual({
+      ok: true,
+      value: true,
+    });
     expect(
       verifyReleaseWorkflowPreflightBoundary(
         [
@@ -222,7 +271,7 @@ describe("release contract", () => {
     ).toBe(false);
     expect(
       verifyReleaseWorkflowPreflightBoundary(
-        "run: just release-preflight rehearsal \"$REQUESTED_VERSION\"",
+        'run: just release-preflight rehearsal "$REQUESTED_VERSION"',
       ).ok,
     ).toBe(false);
   });
@@ -239,10 +288,19 @@ describe("release contract", () => {
       '    tool --evidence "${ACCEPTANCE_EVIDENCE:?ACCEPTANCE_EVIDENCE is required}"',
     ].join("\n");
     expect(verifyJustBoundaryRecipes(safe)).toEqual({ ok: true, value: true });
-    expect(verifyJustBoundaryRecipes('release-stage input:\n    tool "{{input}}"').ok).toBe(false);
-    expect(verifyJustBoundaryRecipes('stage-release input:\n    tool "$input"').ok).toBe(false);
-    expect(verifyJustBoundaryRecipes('@release-stage input:\n    tool "$input"').ok).toBe(false);
-    expect(verifyJustBoundaryRecipes('ordinary:\n    tool "{{value}}"').ok).toBe(false);
+    expect(
+      verifyJustBoundaryRecipes('release-stage input:\n    tool "{{input}}"')
+        .ok,
+    ).toBe(false);
+    expect(
+      verifyJustBoundaryRecipes('stage-release input:\n    tool "$input"').ok,
+    ).toBe(false);
+    expect(
+      verifyJustBoundaryRecipes('@release-stage input:\n    tool "$input"').ok,
+    ).toBe(false);
+    expect(
+      verifyJustBoundaryRecipes('ordinary:\n    tool "{{value}}"').ok,
+    ).toBe(false);
   });
 
   it("requires one pinned square PNG before AppImage bundling", () => {
@@ -256,10 +314,20 @@ describe("release contract", () => {
       ),
     ).toEqual({ ok: true, value: true });
     expect(
-      verifyAppImageBundleIcon([], contract.icon, pngHeader(512, 512), ICON_DIGEST).ok,
+      verifyAppImageBundleIcon(
+        [],
+        contract.icon,
+        pngHeader(512, 512),
+        ICON_DIGEST,
+      ).ok,
     ).toBe(false);
     expect(
-      verifyAppImageBundleIcon(["icons/icon.png"], contract.icon, undefined, undefined).ok,
+      verifyAppImageBundleIcon(
+        ["icons/icon.png"],
+        contract.icon,
+        undefined,
+        undefined,
+      ).ok,
     ).toBe(false);
     expect(
       verifyAppImageBundleIcon(
@@ -274,7 +342,9 @@ describe("release contract", () => {
   it("requires the exact five digest-pinned AppImage helper cache entries", () => {
     const raw = appImageContractFixture();
     expect(parseAppImageReleaseContract(raw)).toMatchObject({ ok: true });
-    expect(parseAppImageReleaseContract({ ...raw, tools: raw.tools.slice(1) }).ok).toBe(false);
+    expect(
+      parseAppImageReleaseContract({ ...raw, tools: raw.tools.slice(1) }).ok,
+    ).toBe(false);
     expect(
       parseAppImageReleaseContract({
         ...raw,
@@ -296,13 +366,18 @@ describe("release contract", () => {
   it("requires exact strict Gradle lock coverage", () => {
     const strict = "lockMode.set(LockMode.STRICT)";
     const activation = "resolutionStrategy.activateDependencyLocking()";
-    const appClasspaths = ["arm64", "arm", "x86", "x86_64", "universal"].flatMap(
-      (abi) =>
-        ["Debug", "Release"].flatMap((buildType) =>
-          ["Compile", "Runtime"].map(
-            (usage) => `${abi}${buildType}${usage}Classpath`,
-          ),
+    const appClasspaths = [
+      "arm64",
+      "arm",
+      "x86",
+      "x86_64",
+      "universal",
+    ].flatMap((abi) =>
+      ["Debug", "Release"].flatMap((buildType) =>
+        ["Compile", "Runtime"].map(
+          (usage) => `${abi}${buildType}${usage}Classpath`,
         ),
+      ),
     );
     const buildSrcClasspaths = [
       "compileClasspath",
@@ -321,7 +396,10 @@ describe("release contract", () => {
       appLock: lock(appClasspaths),
       buildSrcLock: lock(buildSrcClasspaths),
     };
-    expect(verifyGradleDependencyLocking(valid)).toEqual({ ok: true, value: true });
+    expect(verifyGradleDependencyLocking(valid)).toEqual({
+      ok: true,
+      value: true,
+    });
     expect(
       verifyGradleDependencyLocking({
         ...valid,
@@ -347,10 +425,15 @@ describe("release contract", () => {
       value: true,
     });
     expect(
-      verifyRemoteReleaseRefs(stableRefs.replace(COMMIT, "f".repeat(40)), "v1.2.3", COMMIT),
+      verifyRemoteReleaseRefs(
+        stableRefs.replace(COMMIT, "f".repeat(40)),
+        "v1.2.3",
+        COMMIT,
+      ),
     ).toEqual({
       ok: false,
-      reason: "the remote release tag or master moved after candidate verification",
+      reason:
+        "the remote release tag or master moved after candidate verification",
     });
   });
 
@@ -414,7 +497,9 @@ describe("release contract", () => {
             {
               type: "required_reviewers",
               prevent_self_review: true,
-              reviewers: [{ type: "User", reviewer: { id: 42, login: "someone-else" } }],
+              reviewers: [
+                { type: "User", reviewer: { id: 42, login: "someone-else" } },
+              ],
             },
           ],
         },
@@ -449,12 +534,21 @@ describe("release contract", () => {
       ],
     };
     expect(
-      verifyEnvironmentProtection(signingEnvironment, policies, "release-signing", "ponbac"),
+      verifyEnvironmentProtection(
+        signingEnvironment,
+        policies,
+        "release-signing",
+        "ponbac",
+      ),
     ).toEqual({ ok: true, value: true });
     expect(
       verifyEnvironmentProtection(
         signingEnvironment,
-        { ...policies, branch_policies: policies.branch_policies.slice(1), total_count: 1 },
+        {
+          ...policies,
+          branch_policies: policies.branch_policies.slice(1),
+          total_count: 1,
+        },
         "release-signing",
         "ponbac",
       ).ok,
@@ -488,7 +582,9 @@ describe("release contract", () => {
     } as const;
     const parsed = parseCandidateManifest(raw, version, version.tag, COMMIT);
     expect(parsed).toEqual({ ok: true, value: raw });
-    expect(parseCandidateManifest(raw, version, "v0.11.5", COMMIT).ok).toBe(false);
+    expect(parseCandidateManifest(raw, version, "v0.11.5", COMMIT).ok).toBe(
+      false,
+    );
     expect(
       parseCandidateManifest(
         { ...raw, android: { ...raw.android, versionCode: 11_005 } },
@@ -504,6 +600,8 @@ describe("release contract", () => {
     expect(checklist).toContain("Android certificate SHA-256");
     expect(checklist).toContain("attempt 2");
     expect(checklist).toContain("release-publish");
+    expect(checklist).toContain("release-acceptance-seal");
+    expect(checklist).toContain("blank or ordinary UI approval is rejected");
   });
 });
 

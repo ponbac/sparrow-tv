@@ -24,9 +24,10 @@ one-time controls. Do not push a release tag while any item is incomplete.
 
 For a release, commit the version bump to `master`, push the matching
 `vMAJOR.MINOR.PATCH` tag, and wait for the candidate bundle. Download that exact bundle and
-complete every Arch/Wayland and physical-Android item in `CANDIDATE-ACCEPTANCE.md`. Approving
-`release-publish` authorizes only the hashes and workflow attempt shown there. Rejecting or
-rerunning a candidate invalidates earlier acceptance.
+complete the repository-owned gate in [personal release acceptance](personal-acceptance.md).
+The ordinary blank environment approval is rejected: only the generated authenticated receipt
+authorizes the exact artifact and workflow attempt. Rejecting or rerunning a candidate invalidates
+earlier acceptance.
 
 Manual workflow dispatch is rehearsal-only. It can build candidates but cannot publish, and it
 must be dispatched from the current `master` commit.

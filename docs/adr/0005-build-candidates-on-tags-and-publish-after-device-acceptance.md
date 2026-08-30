@@ -54,6 +54,15 @@ Before approving `release-publish`, the owner downloads that run's exact candida
 - installs the APK on the physical Realme device over the preceding release when one exists, loads cached and refreshed catalog data, plays representative video and audio, changes Channel and Audio Track, and checks background/resume plus screen-lock behavior; and
 - confirms the displayed version and candidate SHA-256 values match the waiting workflow run.
 
+The downloaded candidate bundle remains byte-for-byte read-only; completed observations live in a
+separate private, gitignored evidence directory. Repository tooling binds those observations and the
+physical-device key-continuity proof to the workflow run attempt, candidate artifact ID/archive
+digest, candidate manifest, AppImage/APK hashes, and signing certificate. It seals a compact
+acceptance receipt which the reviewer submits as the protected-environment review comment. The
+resumed publication job reads GitHub's authenticated review history and rejects a blank approval,
+an old-attempt receipt, a mismatched artifact, or incomplete evidence before `gh release create` is
+reachable.
+
 The local emulator is optional pre-tag feedback. If it is unavailable or flaky, the release does not acquire a CI emulator requirement: build, signature, and package checks remain automated, while the physical-device check remains mandatory. Rejecting or rerunning a candidate invalidates any earlier manual acceptance; the final successful files must be exercised before approval.
 
 Before the first public APK release, two successively versioned candidates signed by the release key prove Android update continuity on the phone. The first may remain unpublished; the later accepted candidate becomes the first public release.
