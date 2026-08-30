@@ -21,6 +21,7 @@ impl ErrorEnvelope {
 #[serde(tag = "_tag", rename_all = "kebab-case")]
 enum ClientErrorDto {
     AuthenticationRequired,
+    ServiceUnavailable,
     InvalidInput {
         field: &'static str,
         reason: &'static str,
@@ -49,6 +50,15 @@ impl ApiError {
             status: StatusCode::BAD_REQUEST,
             body: Box::new(ErrorEnvelope {
                 error: ClientErrorDto::InvalidInput { field, reason },
+            }),
+        }
+    }
+
+    pub(crate) fn service_unavailable() -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            body: Box::new(ErrorEnvelope {
+                error: ClientErrorDto::ServiceUnavailable,
             }),
         }
     }
@@ -90,6 +100,7 @@ impl From<CoreError> for ApiError {
                     },
                 }),
             },
+            CoreError::Cancelled => Self::service_unavailable(),
         }
     }
 }

@@ -15,7 +15,12 @@ export type {
   IsoInstant,
   Page,
   PageCursor,
+  ProgrammeSummary,
   SafeFailure,
+  ScheduleInput,
+  SearchInput,
+  SearchPageInput,
+  SearchResults,
   SourceState,
   SparrowClient,
 } from "./contracts";

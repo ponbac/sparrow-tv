@@ -1,3 +1,6 @@
+mod programmes;
+mod search_lanes;
+
 use std::{
     collections::HashMap,
     fs,
@@ -26,17 +29,36 @@ use sparrow_core::{
 use tempfile::TempDir;
 use tower::ServiceExt as _;
 
-use crate::{memory_snapshot_store::MemorySnapshotStore, router};
+use crate::{api::ApiError, memory_snapshot_store::MemorySnapshotStore, router};
 
 const PASSWORD: &str = "deployment-password-canary";
 const CONFIGURATION_CANARY: &str = "configuration-user:configuration-secret";
 const PROVIDER_CANARY: &str = "private-provider.fixture.invalid";
 const PLAYBACK_CANARY: &str = "private-media.fixture.invalid";
 const SOURCE_LOCATION: &str = "https://configuration-user:configuration-secret@private-provider.fixture.invalid/browse.m3u?token=source-canary";
+const EPG_CONFIGURATION_CANARY: &str = "guide-user:guide-secret";
+const EPG_PROVIDER_CANARY: &str = "private-guide.fixture.invalid";
+const EPG_SOURCE_LOCATION: &str = "https://guide-user:guide-secret@private-guide.fixture.invalid/schedules.xml?token=guide-canary";
 const BROWSE_M3U: &[u8] = include_bytes!("../../sparrow-core/tests/fixtures/browse_channels.m3u");
 const REORDERED_BROWSE_M3U: &[u8] =
     include_bytes!("../../sparrow-core/tests/fixtures/browse_channels_reordered.m3u");
+const PROGRAMME_M3U: &[u8] =
+    include_bytes!("../../sparrow-core/tests/fixtures/programme_channels.m3u");
+const PROGRAMME_EPG: &[u8] =
+    include_bytes!("../../sparrow-core/tests/fixtures/programme_schedules.xml");
 const REPLACEMENT_M3U: &[u8] = b"#EXTM3U\n#EXTINF:-1 group-title=\"Replacement\",Replacement Channel\nhttps://private-media.fixture.invalid/replacement.ts\n";
+
+#[tokio::test]
+async fn unavailable_api_work_has_a_finite_privacy_safe_error() {
+    let router = Router::new().fallback(|| async { ApiError::service_unavailable() });
+    let response = send(&router, request(Method::GET, "/", None)).await;
+
+    assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response.json,
+        json!({ "error": { "_tag": "service-unavailable" } })
+    );
+}
 
 #[derive(Clone)]
 struct FixtureSource {
@@ -46,11 +68,20 @@ struct FixtureSource {
 
 impl FixtureSource {
     fn available(m3u: &[u8]) -> Self {
+        Self::available_sources(m3u, None)
+    }
+
+    fn available_with_epg(m3u: &[u8], epg: &[u8]) -> Self {
+        Self::available_sources(m3u, Some(epg))
+    }
+
+    fn available_sources(m3u: &[u8], epg: Option<&[u8]>) -> Self {
+        let mut state = HashMap::from([(SourceKind::M3u, Ok(Bytes::copy_from_slice(m3u)))]);
+        if let Some(epg) = epg {
+            state.insert(SourceKind::Epg, Ok(Bytes::copy_from_slice(epg)));
+        }
         Self {
-            state: Arc::new(Mutex::new(HashMap::from([(
-                SourceKind::M3u,
-                Ok(Bytes::copy_from_slice(m3u)),
-            )]))),
+            state: Arc::new(Mutex::new(state)),
             opens: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -77,11 +108,15 @@ impl FixtureSource {
     }
 
     fn set_unavailable(&self) {
+        self.set_source_unavailable(SourceKind::M3u);
+    }
+
+    fn set_source_unavailable(&self, kind: SourceKind) {
         self.state
             .lock()
             .expect("fixture source state is not poisoned")
             .insert(
-                SourceKind::M3u,
+                kind,
                 Err(SourceAccessFailure::new(SourceAccessError::Unavailable)),
             );
     }
@@ -116,6 +151,16 @@ impl TestApp {
         let core = configured_core(
             FixtureSource::available(m3u),
             Arc::new(MemorySnapshotStore::default()),
+        )
+        .await;
+        Self::with_core(core)
+    }
+
+    async fn fixture_with_guide(m3u: &[u8], epg: &[u8]) -> Self {
+        let core = configured_core_with_configuration(
+            FixtureSource::available_with_epg(m3u, epg),
+            Arc::new(MemorySnapshotStore::default()),
+            source_configuration_with_epg(),
         )
         .await;
         Self::with_core(core)
@@ -156,6 +201,8 @@ async fn health_root_and_static_app_have_the_required_authentication_seam() {
         "/app/unknown",
         "/api/v1",
         "/api/v1/status",
+        "/api/v1/search?term=news&channelLimit=10&programmeLimit=10",
+        "/api/v1/channels/not-an-id/schedule?limit=10",
         "/api/v1/unknown",
     ] {
         let unauthorized = send(&app.router, request(Method::GET, uri, None)).await;
@@ -370,23 +417,20 @@ async fn query_and_identifier_failures_are_bounded_typed_responses() {
     assert_eq!(ungrouped["items"][0]["group"], "");
 
     let valid_missing_id = format!("ch1_{}", "0".repeat(64));
-    let missing = send(
-        &app.router,
-        request(
-            Method::GET,
-            &format!("/api/v1/channels/{valid_missing_id}"),
-            Some(PASSWORD),
-        ),
-    )
-    .await;
-    assert_eq!(missing.status, StatusCode::NOT_FOUND);
-    assert_eq!(
-        missing.json,
-        json!({
-            "error": { "_tag": "not-found", "resource": "channel" }
-        })
-    );
-    assert!(!missing.text.contains(&valid_missing_id));
+    for uri in [
+        format!("/api/v1/channels/{valid_missing_id}"),
+        format!("/api/v1/channels/{valid_missing_id}/schedule?limit=10"),
+    ] {
+        let missing = send(&app.router, request(Method::GET, &uri, Some(PASSWORD))).await;
+        assert_eq!(missing.status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            missing.json,
+            json!({
+                "error": { "_tag": "not-found", "resource": "channel" }
+            })
+        );
+        assert!(!missing.text.contains(&valid_missing_id));
+    }
 }
 
 #[tokio::test]
@@ -433,16 +477,21 @@ async fn stale_not_configured_and_unavailable_are_ordinary_client_errors() {
     .await;
     assert_eq!(status.status, StatusCode::OK);
     assert_eq!(status.json["configuration"]["configured"], false);
-    let browse = send(
-        &unconfigured.router,
-        request(Method::GET, "/api/v1/groups", Some(PASSWORD)),
-    )
-    .await;
-    assert_eq!(browse.status, StatusCode::CONFLICT);
-    assert_eq!(
-        browse.json,
-        json!({ "error": { "_tag": "not-configured" } })
-    );
+    for uri in [
+        "/api/v1/groups",
+        "/api/v1/search?term=news&channelLimit=10&programmeLimit=10",
+    ] {
+        let response = send(
+            &unconfigured.router,
+            request(Method::GET, uri, Some(PASSWORD)),
+        )
+        .await;
+        assert_eq!(response.status, StatusCode::CONFLICT);
+        assert_eq!(
+            response.json,
+            json!({ "error": { "_tag": "not-configured" } })
+        );
+    }
 
     let unavailable = TestApp::with_core(
         configured_core(
@@ -457,18 +506,23 @@ async fn stale_not_configured_and_unavailable_are_ordinary_client_errors() {
     )
     .await;
     assert_eq!(status.status, StatusCode::OK);
-    let browse = send(
-        &unavailable.router,
-        request(Method::GET, "/api/v1/channels", Some(PASSWORD)),
-    )
-    .await;
-    assert_eq!(browse.status, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(browse.json["error"]["_tag"], "catalog-unavailable");
-    assert_eq!(browse.json["error"]["status"]["m3u"]["_tag"], "failed");
-    assert_eq!(
-        browse.json["error"]["status"]["m3u"]["failure"],
-        json!({ "_tag": "source-access" })
-    );
+    for uri in [
+        "/api/v1/channels",
+        "/api/v1/search?term=news&channelLimit=10&programmeLimit=10",
+    ] {
+        let response = send(
+            &unavailable.router,
+            request(Method::GET, uri, Some(PASSWORD)),
+        )
+        .await;
+        assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.json["error"]["_tag"], "catalog-unavailable");
+        assert_eq!(response.json["error"]["status"]["m3u"]["_tag"], "failed");
+        assert_eq!(
+            response.json["error"]["status"]["m3u"]["failure"],
+            json!({ "_tag": "source-access" })
+        );
+    }
 }
 
 #[tokio::test]
@@ -600,8 +654,16 @@ async fn configured_core(
     source: FixtureSource,
     snapshots: Arc<MemorySnapshotStore>,
 ) -> Arc<SparrowCore> {
+    configured_core_with_configuration(source, snapshots, source_configuration()).await
+}
+
+async fn configured_core_with_configuration(
+    source: FixtureSource,
+    snapshots: Arc<MemorySnapshotStore>,
+    configuration: SourceConfiguration,
+) -> Arc<SparrowCore> {
     Arc::new(
-        SparrowCore::bootstrap(Some(source_configuration()), adapters(source, snapshots))
+        SparrowCore::bootstrap(Some(configuration), adapters(source, snapshots))
             .await
             .expect("the fixture core bootstraps"),
     )
@@ -615,12 +677,30 @@ fn source_configuration() -> SourceConfiguration {
     .expect("the fixture source configuration is valid")
 }
 
+fn source_configuration_with_epg() -> SourceConfiguration {
+    SparrowCore::parse_source_configuration(SourceConfigurationInput::new(
+        SOURCE_LOCATION,
+        Some(EPG_SOURCE_LOCATION),
+    ))
+    .expect("the enriched fixture source configuration is valid")
+}
+
 fn adapters(source: FixtureSource, snapshots: Arc<MemorySnapshotStore>) -> CoreAdapters {
     CoreAdapters::new(Arc::new(source), snapshots, Arc::new(SystemClock))
 }
 
 fn page_limit(value: u16) -> PageLimit {
     PageLimit::new(value).expect("fixture page limit is valid")
+}
+
+fn channel_id_named<'a>(channels: &'a Value, name: &str) -> &'a str {
+    channels["items"]
+        .as_array()
+        .expect("the Channel page has items")
+        .iter()
+        .find(|channel| channel["name"] == name)
+        .and_then(|channel| channel["id"].as_str())
+        .expect("the named fixture Channel exists")
 }
 
 fn request(method: Method, uri: &str, password: Option<&str>) -> Request<Body> {
@@ -704,4 +784,23 @@ fn assert_no_cors(headers: &HeaderMap) {
     assert!(!headers.contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
     assert!(!headers.contains_key(header::ACCESS_CONTROL_ALLOW_METHODS));
     assert!(!headers.contains_key(header::ACCESS_CONTROL_ALLOW_HEADERS));
+}
+
+fn assert_invalid_input(response: &ObservedResponse, field: &str, reason: &str) {
+    assert_eq!(
+        response.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        response.text
+    );
+    assert_eq!(
+        response.json,
+        json!({
+            "error": {
+                "_tag": "invalid-input",
+                "field": field,
+                "reason": reason,
+            }
+        })
+    );
 }

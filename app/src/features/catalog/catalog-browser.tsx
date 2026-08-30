@@ -5,6 +5,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useState } from "react";
+import { SearchConsole } from "../search/search-console";
 import type {
   CatalogStatus,
   ChannelDetails,
@@ -42,6 +43,8 @@ export function CatalogBrowser({ client }: CatalogBrowserProps) {
     queryKey: ["catalog", "status"],
     queryFn: ({ signal }) => client.status({ signal }),
   });
+  const catalogGeneration =
+    statusQuery.data?.ok === true ? statusQuery.data.value.generation : null;
   const groupsQuery = useInfiniteQuery({
     queryKey: ["catalog", "groups"],
     initialPageParam: FIRST_PAGE,
@@ -68,7 +71,7 @@ export function CatalogBrowser({ client }: CatalogBrowserProps) {
       lastPage.ok ? lastPage.value.next : null,
   });
   const channelQuery = useQuery({
-    queryKey: ["catalog", "channel", selectedChannel],
+    queryKey: ["catalog", "channel", selectedChannel, catalogGeneration],
     queryFn:
       selectedChannel === null
         ? skipToken
@@ -108,6 +111,9 @@ export function CatalogBrowser({ client }: CatalogBrowserProps) {
   const loadMoreChannels = () => {
     channelsQuery.fetchNextPage().catch(() => undefined);
   };
+  const retrySelectedDetails = () => {
+    channelQuery.refetch().catch(() => undefined);
+  };
 
   if (initialLoading) {
     return <CatalogLoading />;
@@ -145,6 +151,16 @@ export function CatalogBrowser({ client }: CatalogBrowserProps) {
       {browseError !== null ? (
         <ErrorNotice error={browseError} onRetry={retryCatalog} />
       ) : null}
+
+      <SearchConsole
+        client={client}
+        status={status}
+        selectedChannel={selectedChannel}
+        selectedDetails={channelQuery.data}
+        selectedLoading={channelQuery.isPending && selectedChannel !== null}
+        onSelectChannel={setSelectedChannel}
+        onRetrySelectedDetails={retrySelectedDetails}
+      />
 
       <main className="catalog-frame">
         <GroupRail
@@ -356,7 +372,9 @@ function ChannelInspector({
               <dd>{abbreviateId(result.value.id)}</dd>
             </div>
           </dl>
-          <p className="inspector-note">Playback control arrives on the next circuit.</p>
+          <p className="inspector-note">
+            Its matched Programme schedule is open in the search desk above.
+          </p>
         </div>
       ) : (
         <CompactError error={result.error} />
@@ -520,6 +538,11 @@ function errorCopy(error: ClientError): {
       return {
         title: "Access credential required",
         detail: "Authenticate with the hosted Sparrow deployment, then retry this signal.",
+      };
+    case "service-unavailable":
+      return {
+        title: "The hosted desk is temporarily unavailable",
+        detail: "The catalog remains unchanged. Try the request again shortly.",
       };
     case "invalid-input":
       return {

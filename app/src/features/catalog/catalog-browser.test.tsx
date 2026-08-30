@@ -23,6 +23,11 @@ import {
   type ListChannelsInput,
   type ListGroupsInput,
   type Page,
+  type ProgrammeSummary,
+  type ScheduleInput,
+  type SearchInput,
+  type SearchPageInput,
+  type SearchResults,
   type SparrowClient,
 } from "../../client/contracts";
 import { CatalogBrowser } from "./catalog-browser";
@@ -41,6 +46,13 @@ const FRESH_STATUS = clientSchemas.status.parse({
   configuration: { configured: true, epgConfigured: true },
   m3u: { _tag: "fresh", validatedAt: "2026-08-30T10:00:00Z" },
   epg: { _tag: "fresh", validatedAt: "2026-08-30T10:00:01Z" },
+});
+
+const NEXT_GENERATION_STATUS = clientSchemas.status.parse({
+  generation: 8,
+  configuration: { configured: true, epgConfigured: true },
+  m3u: { _tag: "fresh", validatedAt: "2026-08-30T11:00:00Z" },
+  epg: { _tag: "fresh", validatedAt: "2026-08-30T11:00:01Z" },
 });
 
 const STALE_STATUS = clientSchemas.status.parse({
@@ -101,6 +113,12 @@ const CHANNEL_DETAILS = clientSchemas.channel.parse({
   group: "News & Current",
 });
 
+const NEXT_GENERATION_CHANNEL_DETAILS = clientSchemas.channel.parse({
+  id: "world-news",
+  name: "World News Reloaded",
+  group: "News & Current",
+});
+
 const EMPTY_GROUPS_PAGE = clientSchemas.groupsPage.parse({
   generation: 7,
   items: [],
@@ -125,6 +143,18 @@ const SECOND_CHANNELS_PAGE = clientSchemas.channelsPage.parse({
   next: null,
 });
 
+const EMPTY_SCHEDULE_PAGE = clientSchemas.schedulePage.parse({
+  generation: 7,
+  items: [],
+  next: null,
+});
+
+const EMPTY_SEARCH_RESULTS = clientSchemas.searchResults.parse({
+  generation: 7,
+  channels: EMPTY_CHANNELS_PAGE,
+  programmes: EMPTY_SCHEDULE_PAGE,
+});
+
 interface FakeBehavior {
   readonly capabilities?: (
     options: ClientRequestOptions | undefined,
@@ -141,6 +171,12 @@ interface FakeBehavior {
   readonly channel?: (
     input: ChannelInput,
   ) => Promise<ClientResult<ChannelDetails>>;
+  readonly schedule?: (
+    input: ScheduleInput,
+  ) => Promise<ClientResult<Page<ProgrammeSummary>>>;
+  readonly search?: (
+    input: SearchInput,
+  ) => Promise<ClientResult<SearchResults>>;
 }
 
 class FakeSparrowClient implements SparrowClient {
@@ -149,6 +185,10 @@ class FakeSparrowClient implements SparrowClient {
   readonly groupInputs: ListGroupsInput[] = [];
   readonly channelListInputs: ListChannelsInput[] = [];
   readonly channelInputs: ChannelInput[] = [];
+  readonly scheduleInputs: ScheduleInput[] = [];
+  readonly searchInputs: SearchInput[] = [];
+  readonly channelSearchInputs: SearchPageInput[] = [];
+  readonly programmeSearchInputs: SearchPageInput[] = [];
 
   constructor(private readonly behavior: FakeBehavior = {}) {}
 
@@ -189,6 +229,35 @@ class FakeSparrowClient implements SparrowClient {
     return (
       this.behavior.channel?.(input) ?? Promise.resolve(success(CHANNEL_DETAILS))
     );
+  }
+
+  schedule(input: ScheduleInput): Promise<ClientResult<Page<ProgrammeSummary>>> {
+    this.scheduleInputs.push(input);
+    return (
+      this.behavior.schedule?.(input) ??
+      Promise.resolve(success(EMPTY_SCHEDULE_PAGE))
+    );
+  }
+
+  search(input: SearchInput): Promise<ClientResult<SearchResults>> {
+    this.searchInputs.push(input);
+    return (
+      this.behavior.search?.(input) ?? Promise.resolve(success(EMPTY_SEARCH_RESULTS))
+    );
+  }
+
+  searchChannels(
+    input: SearchPageInput,
+  ): Promise<ClientResult<Page<ChannelSummary>>> {
+    this.channelSearchInputs.push(input);
+    return Promise.resolve(success(EMPTY_CHANNELS_PAGE));
+  }
+
+  searchProgrammes(
+    input: SearchPageInput,
+  ): Promise<ClientResult<Page<ProgrammeSummary>>> {
+    this.programmeSearchInputs.push(input);
+    return Promise.resolve(success(EMPTY_SCHEDULE_PAGE));
   }
 }
 
@@ -325,6 +394,71 @@ describe("CatalogBrowser", () => {
       "expected an explicit empty group filter",
     );
     expect(ungroupedRequest.group).toBe("");
+  });
+
+  it("retries failed selected Channel details without restarting its schedule", async () => {
+    let detailAttempts = 0;
+    const client = new FakeSparrowClient({
+      channel: () => {
+        detailAttempts += 1;
+        return Promise.resolve(
+          detailAttempts === 1
+            ? failure({ _tag: "not-found", resource: "channel" })
+            : success(CHANNEL_DETAILS),
+        );
+      },
+    });
+    const user = userEvent.setup();
+    renderBrowser(client);
+
+    await user.click(await screen.findByRole("button", { name: /World News/ }));
+    const schedule = screen.getByRole("complementary", {
+      name: "Programme schedule",
+    });
+    expect(
+      await within(schedule).findByText("That Channel left the catalog"),
+    ).toBeVisible();
+
+    await user.click(within(schedule).getByRole("button", { name: "Try again" }));
+
+    expect(await within(schedule).findByText("World News")).toBeVisible();
+    expect(client.channelInputs).toHaveLength(2);
+    expect(client.scheduleInputs).toHaveLength(1);
+  });
+
+  it("refetches selected Channel details for a newly published generation", async () => {
+    let currentGeneration = 7;
+    const client = new FakeSparrowClient({
+      channel: () =>
+        Promise.resolve(
+          success(
+            currentGeneration === 7
+              ? CHANNEL_DETAILS
+              : NEXT_GENERATION_CHANNEL_DETAILS,
+          ),
+        ),
+    });
+    const user = userEvent.setup();
+    const queryClient = renderBrowser(client);
+
+    await user.click(await screen.findByRole("button", { name: /World News/ }));
+    const schedule = screen.getByRole("complementary", {
+      name: "Programme schedule",
+    });
+    expect(await within(schedule).findByText("World News")).toBeVisible();
+
+    currentGeneration = 8;
+    await act(async () => {
+      queryClient.setQueryData(
+        ["catalog", "status"],
+        success(NEXT_GENERATION_STATUS),
+      );
+    });
+
+    expect(
+      await within(schedule).findByText("World News Reloaded"),
+    ).toBeVisible();
+    expect(client.channelInputs).toHaveLength(2);
   });
 
   it("retains earlier Channels while a requested page is loading and appends it", async () => {
@@ -483,7 +617,7 @@ describe("CatalogBrowser", () => {
   });
 });
 
-function renderBrowser(client: SparrowClient): void {
+function renderBrowser(client: SparrowClient): QueryClient {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
@@ -497,6 +631,7 @@ function renderBrowser(client: SparrowClient): void {
       <CatalogBrowser client={client} />
     </QueryClientProvider>,
   );
+  return queryClient;
 }
 
 function success<Value>(

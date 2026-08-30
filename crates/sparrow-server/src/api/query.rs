@@ -1,6 +1,12 @@
-use axum::extract::{Query, rejection::QueryRejection};
+use axum::extract::{
+    Path, Query,
+    rejection::{PathRejection, QueryRejection},
+};
 use serde::Deserialize;
-use sparrow_core::{ChannelGroupFilter, ChannelQuery, PageCursor, PageLimit, PageRequest};
+use sparrow_core::{
+    ChannelGroupFilter, ChannelId, ChannelQuery, PageCursor, PageLimit, PageRequest, ScheduleQuery,
+    SearchRequest, SearchTerm,
+};
 
 use super::ApiError;
 
@@ -15,12 +21,6 @@ pub(crate) struct PageQuery {
 }
 
 impl PageQuery {
-    pub(crate) fn extract(query: Result<Query<Self>, QueryRejection>) -> Result<Self, ApiError> {
-        query
-            .map(|Query(query)| query)
-            .map_err(|_| ApiError::invalid("query", "invalid-format"))
-    }
-
     pub(crate) fn page_request(self) -> Result<PageRequest, ApiError> {
         page_request(self.cursor, self.limit)
     }
@@ -35,12 +35,6 @@ pub(crate) struct ChannelsQuery {
 }
 
 impl ChannelsQuery {
-    pub(crate) fn extract(query: Result<Query<Self>, QueryRejection>) -> Result<Self, ApiError> {
-        query
-            .map(|Query(query)| query)
-            .map_err(|_| ApiError::invalid("query", "invalid-format"))
-    }
-
     pub(crate) fn into_core(self) -> Result<ChannelQuery, ApiError> {
         let page = page_request(self.cursor, self.limit)?;
         match self.group {
@@ -51,6 +45,62 @@ impl ChannelsQuery {
             None => Ok(ChannelQuery::all(page)),
         }
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SearchQuery {
+    term: String,
+    channel_limit: String,
+    channel_cursor: Option<String>,
+    programme_limit: String,
+    programme_cursor: Option<String>,
+}
+
+impl SearchQuery {
+    pub(crate) fn into_core(self) -> Result<SearchRequest, ApiError> {
+        let term = SearchTerm::parse(self.term).map_err(ApiError::from)?;
+        let channels = page_request(self.channel_cursor, Some(self.channel_limit))?;
+        let programmes = page_request(self.programme_cursor, Some(self.programme_limit))?;
+        Ok(SearchRequest::new(term, channels, programmes))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SearchPageQuery {
+    term: String,
+    limit: String,
+    cursor: Option<String>,
+}
+
+impl SearchPageQuery {
+    pub(crate) fn into_core(self) -> Result<(SearchTerm, PageRequest), ApiError> {
+        let term = SearchTerm::parse(self.term).map_err(ApiError::from)?;
+        let page = page_request(self.cursor, Some(self.limit))?;
+        Ok((term, page))
+    }
+}
+
+pub(crate) fn schedule_query(
+    path: Result<Path<String>, PathRejection>,
+    query: Result<Query<PageQuery>, QueryRejection>,
+) -> Result<ScheduleQuery, ApiError> {
+    Ok(ScheduleQuery::new(
+        channel_id(path)?,
+        extract(query)?.page_request()?,
+    ))
+}
+
+pub(crate) fn extract<T>(query: Result<Query<T>, QueryRejection>) -> Result<T, ApiError> {
+    query
+        .map(|Query(query)| query)
+        .map_err(|_| ApiError::invalid("query", "invalid-format"))
+}
+
+pub(crate) fn channel_id(path: Result<Path<String>, PathRejection>) -> Result<ChannelId, ApiError> {
+    let Path(value) = path.map_err(|_| ApiError::invalid("channel-id", "invalid-format"))?;
+    ChannelId::parse(value).map_err(ApiError::from)
 }
 
 fn page_request(cursor: Option<String>, limit: Option<String>) -> Result<PageRequest, ApiError> {
