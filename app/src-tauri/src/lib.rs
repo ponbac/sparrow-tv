@@ -7,6 +7,7 @@ mod instance_lock;
 mod ipc;
 mod playback;
 mod runtime;
+mod screen_wake;
 mod selected_transport_stream;
 
 /// Runs the installed Sparrow shell.
@@ -27,8 +28,9 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .map_err(|_| runtime::InstalledStartupError::AppData)?;
+            let screen_wake = screen_wake::platform_screen_wake(app.handle().clone());
             let runtime = Arc::new(tauri::async_runtime::block_on(
-                runtime::InstalledRuntime::open(app_data),
+                runtime::InstalledRuntime::open_with_screen_wake(app_data, screen_wake),
             )?);
             app.state::<runtime::InstalledRuntimeSlot>()
                 .fill(runtime)
@@ -53,6 +55,7 @@ pub fn run() {
             ipc::playback_start,
             ipc::playback_read,
             ipc::playback_suspend,
+            ipc::playback_activity,
             ipc::playback_reopen,
             ipc::playback_restart,
             ipc::playback_stop,
@@ -94,7 +97,7 @@ fn enable_linux_media_source(app: &tauri::App) -> Result<(), runtime::InstalledS
 
 #[cfg(target_os = "android")]
 fn initialize_android_certificate_verifier() -> Result<(), ()> {
-    use jni::objects::JObject;
+    use jni::objects::{Global, JObject};
     use tauri::tao::platform::android::prelude::main_android_context;
 
     let context = main_android_context().ok_or(())?;
@@ -104,11 +107,12 @@ fn initialize_android_certificate_verifier() -> Result<(), ()> {
     let java_vm = unsafe { jni::JavaVM::from_raw(context.java_vm.cast()) };
     java_vm
         .attach_current_thread(|environment| {
-            // SAFETY: `context_jobject` is Tao's live global Activity reference.
-            // `JObject` is a transparent, non-dropping view used only during this
-            // attached local frame; the verifier immediately creates a global copy.
+            let activity_raw = context.context_jobject.cast();
+            // SAFETY: Tao owns this valid global Activity reference for the
+            // process lifetime. The cast borrows it without taking ownership.
             let activity =
-                unsafe { JObject::from_raw(environment, context.context_jobject.cast()) };
+                unsafe { environment.as_cast_raw::<Global<JObject<'static>>>(&activity_raw)? };
+            let activity = environment.new_local_ref(activity.as_ref())?;
             rustls_platform_verifier::android::init_with_env(environment, activity)
         })
         .map_err(|_| ())
@@ -116,7 +120,7 @@ fn initialize_android_certificate_verifier() -> Result<(), ()> {
 
 fn report_lifecycle(app: &tauri::AppHandle, event: tauri::RunEvent) {
     use sparrow_core::LifecycleSignal;
-    use tauri::Manager as _;
+    use tauri::{Emitter as _, Manager as _};
 
     let signal = match event {
         tauri::RunEvent::Ready => Some(LifecycleSignal::Started),
@@ -138,6 +142,11 @@ fn report_lifecycle(app: &tauri::AppHandle, event: tauri::RunEvent) {
         app.try_state::<runtime::InstalledRuntimeSlot>()
             .and_then(|slot| slot.ready()),
     ) {
-        runtime.core().report_lifecycle(signal);
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Ok(Some(event)) = runtime.report_lifecycle(signal).await {
+                let _ = app.emit("sparrow://playback-lifecycle", event);
+            }
+        });
     }
 }

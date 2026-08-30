@@ -58,6 +58,7 @@ export const NATIVE_COMMANDS = Object.freeze({
   reopenPlayback: "playback_reopen",
   restartPlayback: "playback_restart",
   suspendPlayback: "playback_suspend",
+  setPlaybackActivity: "playback_activity",
   stopPlayback: "playback_stop",
 } as const);
 
@@ -524,10 +525,16 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
       return Promise.resolve(invalidNativeResponse());
     }
     this.#started = true;
-    return this.#open(NATIVE_COMMANDS.startPlayback, {
-      id: this.#channelId,
-      sessionId: this.#sessionId,
-    }, options.signal, null, false);
+    return this.#open(
+      NATIVE_COMMANDS.startPlayback,
+      {
+        id: this.#channelId,
+        sessionId: this.#sessionId,
+      },
+      options.signal,
+      null,
+      false,
+    );
   }
 
   async reopen(
@@ -611,9 +618,7 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
     return parseNativeChunk(outcome);
   }
 
-  suspend(
-    options: ClientRequestOptions = {},
-  ): Promise<ClientResult<void>> {
+  suspend(options: ClientRequestOptions = {}): Promise<ClientResult<void>> {
     if (this.#stopped) {
       return Promise.resolve({ ok: true, value: undefined });
     }
@@ -636,9 +641,27 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
     return flight;
   }
 
-  stop(
+  setActivity(
+    active: boolean,
     options: ClientRequestOptions = {},
   ): Promise<ClientResult<void>> {
+    if (this.#stopped) {
+      return Promise.resolve(
+        active
+          ? { ok: false, error: { _tag: "cancelled" } }
+          : { ok: true, value: undefined },
+      );
+    }
+    return requestNative(
+      this.#ipc,
+      NATIVE_COMMANDS.setPlaybackActivity,
+      { input: { sessionId: this.#sessionId, active } },
+      voidResponseSchema,
+      options.signal,
+    );
+  }
+
+  stop(options: ClientRequestOptions = {}): Promise<ClientResult<void>> {
     if (this.#stopFlight !== null) {
       return this.#stopFlight;
     }
@@ -710,7 +733,11 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
       }
     }
     const result = parseNativeOutcome(outcome, parser);
-    if (!result.ok && result.error._tag === "transport" && !result.error.retryable) {
+    if (
+      !result.ok &&
+      result.error._tag === "transport" &&
+      !result.error.retryable
+    ) {
       await this.stop();
     }
     if (!result.ok) {
@@ -744,10 +771,9 @@ function requestNative<Value>(
   parser: RuntimeParser<Value>,
   signal: AbortSignal | undefined,
 ): Promise<ClientResult<Value>> {
-  return invokeWithCancellation(
-    () => ipc.invoke(command, args),
-    signal,
-  ).then((outcome) => parseNativeOutcome(outcome, parser));
+  return invokeWithCancellation(() => ipc.invoke(command, args), signal).then(
+    (outcome) => parseNativeOutcome(outcome, parser),
+  );
 }
 
 function parseNativeOutcome<Value>(

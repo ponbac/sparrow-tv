@@ -130,21 +130,21 @@ describe("installed Tauri Sparrow client", () => {
             ? FRESH_STATUS
             : command === NATIVE_COMMANDS.refresh
               ? REFRESH_REPORT
-            : command === NATIVE_COMMANDS.groups
-              ? GROUPS_PAGE
-              : command === NATIVE_COMMANDS.channels
-                ? CHANNELS_PAGE
-                : command === NATIVE_COMMANDS.channel
-                  ? CHANNEL
-                  : command === NATIVE_COMMANDS.schedule
-                    ? SCHEDULE_PAGE
-                    : command === NATIVE_COMMANDS.search
-                      ? SEARCH_RESULTS
-                      : command === NATIVE_COMMANDS.searchChannels
-                        ? CHANNELS_PAGE
-                        : command === NATIVE_COMMANDS.searchProgrammes
-                          ? SCHEDULE_PAGE
-                  : FRESH_STATUS,
+              : command === NATIVE_COMMANDS.groups
+                ? GROUPS_PAGE
+                : command === NATIVE_COMMANDS.channels
+                  ? CHANNELS_PAGE
+                  : command === NATIVE_COMMANDS.channel
+                    ? CHANNEL
+                    : command === NATIVE_COMMANDS.schedule
+                      ? SCHEDULE_PAGE
+                      : command === NATIVE_COMMANDS.search
+                        ? SEARCH_RESULTS
+                        : command === NATIVE_COMMANDS.searchChannels
+                          ? CHANNELS_PAGE
+                          : command === NATIVE_COMMANDS.searchProgrammes
+                            ? SCHEDULE_PAGE
+                            : FRESH_STATUS,
       ),
     );
     const client = createNativeSparrowClient({ ipc });
@@ -677,7 +677,9 @@ describe("installed Tauri Sparrow client", () => {
     await startFlight.promise;
     await Promise.resolve();
     expect(
-      ipc.invokes.filter(({ command }) => command === NATIVE_COMMANDS.stopPlayback),
+      ipc.invokes.filter(
+        ({ command }) => command === NATIVE_COMMANDS.stopPlayback,
+      ),
     ).toHaveLength(1);
   });
 
@@ -759,6 +761,7 @@ describe("installed Tauri Sparrow client", () => {
         case NATIVE_COMMANDS.readPlayback:
           return Promise.resolve(chunk);
         case NATIVE_COMMANDS.suspendPlayback:
+        case NATIVE_COMMANDS.setPlaybackActivity:
         case NATIVE_COMMANDS.stopPlayback:
           return Promise.resolve(null);
         default:
@@ -791,10 +794,22 @@ describe("installed Tauri Sparrow client", () => {
     await expect(
       session.read({ streamHandle: reopened.value.streamHandle }),
     ).resolves.toEqual({ ok: true, value: chunk });
+    await expect(session.setActivity(true)).resolves.toEqual({
+      ok: true,
+      value: undefined,
+    });
     const firstStop = session.stop();
     const secondStop = session.stop();
     await expect(firstStop).resolves.toEqual({ ok: true, value: undefined });
     await expect(secondStop).resolves.toEqual({ ok: true, value: undefined });
+    await expect(session.setActivity(false)).resolves.toEqual({
+      ok: true,
+      value: undefined,
+    });
+    await expect(session.setActivity(true)).resolves.toEqual({
+      ok: false,
+      error: { _tag: "cancelled" },
+    });
 
     const startInvoke = requireFirst(ipc.invokes);
     const sessionId = requirePlaybackSessionId(startInvoke.args);
@@ -819,6 +834,10 @@ describe("installed Tauri Sparrow client", () => {
             streamHandle: reopened.value.streamHandle,
           },
         },
+      },
+      {
+        command: NATIVE_COMMANDS.setPlaybackActivity,
+        args: { input: { sessionId, active: true } },
       },
       {
         command: NATIVE_COMMANDS.stopPlayback,
@@ -1082,13 +1101,17 @@ describe("installed Tauri Sparrow client", () => {
       NATIVE_COMMANDS.reopenPlayback,
     ]);
     expect(
-      ipc.invokes.filter(({ command }) => command === NATIVE_COMMANDS.stopPlayback),
+      ipc.invokes.filter(
+        ({ command }) => command === NATIVE_COMMANDS.stopPlayback,
+      ),
     ).toHaveLength(0);
 
     await session.stop();
     await session.stop();
     expect(
-      ipc.invokes.filter(({ command }) => command === NATIVE_COMMANDS.stopPlayback),
+      ipc.invokes.filter(
+        ({ command }) => command === NATIVE_COMMANDS.stopPlayback,
+      ),
     ).toHaveLength(1);
   });
 
@@ -1249,11 +1272,7 @@ function searchRequestId() {
 
 function requireSearchRequestId(invoke: RecordedInvoke): unknown {
   const input = invoke.args?.input;
-  if (
-    typeof input !== "object" ||
-    input === null ||
-    !("requestId" in input)
-  ) {
+  if (typeof input !== "object" || input === null || !("requestId" in input)) {
     throw new Error("expected a native search request identifier");
   }
   return input.requestId;

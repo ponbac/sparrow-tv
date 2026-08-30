@@ -42,7 +42,7 @@ export type InstalledPlaybackStartReason =
   | "recovery";
 
 /** Why a transport-free installed Playback Session is paused. */
-export type InstalledPlaybackPauseCause = "user" | "visibility";
+export type InstalledPlaybackPauseCause = "user" | "visibility" | "lifecycle";
 
 /** Closed lifecycle phases for exactly one selected installed Channel. */
 export type InstalledPlaybackPhase =
@@ -368,3 +368,4 @@ function clampVolume(value: number): number {
   }
   return Math.min(1, Math.max(0, value));
 }
+

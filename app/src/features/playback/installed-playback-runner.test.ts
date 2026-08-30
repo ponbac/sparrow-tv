@@ -4,6 +4,7 @@ import {
   type ChannelId,
   type ClientResult,
   type InstalledPlaybackSession,
+  type InstalledPlaybackTransport,
   type NativePlaybackDescriptor,
 } from "../../client/contracts";
 import {
@@ -78,16 +79,11 @@ describe("InstalledPlaybackRunner", () => {
     const session = sessionFixture(16, {
       start: async () =>
         success(
-          audioDescriptor(
-            16,
-            1,
-            ENGLISH_AUDIO_ID,
-            {
-              _tag: "selected",
-              trackId: ENGLISH_AUDIO_ID,
-              reason: "first-available",
-            },
-          ),
+          audioDescriptor(16, 1, ENGLISH_AUDIO_ID, {
+            _tag: "selected",
+            trackId: ENGLISH_AUDIO_ID,
+            reason: "first-available",
+          }),
         ),
       restart: (input) => {
         order.push("restart");
@@ -151,16 +147,11 @@ describe("InstalledPlaybackRunner", () => {
     const session = sessionFixture(17, {
       start: async () =>
         success(
-          audioDescriptor(
-            17,
-            1,
-            ENGLISH_AUDIO_ID,
-            {
-              _tag: "selected",
-              trackId: ENGLISH_AUDIO_ID,
-              reason: "saved-preference",
-            },
-          ),
+          audioDescriptor(17, 1, ENGLISH_AUDIO_ID, {
+            _tag: "selected",
+            trackId: ENGLISH_AUDIO_ID,
+            reason: "saved-preference",
+          }),
         ),
       restart: async () =>
         success({
@@ -197,16 +188,11 @@ describe("InstalledPlaybackRunner", () => {
     const first = sessionFixture(18, {
       start: async () =>
         success(
-          audioDescriptor(
-            18,
-            1,
-            ENGLISH_AUDIO_ID,
-            {
-              _tag: "selected",
-              trackId: ENGLISH_AUDIO_ID,
-              reason: "first-available",
-            },
-          ),
+          audioDescriptor(18, 1, ENGLISH_AUDIO_ID, {
+            _tag: "selected",
+            trackId: ENGLISH_AUDIO_ID,
+            reason: "first-available",
+          }),
         ),
       restart: () => replacement.promise,
     });
@@ -289,40 +275,42 @@ describe("InstalledPlaybackRunner", () => {
     "source-invalid",
     "media-unsupported",
     "browser-unsupported",
-  ] as const)("makes %s terminal without scheduling recovery", async (failure) => {
-    const time = new ControlledTime();
-    const session = sessionFixture(20);
-    const engine: NativePlaybackEngine = {
-      start: (request) => {
-        request.onFailure(failure, true);
-        return { stop: () => undefined };
-      },
-    };
-    const runner = createInstalledPlaybackRunner({
-      client: clientFixture(() => session.value),
-      engine,
-      clock: time,
-      scheduler: time,
-    });
+  ] as const)(
+    "makes %s terminal without scheduling recovery",
+    async (failure) => {
+      const time = new ControlledTime();
+      const session = sessionFixture(20);
+      const engine: NativePlaybackEngine = {
+        start: (request) => {
+          request.onFailure(failure, true);
+          return { stop: () => undefined };
+        },
+      };
+      const runner = createInstalledPlaybackRunner({
+        client: clientFixture(() => session.value),
+        engine,
+        clock: time,
+        scheduler: time,
+      });
 
-    await runner.select(CHANNEL_A, document.createElement("video"));
+      await runner.select(CHANNEL_A, document.createElement("video"));
 
-    expect(runner.getSnapshot().phase).toEqual({
-      _tag: "failed",
-      failure,
-      attemptsUsed: 0,
-      canRestart: true,
-    });
-    expect(time.scheduledDelays).toEqual([]);
-    expect(session.stop).toHaveBeenCalledTimes(1);
-  });
+      expect(runner.getSnapshot().phase).toEqual({
+        _tag: "failed",
+        failure,
+        attemptsUsed: 0,
+        canRestart: true,
+      });
+      expect(time.scheduledDelays).toEqual([]);
+      expect(session.stop).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("resets recovery only after 60 seconds of continuous playing", async () => {
     const time = new ControlledTime();
     let starts = 0;
     let activeFailure:
-      | ((failure: "stream-interrupted", retryable: boolean) => void)
-      | undefined;
+      ((failure: "stream-interrupted", retryable: boolean) => void) | undefined;
     const engine = recordingEngine([], (request) => {
       starts += 1;
       if (starts === 1) {
@@ -410,10 +398,19 @@ describe("InstalledPlaybackRunner", () => {
       engine: recordingEngine().value,
     });
 
-    const selectingA = runner.select(CHANNEL_A, document.createElement("video"));
+    const selectingA = runner.select(
+      CHANNEL_A,
+      document.createElement("video"),
+    );
     await until(() => a.start.mock.calls.length === 1);
-    const selectingB = runner.select(CHANNEL_B, document.createElement("video"));
-    const selectingC = runner.select(CHANNEL_C, document.createElement("video"));
+    const selectingB = runner.select(
+      CHANNEL_B,
+      document.createElement("video"),
+    );
+    const selectingC = runner.select(
+      CHANNEL_C,
+      document.createElement("video"),
+    );
     await until(() => a.stop.mock.calls.length === 1);
     expect(created).toEqual([CHANNEL_A.id]);
     expect(c.start).not.toHaveBeenCalled();
@@ -440,7 +437,10 @@ describe("InstalledPlaybackRunner", () => {
     const client = clientFixture(({ id }) =>
       id === CHANNEL_A.id ? first.value : second.value,
     );
-    const runner = createInstalledPlaybackRunner({ client, engine: engine.value });
+    const runner = createInstalledPlaybackRunner({
+      client,
+      engine: engine.value,
+    });
 
     await runner.select(CHANNEL_A, document.createElement("video"));
     await runner.select(CHANNEL_B, document.createElement("video"));
@@ -518,6 +518,175 @@ describe("InstalledPlaybackRunner", () => {
     expect(session.reopen).toHaveBeenCalledTimes(2);
   });
 
+  it("combines native lifecycle and document visibility without duplicate resume", async () => {
+    const session = sessionFixture(16);
+    const engine = recordingEngine();
+    const runner = createInstalledPlaybackRunner({
+      client: clientFixture(() => session.value),
+      engine: engine.value,
+    });
+    await runner.select(CHANNEL_A, document.createElement("video"));
+    engine.playing();
+    await runner.whenIdle();
+    expect(session.setActivity.mock.calls.map(([active]) => active)).toEqual([
+      true,
+    ]);
+
+    await runner.setForeground(false);
+    expect(runner.getSnapshot().phase).toEqual({
+      _tag: "paused",
+      cause: "lifecycle",
+      resumeWhenVisible: true,
+    });
+    expect(session.suspend).toHaveBeenCalledTimes(1);
+    expect(session.setActivity.mock.calls.map(([active]) => active)).toEqual([
+      true,
+      false,
+    ]);
+
+    await runner.setVisible(false);
+    await runner.setForeground(true);
+    expect(session.reopen).not.toHaveBeenCalled();
+    await runner.setVisible(true);
+    await runner.whenIdle();
+    expect(session.reopen).toHaveBeenCalledTimes(1);
+    expect(session.setActivity.mock.calls.map(([active]) => active)).toEqual([
+      true,
+      false,
+      true,
+    ]);
+
+    await runner.setForeground(true);
+    await runner.setVisible(true);
+    expect(session.reopen).toHaveBeenCalledTimes(1);
+
+    await runner.pause();
+    await runner.setForeground(false);
+    await runner.setForeground(true);
+    expect(runner.getSnapshot().phase).toEqual({
+      _tag: "paused",
+      cause: "user",
+      resumeWhenVisible: false,
+    });
+    expect(session.reopen).toHaveBeenCalledTimes(1);
+  });
+
+  it("resumes once when visibility returns before suspension is confirmed", async () => {
+    const suspension = deferred<ClientResult<void>>();
+    const session = sessionFixture(20, {
+      suspend: vi.fn(() => suspension.promise),
+    });
+    const engine = recordingEngine();
+    const runner = createInstalledPlaybackRunner({
+      client: clientFixture(() => session.value),
+      engine: engine.value,
+    });
+    await runner.select(CHANNEL_A, document.createElement("video"));
+    engine.playing();
+
+    const hiding = runner.setVisible(false);
+    await until(() => session.suspend.mock.calls.length === 1);
+    await runner.setForeground(false);
+    await runner.setForeground(true);
+    await runner.setVisible(true);
+    expect(session.reopen).not.toHaveBeenCalled();
+
+    suspension.resolve(success(undefined));
+    await hiding;
+    await runner.whenIdle();
+
+    expect(session.suspend).toHaveBeenCalledTimes(1);
+    expect(session.reopen).toHaveBeenCalledTimes(1);
+    expect(engine.maximumActive).toBe(1);
+  });
+
+  it("drops a queued wake activation when lifecycle suspension wins", async () => {
+    const session = sessionFixture(18);
+    const engine = recordingEngine();
+    const runner = createInstalledPlaybackRunner({
+      client: clientFixture(() => session.value),
+      engine: engine.value,
+    });
+    await runner.select(CHANNEL_A, document.createElement("video"));
+
+    engine.playing();
+    await runner.setForeground(false);
+    await runner.whenIdle();
+
+    expect(runner.getSnapshot().phase).toEqual({
+      _tag: "paused",
+      cause: "lifecycle",
+      resumeWhenVisible: true,
+    });
+    expect(session.setActivity.mock.calls.map(([active]) => active)).toEqual([
+      false,
+    ]);
+    expect(session.suspend).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains a natively cancelled opening until the lifecycle signal arrives", async () => {
+    const opening = deferred<ClientResult<InstalledPlaybackTransport>>();
+    const session = sessionFixture(19, {
+      start: vi.fn(() => opening.promise),
+    });
+    const runner = createInstalledPlaybackRunner({
+      client: clientFixture(() => session.value),
+      engine: recordingEngine().value,
+    });
+    const selecting = runner.select(CHANNEL_A, document.createElement("video"));
+    await until(() => session.start.mock.calls.length === 1);
+
+    opening.resolve({ ok: false, error: { _tag: "cancelled" } });
+    await selecting;
+
+    expect(runner.getSnapshot().phase).toEqual({
+      _tag: "paused",
+      cause: "lifecycle",
+      resumeWhenVisible: true,
+    });
+    expect(session.suspend).toHaveBeenCalledTimes(1);
+    expect(session.stop).not.toHaveBeenCalled();
+
+    await runner.setForeground(false);
+    await runner.setForeground(true);
+    expect(session.reopen).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when native wake ownership cannot be confirmed", async () => {
+    const session = sessionFixture(17, {
+      setActivity: vi.fn<InstalledPlaybackSession["setActivity"]>(
+        async (active) =>
+          active
+            ? {
+                ok: false,
+                error: {
+                  _tag: "transport",
+                  retryable: false,
+                  message: "wake-private-canary",
+                },
+              }
+            : success(undefined),
+      ),
+    });
+    const engine = recordingEngine();
+    const runner = createInstalledPlaybackRunner({
+      client: clientFixture(() => session.value),
+      engine: engine.value,
+    });
+    await runner.select(CHANNEL_A, document.createElement("video"));
+    engine.playing();
+    await runner.whenIdle();
+
+    expect(session.stop).toHaveBeenCalledTimes(1);
+    expect(runner.getSnapshot().phase).toEqual({
+      _tag: "failed",
+      failure: "cleanup-unconfirmed",
+      attemptsUsed: 0,
+      canRestart: false,
+    });
+    expect(runner.diagnostics()).not.toContain("wake-private-canary");
+  });
+
   it("cancels recovery timers on pause, switch, and final stop", async () => {
     const time = new ControlledTime();
     const first = sessionFixture(12);
@@ -573,9 +742,13 @@ describe("InstalledPlaybackRunner", () => {
   });
 
   it("keeps volume/mute across recreation and excludes every private canary from diagnostics", async () => {
-    const applied: Array<{ readonly volume: number; readonly muted: boolean }> = [];
+    const applied: Array<{ readonly volume: number; readonly muted: boolean }> =
+      [];
     const engine = recordingEngine([], (request) => {
-      applied.push({ volume: request.video.volume, muted: request.video.muted });
+      applied.push({
+        volume: request.video.volume,
+        muted: request.video.muted,
+      });
       return null;
     });
     const session = sessionFixture(14);
@@ -625,6 +798,7 @@ interface SessionOverrides {
   readonly reopen?: InstalledPlaybackSession["reopen"];
   readonly restart?: InstalledPlaybackSession["restart"];
   readonly suspend?: InstalledPlaybackSession["suspend"];
+  readonly setActivity?: InstalledPlaybackSession["setActivity"];
   readonly stop?: InstalledPlaybackSession["stop"];
 }
 
@@ -635,8 +809,15 @@ function sessionFixture(
   readonly value: InstalledPlaybackSession;
   readonly start: ReturnType<typeof vi.fn<InstalledPlaybackSession["start"]>>;
   readonly reopen: ReturnType<typeof vi.fn<InstalledPlaybackSession["reopen"]>>;
-  readonly restart: ReturnType<typeof vi.fn<InstalledPlaybackSession["restart"]>>;
-  readonly suspend: ReturnType<typeof vi.fn<InstalledPlaybackSession["suspend"]>>;
+  readonly restart: ReturnType<
+    typeof vi.fn<InstalledPlaybackSession["restart"]>
+  >;
+  readonly suspend: ReturnType<
+    typeof vi.fn<InstalledPlaybackSession["suspend"]>
+  >;
+  readonly setActivity: ReturnType<
+    typeof vi.fn<InstalledPlaybackSession["setActivity"]>
+  >;
   readonly stop: ReturnType<typeof vi.fn<InstalledPlaybackSession["stop"]>>;
 } {
   const start = vi.fn<InstalledPlaybackSession["start"]>(
@@ -654,6 +835,9 @@ function sessionFixture(
   const stop = vi.fn<InstalledPlaybackSession["stop"]>(
     overrides.stop ?? (async () => success(undefined)),
   );
+  const setActivity = vi.fn<InstalledPlaybackSession["setActivity"]>(
+    overrides.setActivity ?? (async () => success(undefined)),
+  );
   return {
     value: {
       start,
@@ -661,20 +845,20 @@ function sessionFixture(
       restart,
       read: vi.fn(async () => success(new ArrayBuffer(0))),
       suspend,
+      setActivity,
       stop,
     },
     start,
     reopen,
     restart,
     suspend,
+    setActivity,
     stop,
   };
 }
 
 function clientFixture(
-  create: (
-    input: { readonly id: ChannelId },
-  ) => InstalledPlaybackSession,
+  create: (input: { readonly id: ChannelId }) => InstalledPlaybackSession,
 ): {
   readonly createPlaybackSession: ReturnType<typeof vi.fn>;
 } {
@@ -728,7 +912,9 @@ function recordingEngine(
   };
 }
 
-class ControlledTime implements InstalledPlaybackClock, InstalledPlaybackScheduler {
+class ControlledTime
+  implements InstalledPlaybackClock, InstalledPlaybackScheduler
+{
   #now = 0;
   #sequence = 0;
   readonly #tasks: Array<{
@@ -767,7 +953,9 @@ class ControlledTime implements InstalledPlaybackClock, InstalledPlaybackSchedul
     while (true) {
       const next = this.#tasks
         .filter((task) => task.active && task.dueAt <= target)
-        .sort((left, right) => left.dueAt - right.dueAt || left.id - right.id)[0];
+        .sort(
+          (left, right) => left.dueAt - right.dueAt || left.id - right.id,
+        )[0];
       if (next === undefined) {
         break;
       }
@@ -829,11 +1017,18 @@ function audioDescriptor(
   };
 }
 
-function channel(id: string, name: string): {
+function channel(
+  id: string,
+  name: string,
+): {
   readonly id: ChannelId;
   readonly name: string;
 } {
-  const parsed = clientSchemas.channel.safeParse({ id, name, group: "Fixtures" });
+  const parsed = clientSchemas.channel.safeParse({
+    id,
+    name,
+    group: "Fixtures",
+  });
   if (!parsed.success) {
     throw new Error("expected a valid Channel fixture");
   }
@@ -866,9 +1061,10 @@ function expectRecovery(
   expect(phase.attempt).toBe(attempt);
 }
 
-function success<Value>(
-  value: Value,
-): { readonly ok: true; readonly value: Value } {
+function success<Value>(value: Value): {
+  readonly ok: true;
+  readonly value: Value;
+} {
   return { ok: true, value };
 }
 

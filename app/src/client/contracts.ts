@@ -612,6 +612,12 @@ export interface InstalledPlaybackSession {
   /** Idempotently releases transport work while retaining the pinned session. */
   suspend(options?: ClientRequestOptions): Promise<ClientResult<void>>;
 
+  /** Owns Android screen wake for a matching playing or recovering session only. */
+  setActivity(
+    active: boolean,
+    options?: ClientRequestOptions,
+  ): Promise<ClientResult<void>>;
+
   /** Idempotently releases the transport and final session ownership. */
   stop(options?: ClientRequestOptions): Promise<ClientResult<void>>;
 }
@@ -1267,3 +1273,4 @@ export const clientSchemas = Object.freeze({
   serverError: serverClientErrorSchema,
   errorEnvelope: clientErrorEnvelopeSchema,
 });
+

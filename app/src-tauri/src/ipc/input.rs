@@ -149,6 +149,21 @@ pub(crate) struct PlaybackSuspendInput {
     session_id: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PlaybackActivityInput {
+    session_id: String,
+    active: bool,
+}
+
+impl PlaybackActivityInput {
+    pub(crate) fn into_playback(self) -> Result<(PlaybackSessionId, bool), ClientErrorDto> {
+        let session_id = PlaybackSessionId::parse(self.session_id)
+            .map_err(|_| ClientErrorDto::service_unavailable())?;
+        Ok((session_id, self.active))
+    }
+}
+
 impl PlaybackSuspendInput {
     pub(crate) fn into_session_id(self) -> Result<PlaybackSessionId, ClientErrorDto> {
         PlaybackSessionId::parse(self.session_id).map_err(|_| ClientErrorDto::service_unavailable())
@@ -539,6 +554,13 @@ mod tests {
         .expect("suspend shape parses");
         assert!(suspend.into_session_id().is_ok());
 
+        let activity: PlaybackActivityInput = serde_json::from_value(json!({
+            "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
+            "active": true
+        }))
+        .expect("activity shape parses");
+        assert!(activity.into_playback().is_ok());
+
         let reopen: PlaybackReopenInput = serde_json::from_value(json!({
             "sessionId": "play1_0123456789abcdef0123456789abcdef_a"
         }))
@@ -571,6 +593,14 @@ mod tests {
         assert!(
             serde_json::from_value::<PlaybackSuspendInput>(json!({
                 "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
+                "streamHandle": "stream1_0123456789abcdef"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<PlaybackActivityInput>(json!({
+                "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
+                "active": true,
                 "streamHandle": "stream1_0123456789abcdef"
             }))
             .is_err()

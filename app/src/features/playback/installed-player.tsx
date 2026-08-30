@@ -6,6 +6,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { clientSchemas } from "../../client/contracts";
 import type {
   AudioCodec,
   AudioPreferenceStatus,
@@ -14,7 +15,10 @@ import type {
   ChannelId,
   InstalledSparrowClient,
 } from "../../client/contracts";
-import { clientSchemas } from "../../client/contracts";
+import {
+  tauriInstalledLifecycleEvents,
+  type InstalledLifecycleEvents,
+} from "./installed-lifecycle";
 import { createInstalledPlaybackRunner } from "./installed-playback-runner";
 import { installedPlayerState } from "./installed-playback-state";
 import {
@@ -28,6 +32,7 @@ export interface InstalledPlayerProps {
   readonly client: Pick<InstalledSparrowClient, "createPlaybackSession">;
   readonly onStop: () => void;
   readonly engine?: NativePlaybackEngine;
+  readonly lifecycleEvents?: InstalledLifecycleEvents;
 }
 
 /** Plays one Channel through an owned, recoverable, opaque native session. */
@@ -36,6 +41,7 @@ export function InstalledPlayer({
   client,
   onStop,
   engine = nativeMpegtsPlaybackEngine,
+  lifecycleEvents = tauriInstalledLifecycleEvents,
 }: InstalledPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
@@ -71,15 +77,42 @@ export function InstalledPlayer({
     };
     document.addEventListener("visibilitychange", updateVisibility);
     updateVisibility();
-    return () => document.removeEventListener("visibilitychange", updateVisibility);
+    return () =>
+      document.removeEventListener("visibilitychange", updateVisibility);
   }, [runner]);
+
+  useEffect(() => {
+    let disposed = false;
+    let release: (() => void) | null = null;
+    void lifecycleEvents
+      .subscribe((signal) => {
+        if (!disposed) {
+          void runner.setForeground(signal === "resumed");
+        }
+      })
+      .then(
+        (subscriptionRelease) => {
+          if (disposed) {
+            subscriptionRelease();
+          } else {
+            release = subscriptionRelease;
+          }
+        },
+        () => undefined,
+      );
+    return () => {
+      disposed = true;
+      release?.();
+    };
+  }, [lifecycleEvents, runner]);
 
   useEffect(() => {
     const updateFullscreen = () => {
       runner.setFullscreen(document.fullscreenElement === videoRef.current);
     };
     document.addEventListener("fullscreenchange", updateFullscreen);
-    return () => document.removeEventListener("fullscreenchange", updateFullscreen);
+    return () =>
+      document.removeEventListener("fullscreenchange", updateFullscreen);
   }, [runner]);
 
   const phase = state.phase;
