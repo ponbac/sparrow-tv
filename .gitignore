@@ -1,10 +1,13 @@
 /target
+/node_modules/
 .env.local
 playlist.m3u
 playlist_full.m3u
 /examples
 /release-candidates
 /release-acceptance
+/hosted-cutover-evidence
+/hosted-cutover-private
 /app/src-tauri/gen/android/keystore.properties
 /app/src-tauri/gen/android/**/*.jks
 /app/src-tauri/gen/android/**/*.keystore

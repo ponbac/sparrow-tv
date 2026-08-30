@@ -25,6 +25,7 @@ import {
   ReleaseFilesystemFailure,
   type ReleaseDirectorySnapshot,
 } from "./release-filesystem.ts";
+import { HOSTED_REHEARSAL_FIXTURE_SHA256 } from "./hosted-cutover-domain.ts";
 import {
   projectAcceptanceCandidate,
   verifyAcceptanceApprovalHistory,
@@ -263,6 +264,79 @@ async function staticCheck(): Promise<void> {
   const justfile = await readFile(join(REPOSITORY_ROOT, "justfile"), "utf8");
   const justBoundary = verifyJustBoundaryRecipes(justfile);
   if (!justBoundary.ok) throw new ContractFailure(justBoundary.reason);
+  const hostedCutoverFiles = [
+    "deployment/hosted-contract.json",
+    "app/scripts/hosted-cutover-domain.ts",
+    "app/scripts/hosted-cutover.ts",
+    "app/scripts/hosted-cutover-cli.test.ts",
+    "scripts/verify-hosted-endpoint.sh",
+    "scripts/rehearse-hosted-cutover.sh",
+    "scripts/accept-hosted-candidate.sh",
+    "scripts/hosted-rehearsal-fixture.py",
+    "docs/deployment/hosted-hard-cutover.md",
+  ];
+  for (const path of hostedCutoverFiles) {
+    const file = await stat(join(REPOSITORY_ROOT, path)).catch(() => undefined);
+    if (file === undefined || !file.isFile() || file.size === 0) {
+      throw new ContractFailure("the hosted hard-cutover contract is incomplete");
+    }
+  }
+  const hostedAcceptanceRunner = await readFile(join(REPOSITORY_ROOT, "scripts/accept-hosted-candidate.sh"), "utf8");
+  if (!hostedAcceptanceRunner.includes("docker_cmd network create --internal") ||
+    hostedAcceptanceRunner.includes("host.docker.internal") || hostedAcceptanceRunner.includes(".env.local") ||
+    hostedAcceptanceRunner.includes("--publish") || !hostedAcceptanceRunner.includes("SPARROW_HOSTED_RESOLVE_IP") ||
+    !hostedAcceptanceRunner.includes('docker_cmd() { /usr/bin/docker --host "$docker_endpoint" "$@"; }') ||
+    !hostedAcceptanceRunner.includes('with index .NetworkSettings.Networks \\"$network\\"') ||
+    !hostedAcceptanceRunner.includes("the synthetic fixture did not become ready") ||
+    !hostedAcceptanceRunner.includes('--user "$fixture_user"') ||
+    !hostedAcceptanceRunner.includes("verify-hosted-endpoint.sh") || !hostedAcceptanceRunner.includes("--volumes") ||
+    !hostedAcceptanceRunner.includes("--memory") || !hostedAcceptanceRunner.includes("Config.Volumes") ||
+    !hostedAcceptanceRunner.includes("--env PASSWORD")) {
+    throw new ContractFailure("hosted acceptance must stay synthetic, internal, and verifier-backed");
+  }
+  const cutoverRunner = await readFile(join(REPOSITORY_ROOT, "scripts/rehearse-hosted-cutover.sh"), "utf8");
+  const endpointVerifier = await readFile(join(REPOSITORY_ROOT, "scripts/verify-hosted-endpoint.sh"), "utf8");
+  if ([hostedAcceptanceRunner, cutoverRunner, endpointVerifier].some((runner) => runner.includes("iso-8601=milliseconds")) ||
+    ![hostedAcceptanceRunner, cutoverRunner, endpointVerifier].every((runner) => runner.includes("new Date().toISOString()"))) {
+    throw new ContractFailure("hosted evidence timestamps must use the pinned cross-platform runtime");
+  }
+  if (![hostedAcceptanceRunner, cutoverRunner].every((runner) => runner.includes('bun_path="$(mise which bun)"')) ||
+    !endpointVerifier.includes('bun_path="${SPARROW_PINNED_BUN:-}"') || !endpointVerifier.includes('bun_path="$(mise which bun)"') ||
+    !hostedAcceptanceRunner.includes('SPARROW_PINNED_BUN="$bun_path"') || !cutoverRunner.includes('SPARROW_PINNED_BUN="$bun_path"') ||
+    !cutoverRunner.includes("docker_cmd network create --internal") || cutoverRunner.includes("host.docker.internal") ||
+    !cutoverRunner.includes('docker_cmd() { /usr/bin/docker --host "$context_host" "$@"; }') ||
+    !cutoverRunner.includes('with index .NetworkSettings.Networks \\"$network_name\\"') ||
+    cutoverRunner.includes("--publish") || !cutoverRunner.includes("SPARROW_HOSTED_RESOLVE_IP") || !endpointVerifier.includes("--resolve") ||
+    !cutoverRunner.includes("the synthetic fixture did not become ready") ||
+    !cutoverRunner.includes('--user "$fixture_user"') ||
+    !cutoverRunner.includes("--volumes") || !cutoverRunner.includes("Config.Volumes") || !cutoverRunner.includes("--memory") ||
+    !endpointVerifier.includes("curl -q") || !endpointVerifier.includes("--noproxy '*'") || !endpointVerifier.includes("--max-redirs 0") ||
+    !endpointVerifier.includes("--max-filesize") || !endpointVerifier.includes("https://tv.ponbac.xyz")) {
+    throw new ContractFailure("hosted rehearsal and endpoint privacy boundaries are incomplete");
+  }
+  const hostedContract = await readFile(join(REPOSITORY_ROOT, "deployment/hosted-contract.json"), "utf8");
+  const hostedFixture = await readFile(join(REPOSITORY_ROOT, "scripts/hosted-rehearsal-fixture.py"));
+  if (!hostedContract.includes("docker.io/library/python:3.13.15-alpine3.24@sha256:540c7d91f98ff6880174c40e99067bf5941eb54d818a7a5e094d188b196a934d") ||
+    !hostedContract.includes(HOSTED_REHEARSAL_FIXTURE_SHA256) ||
+    createHash("sha256").update(hostedFixture).digest("hex") !== HOSTED_REHEARSAL_FIXTURE_SHA256 ||
+    justfile.includes(".env.local") || cutoverRunner.includes("--network host") || hostedAcceptanceRunner.includes("--network host")) {
+    throw new ContractFailure("the hosted fixture and network pins are incomplete");
+  }
+  for (const recipe of [
+    "hosted-cutover-prepare:",
+    "hosted-candidate-accept:",
+    "hosted-shell-check:",
+    "hosted-cutover-rehearse:",
+    "hosted-cutover-readiness:",
+    "hosted-cutover-seal:",
+    "hosted-cutover-bind-route:",
+    "hosted-cutover-observe-start:",
+    "hosted-cutover-observe-finish:",
+  ]) {
+    if (!justfile.includes(recipe)) {
+      throw new ContractFailure("the hosted hard-cutover Just interface is incomplete");
+    }
+  }
   if (
     !release.includes(`existing_release_tags="$(git tag --list 'v*')"`) ||
     !release.includes("bun run release:contract preflight")

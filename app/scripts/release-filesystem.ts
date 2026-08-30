@@ -1,4 +1,4 @@
-import { constants } from "node:fs";
+import { constants, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import {
   chmod,
@@ -88,6 +88,21 @@ export async function readReleaseRegularFile(
   } finally {
     await handle.close();
   }
+}
+
+/** Reads one owner-private, singly linked no-follow regular file through one held descriptor. */
+export async function readReleasePrivateRegularFile(path: string, maximumBytes = REGULAR_READ_LIMIT): Promise<Buffer> {
+  const handle = await openRegularNoFollow(path);
+  try {
+    const status = await handle.stat();
+    const uid = process.geteuid?.();
+    if (!status.isFile() || status.nlink !== 1 || (uid !== undefined && status.uid !== uid) || (status.mode & 0o077) !== 0 || status.size > maximumBytes) {
+      throw new ReleaseFilesystemFailure("a private release input has unsafe ownership, links, or permissions");
+    }
+    const before = await regularIdentity(handle, maximumBytes); const contents = await handle.readFile(); const after = await regularIdentity(handle, maximumBytes);
+    if (!sameIdentity(before, after) || BigInt(contents.byteLength) !== before.size) throw new ReleaseFilesystemFailure("a private release file changed while it was being read");
+    return contents;
+  } finally { await handle.close(); }
 }
 
 /** Snapshots named regular files through held no-follow handles into a private directory. */
@@ -431,11 +446,23 @@ async function openOrCreateDirectoryTree(
 }
 
 async function openRegularNoFollow(path: string): Promise<FileHandle> {
-  const handle = await open(path, READ_NOFOLLOW).catch(() => {
-    throw new ReleaseFilesystemFailure(
-      "a release entry is missing, linked, or unreadable",
-    );
-  });
+  const absolute = resolve(path);
+  const name = basename(absolute);
+  if (name === "." || name === ".." || name.includes(sep)) throw new ReleaseFilesystemFailure("a release entry name is invalid");
+  const heldDescriptorEntry = new RegExp(
+    `^/proc/${process.pid}/fd/[0-9]+/[^/]+$`,
+    "u",
+  ).test(absolute);
+  const parent = heldDescriptorEntry
+    ? undefined
+    : await openCanonicalDirectory(dirname(absolute));
+  const anchoredPath = parent === undefined ? absolute : join(directoryHandlePath(parent.handle), name);
+  let handle: FileHandle;
+  try {
+    handle = await open(anchoredPath, READ_NOFOLLOW).catch(() => {
+      throw new ReleaseFilesystemFailure("a release entry is missing, linked, or unreadable");
+    });
+  } finally { await parent?.handle.close(); }
   try {
     if (!(await handle.stat()).isFile()) {
       throw new ReleaseFilesystemFailure(
@@ -500,8 +527,14 @@ function publishNoReplace(source: string, destination: string): void {
   // Both entries are children of the same held parent, so EXDEV is impossible.
   // GNU mv uses the platform's no-replace rename where available; `-n` may
   // report success for a collision, which the caller detects by inode identity.
-  const result = spawnSync("mv", ["-n", "-T", "--", source, destination], {
+  const mover = "/usr/bin/mv";
+  const status = statSync(mover);
+  if (!status.isFile() || status.uid !== 0 || (status.mode & 0o022) !== 0) {
+    throw new ReleaseFilesystemFailure("the trusted atomic publisher is unavailable");
+  }
+  const result = spawnSync(mover, ["-n", "-T", "--", source, destination], {
     encoding: "utf8",
+    env: { PATH: "/usr/bin:/bin" },
   });
   if (result.status !== 0) {
     throw new ReleaseFilesystemFailure(

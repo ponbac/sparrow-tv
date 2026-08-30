@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "repository": "ponbac/sparrow-tv",
+  "service": {
+    "name": "sparrow",
+    "containerPort": 33733
+  },
+  "reverseProxy": {
+    "publicOrigin": "https://tv.ponbac.xyz",
+    "upstream": "sparrow:33733",
+    "mutation": "forbidden"
+  },
+  "rollback": {
+    "baselineTag": "docker.io/ponbac/sparrow:0.11.4",
+    "immutableDigest": "sha256:96ac1b8e3fe6f25bc912a62a4b457be4fd553bc9a6e72db6fc6dffde2e8ff30f",
+    "digestSource": "hosted-checkpoint"
+  },
+  "rehearsalFixture": {
+    "image": "docker.io/library/python:3.13.15-alpine3.24@sha256:540c7d91f98ff6880174c40e99067bf5941eb54d818a7a5e094d188b196a934d",
+    "script": "scripts/hosted-rehearsal-fixture.py",
+    "scriptSha256": "d75c9cd4e8e0928904e191464f5ab73ad3c1d5fdad8b7c55cc19bc575e852991"
+  }
+}
