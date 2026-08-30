@@ -14,9 +14,20 @@ afterEach(() => vi.restoreAllMocks());
 const INSTALLED_CAPABILITIES = {
   sourceConfiguration: "device-writable",
   playbackTransport: "tauri-native-stream",
-  audioTrackSelection: false,
+  audioTrackSelection: true,
   mpvFailover: false,
 } as const;
+
+const EMPTY_AUDIO = {
+  tracks: [],
+  selection: { _tag: "none" },
+} as const;
+const ENGLISH_AUDIO_ID = clientSchemas.audioTrackId.parse(
+  `atrk1_${"1".repeat(32)}`,
+);
+const SPANISH_AUDIO_ID = clientSchemas.audioTrackId.parse(
+  `atrk1_${"2".repeat(32)}`,
+);
 
 const FRESH_STATUS = clientSchemas.status.parse({
   generation: 7,
@@ -527,6 +538,7 @@ describe("installed Tauri Sparrow client", () => {
             _tag: "tauri-native-stream",
             sessionId: requirePlaybackSessionId(args),
             streamHandle,
+            ...EMPTY_AUDIO,
           });
         case NATIVE_COMMANDS.readPlayback:
           return Promise.resolve(chunk);
@@ -550,7 +562,10 @@ describe("installed Tauri Sparrow client", () => {
       }),
     ).resolves.toEqual({ ok: true, value: chunk });
     await expect(
-      client.stopPlayback({ sessionId: descriptor.sessionId }),
+      client.stopPlayback({
+        sessionId: descriptor.sessionId,
+        streamHandle: descriptor.streamHandle,
+      }),
     ).resolves.toEqual({ ok: true, value: undefined });
 
     expect(ipc.invokes).toEqual([
@@ -571,9 +586,55 @@ describe("installed Tauri Sparrow client", () => {
       },
       {
         command: NATIVE_COMMANDS.stopPlayback,
-        args: { input: { sessionId: descriptor.sessionId } },
+        args: {
+          input: {
+            sessionId: descriptor.sessionId,
+            streamHandle: descriptor.streamHandle,
+          },
+        },
       },
     ]);
+  });
+
+  it("final-stops the exact handle when a legacy native read is cancelled", async () => {
+    const readFlight = deferred<unknown>();
+    const ipc = new FakeNativeIpc((command) =>
+      command === NATIVE_COMMANDS.readPlayback
+        ? readFlight.promise
+        : Promise.resolve(null),
+    );
+    const client = createNativeSparrowClient({ ipc });
+    const sessionId = clientSchemas.playbackSessionId.parse(
+      `play1_${"6".repeat(32)}_1`,
+    );
+    const streamHandle = clientSchemas.nativeStreamHandle.parse(
+      `stream1_${"6".repeat(16)}`,
+    );
+    const controller = new AbortController();
+
+    const reading = client.readPlayback({
+      sessionId,
+      streamHandle,
+      signal: controller.signal,
+    });
+    controller.abort();
+    await expect(reading).resolves.toEqual({
+      ok: false,
+      error: { _tag: "cancelled" },
+    });
+    expect(ipc.invokes).toEqual([
+      {
+        command: NATIVE_COMMANDS.readPlayback,
+        args: { input: { sessionId, streamHandle } },
+      },
+      {
+        command: NATIVE_COMMANDS.stopPlayback,
+        args: { input: { sessionId, streamHandle } },
+      },
+    ]);
+
+    readFlight.resolve(new ArrayBuffer(0));
+    await readFlight.promise;
   });
 
   it("stops an opening session exactly once when the caller cancels", async () => {
@@ -611,6 +672,7 @@ describe("installed Tauri Sparrow client", () => {
       _tag: "tauri-native-stream",
       sessionId,
       streamHandle: `stream1_${"c".repeat(16)}`,
+      ...EMPTY_AUDIO,
     });
     await startFlight.promise;
     await Promise.resolve();
@@ -656,11 +718,13 @@ describe("installed Tauri Sparrow client", () => {
         _tag: "tauri-native-stream",
         sessionId,
         streamHandle: `stream1_${"e".repeat(16)}`,
+        ...EMPTY_AUDIO,
       }).sessionId,
       streamHandle: clientSchemas.nativePlaybackDescriptor.parse({
         _tag: "tauri-native-stream",
         sessionId,
         streamHandle: `stream1_${"e".repeat(16)}`,
+        ...EMPTY_AUDIO,
       }).streamHandle,
     };
     await expect(client.readPlayback(readInput)).resolves.toEqual(
@@ -682,6 +746,7 @@ describe("installed Tauri Sparrow client", () => {
             _tag: "tauri-native-stream",
             sessionId: requirePlaybackSessionId(args),
             streamHandle: `stream1_${"1".repeat(16)}`,
+            ...EMPTY_AUDIO,
           });
         case NATIVE_COMMANDS.reopenPlayback:
           reopenSequence += 1;
@@ -689,6 +754,7 @@ describe("installed Tauri Sparrow client", () => {
             _tag: "tauri-native-stream",
             sessionId: requirePlaybackSessionId(args),
             streamHandle: `stream1_${String(reopenSequence).repeat(16)}`,
+            ...EMPTY_AUDIO,
           });
         case NATIVE_COMMANDS.readPlayback:
           return Promise.resolve(chunk);
@@ -710,6 +776,7 @@ describe("installed Tauri Sparrow client", () => {
     expect(started.value).toEqual({
       _tag: "tauri-native-stream",
       streamHandle: `stream1_${"1".repeat(16)}`,
+      ...EMPTY_AUDIO,
     });
     expect(JSON.stringify(started.value)).not.toContain("play1_");
     await expect(session.suspend()).resolves.toEqual({
@@ -755,9 +822,167 @@ describe("installed Tauri Sparrow client", () => {
       },
       {
         command: NATIVE_COMMANDS.stopPlayback,
-        args: { input: { sessionId } },
+        args: {
+          input: {
+            sessionId,
+            streamHandle: reopened.value.streamHandle,
+          },
+        },
       },
     ]);
+  });
+
+  it("atomically restarts an exact handle for Audio Track selection and rejects stale work locally", async () => {
+    const firstHandle = clientSchemas.nativeStreamHandle.parse(
+      `stream1_${"7".repeat(16)}`,
+    );
+    const secondHandle = clientSchemas.nativeStreamHandle.parse(
+      `stream1_${"8".repeat(16)}`,
+    );
+    const ipc = new FakeNativeIpc((command, args) => {
+      switch (command) {
+        case NATIVE_COMMANDS.startPlayback:
+          return Promise.resolve(
+            audioDescriptor(
+              requirePlaybackSessionId(args),
+              firstHandle,
+              ENGLISH_AUDIO_ID,
+              {
+                _tag: "selected",
+                trackId: ENGLISH_AUDIO_ID,
+                reason: "first-available",
+              },
+            ),
+          );
+        case NATIVE_COMMANDS.restartPlayback:
+          return Promise.resolve(
+            audioDescriptor(
+              requirePlaybackSessionId(args),
+              secondHandle,
+              SPANISH_AUDIO_ID,
+              {
+                _tag: "selected",
+                trackId: SPANISH_AUDIO_ID,
+                reason: "requested",
+              },
+              "saved",
+            ),
+          );
+        case NATIVE_COMMANDS.stopPlayback:
+          return Promise.resolve(null);
+        default:
+          return Promise.reject(new Error("unexpected fixture command"));
+      }
+    });
+    const session = createNativeSparrowClient({ ipc }).createPlaybackSession({
+      id: CHANNEL.id,
+    });
+    const started = await session.start();
+    if (!started.ok) {
+      throw new Error("expected the session to start");
+    }
+
+    const restarted = await session.restart({
+      expectedStreamHandle: started.value.streamHandle,
+      intent: { _tag: "select-audio", audioTrackId: SPANISH_AUDIO_ID },
+    });
+    expect(restarted).toEqual({
+      ok: true,
+      value: {
+        _tag: "tauri-native-stream",
+        streamHandle: secondHandle,
+        tracks: audioTracks(SPANISH_AUDIO_ID),
+        selection: {
+          _tag: "selected",
+          trackId: SPANISH_AUDIO_ID,
+          reason: "requested",
+        },
+        preferenceStatus: "saved",
+      },
+    });
+    await expect(
+      session.restart({
+        expectedStreamHandle: firstHandle,
+        intent: { _tag: "select-audio", audioTrackId: ENGLISH_AUDIO_ID },
+      }),
+    ).resolves.toEqual({ ok: false, error: { _tag: "cancelled" } });
+    await expect(
+      session.read({ streamHandle: firstHandle }),
+    ).resolves.toEqual({ ok: false, error: { _tag: "cancelled" } });
+    await session.stop();
+
+    const sessionId = requirePlaybackSessionId(requireFirst(ipc.invokes).args);
+    expect(ipc.invokes).toEqual([
+      {
+        command: NATIVE_COMMANDS.startPlayback,
+        args: { input: { id: CHANNEL.id, sessionId } },
+      },
+      {
+        command: NATIVE_COMMANDS.restartPlayback,
+        args: {
+          input: {
+            sessionId,
+            expectedStreamHandle: firstHandle,
+            intent: {
+              _tag: "select-audio",
+              audioTrackId: SPANISH_AUDIO_ID,
+            },
+          },
+        },
+      },
+      {
+        command: NATIVE_COMMANDS.stopPlayback,
+        args: { input: { sessionId, streamHandle: secondHandle } },
+      },
+    ]);
+  });
+
+  it("accepts bounded missing Audio Track metadata and validates visible fallback invariants", () => {
+    const valid = clientSchemas.nativePlaybackDescriptor.parse(
+      audioDescriptor(
+        `play1_${"9".repeat(32)}_1`,
+        `stream1_${"9".repeat(16)}`,
+        ENGLISH_AUDIO_ID,
+        {
+          _tag: "fallback",
+          trackId: ENGLISH_AUDIO_ID,
+          missing: "saved-preference",
+        },
+      ),
+    );
+    expect(valid.tracks[1]).toEqual({
+      id: SPANISH_AUDIO_ID,
+      codec: "ac-3",
+      selected: false,
+    });
+    expect(valid.selection).toEqual({
+      _tag: "fallback",
+      trackId: ENGLISH_AUDIO_ID,
+      missing: "saved-preference",
+    });
+
+    expect(
+      clientSchemas.nativePlaybackDescriptor.safeParse({
+        ...valid,
+        tracks: [valid.tracks[0], valid.tracks[0]],
+      }).success,
+    ).toBe(false);
+    expect(
+      clientSchemas.nativePlaybackDescriptor.safeParse({
+        ...valid,
+        selection: {
+          _tag: "selected",
+          trackId: SPANISH_AUDIO_ID,
+          reason: "requested",
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      clientSchemas.nativePlaybackDescriptor.safeParse({
+        ...valid,
+        providerLocation: "private-canary",
+      }).success,
+    ).toBe(false);
   });
 
   it("reopens the same pinned session after the initial open returns a safe failure", async () => {
@@ -774,6 +999,7 @@ describe("installed Tauri Sparrow client", () => {
             _tag: "tauri-native-stream",
             sessionId: requirePlaybackSessionId(args),
             streamHandle: `stream1_${"4".repeat(16)}`,
+            ...EMPTY_AUDIO,
           });
         default:
           return Promise.reject(new Error("unexpected fixture command"));
@@ -816,6 +1042,7 @@ describe("installed Tauri Sparrow client", () => {
             _tag: "tauri-native-stream",
             sessionId: requirePlaybackSessionId(args),
             streamHandle: `stream1_${"6".repeat(16)}`,
+            ...EMPTY_AUDIO,
           });
         case NATIVE_COMMANDS.suspendPlayback:
         case NATIVE_COMMANDS.stopPlayback:
@@ -845,6 +1072,7 @@ describe("installed Tauri Sparrow client", () => {
       _tag: "tauri-native-stream",
       sessionId,
       streamHandle: `stream1_${"5".repeat(16)}`,
+      ...EMPTY_AUDIO,
     });
     await startFlight.promise;
     await reopen;
@@ -978,6 +1206,40 @@ function invalidResponse(): ClientResult<never> {
       retryable: false,
       message: "The installed app returned an invalid response.",
     },
+  };
+}
+
+function audioTracks(selected: typeof ENGLISH_AUDIO_ID | typeof SPANISH_AUDIO_ID) {
+  return [
+    {
+      id: ENGLISH_AUDIO_ID,
+      language: "eng",
+      label: "Original",
+      codec: "aac-adts" as const,
+      selected: selected === ENGLISH_AUDIO_ID,
+    },
+    {
+      id: SPANISH_AUDIO_ID,
+      codec: "ac-3" as const,
+      selected: selected === SPANISH_AUDIO_ID,
+    },
+  ];
+}
+
+function audioDescriptor(
+  sessionId: string,
+  streamHandle: string,
+  selected: typeof ENGLISH_AUDIO_ID | typeof SPANISH_AUDIO_ID,
+  selection: Readonly<Record<string, unknown>>,
+  preferenceStatus?: "saved" | "not-saved" | "unchanged",
+) {
+  return {
+    _tag: "tauri-native-stream" as const,
+    sessionId,
+    streamHandle,
+    tracks: audioTracks(selected),
+    selection,
+    ...(preferenceStatus === undefined ? {} : { preferenceStatus }),
   };
 }
 

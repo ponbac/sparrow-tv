@@ -12,6 +12,9 @@ const PRIVATE_CHANNEL = clientSchemas.channel.parse({
   name: "Private Provider Canary",
   group: "Private",
 });
+const PRIVATE_AUDIO_ID = clientSchemas.audioTrackId.parse(
+  `atrk1_${"e".repeat(32)}`,
+);
 
 describe("installed Playback Session state", () => {
   it("reduces every lifecycle phase and preserves controls across transport epochs", () => {
@@ -22,6 +25,23 @@ describe("installed Playback Session state", () => {
         channel: PRIVATE_CHANNEL,
         sessionEpoch: 1,
         transportEpoch: 1,
+      },
+      {
+        _tag: "transport-opened",
+        tracks: [
+          {
+            id: PRIVATE_AUDIO_ID,
+            language: "eng",
+            label: "Private audio canary",
+            codec: "aac-adts",
+            selected: true,
+          },
+        ],
+        selection: {
+          _tag: "selected",
+          trackId: PRIVATE_AUDIO_ID,
+          reason: "saved-preference",
+        },
       },
       { _tag: "volume", volume: 0.37 },
       { _tag: "muted", muted: true },
@@ -74,6 +94,7 @@ describe("installed Playback Session state", () => {
       "starting",
       "starting",
       "starting",
+      "starting",
       "playing",
       "suspending",
       "paused",
@@ -93,6 +114,7 @@ describe("installed Playback Session state", () => {
       muted: true,
       fullscreen: false,
     });
+    expect(state.audio.discovered).toBe(false);
   });
 
   it("clamps invalid control input and emits diagnostics from an allowlist only", () => {
@@ -101,6 +123,23 @@ describe("installed Playback Session state", () => {
       channel: PRIVATE_CHANNEL,
       sessionEpoch: 987_654,
       transportEpoch: 456_789,
+    });
+    state = reduceInstalledPlaybackState(state, {
+      _tag: "transport-opened",
+      tracks: [
+        {
+          id: PRIVATE_AUDIO_ID,
+          label: "Private audio metadata canary",
+          codec: "aac-adts",
+          selected: true,
+        },
+      ],
+      selection: {
+        _tag: "fallback",
+        trackId: PRIVATE_AUDIO_ID,
+        missing: "saved-preference",
+      },
+      preferenceStatus: "not-saved",
     });
     state = reduceInstalledPlaybackState(state, {
       _tag: "volume",
@@ -136,9 +175,13 @@ describe("installed Playback Session state", () => {
       "authorization",
       "fingerprint-canary",
       "payload-canary",
+      PRIVATE_AUDIO_ID,
+      "Private audio metadata canary",
     ]) {
       expect(diagnostics).not.toContain(canary);
     }
     expect(diagnostics).toContain('"failure":"source-unavailable"');
+    expect(diagnostics).toContain('"selection":"saved-preference-fallback"');
+    expect(diagnostics).toContain('"preferenceStatus":"not-saved"');
   });
 });

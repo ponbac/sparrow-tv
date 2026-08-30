@@ -5,7 +5,10 @@ use sparrow_core::{
 };
 
 use crate::config_store::StoredSourceConfiguration;
-use crate::playback::{NativeStreamHandle, PlaybackSessionId};
+use crate::{
+    playback::{NativeStreamHandle, PlaybackRestartIntent, PlaybackSessionId},
+    selected_transport_stream::AudioTrackId,
+};
 
 use super::dto::ClientErrorDto;
 
@@ -121,11 +124,22 @@ impl PlaybackReadInput {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PlaybackStopInput {
     session_id: String,
+    #[serde(default, deserialize_with = "deserialize_present_string")]
+    stream_handle: Option<String>,
 }
 
 impl PlaybackStopInput {
-    pub(crate) fn into_session_id(self) -> Result<PlaybackSessionId, ClientErrorDto> {
-        PlaybackSessionId::parse(self.session_id).map_err(|_| ClientErrorDto::service_unavailable())
+    pub(crate) fn into_playback(
+        self,
+    ) -> Result<(PlaybackSessionId, Option<NativeStreamHandle>), ClientErrorDto> {
+        let session_id = PlaybackSessionId::parse(self.session_id)
+            .map_err(|_| ClientErrorDto::service_unavailable())?;
+        let stream_handle = self
+            .stream_handle
+            .map(NativeStreamHandle::parse)
+            .transpose()
+            .map_err(|_| ClientErrorDto::service_unavailable())?;
+        Ok((session_id, stream_handle))
     }
 }
 
@@ -145,6 +159,55 @@ impl PlaybackSuspendInput {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PlaybackReopenInput {
     session_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PlaybackRestartInput {
+    session_id: String,
+    expected_stream_handle: String,
+    intent: PlaybackRestartIntentInput,
+}
+
+impl PlaybackRestartInput {
+    pub(crate) fn into_playback(
+        self,
+    ) -> Result<(PlaybackSessionId, NativeStreamHandle, PlaybackRestartIntent), ClientErrorDto>
+    {
+        let session_id = PlaybackSessionId::parse(self.session_id)
+            .map_err(|_| ClientErrorDto::service_unavailable())?;
+        let expected_stream_handle = NativeStreamHandle::parse(self.expected_stream_handle)
+            .map_err(|_| ClientErrorDto::service_unavailable())?;
+        let intent = match self.intent {
+            PlaybackRestartIntentInput::Retry => PlaybackRestartIntent::Retry,
+            PlaybackRestartIntentInput::Resume => PlaybackRestartIntent::Resume,
+            PlaybackRestartIntentInput::SelectAudio { audio_track_id } => {
+                PlaybackRestartIntent::SelectAudio(
+                    AudioTrackId::parse(audio_track_id)
+                        .map_err(|_| ClientErrorDto::service_unavailable())?,
+                )
+            }
+        };
+        Ok((session_id, expected_stream_handle, intent))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "_tag", rename_all = "kebab-case", deny_unknown_fields)]
+enum PlaybackRestartIntentInput {
+    Retry,
+    Resume,
+    SelectAudio {
+        #[serde(rename = "audioTrackId")]
+        audio_track_id: String,
+    },
+}
+
+fn deserialize_present_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(Some)
 }
 
 impl PlaybackReopenInput {
@@ -447,7 +510,28 @@ mod tests {
             "sessionId": "play1_0123456789abcdef0123456789abcdef_a"
         }))
         .expect("stop shape parses");
-        assert!(stop.into_session_id().is_ok());
+        assert!(matches!(stop.into_playback(), Ok((_, None))));
+
+        let stop_with_handle: PlaybackStopInput = serde_json::from_value(json!({
+            "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
+            "streamHandle": "stream1_0123456789abcdef"
+        }))
+        .expect("handle-safe stop shape parses");
+        assert!(matches!(stop_with_handle.into_playback(), Ok((_, Some(_)))));
+
+        let restart: PlaybackRestartInput = serde_json::from_value(json!({
+            "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
+            "expectedStreamHandle": "stream1_0123456789abcdef",
+            "intent": {
+                "_tag": "select-audio",
+                "audioTrackId": "atrk1_0123456789abcdef0123456789abcdef"
+            }
+        }))
+        .expect("audio restart shape parses");
+        assert!(matches!(
+            restart.into_playback(),
+            Ok((_, _, PlaybackRestartIntent::SelectAudio(_)))
+        ));
 
         let suspend: PlaybackSuspendInput = serde_json::from_value(json!({
             "sessionId": "play1_0123456789abcdef0123456789abcdef_a"
@@ -480,7 +564,7 @@ mod tests {
         assert!(
             serde_json::from_value::<PlaybackStopInput>(json!({
                 "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
-                "streamHandle": "stream1_0123456789abcdef"
+                "streamHandle": null
             }))
             .is_err()
         );
@@ -509,7 +593,7 @@ mod tests {
             let input: PlaybackStopInput =
                 serde_json::from_value(json!({ "sessionId": invalid })).expect("stop shape parses");
             assert!(matches!(
-                input.into_session_id(),
+                input.into_playback(),
                 Err(ClientErrorDto::ServiceUnavailable)
             ));
             let suspend: PlaybackSuspendInput =
@@ -541,6 +625,15 @@ mod tests {
             .expect("read shape parses");
             assert!(matches!(
                 input.into_playback(),
+                Err(ClientErrorDto::ServiceUnavailable)
+            ));
+            let stop: PlaybackStopInput = serde_json::from_value(json!({
+                "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
+                "streamHandle": invalid
+            }))
+            .expect("stop shape parses");
+            assert!(matches!(
+                stop.into_playback(),
                 Err(ClientErrorDto::ServiceUnavailable)
             ));
         }

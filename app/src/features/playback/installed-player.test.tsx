@@ -33,11 +33,61 @@ const DESCRIPTOR = clientSchemas.nativePlaybackDescriptor.parse({
   _tag: "tauri-native-stream",
   sessionId: `play1_${"f".repeat(32)}_1`,
   streamHandle: `stream1_${"a".repeat(16)}`,
+  tracks: [],
+  selection: { _tag: "none" },
 });
 const REOPENED_DESCRIPTOR = clientSchemas.nativePlaybackDescriptor.parse({
   _tag: "tauri-native-stream",
   sessionId: DESCRIPTOR.sessionId,
   streamHandle: `stream1_${"b".repeat(16)}`,
+  tracks: [],
+  selection: { _tag: "none" },
+});
+const ENGLISH_AUDIO_ID = clientSchemas.audioTrackId.parse(
+  `atrk1_${"3".repeat(32)}`,
+);
+const SPANISH_AUDIO_ID = clientSchemas.audioTrackId.parse(
+  `atrk1_${"4".repeat(32)}`,
+);
+const AUDIO_TRACKS = [
+  {
+    id: ENGLISH_AUDIO_ID,
+    language: "eng",
+    label: "Original",
+    codec: "aac-adts" as const,
+    selected: true,
+  },
+  {
+    id: SPANISH_AUDIO_ID,
+    codec: "ac-3" as const,
+    selected: false,
+  },
+] as const;
+const MULTI_AUDIO_DESCRIPTOR = clientSchemas.nativePlaybackDescriptor.parse({
+  _tag: "tauri-native-stream",
+  sessionId: DESCRIPTOR.sessionId,
+  streamHandle: `stream1_${"c".repeat(16)}`,
+  tracks: AUDIO_TRACKS,
+  selection: {
+    _tag: "selected",
+    trackId: ENGLISH_AUDIO_ID,
+    reason: "first-available",
+  },
+});
+const SPANISH_AUDIO_DESCRIPTOR = clientSchemas.nativePlaybackDescriptor.parse({
+  _tag: "tauri-native-stream",
+  sessionId: DESCRIPTOR.sessionId,
+  streamHandle: `stream1_${"d".repeat(16)}`,
+  tracks: AUDIO_TRACKS.map((track) => ({
+    ...track,
+    selected: track.id === SPANISH_AUDIO_ID,
+  })),
+  selection: {
+    _tag: "selected",
+    trackId: SPANISH_AUDIO_ID,
+    reason: "requested",
+  },
+  preferenceStatus: "saved",
 });
 
 describe("InstalledPlayer", () => {
@@ -127,6 +177,72 @@ describe("InstalledPlayer", () => {
     expect(screen.queryByRole("button", { name: "Restart" })).not.toBeInTheDocument();
   });
 
+  it("enumerates Audio Tracks, selects without opaque UI, and confirms persistence", async () => {
+    const session = fixtureSession({
+      start: MULTI_AUDIO_DESCRIPTOR,
+      restart: SPANISH_AUDIO_DESCRIPTOR,
+    });
+    render(
+      <InstalledPlayer
+        channel={CHANNEL}
+        client={fixtureClient(() => session.value)}
+        engine={playingEngine().value}
+        onStop={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText("ON AIR")).toBeVisible();
+    const selector = screen.getByRole("combobox", { name: "Audio track" });
+    expect(selector).toHaveValue(ENGLISH_AUDIO_ID);
+    expect(
+      screen.getByRole("option", { name: "Original · ENG · AAC" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("option", { name: "Audio 2 · AC-3" }),
+    ).toBeVisible();
+    expect(document.body.textContent).not.toContain(ENGLISH_AUDIO_ID);
+    expect(document.body.textContent).not.toContain(SPANISH_AUDIO_ID);
+
+    await userEvent.setup().selectOptions(selector, SPANISH_AUDIO_ID);
+    await waitFor(() => expect(session.restart).toHaveBeenCalledTimes(1));
+    expect(session.restart).toHaveBeenCalledWith({
+      expectedStreamHandle: MULTI_AUDIO_DESCRIPTOR.streamHandle,
+      intent: {
+        _tag: "select-audio",
+        audioTrackId: SPANISH_AUDIO_ID,
+      },
+      signal: expect.any(AbortSignal),
+    });
+    expect(await screen.findByText("Audio preference saved for this channel.")).toBeVisible();
+    expect(selector).toHaveValue(SPANISH_AUDIO_ID);
+  });
+
+  it("visibly falls back when a saved Audio Track is no longer available", async () => {
+    const fallback = clientSchemas.nativePlaybackDescriptor.parse({
+      ...MULTI_AUDIO_DESCRIPTOR,
+      tracks: [AUDIO_TRACKS[0]],
+      selection: {
+        _tag: "fallback",
+        trackId: ENGLISH_AUDIO_ID,
+        missing: "saved-preference",
+      },
+    });
+    render(
+      <InstalledPlayer
+        channel={CHANNEL}
+        client={fixtureClient(() => fixtureSession({ start: fallback }).value)}
+        engine={playingEngine().value}
+        onStop={vi.fn()}
+      />,
+    );
+
+    expect(
+      await screen.findByText(
+        "Saved audio is unavailable. Using the first compatible track.",
+      ),
+    ).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "Audio track" })).toBeDisabled();
+  });
+
   it("does not leak resources across React StrictMode setup replay", async () => {
     const resources: ReturnType<typeof fixtureSession>[] = [];
     const client = fixtureClient(() => {
@@ -167,27 +283,41 @@ function fixtureClient(
   return { createPlaybackSession: vi.fn(create) };
 }
 
-function fixtureSession(): {
+function fixtureSession(
+  descriptors: {
+    readonly start?: typeof DESCRIPTOR;
+    readonly reopen?: typeof DESCRIPTOR;
+    readonly restart?: typeof DESCRIPTOR;
+  } = {},
+): {
   readonly value: InstalledPlaybackSession;
   readonly start: ReturnType<typeof vi.fn>;
   readonly reopen: ReturnType<typeof vi.fn>;
+  readonly restart: ReturnType<typeof vi.fn>;
   readonly suspend: ReturnType<typeof vi.fn>;
   readonly stop: ReturnType<typeof vi.fn>;
 } {
-  const start = vi.fn(async () => success(DESCRIPTOR));
-  const reopen = vi.fn(async () => success(REOPENED_DESCRIPTOR));
+  const start = vi.fn(async () => success(descriptors.start ?? DESCRIPTOR));
+  const reopen = vi.fn(async () =>
+    success(descriptors.reopen ?? REOPENED_DESCRIPTOR),
+  );
+  const restart = vi.fn(async () =>
+    success(descriptors.restart ?? REOPENED_DESCRIPTOR),
+  );
   const suspend = vi.fn(async () => success(undefined));
   const stop = vi.fn(async () => success(undefined));
   return {
     value: {
       start,
       reopen,
+      restart,
       read: vi.fn(async () => success(new ArrayBuffer(0))),
       suspend,
       stop,
     },
     start,
     reopen,
+    restart,
     suspend,
     stop,
   };

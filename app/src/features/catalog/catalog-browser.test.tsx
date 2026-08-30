@@ -57,7 +57,7 @@ const CAPABILITIES = clientSchemas.capabilities.parse({
 const INSTALLED_CAPABILITIES = clientSchemas.capabilities.parse({
   sourceConfiguration: "device-writable",
   playbackTransport: "tauri-native-stream",
-  audioTrackSelection: false,
+  audioTrackSelection: true,
   mpvFailover: false,
 });
 
@@ -453,6 +453,8 @@ class FakeSparrowClient implements InstalledSparrowClient {
               _tag: "tauri-native-stream",
               sessionId: `play1_${"a".repeat(32)}_1`,
               streamHandle: `stream1_${"b".repeat(16)}`,
+              tracks: [],
+              selection: { _tag: "none" },
             })
           : clientSchemas.hostedPlaybackDescriptor.parse({
               _tag: "same-origin-http",
@@ -469,6 +471,8 @@ class FakeSparrowClient implements InstalledSparrowClient {
       _tag: "tauri-native-stream",
       sessionId: `play1_${"a".repeat(32)}_1`,
       streamHandle: `stream1_${"b".repeat(16)}`,
+      tracks: [],
+      selection: { _tag: "none" },
     });
     return {
       start: async (options) => {
@@ -476,6 +480,7 @@ class FakeSparrowClient implements InstalledSparrowClient {
         return success(descriptor);
       },
       reopen: async () => success(descriptor),
+      restart: async () => success(descriptor),
       read: async () => success(new ArrayBuffer(0)),
       suspend: async () => success(undefined),
       stop: async () => success(undefined),

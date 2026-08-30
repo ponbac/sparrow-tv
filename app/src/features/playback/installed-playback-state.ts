@@ -1,4 +1,10 @@
-import type { ChannelId } from "../../client/contracts";
+import type {
+  AudioPreferenceStatus,
+  AudioSelection,
+  AudioTrack,
+  AudioTrackId,
+  ChannelId,
+} from "../../client/contracts";
 import type { HostedPlaybackFailure } from "./mpegts-engine";
 import type { PlayerState } from "./playback-presentation";
 
@@ -13,6 +19,14 @@ export interface InstalledPlaybackControls {
   readonly volume: number;
   readonly muted: boolean;
   readonly fullscreen: boolean;
+}
+
+/** Native-discovered audio metadata retained across local engine recreation. */
+export interface InstalledPlaybackAudio {
+  readonly discovered: boolean;
+  readonly tracks: readonly AudioTrack[];
+  readonly selection: AudioSelection;
+  readonly preferenceStatus: AudioPreferenceStatus | null;
 }
 
 /** Safe terminal failure unique to installed resource ownership. */
@@ -39,6 +53,10 @@ export type InstalledPlaybackPhase =
     }
   | { readonly _tag: "playing"; readonly stableSince: number }
   | { readonly _tag: "autoplay-blocked" }
+  | {
+      readonly _tag: "replacing-audio";
+      readonly requestedTrackId: AudioTrackId;
+    }
   | {
       readonly _tag: "suspending";
       readonly next:
@@ -77,6 +95,7 @@ export interface InstalledPlaybackState {
   readonly recoveryCount: number;
   readonly visible: boolean;
   readonly controls: InstalledPlaybackControls;
+  readonly audio: InstalledPlaybackAudio;
 }
 
 /** Closed event algebra accepted by the pure installed playback reducer. */
@@ -97,6 +116,17 @@ export type InstalledPlaybackEvent =
       readonly _tag: "starting";
       readonly reason: InstalledPlaybackStartReason;
       readonly transportEpoch: number;
+    }
+  | {
+      readonly _tag: "replacing-audio";
+      readonly requestedTrackId: AudioTrackId;
+      readonly transportEpoch: number;
+    }
+  | {
+      readonly _tag: "transport-opened";
+      readonly tracks: readonly AudioTrack[];
+      readonly selection: AudioSelection;
+      readonly preferenceStatus?: AudioPreferenceStatus;
     }
   | { readonly _tag: "playing"; readonly now: number }
   | { readonly _tag: "autoplay-blocked" }
@@ -133,6 +163,15 @@ export type InstalledPlaybackEvent =
 export const INITIAL_INSTALLED_PLAYBACK_CONTROLS: InstalledPlaybackControls =
   Object.freeze({ volume: 1, muted: false, fullscreen: false });
 
+/** Empty audio state before native programme metadata has been discovered. */
+export const INITIAL_INSTALLED_PLAYBACK_AUDIO: InstalledPlaybackAudio =
+  Object.freeze({
+    discovered: false,
+    tracks: Object.freeze([]),
+    selection: Object.freeze({ _tag: "none" }),
+    preferenceStatus: null,
+  });
+
 /** Creates the transport-free initial state without acquiring any resource. */
 export function createInstalledPlaybackState(
   visible = true,
@@ -145,6 +184,7 @@ export function createInstalledPlaybackState(
     recoveryCount: 0,
     visible,
     controls: INITIAL_INSTALLED_PLAYBACK_CONTROLS,
+    audio: INITIAL_INSTALLED_PLAYBACK_AUDIO,
   };
 }
 
@@ -162,6 +202,7 @@ export function reduceInstalledPlaybackState(
         sessionEpoch: event.sessionEpoch,
         transportEpoch: event.transportEpoch,
         recoveryCount: 0,
+        audio: INITIAL_INSTALLED_PLAYBACK_AUDIO,
       };
     case "stopping":
       return {
@@ -176,6 +217,28 @@ export function reduceInstalledPlaybackState(
         ...state,
         phase: { _tag: "starting", reason: event.reason },
         transportEpoch: event.transportEpoch,
+      };
+    case "replacing-audio":
+      requireSelectedChannel(state);
+      return {
+        ...state,
+        phase: {
+          _tag: "replacing-audio",
+          requestedTrackId: event.requestedTrackId,
+        },
+        transportEpoch: event.transportEpoch,
+      };
+    case "transport-opened":
+      requireSelectedChannel(state);
+      return {
+        ...state,
+        audio: {
+          discovered: true,
+          tracks: event.tracks,
+          selection: event.selection,
+          preferenceStatus:
+            event.preferenceStatus ?? state.audio.preferenceStatus,
+        },
       };
     case "playing":
       requireSelectedChannel(state);
@@ -230,6 +293,7 @@ export function reduceInstalledPlaybackState(
         channel: null,
         recoveryCount: 0,
         controls: { ...state.controls, fullscreen: false },
+        audio: INITIAL_INSTALLED_PLAYBACK_AUDIO,
       };
     case "stable":
       return { ...state, recoveryCount: 0 };
@@ -266,6 +330,8 @@ export function installedPlayerState(
       return { _tag: "playing" };
     case "autoplay-blocked":
       return { _tag: "autoplay-blocked" };
+    case "replacing-audio":
+      return { _tag: "starting" };
     case "suspending":
       return { _tag: "suspending" };
     case "paused":
