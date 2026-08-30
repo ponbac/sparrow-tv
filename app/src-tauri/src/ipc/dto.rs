@@ -2,8 +2,8 @@ use chrono::{DateTime, Datelike, SecondsFormat, Utc};
 use serde::Serialize;
 use sparrow_core::{
     CatalogStatus, ChannelDetails, ChannelGroupView, ChannelSummary, CoreError, CoreEvent,
-    InputField, InputReason, Page, RefreshOutcome, RefreshSkipReason, SafeFailure, SourceKind,
-    SourceState,
+    InputField, InputReason, Page, ProgrammeSummary, RefreshOutcome, RefreshReport,
+    RefreshSkipReason, SafeFailure, SearchResults, SourceKind, SourceState,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -262,6 +262,31 @@ impl From<&SafeFailure> for SafeFailureDto {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RefreshReportDto {
+    trigger: &'static str,
+    m3u: RefreshOutcomeDto,
+    epg: Option<RefreshOutcomeDto>,
+    status: CatalogStatusDto,
+}
+
+impl From<RefreshReport> for RefreshReportDto {
+    fn from(report: RefreshReport) -> Self {
+        Self {
+            trigger: match report.trigger() {
+                sparrow_core::RefreshTrigger::Manual => "manual",
+                sparrow_core::RefreshTrigger::Startup => "startup",
+                sparrow_core::RefreshTrigger::Resume => "resume",
+                sparrow_core::RefreshTrigger::FreshnessDeadline => "freshness-deadline",
+            },
+            m3u: RefreshOutcomeDto::from(report.m3u()),
+            epg: report.epg().map(RefreshOutcomeDto::from),
+            status: CatalogStatusDto::from(report.status()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "_tag", rename_all = "kebab-case")]
 pub(crate) enum RefreshOutcomeDto {
     NotConfigured,
@@ -390,6 +415,12 @@ impl PageDto<ChannelSummaryDto> {
     }
 }
 
+impl PageDto<ProgrammeDto> {
+    pub(crate) fn programmes(page: &Page<ProgrammeSummary>) -> Self {
+        Self::new(page, |programme| ProgrammeDto::from(programme))
+    }
+}
+
 impl<T> PageDto<T> {
     fn new<U>(page: &Page<U>, project: impl Fn(&U) -> T) -> Self {
         Self {
@@ -439,6 +470,46 @@ impl From<&ChannelDetails> for ChannelDetailsDto {
             id: channel.id().as_str().to_owned(),
             name: channel.name().to_owned(),
             group: channel.group().to_owned(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProgrammeDto {
+    channel_id: String,
+    title: String,
+    description: Option<String>,
+    starts_at: String,
+    ends_at: String,
+}
+
+impl From<&ProgrammeSummary> for ProgrammeDto {
+    fn from(programme: &ProgrammeSummary) -> Self {
+        Self {
+            channel_id: programme.channel_id().as_str().to_owned(),
+            title: programme.title().to_owned(),
+            description: programme.description().map(str::to_owned),
+            starts_at: instant(programme.starts_at()),
+            ends_at: instant(programme.ends_at()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SearchResultsDto {
+    generation: u64,
+    channels: PageDto<ChannelSummaryDto>,
+    programmes: PageDto<ProgrammeDto>,
+}
+
+impl From<&SearchResults> for SearchResultsDto {
+    fn from(results: &SearchResults) -> Self {
+        Self {
+            generation: results.generation().get(),
+            channels: PageDto::channels(results.channels()),
+            programmes: PageDto::programmes(results.programmes()),
         }
     }
 }

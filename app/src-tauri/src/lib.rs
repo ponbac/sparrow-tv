@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+mod bounded_blocking;
 mod config_store;
 mod instance_lock;
 mod ipc;
@@ -8,6 +11,7 @@ mod runtime;
 pub fn run() {
     configure_platform_before_webview();
     let application = match tauri::Builder::default()
+        .manage(runtime::InstalledRuntimeSlot::new())
         .setup(|app| {
             use tauri::Manager as _;
 
@@ -18,9 +22,12 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .map_err(|_| runtime::InstalledStartupError::AppData)?;
-            let runtime =
-                tauri::async_runtime::block_on(runtime::InstalledRuntime::open(app_data))?;
-            app.manage(runtime);
+            let runtime = Arc::new(tauri::async_runtime::block_on(
+                runtime::InstalledRuntime::open(app_data),
+            )?);
+            app.state::<runtime::InstalledRuntimeSlot>()
+                .fill(runtime)
+                .map_err(|_| runtime::InstalledStartupError::Core)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -29,6 +36,12 @@ pub fn run() {
             ipc::catalog_list_groups,
             ipc::catalog_list_channels,
             ipc::catalog_channel,
+            ipc::catalog_schedule,
+            ipc::catalog_search,
+            ipc::catalog_search_channels,
+            ipc::catalog_search_programmes,
+            ipc::catalog_search_cancel,
+            ipc::catalog_refresh,
             ipc::source_configuration_replace,
             ipc::catalog_subscribe,
             ipc::catalog_unsubscribe,
@@ -91,7 +104,11 @@ fn report_lifecycle(app: &tauri::AppHandle, event: tauri::RunEvent) {
         } => Some(LifecycleSignal::Resumed),
         _ => None,
     };
-    if let (Some(signal), Some(runtime)) = (signal, app.try_state::<runtime::InstalledRuntime>()) {
+    if let (Some(signal), Some(runtime)) = (
+        signal,
+        app.try_state::<runtime::InstalledRuntimeSlot>()
+            .and_then(|slot| slot.ready()),
+    ) {
         runtime.core().report_lifecycle(signal);
     }
 }

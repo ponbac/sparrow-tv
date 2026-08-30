@@ -43,6 +43,7 @@ type SchedulePageParam = ScheduleContinuation | null;
 /** Displays one selected Channel's generation-bound, independently paginated schedule. */
 export function ScheduleDesk({
   client,
+  runtime,
   guide,
   selectedChannel,
   selectedDetails,
@@ -54,6 +55,7 @@ export function ScheduleDesk({
   onRetrySelectedDetails,
 }: {
   readonly client: SparrowClient;
+  readonly runtime: "hosted" | "installed";
   readonly guide: GuidePresentation;
   readonly selectedChannel: ChannelId | null;
   readonly selectedDetails: ClientResult<ChannelDetails> | undefined;
@@ -98,6 +100,7 @@ export function ScheduleDesk({
         <ActiveSchedule
           key={`${selectedChannel}:${revision}`}
           client={client}
+          runtime={runtime}
           guide={guide}
           selectedChannel={selectedChannel}
           selectedDetails={selectedDetails}
@@ -114,6 +117,7 @@ export function ScheduleDesk({
 
 function ActiveSchedule({
   client,
+  runtime,
   guide,
   selectedChannel,
   selectedDetails,
@@ -124,6 +128,7 @@ function ActiveSchedule({
   onRetrySelectedDetails,
 }: {
   readonly client: SparrowClient;
+  readonly runtime: "hosted" | "installed";
   readonly guide: GuidePresentation;
   readonly selectedChannel: ChannelId;
   readonly selectedDetails: ClientResult<ChannelDetails> | undefined;
@@ -213,6 +218,7 @@ function ActiveSchedule({
           error={detailError}
           onRestart={onRetrySelectedDetails}
           retained={false}
+          runtime={runtime}
         />
       )}
 
@@ -248,6 +254,7 @@ function ActiveSchedule({
           error={error}
           onRestart={onRestart}
           retained={programmes.length > 0}
+          runtime={runtime}
         />
       )}
       {scheduleQuery.hasNextPage && !generationChanged ? (

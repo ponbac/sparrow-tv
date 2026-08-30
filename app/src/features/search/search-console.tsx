@@ -20,6 +20,7 @@ const textEncoder = new TextEncoder();
 
 interface SearchConsoleProps {
   readonly client: SparrowClient;
+  readonly runtime?: "hosted" | "installed";
   readonly status: CatalogStatus | null;
   readonly catalogGeneration?: CatalogGeneration | null;
   readonly selectedChannel: ChannelId | null;
@@ -35,6 +36,7 @@ interface SearchConsoleProps {
  */
 export function SearchConsole({
   client,
+  runtime = "hosted",
   status,
   catalogGeneration,
   selectedChannel,
@@ -137,6 +139,7 @@ export function SearchConsole({
           <SearchResultsPanel
             key={`${submittedSearch.term}:${submittedSearch.revision}`}
             client={client}
+            runtime={runtime}
             guide={guide}
             term={submittedSearch.term}
             revision={submittedSearch.revision}
@@ -149,6 +152,7 @@ export function SearchConsole({
         <ScheduleDesk
           key={selectedChannel ?? "no-channel"}
           client={client}
+          runtime={runtime}
           guide={guide}
           selectedChannel={selectedChannel}
           selectedDetails={selectedDetails}

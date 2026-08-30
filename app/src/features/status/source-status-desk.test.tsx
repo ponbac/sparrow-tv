@@ -151,6 +151,126 @@ describe("SourceStatusDesk", () => {
     expect(within(feedback).getByText(/Browsing and playback stay available/)).toBeVisible();
   });
 
+  it("does not promise playback after an installed Guide-only refresh failure", () => {
+    const result = clientSchemas.refreshReport.parse({
+      trigger: "manual",
+      m3u: {
+        _tag: "updated",
+        validatedAt: "2026-08-30T10:02:00Z",
+      },
+      epg: {
+        _tag: "failed",
+        failure: {
+          _tag: "snapshot",
+          source: "epg",
+          operation: "activate",
+          reason: "corrupt",
+        },
+        nextAttemptAt: "2026-08-30T10:05:00Z",
+      },
+      status: INDEPENDENT_GUIDE_FAILURE,
+    });
+
+    render(
+      <SourceStatusDesk
+        status={INDEPENDENT_GUIDE_FAILURE}
+        refreshing={false}
+        refreshResult={{ ok: true, value: result }}
+        latestEvent={null}
+        onRefresh={() => undefined}
+        playbackAvailable={false}
+      />,
+    );
+
+    const feedback = screen.getByRole("alert");
+    expect(
+      within(feedback).getByText(/Channel browsing and search stay available/),
+    ).toBeVisible();
+    expect(within(feedback).queryByText(/playback/i)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["Channel-only", false],
+    ["combined Channel and Guide", true],
+  ] as const)(
+    "ties %s refresh failure availability to the retained Channel snapshot",
+    (_, guideFailed) => {
+      const retainedFailureStatus = clientSchemas.status.parse({
+        ...FRESH_STATUS,
+        m3u: {
+          _tag: "failed",
+          validatedAt: "2026-08-30T10:00:00Z",
+          failure: {
+            _tag: "source-access",
+            source: "m3u",
+            reason: "timed-out",
+            retryAfterSeconds: 45,
+          },
+          nextAttemptAt: "2026-08-30T10:05:00Z",
+        },
+        epg: guideFailed ? INDEPENDENT_GUIDE_FAILURE.epg : FRESH_STATUS.epg,
+      });
+      const result = clientSchemas.refreshReport.parse({
+        trigger: "manual",
+        m3u: {
+          _tag: "failed",
+          failure: {
+            _tag: "source-access",
+            source: "m3u",
+            reason: "timed-out",
+            retryAfterSeconds: 45,
+          },
+          nextAttemptAt: "2026-08-30T10:05:00Z",
+        },
+        epg: guideFailed
+          ? {
+              _tag: "failed",
+              failure: {
+                _tag: "snapshot",
+                source: "epg",
+                operation: "activate",
+                reason: "corrupt",
+              },
+              nextAttemptAt: "2026-08-30T10:05:00Z",
+            }
+          : {
+              _tag: "updated",
+              validatedAt: "2026-08-30T10:02:01Z",
+            },
+        status: retainedFailureStatus,
+      });
+
+      render(
+        <SourceStatusDesk
+          status={retainedFailureStatus}
+          refreshing={false}
+          refreshResult={{ ok: true, value: result }}
+          latestEvent={null}
+          onRefresh={() => undefined}
+          playbackAvailable={false}
+        />,
+      );
+
+      const feedback = screen.getByRole("alert");
+      expect(
+        within(feedback).getByText(
+          guideFailed
+            ? "Channel source and Guide source refresh failed"
+            : "Channel source refresh failed",
+        ),
+      ).toBeVisible();
+      expect(
+        within(feedback).getByText(
+          /The Channel source failed, but its last validated snapshot remains in service/,
+        ),
+      ).toBeVisible();
+      expect(
+        within(feedback).queryByText(/because the Channel source completed independently/),
+      ).not.toBeInTheDocument();
+      expect(within(feedback).queryByText(/playback/i)).not.toBeInTheDocument();
+    },
+  );
+
   it("reports a fully successful manual refresh with both source outcomes", () => {
     const refreshedStatus = clientSchemas.status.parse({
       ...FRESH_STATUS,

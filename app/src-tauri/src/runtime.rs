@@ -1,16 +1,21 @@
 use std::{
+    collections::{HashMap, VecDeque},
     fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex as StdMutex, OnceLock},
 };
 
-use sparrow_core::{CoreAdapters, SparrowCore, SystemClock};
+use sparrow_core::{
+    ChannelSummary, CoreAdapters, CoreError, Page, PageRequest, ProgrammeSummary, RefreshReport,
+    RefreshTrigger, SearchRequest, SearchResults, SearchTerm, SparrowCore, SystemClock,
+};
 use sparrow_snapshot_store::AtomicFileSnapshotStore;
 use sparrow_source_http::HttpSourceAccess;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 
 use crate::{
+    bounded_blocking::{BlockingTaskCancellation, BoundedBlocking},
     config_store::{
         ConfigurationStoreError, SourceConfigurationStore, StoredSourceConfiguration,
         ensure_private_directory,
@@ -18,19 +23,77 @@ use crate::{
     instance_lock::{InstanceLock, InstanceLockError},
     ipc::{
         dto::{CatalogStatusDto, ClientErrorDto, CoreEventDto},
-        input::SourceConfigurationInputDto,
+        input::{SearchRequestId, SourceConfigurationInputDto},
         subscriptions::SubscriptionRegistry,
     },
 };
 
 const PRIVATE_DIRECTORY: &str = "private-v1";
 const SNAPSHOT_DIRECTORY: &str = "snapshots-v1";
+const MAX_TRACKED_SEARCH_REQUESTS: usize = 64;
+
+/// Process-lifetime rendezvous between early WebView invokes and runtime startup.
+#[derive(Clone)]
+pub(crate) struct InstalledRuntimeSlot {
+    inner: Arc<InstalledRuntimeSlotInner>,
+}
+
+struct InstalledRuntimeSlotInner {
+    runtime: OnceLock<Arc<InstalledRuntime>>,
+    ready: watch::Sender<bool>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct InstalledRuntimeAlreadyReady;
+
+impl InstalledRuntimeSlot {
+    pub(crate) fn new() -> Self {
+        let (ready, _) = watch::channel(false);
+        Self {
+            inner: Arc::new(InstalledRuntimeSlotInner {
+                runtime: OnceLock::new(),
+                ready,
+            }),
+        }
+    }
+
+    pub(crate) fn fill(
+        &self,
+        runtime: Arc<InstalledRuntime>,
+    ) -> Result<(), InstalledRuntimeAlreadyReady> {
+        self.inner
+            .runtime
+            .set(runtime)
+            .map_err(|_| InstalledRuntimeAlreadyReady)?;
+        self.inner.ready.send_replace(true);
+        Ok(())
+    }
+
+    pub(crate) async fn wait(&self) -> Arc<InstalledRuntime> {
+        let mut ready = self.inner.ready.subscribe();
+        loop {
+            if let Some(runtime) = self.ready() {
+                return runtime;
+            }
+            ready
+                .changed()
+                .await
+                .expect("the process-lifetime runtime slot remains open");
+        }
+    }
+
+    pub(crate) fn ready(&self) -> Option<Arc<InstalledRuntime>> {
+        self.inner.runtime.get().map(Arc::clone)
+    }
+}
 
 /// The complete on-device catalog composition managed by Tauri.
 pub(crate) struct InstalledRuntime {
     core: Arc<SparrowCore>,
     configuration_store: SourceConfigurationStore,
     configuration_mutation: Mutex<()>,
+    searches: BoundedBlocking,
+    search_cancellations: SearchCancellationRegistry,
     subscriptions: SubscriptionRegistry,
     _instance_lock: InstanceLock,
 }
@@ -65,6 +128,8 @@ impl InstalledRuntime {
             core,
             configuration_store,
             configuration_mutation: Mutex::new(()),
+            searches: BoundedBlocking::serial(),
+            search_cancellations: SearchCancellationRegistry::default(),
             subscriptions: SubscriptionRegistry::default(),
             _instance_lock: instance_lock,
         })
@@ -72,6 +137,12 @@ impl InstalledRuntime {
 
     pub(crate) fn core(&self) -> &SparrowCore {
         &self.core
+    }
+
+    pub(crate) fn status(&self) -> sparrow_core::CatalogStatus {
+        let status = self.core.status();
+        self.core.activate_automation();
+        status
     }
 
     pub(crate) async fn replace_configuration(
@@ -86,6 +157,80 @@ impl InstalledRuntime {
             .replace_source_configuration(Some(configuration))
             .await;
         Ok(CatalogStatusDto::from(status))
+    }
+
+    pub(crate) async fn refresh(&self) -> RefreshReport {
+        self.core.refresh(RefreshTrigger::Manual).await
+    }
+
+    pub(crate) async fn search(
+        &self,
+        request_id: SearchRequestId,
+        request: SearchRequest,
+    ) -> Result<SearchResults, ClientErrorDto> {
+        self.run_search(request_id, move |core, cancellation| {
+            core.search_with_cancellation(request, || cancellation.is_cancelled())
+        })
+        .await
+    }
+
+    pub(crate) async fn search_channels(
+        &self,
+        request_id: SearchRequestId,
+        term: SearchTerm,
+        page: PageRequest,
+    ) -> Result<Page<ChannelSummary>, ClientErrorDto> {
+        self.run_search(request_id, move |core, cancellation| {
+            core.search_channels_with_cancellation(term, page, || cancellation.is_cancelled())
+        })
+        .await
+    }
+
+    pub(crate) async fn search_programmes(
+        &self,
+        request_id: SearchRequestId,
+        term: SearchTerm,
+        page: PageRequest,
+    ) -> Result<Page<ProgrammeSummary>, ClientErrorDto> {
+        self.run_search(request_id, move |core, cancellation| {
+            core.search_programmes_with_cancellation(term, page, || cancellation.is_cancelled())
+        })
+        .await
+    }
+
+    pub(crate) fn cancel_search(&self, request_id: SearchRequestId) {
+        self.search_cancellations.cancel(request_id);
+    }
+
+    async fn run_search<Output, Job>(
+        &self,
+        request_id: SearchRequestId,
+        job: Job,
+    ) -> Result<Output, ClientErrorDto>
+    where
+        Job: FnOnce(Arc<SparrowCore>, BlockingTaskCancellation) -> Result<Output, CoreError>
+            + Send
+            + 'static,
+        Output: Send + 'static,
+    {
+        let registration = self
+            .search_cancellations
+            .register(request_id)
+            .map_err(|_| ClientErrorDto::service_unavailable())?;
+        if registration.is_cancelled() {
+            return Err(ClientErrorDto::service_unavailable());
+        }
+
+        let core = Arc::clone(&self.core);
+        let result = self
+            .searches
+            .run_with_cancellation(registration.cancellation(), move |cancellation| {
+                job(core, cancellation)
+            })
+            .await
+            .map_err(|_| ClientErrorDto::service_unavailable())?;
+        drop(registration);
+        result.map_err(ClientErrorDto::from)
     }
 
     async fn persist_configuration(
@@ -108,6 +253,136 @@ impl InstalledRuntime {
 
     pub(crate) fn unsubscribe(&self, subscription_id: &str) {
         self.subscriptions.unsubscribe(subscription_id);
+    }
+}
+
+#[derive(Default)]
+struct SearchCancellationRegistry {
+    state: StdMutex<SearchCancellationState>,
+}
+
+#[derive(Default)]
+struct SearchCancellationState {
+    entries: HashMap<SearchRequestId, SearchCancellationEntry>,
+    pending_cancellations: VecDeque<SearchRequestId>,
+}
+
+struct SearchCancellationEntry {
+    cancellation: BlockingTaskCancellation,
+    claimed: bool,
+}
+
+struct SearchRegistration<'a> {
+    registry: &'a SearchCancellationRegistry,
+    request_id: SearchRequestId,
+    cancellation: BlockingTaskCancellation,
+}
+
+impl SearchCancellationRegistry {
+    fn register(&self, request_id: SearchRequestId) -> Result<SearchRegistration<'_>, ()> {
+        let mut state = self
+            .state
+            .lock()
+            .expect("search cancellation state poisoned");
+        let cancellation = match state.entries.get_mut(&request_id) {
+            Some(entry) if entry.claimed => return Err(()),
+            Some(entry) => {
+                entry.claimed = true;
+                entry.cancellation.clone()
+            }
+            None => {
+                if !state.make_room() {
+                    return Err(());
+                }
+                let cancellation = BlockingTaskCancellation::new();
+                state.entries.insert(
+                    request_id.clone(),
+                    SearchCancellationEntry {
+                        cancellation: cancellation.clone(),
+                        claimed: true,
+                    },
+                );
+                cancellation
+            }
+        };
+        drop(state);
+        Ok(SearchRegistration {
+            registry: self,
+            request_id,
+            cancellation,
+        })
+    }
+
+    fn cancel(&self, request_id: SearchRequestId) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("search cancellation state poisoned");
+        if let Some(entry) = state.entries.get(&request_id) {
+            entry.cancellation.cancel();
+            return;
+        }
+        if !state.make_room() {
+            return;
+        }
+        let cancellation = BlockingTaskCancellation::new();
+        cancellation.cancel();
+        state.entries.insert(
+            request_id.clone(),
+            SearchCancellationEntry {
+                cancellation,
+                claimed: false,
+            },
+        );
+        state.pending_cancellations.push_back(request_id);
+    }
+
+    fn remove(&self, request_id: &SearchRequestId, cancellation: &BlockingTaskCancellation) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("search cancellation state poisoned");
+        if state
+            .entries
+            .get(request_id)
+            .is_some_and(|entry| entry.cancellation.same_request(cancellation))
+        {
+            state.entries.remove(request_id);
+        }
+    }
+}
+
+impl SearchCancellationState {
+    fn make_room(&mut self) -> bool {
+        while self.entries.len() >= MAX_TRACKED_SEARCH_REQUESTS {
+            let Some(request_id) = self.pending_cancellations.pop_front() else {
+                return false;
+            };
+            if self
+                .entries
+                .get(&request_id)
+                .is_some_and(|entry| !entry.claimed)
+            {
+                self.entries.remove(&request_id);
+            }
+        }
+        true
+    }
+}
+
+impl SearchRegistration<'_> {
+    fn cancellation(&self) -> BlockingTaskCancellation {
+        self.cancellation.clone()
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancellation.is_cancelled()
+    }
+}
+
+impl Drop for SearchRegistration<'_> {
+    fn drop(&mut self) {
+        self.registry.remove(&self.request_id, &self.cancellation);
     }
 }
 
@@ -171,8 +446,12 @@ mod tests {
     use std::{
         fs,
         io::{Read as _, Write as _},
-        net::TcpListener,
+        net::{TcpListener, TcpStream},
         os::unix::fs::PermissionsExt,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
         thread,
     };
 
@@ -205,6 +484,148 @@ mod tests {
             InstalledStartupError::AlreadyRunning
         );
         drop(runtime);
+    }
+
+    #[tokio::test]
+    async fn runtime_slot_waits_for_and_then_reuses_the_exact_startup_runtime() {
+        let slot = InstalledRuntimeSlot::new();
+        assert!(slot.ready().is_none());
+
+        let first_waiting = slot.wait();
+        let second_waiting = slot.wait();
+        tokio::pin!(first_waiting);
+        tokio::pin!(second_waiting);
+        let first_completed_before_fill = tokio::select! {
+            biased;
+            runtime = &mut first_waiting => Some(runtime),
+            () = async {} => None,
+        };
+        let second_completed_before_fill = tokio::select! {
+            biased;
+            runtime = &mut second_waiting => Some(runtime),
+            () = async {} => None,
+        };
+        assert!(first_completed_before_fill.is_none());
+        assert!(second_completed_before_fill.is_none());
+
+        let directory = TempDir::new().expect("temporary directory");
+        let runtime = Arc::new(
+            InstalledRuntime::open(directory.path().join("app-data"))
+                .await
+                .expect("runtime opens"),
+        );
+        slot.fill(Arc::clone(&runtime))
+            .expect("the startup runtime fills the slot once");
+
+        let first_released =
+            tokio::time::timeout(std::time::Duration::from_secs(2), &mut first_waiting)
+                .await
+                .expect("the first pending command is released");
+        let second_released =
+            tokio::time::timeout(std::time::Duration::from_secs(2), &mut second_waiting)
+                .await
+                .expect("the second pending command is released");
+        assert!(Arc::ptr_eq(&first_released, &runtime));
+        assert!(Arc::ptr_eq(&second_released, &runtime));
+        assert!(
+            Arc::ptr_eq(&slot.wait().await, &runtime),
+            "commands arriving after startup reuse the same runtime"
+        );
+        assert_eq!(
+            slot.fill(Arc::clone(&runtime)),
+            Err(InstalledRuntimeAlreadyReady),
+        );
+    }
+
+    #[test]
+    fn search_cancellation_registry_handles_reordering_and_bounds_tombstones() {
+        let registry = SearchCancellationRegistry::default();
+        let cancelled_before_registration = search_request_id(1);
+        registry.cancel(cancelled_before_registration.clone());
+        let registration = registry
+            .register(cancelled_before_registration)
+            .expect("the matching search claims its cancellation");
+        assert!(registration.is_cancelled());
+        drop(registration);
+
+        let active_request = search_request_id(2);
+        let registration = registry
+            .register(active_request.clone())
+            .expect("the active search registers");
+        registry.cancel(active_request);
+        assert!(registration.is_cancelled());
+        drop(registration);
+
+        for sequence in 0..(MAX_TRACKED_SEARCH_REQUESTS + 8) {
+            registry.cancel(search_request_id(sequence + 100));
+        }
+        let state = registry
+            .state
+            .lock()
+            .expect("search cancellation state is readable");
+        assert_eq!(state.entries.len(), MAX_TRACKED_SEARCH_REQUESTS);
+        assert!(state.entries.values().all(|entry| !entry.claimed));
+    }
+
+    #[tokio::test]
+    async fn cancel_command_before_search_prevents_work_without_poisoning_the_next_search() {
+        let directory = TempDir::new().expect("temporary directory");
+        let app_data = directory.path().join("app-data");
+        let runtime = InstalledRuntime::open(app_data)
+            .await
+            .expect("unconfigured runtime opens");
+        let (source_location, source_server) = one_shot_m3u_server();
+        runtime
+            .replace_configuration(
+                serde_json::from_value(json!({
+                    "m3uLocation": source_location,
+                    "epgLocation": null
+                }))
+                .expect("source input parses"),
+            )
+            .await
+            .expect("configuration loads");
+        source_server.join().expect("source server exits");
+
+        crate::ipc::cancel_search(
+            &runtime,
+            serde_json::from_value(json!({
+                "requestId": "srch1_0123456789abcdef0123456789abcdef_30"
+            }))
+            .expect("cancellation input parses"),
+        )
+        .expect("cancellation is accepted");
+        let cancelled = crate::ipc::search(
+            &runtime,
+            serde_json::from_value(json!({
+                "requestId": "srch1_0123456789abcdef0123456789abcdef_30",
+                "term": "world",
+                "channelLimit": 20,
+                "programmeLimit": 20
+            }))
+            .expect("cancelled search input parses"),
+        )
+        .await;
+        assert!(matches!(cancelled, Err(ClientErrorDto::ServiceUnavailable)));
+
+        let recovered = crate::ipc::search(
+            &runtime,
+            serde_json::from_value(json!({
+                "requestId": "srch1_0123456789abcdef0123456789abcdef_31",
+                "term": "world",
+                "channelLimit": 20,
+                "programmeLimit": 20
+            }))
+            .expect("replacement search input parses"),
+        )
+        .await
+        .expect("the next search uses the available permit");
+        let recovered_json = serde_json::to_value(recovered).expect("search serializes");
+        assert_eq!(
+            recovered_json["channels"]["items"].as_array().map(Vec::len),
+            Some(1)
+        );
+        assert_safe_routine_json(&recovered_json);
     }
 
     #[tokio::test]
@@ -256,10 +677,58 @@ mod tests {
             .to_owned();
         let channel = crate::ipc::channel(
             &runtime,
-            serde_json::from_value(json!({ "id": channel_id })).expect("channel input parses"),
+            serde_json::from_value(json!({ "id": channel_id.clone() }))
+                .expect("channel input parses"),
         )
         .expect("channel resolves locally");
         assert_safe_routine_json(&serde_json::to_value(channel).expect("channel serializes"));
+
+        let schedule = crate::ipc::schedule(
+            &runtime,
+            serde_json::from_value(json!({ "id": channel_id, "limit": 20 }))
+                .expect("schedule input parses"),
+        )
+        .expect("channel-only schedule resolves");
+        let search = crate::ipc::search(
+            &runtime,
+            serde_json::from_value(json!({
+                "requestId": "srch1_0123456789abcdef0123456789abcdef_10",
+                "term": "world",
+                "channelLimit": 20,
+                "programmeLimit": 20
+            }))
+            .expect("search input parses"),
+        )
+        .await
+        .expect("channel-only search resolves");
+        let programmes = crate::ipc::search_programmes(
+            &runtime,
+            serde_json::from_value(json!({
+                "requestId": "srch1_0123456789abcdef0123456789abcdef_11",
+                "term": "world",
+                "limit": 20
+            }))
+            .expect("Programme lane input parses"),
+        )
+        .await
+        .expect("channel-only Programme search resolves");
+        let schedule_json = serde_json::to_value(schedule).expect("schedule serializes");
+        let search_json = serde_json::to_value(search).expect("search serializes");
+        let programmes_json = serde_json::to_value(programmes).expect("Programme lane serializes");
+        assert_eq!(schedule_json["items"].as_array().map(Vec::len), Some(0));
+        assert_eq!(
+            search_json["channels"]["items"].as_array().map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            search_json["programmes"]["items"].as_array().map(Vec::len),
+            Some(0)
+        );
+        assert_eq!(programmes_json["items"].as_array().map(Vec::len), Some(0));
+        assert_eq!(search_json["generation"], schedule_json["generation"]);
+        assert_safe_routine_json(&schedule_json);
+        assert_safe_routine_json(&search_json);
+        assert_safe_routine_json(&programmes_json);
 
         let configuration_path = app_data
             .join(PRIVATE_DIRECTORY)
@@ -277,6 +746,11 @@ mod tests {
         let offline = InstalledRuntime::open(app_data)
             .await
             .expect("offline snapshot reopens without the source server");
+        let offline_status = serde_json::to_value(CatalogStatusDto::from(offline.core().status()))
+            .expect("offline status serializes");
+        assert_eq!(offline_status["m3u"]["_tag"], "stale");
+        assert!(offline_status["m3u"]["nextAttemptAt"].is_string());
+        assert_safe_routine_json(&offline_status);
         let offline_channels = crate::ipc::list_channels(
             &offline,
             serde_json::from_value(json!({ "limit": 20 })).expect("channel input parses"),
@@ -309,6 +783,267 @@ mod tests {
                 .expect("runtime degrades safely");
             assert!(!runtime.core().status().configuration().is_configured());
         }
+    }
+
+    #[tokio::test]
+    async fn manual_source_failure_retains_the_eligible_guide_and_generation() {
+        let directory = TempDir::new().expect("temporary directory");
+        let app_data = directory.path().join("app-data");
+        let runtime = InstalledRuntime::open(app_data)
+            .await
+            .expect("unconfigured runtime opens");
+        let (m3u_location, m3u_server) = two_request_source_server(
+            "/channels.m3u",
+            GUIDE_M3U,
+            "m3u-v1",
+            FixtureSecondResponse::NotModified,
+        );
+        let (epg_location, epg_server) = two_request_source_server(
+            "/guide.xml",
+            GUIDE_EPG,
+            "epg-v1",
+            FixtureSecondResponse::ServiceUnavailable,
+        );
+        let input = serde_json::from_value(json!({
+            "m3uLocation": m3u_location,
+            "epgLocation": epg_location
+        }))
+        .expect("source input parses");
+        let initial_status = runtime
+            .replace_configuration(input)
+            .await
+            .expect("configuration replacement completes");
+        let initial_status_json =
+            serde_json::to_value(initial_status).expect("initial status serializes");
+        let generation = initial_status_json["generation"]
+            .as_u64()
+            .expect("initial catalog has a generation");
+
+        let channels = crate::ipc::list_channels(
+            &runtime,
+            serde_json::from_value(json!({ "limit": 20 })).expect("channel input parses"),
+        )
+        .expect("channels browse locally");
+        let channels_json = serde_json::to_value(channels).expect("channels serialize");
+        let channel_id = channels_json["items"][0]["id"]
+            .as_str()
+            .expect("channel id exists")
+            .to_owned();
+        let schedule_before = crate::ipc::schedule(
+            &runtime,
+            serde_json::from_value(json!({ "id": channel_id.clone(), "limit": 20 }))
+                .expect("schedule input parses"),
+        )
+        .expect("guide schedule resolves");
+        let search_before = crate::ipc::search(
+            &runtime,
+            serde_json::from_value(json!({
+                "requestId": "srch1_0123456789abcdef0123456789abcdef_20",
+                "term": "morning",
+                "channelLimit": 20,
+                "programmeLimit": 20
+            }))
+            .expect("search input parses"),
+        )
+        .await
+        .expect("guide search resolves");
+        let schedule_before_json =
+            serde_json::to_value(schedule_before).expect("schedule serializes");
+        let search_before_json = serde_json::to_value(search_before).expect("search serializes");
+        assert_eq!(
+            schedule_before_json["items"].as_array().map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            search_before_json["programmes"]["items"]
+                .as_array()
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            schedule_before_json["items"][0]["title"],
+            "Morning Bulletin"
+        );
+        let expected_programme = json!({
+            "channelId": channel_id.clone(),
+            "title": "Morning Bulletin",
+            "description": "Daily roundup",
+            "startsAt": "2026-08-30T12:00:00Z",
+            "endsAt": "2026-08-30T13:00:00Z"
+        });
+        assert_eq!(
+            schedule_before_json,
+            json!({
+                "generation": generation,
+                "items": [expected_programme.clone()],
+                "next": null
+            })
+        );
+        assert_eq!(
+            search_before_json,
+            json!({
+                "generation": generation,
+                "channels": {
+                    "generation": generation,
+                    "items": [],
+                    "next": null
+                },
+                "programmes": {
+                    "generation": generation,
+                    "items": [expected_programme],
+                    "next": null
+                }
+            })
+        );
+
+        let report = runtime.refresh().await;
+        m3u_server.join().expect("M3U server exits");
+        epg_server.join().expect("EPG server exits");
+        let report_json = serde_json::to_value(crate::ipc::dto::RefreshReportDto::from(report))
+            .expect("refresh report serializes");
+        assert_eq!(report_json["trigger"], "manual");
+        assert_eq!(report_json["m3u"]["_tag"], "not-modified");
+        assert_eq!(report_json["epg"]["_tag"], "failed");
+        assert_eq!(report_json["status"]["generation"], generation);
+        assert!(report_json["status"]["epg"]["validatedAt"].is_string());
+        assert_safe_routine_json(&report_json);
+
+        let schedule_after = crate::ipc::schedule(
+            &runtime,
+            serde_json::from_value(json!({ "id": channel_id, "limit": 20 }))
+                .expect("schedule input parses"),
+        )
+        .expect("retained guide schedule resolves");
+        let search_after = crate::ipc::search_programmes(
+            &runtime,
+            serde_json::from_value(json!({
+                "requestId": "srch1_0123456789abcdef0123456789abcdef_21",
+                "term": "morning",
+                "limit": 20
+            }))
+            .expect("Programme lane input parses"),
+        )
+        .await
+        .expect("retained guide search resolves");
+        let schedule_after_json =
+            serde_json::to_value(schedule_after).expect("schedule serializes");
+        let search_after_json =
+            serde_json::to_value(search_after).expect("Programme lane serializes");
+        assert_eq!(schedule_after_json["generation"], generation);
+        assert_eq!(
+            schedule_after_json["items"].as_array().map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(search_after_json["generation"], generation);
+        assert_eq!(search_after_json["items"].as_array().map(Vec::len), Some(1));
+        assert_safe_routine_json(&schedule_after_json);
+        assert_safe_routine_json(&search_after_json);
+    }
+
+    #[tokio::test]
+    async fn replacing_configuration_immediately_excludes_prior_catalog_and_snapshots() {
+        let directory = TempDir::new().expect("temporary directory");
+        let app_data = directory.path().join("app-data");
+        let runtime = Arc::new(
+            InstalledRuntime::open(app_data.clone())
+                .await
+                .expect("unconfigured runtime opens"),
+        );
+        let (initial_location, initial_server) = one_shot_m3u_server();
+        runtime
+            .replace_configuration(
+                serde_json::from_value(json!({
+                    "m3uLocation": initial_location,
+                    "epgLocation": null
+                }))
+                .expect("initial source input parses"),
+            )
+            .await
+            .expect("initial configuration loads");
+        initial_server.join().expect("initial source server exits");
+        let prior_channels = crate::ipc::list_channels(
+            runtime.as_ref(),
+            serde_json::from_value(json!({ "limit": 20 })).expect("channel input parses"),
+        )
+        .expect("prior catalog browses");
+        let prior_json = serde_json::to_value(prior_channels).expect("channels serialize");
+        let prior_channel_id = prior_json["items"][0]["id"]
+            .as_str()
+            .expect("prior channel id exists")
+            .to_owned();
+
+        let (replacement_location, request_started, release, replacement_server) =
+            blocked_failure_source_server();
+        let replacement = tokio::spawn({
+            let runtime = Arc::clone(&runtime);
+            async move {
+                runtime
+                    .replace_configuration(
+                        serde_json::from_value(json!({
+                            "m3uLocation": replacement_location,
+                            "epgLocation": null
+                        }))
+                        .expect("replacement source input parses"),
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), request_started)
+            .await
+            .expect("replacement request starts")
+            .expect("replacement server reports request");
+
+        let replacing_status =
+            serde_json::to_value(CatalogStatusDto::from(runtime.core().status()))
+                .expect("replacement status serializes");
+        assert_eq!(replacing_status["generation"], serde_json::Value::Null);
+        assert!(matches!(
+            crate::ipc::list_channels(
+                runtime.as_ref(),
+                serde_json::from_value(json!({ "limit": 20 })).expect("channel input parses")
+            ),
+            Err(ClientErrorDto::CatalogUnavailable { .. })
+        ));
+        assert!(matches!(
+            crate::ipc::channel(
+                runtime.as_ref(),
+                serde_json::from_value(json!({ "id": prior_channel_id }))
+                    .expect("channel input parses")
+            ),
+            Err(ClientErrorDto::CatalogUnavailable { .. })
+        ));
+        assert_safe_routine_json(&replacing_status);
+
+        release.store(true, Ordering::Release);
+        let replaced_status = replacement
+            .await
+            .expect("replacement task completes")
+            .expect("replacement command returns a safe status");
+        replacement_server
+            .join()
+            .expect("replacement source server exits");
+        let replaced_json =
+            serde_json::to_value(replaced_status).expect("replacement status serializes");
+        assert_eq!(replaced_json["generation"], serde_json::Value::Null);
+        assert_eq!(replaced_json["m3u"]["_tag"], "failed");
+        assert_safe_routine_json(&replaced_json);
+        drop(runtime);
+
+        let reopened = InstalledRuntime::open(app_data)
+            .await
+            .expect("replacement configuration reopens");
+        let reopened_status =
+            serde_json::to_value(CatalogStatusDto::from(reopened.core().status()))
+                .expect("reopened status serializes");
+        assert_eq!(reopened_status["generation"], serde_json::Value::Null);
+        assert!(matches!(
+            crate::ipc::list_channels(
+                &reopened,
+                serde_json::from_value(json!({ "limit": 20 })).expect("channel input parses")
+            ),
+            Err(ClientErrorDto::CatalogUnavailable { .. })
+        ));
+        assert_safe_routine_json(&reopened_status);
     }
 
     #[tokio::test]
@@ -384,10 +1119,120 @@ mod tests {
         (format!("http://{address}/channels.m3u"), task)
     }
 
+    const GUIDE_M3U: &[u8] = b"#EXTM3U\n#EXTINF:-1 tvg-id=\"fixture-one\" group-title=\"News\",World News\nhttp://127.0.0.1:9/live\n#EXTINF:-1 tvg-id=\"fixture-two\" group-title=\"Sport\",Sports Desk\nhttp://127.0.0.1:9/sport\n";
+    const GUIDE_EPG: &[u8] = b"<tv><channel id=\"fixture-one\"><display-name>World News</display-name></channel><programme start=\"20260830120000 +0000\" stop=\"20260830130000 +0000\" channel=\"fixture-one\"><title>Morning Bulletin</title><desc>Daily roundup</desc></programme></tv>";
+
+    #[derive(Clone, Copy)]
+    enum FixtureSecondResponse {
+        NotModified,
+        ServiceUnavailable,
+    }
+
+    fn two_request_source_server(
+        path: &'static str,
+        body: &'static [u8],
+        validator: &'static str,
+        second: FixtureSecondResponse,
+    ) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("fixture listener binds");
+        let address = listener.local_addr().expect("fixture address exists");
+        let task = thread::spawn(move || {
+            for request_index in 0..2 {
+                let (mut stream, _) = listener.accept().expect("fixture request arrives");
+                let request = read_http_request(&mut stream);
+                assert!(request.starts_with(&format!("GET {path} HTTP/1.1\r\n")));
+                if request_index == 0 {
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nETag: \"{}\"\r\nConnection: close\r\n\r\n",
+                        body.len(),
+                        validator
+                    )
+                    .expect("fixture response header writes");
+                    stream.write_all(body).expect("fixture body writes");
+                } else {
+                    assert!(request.to_ascii_lowercase().contains("if-none-match:"));
+                    match second {
+                        FixtureSecondResponse::NotModified => write!(
+                            stream,
+                            "HTTP/1.1 304 Not Modified\r\nETag: \"{validator}\"\r\nConnection: close\r\n\r\n"
+                        )
+                        .expect("not-modified response writes"),
+                        FixtureSecondResponse::ServiceUnavailable => write!(
+                            stream,
+                            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        )
+                        .expect("failure response writes"),
+                    }
+                }
+                stream.flush().expect("fixture response flushes");
+            }
+        });
+        (format!("http://{address}{path}"), task)
+    }
+
+    fn blocked_failure_source_server() -> (
+        String,
+        tokio::sync::oneshot::Receiver<()>,
+        Arc<AtomicBool>,
+        thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("fixture listener binds");
+        let address = listener.local_addr().expect("fixture address exists");
+        let (request_started, request_started_rx) = tokio::sync::oneshot::channel();
+        let release = Arc::new(AtomicBool::new(false));
+        let release_for_server = Arc::clone(&release);
+        let task = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("fixture request arrives");
+            let request = read_http_request(&mut stream);
+            assert!(request.starts_with("GET /replacement.m3u HTTP/1.1\r\n"));
+            request_started
+                .send(())
+                .expect("test receives request-started signal");
+            while !release_for_server.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+            write!(
+                stream,
+                "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .expect("failure response writes");
+            stream.flush().expect("failure response flushes");
+        });
+        (
+            format!("http://{address}/replacement.m3u"),
+            request_started_rx,
+            release,
+            task,
+        )
+    }
+
+    fn read_http_request(stream: &mut TcpStream) -> String {
+        let mut request = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = stream.read(&mut chunk).expect("fixture request reads");
+            assert!(read > 0, "fixture request contains complete headers");
+            request.extend_from_slice(&chunk[..read]);
+            assert!(request.len() <= 16 * 1024, "fixture request is bounded");
+        }
+        String::from_utf8(request).expect("fixture request headers are UTF-8")
+    }
+
     fn assert_safe_routine_json(value: &serde_json::Value) {
         let serialized = value.to_string();
         for forbidden in ["http://", "https://", "m3uLocation", "epgLocation"] {
             assert!(!serialized.contains(forbidden));
         }
+    }
+
+    fn search_request_id(sequence: usize) -> SearchRequestId {
+        let input: crate::ipc::input::SearchCancellationInput = serde_json::from_value(json!({
+            "requestId": format!("srch1_0123456789abcdef0123456789abcdef_{sequence:x}")
+        }))
+        .expect("cancellation input parses");
+        input
+            .into_request_id()
+            .expect("fixture request identifier is valid")
     }
 }
