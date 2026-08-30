@@ -27,6 +27,8 @@ use sparrow_source_http::{
 };
 use tempfile::TempDir;
 
+use crate::screen_wake::ScreenWake;
+
 use super::*;
 use crate::selected_transport_stream::{AudioCodec, AudioSelectionReason, MissingAudioSelection};
 
@@ -854,6 +856,138 @@ async fn active_transport_defers_background_refresh_then_dormant_reopen_uses_pin
 }
 
 #[tokio::test]
+async fn lifecycle_releases_transport_and_wake_then_preleases_resume_refresh_without_overlap() {
+    let (source_location, source_server) =
+        m3u_server([PRIVATE_PLAYBACK_CANARY, PRIVATE_PLAYBACK_CANARY]);
+    let clock = Arc::new(ControlledClock::at("2026-08-29T00:00:00Z"));
+    let fixture = CoreFixture::from_source_with_clock(&source_location, clock.clone()).await;
+    let access = FakeAccess::new([
+        OpenPlan::Stream(vec![StreamStep::Pending]),
+        OpenPlan::Stream(vec![StreamStep::Pending]),
+    ]);
+    let wake = Arc::new(RecordingScreenWake::default());
+    let manager = PlaybackManager::with_access_and_screen_wake(
+        Arc::clone(&fixture.core),
+        access.clone(),
+        wake.clone(),
+    );
+    let session_id = session(102);
+    let started = manager
+        .start(session_id.clone(), fixture.channel.clone())
+        .await
+        .expect("playback starts");
+
+    manager
+        .set_activity(session_id.clone(), true)
+        .await
+        .expect("playing owns screen wake");
+    assert!(wake.active());
+    assert_eq!(access.tracker.active(), 1);
+
+    manager
+        .suspend_for_lifecycle()
+        .await
+        .expect("background suspension is confirmed");
+    manager
+        .suspend_for_lifecycle()
+        .await
+        .expect("duplicate suspension is idempotent");
+    assert!(!wake.active());
+    assert_eq!(access.tracker.active(), 0);
+    assert!(matches!(
+        read(&manager, &started).await,
+        Err(PlaybackManagerError::Cancelled)
+    ));
+
+    clock.set("2026-08-29T07:00:00Z");
+    manager
+        .resume_for_lifecycle()
+        .await
+        .expect("prior-active intent prepares resume");
+    assert!(wake.active(), "resume is active recovery");
+    fixture
+        .core
+        .report_lifecycle(sparrow_core::LifecycleSignal::Resumed);
+    wait_until(|| matches!(fixture.core.status().m3u(), SourceState::Deferred { .. })).await;
+
+    let reopened = manager
+        .reopen(session_id.clone())
+        .await
+        .expect("foreground reopens the pinned session");
+    assert_ne!(reopened.stream_handle(), started.stream_handle());
+    assert_eq!(access.tracker.active(), 1);
+    assert_eq!(access.tracker.max_active(), 1);
+
+    manager
+        .stop(session_id.clone(), Some(reopened.stream_handle().clone()))
+        .await
+        .expect("stop releases the resumed session");
+    assert!(!wake.active());
+    assert_eq!(access.tracker.active(), 0);
+    wait_until(|| matches!(fixture.core.status().m3u(), SourceState::Fresh { .. })).await;
+    source_server.join().expect("source fixture exits");
+
+    assert!(matches!(
+        manager.set_activity(session_id, true).await,
+        Err(PlaybackManagerError::Cancelled)
+    ));
+    assert!(!wake.active(), "a stale session cannot reacquire wake");
+}
+
+#[tokio::test]
+async fn transport_failure_and_explicit_suspend_clear_screen_wake() {
+    let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
+    let access = FakeAccess::new([
+        OpenPlan::Stream(vec![StreamStep::Error(PlaybackReadError::Interrupted)]),
+        OpenPlan::Stream(vec![StreamStep::Pending]),
+    ]);
+    let wake = Arc::new(RecordingScreenWake::default());
+    let manager = PlaybackManager::with_access_and_screen_wake(
+        Arc::clone(&fixture.core),
+        access,
+        wake.clone(),
+    );
+    let session_id = session(103);
+    let started = manager
+        .start(session_id.clone(), fixture.channel.clone())
+        .await
+        .expect("playback starts");
+    manager
+        .set_activity(session_id.clone(), true)
+        .await
+        .expect("playing owns wake");
+
+    assert!(matches!(
+        read(&manager, &started).await,
+        Err(PlaybackManagerError::Read(PlaybackReadError::Interrupted))
+    ));
+    assert!(!wake.active(), "read failure cannot leak wake");
+
+    manager
+        .set_activity(session_id.clone(), true)
+        .await
+        .expect("bounded recovery owns wake");
+    assert!(wake.active());
+    let reopened = manager
+        .reopen(session_id.clone())
+        .await
+        .expect("recovering session reopens");
+    manager
+        .suspend(session_id.clone())
+        .await
+        .expect("manual pause releases transport and wake");
+    assert!(!wake.active());
+    assert!(matches!(
+        read(&manager, &reopened).await,
+        Err(PlaybackManagerError::Cancelled)
+    ));
+    manager
+        .stop(session_id, Some(reopened.stream_handle().clone()))
+        .await
+        .expect("session stops");
+}
+
+#[tokio::test]
 async fn diagnostics_never_expose_provider_or_opaque_identifier_values() {
     let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
     let access = FakeAccess::new([OpenPlan::Error(PlaybackAccessError::Rejected)]);
@@ -1104,6 +1238,29 @@ impl CoreFixture {
 struct ControlledClock {
     current: Mutex<DateTime<Utc>>,
     changed: tokio::sync::watch::Sender<DateTime<Utc>>,
+}
+
+#[derive(Default)]
+struct RecordingScreenWake {
+    states: Mutex<Vec<bool>>,
+}
+
+impl RecordingScreenWake {
+    fn active(&self) -> bool {
+        self.states
+            .lock()
+            .expect("screen wake lock")
+            .last()
+            .copied()
+            .unwrap_or(false)
+    }
+}
+
+impl ScreenWake for RecordingScreenWake {
+    fn set_active(&self, active: bool) -> Result<(), ()> {
+        self.states.lock().expect("screen wake lock").push(active);
+        Ok(())
+    }
 }
 
 impl ControlledClock {

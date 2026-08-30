@@ -59,6 +59,7 @@ export interface InstalledPlaybackRunnerOptions {
   readonly recoveryDelaysMs?: readonly [number, number, number];
   readonly stableResetMs?: number;
   readonly initiallyVisible?: boolean;
+  readonly initiallyForeground?: boolean;
 }
 
 /**
@@ -86,7 +87,10 @@ export class InstalledPlaybackRunner {
   #queue: Promise<void> = Promise.resolve();
   #sessionEpoch = 0;
   #transportEpoch = 0;
+  #activityEpoch = 0;
   #cleanupBlocked = false;
+  #documentVisible: boolean;
+  #foreground: boolean;
 
   constructor(options: InstalledPlaybackRunnerOptions) {
     this.#client = options.client;
@@ -100,7 +104,11 @@ export class InstalledPlaybackRunner {
       options.stableResetMs ?? DEFAULT_STABLE_RESET_MS,
       DEFAULT_STABLE_RESET_MS,
     );
-    this.#state = createInstalledPlaybackState(options.initiallyVisible ?? true);
+    this.#documentVisible = options.initiallyVisible ?? true;
+    this.#foreground = options.initiallyForeground ?? true;
+    this.#state = createInstalledPlaybackState(
+      this.#documentVisible && this.#foreground,
+    );
   }
 
   /** Stable subscription interface used by React's external-store hook. */
@@ -201,7 +209,7 @@ export class InstalledPlaybackRunner {
     if (!this.#state.visible) {
       this.#dispatch({
         _tag: "paused",
-        cause: "visibility",
+        cause: this.#foreground ? "visibility" : "lifecycle",
         resumeWhenVisible: true,
       });
       return Promise.resolve();
@@ -219,9 +227,7 @@ export class InstalledPlaybackRunner {
     }
     const phase = this.#state.phase;
     if (phase._tag === "failed") {
-      return phase.canRestart
-        ? this.select(channel, video)
-        : Promise.resolve();
+      return phase.canRestart ? this.select(channel, video) : Promise.resolve();
     }
     const session = this.#session;
     if (session === null) {
@@ -252,7 +258,7 @@ export class InstalledPlaybackRunner {
       if (!this.#state.visible) {
         this.#dispatch({
           _tag: "paused",
-          cause: "visibility",
+          cause: this.#inactivityCause(),
           resumeWhenVisible: true,
         });
         return;
@@ -275,9 +281,7 @@ export class InstalledPlaybackRunner {
       this.#cleanupBlocked ||
       !this.#state.visible ||
       !transport.tracks.some((track) => track.id === trackId) ||
-      transport.tracks.some(
-        (track) => track.id === trackId && track.selected,
-      )
+      transport.tracks.some((track) => track.id === trackId && track.selected)
     ) {
       return Promise.resolve();
     }
@@ -346,10 +350,15 @@ export class InstalledPlaybackRunner {
         return;
       }
       if (!result.ok) {
-        const mapped =
-          result.error._tag === "cancelled"
-            ? { failure: "source-unavailable" as const, retryable: true }
-            : clientPlaybackFailure(result.error);
+        if (result.error._tag === "cancelled") {
+          await this.#pauseAfterNativeCancellation(
+            sessionEpoch,
+            transportEpoch,
+            session,
+          );
+          return;
+        }
+        const mapped = clientPlaybackFailure(result.error);
         await this.#afterFailure(
           sessionEpoch,
           transportEpoch,
@@ -402,18 +411,38 @@ export class InstalledPlaybackRunner {
 
   /** Suspends active/recovering work while hidden and resumes only visibility-owned pauses. */
   setVisible(visible: boolean): Promise<void> {
-    if (visible === this.#state.visible) {
+    if (visible === this.#documentVisible) {
       return Promise.resolve();
     }
-    this.#dispatch({ _tag: "visibility", visible });
-    if (!visible) {
+    this.#documentVisible = visible;
+    return this.#setPresentationActive("visibility");
+  }
+
+  /** Suspends for native app background/lock and resumes only prior-active intent. */
+  setForeground(foreground: boolean): Promise<void> {
+    if (foreground === this.#foreground) {
+      return Promise.resolve();
+    }
+    this.#foreground = foreground;
+    return this.#setPresentationActive("lifecycle");
+  }
+
+  #setPresentationActive(
+    cause: Extract<InstalledPlaybackPauseCause, "visibility" | "lifecycle">,
+  ): Promise<void> {
+    const active = this.#documentVisible && this.#foreground;
+    if (active === this.#state.visible) {
+      return Promise.resolve();
+    }
+    this.#dispatch({ _tag: "visibility", visible: active });
+    if (!active) {
       switch (this.#state.phase._tag) {
         case "starting":
         case "playing":
         case "autoplay-blocked":
         case "replacing-audio":
         case "recovering":
-          return this.#suspendFor("visibility");
+          return this.#suspendFor(cause);
         case "idle":
         case "suspending":
         case "paused":
@@ -424,7 +453,7 @@ export class InstalledPlaybackRunner {
     }
     const phase = this.#state.phase;
     return phase._tag === "paused" &&
-      phase.cause === "visibility" &&
+      phase.cause !== "user" &&
       phase.resumeWhenVisible
       ? this.resume()
       : Promise.resolve();
@@ -578,8 +607,11 @@ export class InstalledPlaybackRunner {
       this.#dispatch({
         _tag: "paused",
         cause,
-        resumeWhenVisible: cause === "visibility",
+        resumeWhenVisible: cause !== "user",
       });
+      if (cause !== "user" && this.#state.visible) {
+        await this.#open(sessionEpoch, "resume", false);
+      }
     });
   }
 
@@ -642,18 +674,17 @@ export class InstalledPlaybackRunner {
       }
       this.#dispatch({
         _tag: "paused",
-        cause: "visibility",
+        cause: this.#inactivityCause(),
         resumeWhenVisible: true,
       });
       return;
     }
     if (!result.ok) {
       if (result.error._tag === "cancelled") {
-        await this.#afterFailure(
+        await this.#pauseAfterNativeCancellation(
           sessionEpoch,
           transportEpoch,
-          "source-unavailable",
-          false,
+          session,
         );
         return;
       }
@@ -674,6 +705,26 @@ export class InstalledPlaybackRunner {
       video,
       result.value,
     );
+  }
+
+  async #pauseAfterNativeCancellation(
+    sessionEpoch: number,
+    transportEpoch: number,
+    session: InstalledPlaybackSession,
+  ): Promise<void> {
+    const suspended = await safeSuspend(session);
+    if (!this.#matchesTransport(sessionEpoch, transportEpoch, session)) {
+      return;
+    }
+    if (!suspended) {
+      this.#failCleanup();
+      return;
+    }
+    this.#dispatch({
+      _tag: "paused",
+      cause: this.#state.visible ? "lifecycle" : this.#inactivityCause(),
+      resumeWhenVisible: true,
+    });
   }
 
   async #startTransport(
@@ -718,12 +769,7 @@ export class InstalledPlaybackRunner {
           return;
         }
         void this.#enqueue(() =>
-          this.#afterFailure(
-            sessionEpoch,
-            transportEpoch,
-            failure,
-            retryable,
-          ),
+          this.#afterFailure(sessionEpoch, transportEpoch, failure, retryable),
         );
       },
       onAutoplayBlocked: () => {
@@ -741,12 +787,7 @@ export class InstalledPlaybackRunner {
     });
     registered = true;
     if (typeof started === "string") {
-      await this.#afterFailure(
-        sessionEpoch,
-        transportEpoch,
-        started,
-        true,
-      );
+      await this.#afterFailure(sessionEpoch, transportEpoch, started, true);
       return;
     }
     if (!this.#matchesTransport(sessionEpoch, transportEpoch, session)) {
@@ -799,7 +840,7 @@ export class InstalledPlaybackRunner {
     if (!this.#state.visible) {
       this.#dispatch({
         _tag: "paused",
-        cause: "visibility",
+        cause: this.#inactivityCause(),
         resumeWhenVisible: true,
       });
       return;
@@ -841,7 +882,7 @@ export class InstalledPlaybackRunner {
         if (!this.#state.visible) {
           this.#dispatch({
             _tag: "paused",
-            cause: "visibility",
+            cause: this.#inactivityCause(),
             resumeWhenVisible: true,
           });
           return;
@@ -940,6 +981,13 @@ export class InstalledPlaybackRunner {
     video.muted = this.#state.controls.muted;
   }
 
+  #inactivityCause(): Extract<
+    InstalledPlaybackPauseCause,
+    "visibility" | "lifecycle"
+  > {
+    return this.#foreground ? "visibility" : "lifecycle";
+  }
+
   #matchesSession(
     sessionEpoch: number,
     session: InstalledPlaybackSession,
@@ -962,6 +1010,49 @@ export class InstalledPlaybackRunner {
     const previous = this.#state;
     const next = reduceInstalledPlaybackState(previous, event);
     this.#state = next;
+    if (ownsScreenWake(previous.phase) !== ownsScreenWake(next.phase)) {
+      const activityEpoch = ++this.#activityEpoch;
+      const session = this.#session;
+      const sessionEpoch = this.#sessionEpoch;
+      const active = ownsScreenWake(next.phase);
+      if (session !== null) {
+        void this.#enqueue(async () => {
+          if (
+            !this.#matchesSession(sessionEpoch, session) ||
+            activityEpoch !== this.#activityEpoch ||
+            ownsScreenWake(this.#state.phase) !== active
+          ) {
+            return;
+          }
+          const confirmed = await safeSetActivity(session, active);
+          if (
+            !confirmed &&
+            active &&
+            this.#matchesSession(sessionEpoch, session) &&
+            activityEpoch === this.#activityEpoch &&
+            ownsScreenWake(this.#state.phase)
+          ) {
+            this.#cancelLocalTransport();
+            const stopped = await safeStop(session);
+            if (this.#session === session && stopped) {
+              this.#session = null;
+            }
+            if (
+              this.#matchesSession(sessionEpoch, session) ||
+              this.#session === null
+            ) {
+              this.#cleanupBlocked = true;
+              this.#dispatch({
+                _tag: "failed",
+                failure: "cleanup-unconfirmed",
+                attemptsUsed: this.#state.recoveryCount,
+                canRestart: false,
+              });
+            }
+          }
+        });
+      }
+    }
     if (previous.phase._tag !== next.phase._tag) {
       this.#transitions.push({
         from: previous.phase._tag,
@@ -1016,9 +1107,41 @@ function isRecoverableFailure(failure: HostedPlaybackFailure): boolean {
   }
 }
 
-async function safeSuspend(session: InstalledPlaybackSession): Promise<boolean> {
+function ownsScreenWake(phase: InstalledPlaybackState["phase"]): boolean {
+  switch (phase._tag) {
+    case "playing":
+    case "recovering":
+      return true;
+    case "starting":
+      return phase.reason !== "selection";
+    case "idle":
+    case "autoplay-blocked":
+    case "replacing-audio":
+    case "suspending":
+    case "paused":
+    case "failed":
+    case "stopping":
+      return false;
+  }
+}
+
+async function safeSuspend(
+  session: InstalledPlaybackSession,
+): Promise<boolean> {
   try {
     const result = await session.suspend();
+    return result.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function safeSetActivity(
+  session: InstalledPlaybackSession,
+  active: boolean,
+): Promise<boolean> {
+  try {
+    const result = await session.setActivity(active);
     return result.ok;
   } catch {
     return false;

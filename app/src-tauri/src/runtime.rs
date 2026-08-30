@@ -3,7 +3,10 @@ use std::{
     fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex as StdMutex, OnceLock},
+    sync::{
+        Arc, Mutex as StdMutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use sparrow_core::{
@@ -32,7 +35,11 @@ use crate::{
         NativeStreamHandle, PlaybackManager, PlaybackManagerError, PlaybackRestartIntent,
         PlaybackSessionId, StartedPlayback,
     },
+    screen_wake::ScreenWake,
 };
+
+#[cfg(test)]
+use crate::screen_wake::noop_screen_wake;
 
 const PRIVATE_DIRECTORY: &str = "private-v1";
 const SNAPSHOT_DIRECTORY: &str = "snapshots-v1";
@@ -102,11 +109,27 @@ pub(crate) struct InstalledRuntime {
     searches: BoundedBlocking,
     search_cancellations: SearchCancellationRegistry,
     subscriptions: SubscriptionRegistry,
+    lifecycle_revision: AtomicU64,
     _instance_lock: InstanceLock,
 }
 
+#[derive(Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InstalledLifecycleEvent {
+    revision: u64,
+    state: &'static str,
+}
+
 impl InstalledRuntime {
+    #[cfg(test)]
     pub(crate) async fn open(app_data: PathBuf) -> Result<Self, InstalledStartupError> {
+        Self::open_with_screen_wake(app_data, noop_screen_wake()).await
+    }
+
+    pub(crate) async fn open_with_screen_wake(
+        app_data: PathBuf,
+        screen_wake: Arc<dyn ScreenWake>,
+    ) -> Result<Self, InstalledStartupError> {
         prepare_app_data(&app_data)?;
         let private_root = app_data.join(PRIVATE_DIRECTORY);
         ensure_private_directory(&private_root).map_err(InstalledStartupError::from)?;
@@ -133,7 +156,12 @@ impl InstalledRuntime {
         let playback_access =
             HttpPlaybackAccess::new().map_err(|_| InstalledStartupError::PlaybackAdapter)?;
         let audio_preferences = AudioPreferenceStore::open(&private_root);
-        let playback = PlaybackManager::new(Arc::clone(&core), playback_access, audio_preferences);
+        let playback = PlaybackManager::new_with_screen_wake(
+            Arc::clone(&core),
+            playback_access,
+            audio_preferences,
+            screen_wake,
+        );
 
         Ok(Self {
             playback,
@@ -143,6 +171,7 @@ impl InstalledRuntime {
             searches: BoundedBlocking::serial(),
             search_cancellations: SearchCancellationRegistry::default(),
             subscriptions: SubscriptionRegistry::default(),
+            lifecycle_revision: AtomicU64::new(0),
             _instance_lock: instance_lock,
         })
     }
@@ -314,6 +343,50 @@ impl InstalledRuntime {
         stream_handle: Option<NativeStreamHandle>,
     ) -> Result<(), PlaybackManagerError> {
         self.playback.stop(session_id, stream_handle).await
+    }
+
+    pub(crate) async fn set_playback_activity(
+        &self,
+        session_id: PlaybackSessionId,
+        active: bool,
+    ) -> Result<(), PlaybackManagerError> {
+        self.playback.set_activity(session_id, active).await
+    }
+
+    pub(crate) async fn report_lifecycle(
+        &self,
+        signal: sparrow_core::LifecycleSignal,
+    ) -> Result<Option<InstalledLifecycleEvent>, PlaybackManagerError> {
+        match signal {
+            sparrow_core::LifecycleSignal::Started => {
+                self.core.report_lifecycle(signal);
+                Ok(None)
+            }
+            sparrow_core::LifecycleSignal::Suspended => {
+                self.playback.suspend_for_lifecycle().await?;
+                self.core.report_lifecycle(signal);
+                self.lifecycle_event("suspended").map(Some)
+            }
+            sparrow_core::LifecycleSignal::Resumed => {
+                self.playback.resume_for_lifecycle().await?;
+                self.core.report_lifecycle(signal);
+                self.lifecycle_event("resumed").map(Some)
+            }
+        }
+    }
+
+    fn lifecycle_event(
+        &self,
+        state: &'static str,
+    ) -> Result<InstalledLifecycleEvent, PlaybackManagerError> {
+        let revision = self
+            .lifecycle_revision
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
+                revision.checked_add(1)
+            })
+            .map_err(|_| PlaybackManagerError::Unavailable)?
+            + 1;
+        Ok(InstalledLifecycleEvent { revision, state })
     }
 }
 

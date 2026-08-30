@@ -20,14 +20,16 @@ use tokio::{
     task::JoinHandle,
 };
 
+#[cfg(test)]
+use crate::screen_wake::noop_screen_wake;
 use crate::{
     audio_preferences::{AudioPreferenceStore, PreferenceWrite},
+    screen_wake::ScreenWake,
     selected_transport_stream::{
         AudioSelection, AudioTrack, AudioTrackId, PreferenceStatus, SelectedTransportStream,
         SelectionRequest, TransportStreamError,
     },
 };
-
 const COMMAND_CAPACITY: usize = 16;
 const READ_CAPACITY: usize = 16;
 const MAX_STOP_TOMBSTONES: usize = 64;
@@ -263,34 +265,63 @@ pub(crate) struct PlaybackManager {
 }
 
 impl PlaybackManager {
-    pub(crate) fn new(
+    pub(crate) fn new_with_screen_wake(
         core: Arc<SparrowCore>,
         access: HttpPlaybackAccess,
         preferences: AudioPreferenceStore,
+        screen_wake: Arc<dyn ScreenWake>,
     ) -> Self {
-        Self::with_access_preferences_and_selector(
+        Self::with_access_preferences_selector_and_screen_wake(
             core,
             Arc::new(access),
             preferences,
             Arc::new(MpegTsPlaybackTransportSelector),
+            screen_wake,
         )
     }
 
     #[cfg(test)]
     fn with_access(core: Arc<SparrowCore>, access: Arc<dyn NativePlaybackAccess>) -> Self {
-        Self::with_access_preferences_and_selector(
+        Self::with_access_and_screen_wake(core, access, noop_screen_wake())
+    }
+
+    #[cfg(test)]
+    fn with_access_and_screen_wake(
+        core: Arc<SparrowCore>,
+        access: Arc<dyn NativePlaybackAccess>,
+        screen_wake: Arc<dyn ScreenWake>,
+    ) -> Self {
+        Self::with_access_preferences_selector_and_screen_wake(
             core,
             access,
             AudioPreferenceStore::disabled(),
             Arc::new(PassthroughPlaybackTransportSelector),
+            screen_wake,
         )
     }
 
+    #[cfg(test)]
     fn with_access_preferences_and_selector(
         core: Arc<SparrowCore>,
         access: Arc<dyn NativePlaybackAccess>,
         preferences: AudioPreferenceStore,
         selector: Arc<dyn PlaybackTransportSelector>,
+    ) -> Self {
+        Self::with_access_preferences_selector_and_screen_wake(
+            core,
+            access,
+            preferences,
+            selector,
+            noop_screen_wake(),
+        )
+    }
+
+    fn with_access_preferences_selector_and_screen_wake(
+        core: Arc<SparrowCore>,
+        access: Arc<dyn NativePlaybackAccess>,
+        preferences: AudioPreferenceStore,
+        selector: Arc<dyn PlaybackTransportSelector>,
+        screen_wake: Arc<dyn ScreenWake>,
     ) -> Self {
         let (controls, control_receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (reads, read_receiver) = mpsc::channel(READ_CAPACITY);
@@ -300,6 +331,7 @@ impl PlaybackManager {
                 access,
                 preferences,
                 selector,
+                screen_wake,
                 control_receiver,
                 read_receiver,
             )
@@ -417,6 +449,47 @@ impl PlaybackManager {
             .await
             .map_err(|_| PlaybackManagerError::Unavailable)?
     }
+
+    pub(crate) async fn set_activity(
+        &self,
+        session_id: PlaybackSessionId,
+        active: bool,
+    ) -> Result<(), PlaybackManagerError> {
+        let (reply, response) = oneshot::channel();
+        self.controls
+            .send(ControlCommand::SetActivity {
+                session_id,
+                active,
+                reply,
+            })
+            .await
+            .map_err(|_| PlaybackManagerError::Unavailable)?;
+        response
+            .await
+            .map_err(|_| PlaybackManagerError::Unavailable)?
+    }
+
+    pub(crate) async fn suspend_for_lifecycle(&self) -> Result<(), PlaybackManagerError> {
+        self.report_lifecycle(PlaybackLifecycle::Suspended).await
+    }
+
+    pub(crate) async fn resume_for_lifecycle(&self) -> Result<(), PlaybackManagerError> {
+        self.report_lifecycle(PlaybackLifecycle::Resumed).await
+    }
+
+    async fn report_lifecycle(
+        &self,
+        lifecycle: PlaybackLifecycle,
+    ) -> Result<(), PlaybackManagerError> {
+        let (reply, response) = oneshot::channel();
+        self.controls
+            .send(ControlCommand::Lifecycle { lifecycle, reply })
+            .await
+            .map_err(|_| PlaybackManagerError::Unavailable)?;
+        response
+            .await
+            .map_err(|_| PlaybackManagerError::Unavailable)?
+    }
 }
 
 impl Drop for PlaybackManager {
@@ -450,6 +523,21 @@ enum ControlCommand {
         stream_handle: Option<NativeStreamHandle>,
         reply: UnitReply,
     },
+    SetActivity {
+        session_id: PlaybackSessionId,
+        active: bool,
+        reply: UnitReply,
+    },
+    Lifecycle {
+        lifecycle: PlaybackLifecycle,
+        reply: UnitReply,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum PlaybackLifecycle {
+    Suspended,
+    Resumed,
 }
 
 struct ReadCommand {
@@ -463,11 +551,15 @@ struct PlaybackActor {
     access: Arc<dyn NativePlaybackAccess>,
     preferences: AudioPreferenceStore,
     selector: Arc<dyn PlaybackTransportSelector>,
+    screen_wake: Arc<dyn ScreenWake>,
     controls: mpsc::Receiver<ControlCommand>,
     reads: mpsc::Receiver<ReadCommand>,
     tombstones: VecDeque<PlaybackSessionId>,
     suspend_intents: VecDeque<PlaybackSessionId>,
     next_handle: u64,
+    foreground: bool,
+    active_intent: Option<PlaybackSessionId>,
+    resume_intent: Option<PlaybackSessionId>,
 }
 
 impl PlaybackActor {
@@ -476,6 +568,7 @@ impl PlaybackActor {
         access: Arc<dyn NativePlaybackAccess>,
         preferences: AudioPreferenceStore,
         selector: Arc<dyn PlaybackTransportSelector>,
+        screen_wake: Arc<dyn ScreenWake>,
         controls: mpsc::Receiver<ControlCommand>,
         reads: mpsc::Receiver<ReadCommand>,
     ) -> Self {
@@ -484,11 +577,15 @@ impl PlaybackActor {
             access,
             preferences,
             selector,
+            screen_wake,
             controls,
             reads,
             tombstones: VecDeque::with_capacity(MAX_STOP_TOMBSTONES),
             suspend_intents: VecDeque::with_capacity(MAX_SUSPEND_INTENTS),
             next_handle: 1,
+            foreground: true,
+            active_intent: None,
+            resume_intent: None,
         }
     }
 
@@ -608,6 +705,15 @@ impl PlaybackActor {
                 let _ = reply.send(Ok(()));
                 ActorState::Idle
             }
+            ControlCommand::SetActivity { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Idle
+            }
+            ControlCommand::Lifecycle { lifecycle, reply } => {
+                let result = self.update_lifecycle(None, lifecycle, false);
+                let _ = reply.send(result);
+                ActorState::Idle
+            }
         }
     }
 
@@ -643,13 +749,14 @@ impl PlaybackActor {
                 self.begin_start(session_id, channel_id, reply)
             }
             ControlCommand::Suspend { session_id, reply } if session_id == opening.session.id => {
+                let activity = self.update_activity(&mut opening.session, session_id, false, false);
                 drop(opening.pending);
                 let _ = opening
                     .reply
                     .take()
                     .expect("opening reply exists")
                     .send(Err(PlaybackManagerError::Cancelled));
-                let _ = reply.send(Ok(()));
+                let _ = reply.send(activity);
                 ActorState::Dormant(opening.session)
             }
             ControlCommand::Suspend { session_id, reply } => {
@@ -725,12 +832,51 @@ impl PlaybackActor {
                 let _ = reply.send(Err(PlaybackManagerError::Cancelled));
                 ActorState::Opening(opening)
             }
+            ControlCommand::SetActivity {
+                session_id,
+                active,
+                reply,
+            } => {
+                let result = self.update_activity(&mut opening.session, session_id, active, false);
+                let _ = reply.send(result);
+                ActorState::Opening(opening)
+            }
+            ControlCommand::Lifecycle {
+                lifecycle: PlaybackLifecycle::Suspended,
+                reply,
+            } => {
+                drop(opening.pending);
+                let _ = opening
+                    .reply
+                    .take()
+                    .expect("opening reply exists")
+                    .send(Err(PlaybackManagerError::Cancelled));
+                let result = self.update_lifecycle(
+                    Some(&mut opening.session),
+                    PlaybackLifecycle::Suspended,
+                    false,
+                );
+                let _ = reply.send(result);
+                ActorState::Dormant(opening.session)
+            }
+            ControlCommand::Lifecycle {
+                lifecycle: PlaybackLifecycle::Resumed,
+                reply,
+            } => {
+                let result = self.update_lifecycle(
+                    Some(&mut opening.session),
+                    PlaybackLifecycle::Resumed,
+                    false,
+                );
+                let _ = reply.send(result);
+                ActorState::Opening(opening)
+            }
         }
     }
 
     fn control_streaming(
         &mut self,
-        streaming: StreamingState,
+        mut streaming: StreamingState,
         command: ControlCommand,
     ) -> ActorState {
         match command {
@@ -755,8 +901,10 @@ impl PlaybackActor {
                 self.begin_start(session_id, channel_id, reply)
             }
             ControlCommand::Suspend { session_id, reply } if session_id == streaming.session.id => {
+                let activity =
+                    self.update_activity(&mut streaming.session, session_id, false, false);
                 drop(streaming.stream);
-                let _ = reply.send(Ok(()));
+                let _ = reply.send(activity);
                 ActorState::Dormant(streaming.session)
             }
             ControlCommand::Suspend { session_id, reply } => {
@@ -817,10 +965,49 @@ impl PlaybackActor {
                 let _ = reply.send(Err(PlaybackManagerError::Cancelled));
                 ActorState::Streaming(streaming)
             }
+            ControlCommand::SetActivity {
+                session_id,
+                active,
+                reply,
+            } => {
+                let result =
+                    self.update_activity(&mut streaming.session, session_id, active, false);
+                let _ = reply.send(result);
+                ActorState::Streaming(streaming)
+            }
+            ControlCommand::Lifecycle {
+                lifecycle: PlaybackLifecycle::Suspended,
+                reply,
+            } => {
+                drop(streaming.stream);
+                let result = self.update_lifecycle(
+                    Some(&mut streaming.session),
+                    PlaybackLifecycle::Suspended,
+                    false,
+                );
+                let _ = reply.send(result);
+                ActorState::Dormant(streaming.session)
+            }
+            ControlCommand::Lifecycle {
+                lifecycle: PlaybackLifecycle::Resumed,
+                reply,
+            } => {
+                let result = self.update_lifecycle(
+                    Some(&mut streaming.session),
+                    PlaybackLifecycle::Resumed,
+                    false,
+                );
+                let _ = reply.send(result);
+                ActorState::Streaming(streaming)
+            }
         }
     }
 
-    fn control_reading(&mut self, reading: ReadingState, command: ControlCommand) -> ActorState {
+    fn control_reading(
+        &mut self,
+        mut reading: ReadingState,
+        command: ControlCommand,
+    ) -> ActorState {
         match command {
             ControlCommand::Start { reply, .. } if reply.is_closed() => {
                 ActorState::Reading(reading)
@@ -844,9 +1031,10 @@ impl PlaybackActor {
                 self.begin_start(session_id, channel_id, reply)
             }
             ControlCommand::Suspend { session_id, reply } if session_id == reading.session.id => {
+                let activity = self.update_activity(&mut reading.session, session_id, false, false);
                 drop(reading.pending);
                 let _ = reading.reply.send(Err(PlaybackManagerError::Cancelled));
-                let _ = reply.send(Ok(()));
+                let _ = reply.send(activity);
                 ActorState::Dormant(reading.session)
             }
             ControlCommand::Suspend { session_id, reply } => {
@@ -910,10 +1098,45 @@ impl PlaybackActor {
                 let _ = reply.send(Err(PlaybackManagerError::Cancelled));
                 ActorState::Reading(reading)
             }
+            ControlCommand::SetActivity {
+                session_id,
+                active,
+                reply,
+            } => {
+                let result = self.update_activity(&mut reading.session, session_id, active, false);
+                let _ = reply.send(result);
+                ActorState::Reading(reading)
+            }
+            ControlCommand::Lifecycle {
+                lifecycle: PlaybackLifecycle::Suspended,
+                reply,
+            } => {
+                drop(reading.pending);
+                let _ = reading.reply.send(Err(PlaybackManagerError::Cancelled));
+                let result = self.update_lifecycle(
+                    Some(&mut reading.session),
+                    PlaybackLifecycle::Suspended,
+                    false,
+                );
+                let _ = reply.send(result);
+                ActorState::Dormant(reading.session)
+            }
+            ControlCommand::Lifecycle {
+                lifecycle: PlaybackLifecycle::Resumed,
+                reply,
+            } => {
+                let result = self.update_lifecycle(
+                    Some(&mut reading.session),
+                    PlaybackLifecycle::Resumed,
+                    false,
+                );
+                let _ = reply.send(result);
+                ActorState::Reading(reading)
+            }
         }
     }
 
-    fn control_dormant(&mut self, session: Session, command: ControlCommand) -> ActorState {
+    fn control_dormant(&mut self, mut session: Session, command: ControlCommand) -> ActorState {
         match command {
             ControlCommand::Start { reply, .. } if reply.is_closed() => {
                 ActorState::Dormant(session)
@@ -935,7 +1158,8 @@ impl PlaybackActor {
                 self.begin_start(session_id, channel_id, reply)
             }
             ControlCommand::Suspend { session_id, reply } if session_id == session.id => {
-                let _ = reply.send(Ok(()));
+                let activity = self.update_activity(&mut session, session_id, false, true);
+                let _ = reply.send(activity);
                 ActorState::Dormant(session)
             }
             ControlCommand::Suspend { session_id, reply } => {
@@ -993,6 +1217,20 @@ impl PlaybackActor {
                 let _ = reply.send(Err(PlaybackManagerError::Cancelled));
                 ActorState::Dormant(session)
             }
+            ControlCommand::SetActivity {
+                session_id,
+                active,
+                reply,
+            } => {
+                let result = self.update_activity(&mut session, session_id, active, true);
+                let _ = reply.send(result);
+                ActorState::Dormant(session)
+            }
+            ControlCommand::Lifecycle { lifecycle, reply } => {
+                let result = self.update_lifecycle(Some(&mut session), lifecycle, true);
+                let _ = reply.send(result);
+                ActorState::Dormant(session)
+            }
         }
     }
 
@@ -1022,8 +1260,9 @@ impl PlaybackActor {
             source,
             current_track: None,
             last_stream_handle: None,
+            resume_activity: None,
         };
-        if self.take_suspend(&session.id) {
+        if !self.foreground || self.take_suspend(&session.id) {
             drop(activity);
             return self.reply_with_dormant(reply, Err(PlaybackManagerError::Cancelled), session);
         }
@@ -1033,8 +1272,14 @@ impl PlaybackActor {
         self.begin_open(session, activity, request, reply)
     }
 
-    fn begin_reopen(&mut self, session: Session, reply: DescriptorReply) -> ActorState {
-        let activity = self.core.begin_playback_activity();
+    fn begin_reopen(&mut self, mut session: Session, reply: DescriptorReply) -> ActorState {
+        if !self.foreground {
+            return self.reply_with_dormant(reply, Err(PlaybackManagerError::Cancelled), session);
+        }
+        let activity = session
+            .resume_activity
+            .take()
+            .unwrap_or_else(|| self.core.begin_playback_activity());
         let request = SelectionRequest::Continue {
             current: session.current_track.clone(),
             saved: self.preferences.preference(&session.channel_id),
@@ -1044,10 +1289,13 @@ impl PlaybackActor {
 
     fn begin_restart(
         &mut self,
-        session: Session,
+        mut session: Session,
         intent: PlaybackRestartIntent,
         reply: DescriptorReply,
     ) -> ActorState {
+        if !self.foreground {
+            return self.reply_with_dormant(reply, Err(PlaybackManagerError::Cancelled), session);
+        }
         let request = match intent {
             PlaybackRestartIntent::Retry | PlaybackRestartIntent::Resume => {
                 SelectionRequest::Continue {
@@ -1057,7 +1305,10 @@ impl PlaybackActor {
             }
             PlaybackRestartIntent::SelectAudio(track_id) => SelectionRequest::Requested(track_id),
         };
-        let activity = self.core.begin_playback_activity();
+        let activity = session
+            .resume_activity
+            .take()
+            .unwrap_or_else(|| self.core.begin_playback_activity());
         self.begin_open(session, activity, request, reply)
     }
 
@@ -1229,8 +1480,10 @@ impl PlaybackActor {
         &mut self,
         reply: oneshot::Sender<Result<T, PlaybackManagerError>>,
         result: Result<T, PlaybackManagerError>,
-        session: Session,
+        mut session: Session,
     ) -> ActorState {
+        session.resume_activity = None;
+        self.clear_activity_for(&session.id);
         match reply.send(result) {
             Ok(()) => ActorState::Dormant(session),
             Err(_) => self.drop_session(session),
@@ -1272,6 +1525,96 @@ impl PlaybackActor {
         true
     }
 
+    fn update_activity(
+        &mut self,
+        session: &mut Session,
+        session_id: PlaybackSessionId,
+        active: bool,
+        preacquire_activity: bool,
+    ) -> Result<(), PlaybackManagerError> {
+        if session.id != session_id || (active && !self.foreground) {
+            return Err(PlaybackManagerError::Cancelled);
+        }
+        if active {
+            self.active_intent = Some(session.id.clone());
+            self.resume_intent = None;
+            if preacquire_activity && session.resume_activity.is_none() {
+                session.resume_activity = Some(self.core.begin_playback_activity());
+            }
+        } else {
+            session.resume_activity = None;
+            self.clear_activity_for(&session.id);
+        }
+        self.screen_wake
+            .set_active(active)
+            .map_err(|()| PlaybackManagerError::Unavailable)
+    }
+
+    fn update_lifecycle(
+        &mut self,
+        session: Option<&mut Session>,
+        lifecycle: PlaybackLifecycle,
+        preacquire_resume_activity: bool,
+    ) -> Result<(), PlaybackManagerError> {
+        match lifecycle {
+            PlaybackLifecycle::Suspended => {
+                if !self.foreground {
+                    if let Some(session) = session {
+                        session.resume_activity = None;
+                    }
+                    return self
+                        .screen_wake
+                        .set_active(false)
+                        .map_err(|()| PlaybackManagerError::Unavailable);
+                }
+                self.foreground = false;
+                self.resume_intent = self.active_intent.take();
+                if let Some(session) = session {
+                    session.resume_activity = None;
+                }
+                self.screen_wake
+                    .set_active(false)
+                    .map_err(|()| PlaybackManagerError::Unavailable)
+            }
+            PlaybackLifecycle::Resumed => {
+                let was_foreground = self.foreground;
+                self.foreground = true;
+                let Some(session) = session else {
+                    self.resume_intent = None;
+                    return self
+                        .screen_wake
+                        .set_active(false)
+                        .map_err(|()| PlaybackManagerError::Unavailable);
+                };
+                if was_foreground || self.resume_intent.as_ref() != Some(&session.id) {
+                    return Ok(());
+                }
+                self.active_intent = Some(session.id.clone());
+                if preacquire_resume_activity && session.resume_activity.is_none() {
+                    session.resume_activity = Some(self.core.begin_playback_activity());
+                }
+                self.screen_wake
+                    .set_active(true)
+                    .map_err(|()| PlaybackManagerError::Unavailable)
+            }
+        }
+    }
+
+    fn clear_activity_for(&mut self, session_id: &PlaybackSessionId) {
+        let mut owned = false;
+        if self.active_intent.as_ref() == Some(session_id) {
+            self.active_intent = None;
+            owned = true;
+        }
+        if self.resume_intent.as_ref() == Some(session_id) {
+            self.resume_intent = None;
+            owned = true;
+        }
+        if owned {
+            let _ = self.screen_wake.set_active(false);
+        }
+    }
+
     fn retire(&mut self, session_id: PlaybackSessionId) {
         if let Some(index) = self
             .suspend_intents
@@ -1281,11 +1624,13 @@ impl PlaybackActor {
             self.suspend_intents.remove(index);
         }
         if self.tombstones.contains(&session_id) {
+            self.clear_activity_for(&session_id);
             return;
         }
         if self.tombstones.len() == MAX_STOP_TOMBSTONES {
             self.tombstones.pop_front();
         }
+        self.clear_activity_for(&session_id);
         self.tombstones.push_back(session_id);
     }
 }
@@ -1331,6 +1676,7 @@ struct Session {
     source: Arc<ResolvedPlaybackSource>,
     current_track: Option<AudioTrackId>,
     last_stream_handle: Option<NativeStreamHandle>,
+    resume_activity: Option<PlaybackActivityLease>,
 }
 
 struct StreamInstance {

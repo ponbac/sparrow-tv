@@ -13,10 +13,11 @@ import {
   clientSchemas,
   type InstalledPlaybackSession,
 } from "../../client/contracts";
-import {
-  InstalledPlayer,
-  type InstalledPlayerProps,
-} from "./installed-player";
+import { InstalledPlayer, type InstalledPlayerProps } from "./installed-player";
+import type {
+  InstalledLifecycleEvents,
+  InstalledLifecycleSignal,
+} from "./installed-lifecycle";
 import type { NativePlaybackEngine } from "./native-mpegts-engine";
 
 afterEach(() => {
@@ -97,7 +98,9 @@ describe("InstalledPlayer", () => {
     const engine = playingEngine();
     const onStop = vi.fn();
     const user = userEvent.setup();
-    const clipboard = vi.fn<(text: string) => Promise<void>>(async () => undefined);
+    const clipboard = vi.fn<(text: string) => Promise<void>>(
+      async () => undefined,
+    );
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText: clipboard },
@@ -112,7 +115,9 @@ describe("InstalledPlayer", () => {
     );
 
     expect(await screen.findByText("ON AIR")).toBeVisible();
-    expect(client.createPlaybackSession).toHaveBeenCalledWith({ id: CHANNEL.id });
+    expect(client.createPlaybackSession).toHaveBeenCalledWith({
+      id: CHANNEL.id,
+    });
     expect(session.start).toHaveBeenCalledTimes(1);
 
     await user.click(screen.getByRole("button", { name: "Pause" }));
@@ -168,13 +173,15 @@ describe("InstalledPlayer", () => {
     );
     expect(await screen.findByText("ON AIR")).toBeVisible();
 
-    await userEvent.setup().click(
-      screen.getByRole("button", { name: "Stop stream" }),
-    );
+    await userEvent
+      .setup()
+      .click(screen.getByRole("button", { name: "Stop stream" }));
 
     expect(await screen.findByText("CLEANUP NEEDED")).toBeVisible();
     expect(onStop).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: "Restart" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Restart" }),
+    ).not.toBeInTheDocument();
   });
 
   it("enumerates Audio Tracks, selects without opaque UI, and confirms persistence", async () => {
@@ -269,11 +276,76 @@ describe("InstalledPlayer", () => {
     });
 
     expect(resources.length).toBeGreaterThanOrEqual(1);
-    expect(resources.every((resource) => resource.stop.mock.calls.length === 1)).toBe(
-      true,
+    expect(
+      resources.every((resource) => resource.stop.mock.calls.length === 1),
+    ).toBe(true);
+  });
+
+  it("preserves one session across rotation and owns native lifecycle resume", async () => {
+    const session = fixtureSession();
+    const client = fixtureClient(() => session.value);
+    const lifecycle = lifecycleFixture();
+    const props = {
+      channel: CHANNEL,
+      client,
+      engine: playingEngine().value,
+      lifecycleEvents: lifecycle.value,
+      onStop: vi.fn(),
+    } satisfies InstalledPlayerProps;
+    const view = render(<InstalledPlayer {...props} />);
+    expect(await screen.findByText("ON AIR")).toBeVisible();
+    await waitFor(() => expect(lifecycle.subscribe).toHaveBeenCalledTimes(1));
+
+    fireEvent(window, new Event("resize"));
+    view.rerender(
+      <InstalledPlayer
+        {...props}
+        channel={{ id: CHANNEL.id, name: CHANNEL.name }}
+      />,
     );
+    expect(client.createPlaybackSession).toHaveBeenCalledTimes(1);
+    expect(session.start).toHaveBeenCalledTimes(1);
+
+    await act(async () => lifecycle.emit("suspended"));
+    expect(await screen.findByText("PAUSED")).toBeVisible();
+    expect(session.suspend).toHaveBeenCalledTimes(1);
+    await act(async () => lifecycle.emit("suspended"));
+    expect(session.suspend).toHaveBeenCalledTimes(1);
+
+    await act(async () => lifecycle.emit("resumed"));
+    expect(await screen.findByText("ON AIR")).toBeVisible();
+    expect(session.reopen).toHaveBeenCalledTimes(1);
+    await act(async () => lifecycle.emit("resumed"));
+    expect(session.reopen).toHaveBeenCalledTimes(1);
+
+    view.unmount();
+    expect(lifecycle.release).toHaveBeenCalledTimes(1);
   });
 });
+
+function lifecycleFixture(): {
+  readonly value: InstalledLifecycleEvents;
+  readonly subscribe: ReturnType<typeof vi.fn>;
+  readonly release: ReturnType<typeof vi.fn>;
+  readonly emit: (signal: InstalledLifecycleSignal) => void;
+} {
+  let listener: ((signal: InstalledLifecycleSignal) => void) | null = null;
+  const release = vi.fn(() => {
+    listener = null;
+  });
+  const subscribe = vi.fn<InstalledLifecycleEvents["subscribe"]>(
+    async (next) => {
+      listener = next;
+      return release;
+    },
+  );
+  return {
+    value: { subscribe },
+    subscribe,
+    release,
+    emit: (signal) => listener?.(signal),
+  };
+}
 
 function fixtureClient(
   create: () => InstalledPlaybackSession,
@@ -295,6 +367,7 @@ function fixtureSession(
   readonly reopen: ReturnType<typeof vi.fn>;
   readonly restart: ReturnType<typeof vi.fn>;
   readonly suspend: ReturnType<typeof vi.fn>;
+  readonly setActivity: ReturnType<typeof vi.fn>;
   readonly stop: ReturnType<typeof vi.fn>;
 } {
   const start = vi.fn(async () => success(descriptors.start ?? DESCRIPTOR));
@@ -305,6 +378,7 @@ function fixtureSession(
     success(descriptors.restart ?? REOPENED_DESCRIPTOR),
   );
   const suspend = vi.fn(async () => success(undefined));
+  const setActivity = vi.fn(async () => success(undefined));
   const stop = vi.fn(async () => success(undefined));
   return {
     value: {
@@ -313,12 +387,14 @@ function fixtureSession(
       restart,
       read: vi.fn(async () => success(new ArrayBuffer(0))),
       suspend,
+      setActivity,
       stop,
     },
     start,
     reopen,
     restart,
     suspend,
+    setActivity,
     stop,
   };
 }
@@ -349,8 +425,9 @@ function playingEngine(): {
   };
 }
 
-function success<Value>(
-  value: Value,
-): { readonly ok: true; readonly value: Value } {
+function success<Value>(value: Value): {
+  readonly ok: true;
+  readonly value: Value;
+} {
   return { ok: true, value };
 }

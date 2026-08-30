@@ -483,6 +483,7 @@ class FakeSparrowClient implements InstalledSparrowClient {
       restart: async () => success(descriptor),
       read: async () => success(new ArrayBuffer(0)),
       suspend: async () => success(undefined),
+      setActivity: async () => success(undefined),
       stop: async () => success(undefined),
     };
   }
@@ -1453,3 +1454,4 @@ function requireMatch<Value>(
   }
   return value;
 }
+

@@ -16,9 +16,9 @@ use self::{
         RefreshReportDto, SearchResultsDto,
     },
     input::{
-        ChannelInput, ListChannelsInput, ListGroupsInput, PlaybackReadInput, PlaybackReopenInput,
-        PlaybackRestartInput, PlaybackStartInput, PlaybackStopInput, PlaybackSuspendInput,
-        ScheduleInput, SearchCancellationInput, SearchInput, SearchPageInput,
+        ChannelInput, ListChannelsInput, ListGroupsInput, PlaybackActivityInput, PlaybackReadInput,
+        PlaybackReopenInput, PlaybackRestartInput, PlaybackStartInput, PlaybackStopInput,
+        PlaybackSuspendInput, ScheduleInput, SearchCancellationInput, SearchInput, SearchPageInput,
         SourceConfigurationInputDto,
     },
 };
@@ -285,6 +285,26 @@ pub(crate) async fn suspend_playback(
 ) -> Result<(), ClientErrorDto> {
     state
         .suspend_playback(input.into_session_id()?)
+        .await
+        .map_err(ClientErrorDto::from)
+}
+
+#[tauri::command]
+pub(crate) async fn playback_activity(
+    slot: State<'_, InstalledRuntimeSlot>,
+    input: PlaybackActivityInput,
+) -> Result<(), ClientErrorDto> {
+    let runtime = slot.wait().await;
+    set_playback_activity(runtime.as_ref(), input).await
+}
+
+pub(crate) async fn set_playback_activity(
+    state: &InstalledRuntime,
+    input: PlaybackActivityInput,
+) -> Result<(), ClientErrorDto> {
+    let (session_id, active) = input.into_playback()?;
+    state
+        .set_playback_activity(session_id, active)
         .await
         .map_err(ClientErrorDto::from)
 }
