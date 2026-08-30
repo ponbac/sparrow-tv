@@ -11,7 +11,7 @@ use std::{path::PathBuf, sync::Arc};
 use axum::{Router, middleware, response::Redirect, routing::get};
 use serde::Serialize;
 use sparrow_core::{CoreAdapters, SparrowCore, SystemClock};
-use sparrow_source_http::HttpSourceAccess;
+use sparrow_source_http::{HttpPlaybackAccess, HttpSourceAccess};
 use thiserror::Error;
 
 use crate::{
@@ -31,11 +31,18 @@ pub fn router(
     app_root: impl Into<PathBuf>,
 ) -> Result<Router, RouterBuildError> {
     let credential = DeploymentCredential::new(password.as_ref())?;
-    Ok(authenticated_router(core, credential, app_root.into()))
+    let playback = HttpPlaybackAccess::new().map_err(|_| RouterBuildError::PlaybackAdapter)?;
+    Ok(authenticated_router(
+        core,
+        playback,
+        credential,
+        app_root.into(),
+    ))
 }
 
 fn authenticated_router(
     core: Arc<SparrowCore>,
+    playback: HttpPlaybackAccess,
     credential: DeploymentCredential,
     app_root: PathBuf,
 ) -> Router {
@@ -46,7 +53,7 @@ fn authenticated_router(
             credential,
             auth::require_authentication,
         ))
-        .with_state(AppState::new(core));
+        .with_state(AppState::new(core, playback));
 
     Router::new()
         .route("/health", get(health))
@@ -67,6 +74,7 @@ pub async fn run() -> Result<(), StartupError> {
     } = config;
     drop(password);
     let source = Arc::new(HttpSourceAccess::new().map_err(|_| StartupError::SourceAdapter)?);
+    let playback = HttpPlaybackAccess::new().map_err(|_| StartupError::PlaybackAdapter)?;
     let snapshots = Arc::new(MemorySnapshotStore::default());
     let adapters = CoreAdapters::new(source, snapshots, Arc::new(SystemClock));
     let core = Arc::new(
@@ -74,7 +82,7 @@ pub async fn run() -> Result<(), StartupError> {
             .await
             .map_err(|_| StartupError::Core)?,
     );
-    let app = authenticated_router(core, credential, app_root);
+    let app = authenticated_router(core, playback, credential, app_root);
     let listener = tokio::net::TcpListener::bind(BIND_ADDRESS)
         .await
         .map_err(|_| StartupError::Bind)?;
@@ -98,6 +106,8 @@ pub enum RouterBuildError {
     MissingPassword,
     #[error("the deployment password exceeds the supported size")]
     PasswordTooLong,
+    #[error("the hosted playback adapter could not be initialized")]
+    PlaybackAdapter,
 }
 
 /// Startup errors deliberately discard environment, provider, filesystem, and
@@ -108,6 +118,8 @@ pub enum StartupError {
     Configuration,
     #[error("the source adapter could not be initialized")]
     SourceAdapter,
+    #[error("the playback adapter could not be initialized")]
+    PlaybackAdapter,
     #[error("the catalog core could not be initialized")]
     Core,
     #[error("the hosted listener could not bind")]

@@ -12,10 +12,10 @@ pub use domain::{
     ChannelId, ChannelQuery, ChannelSummary, CoreError, CoreEvent, EpgFailureKind, InputField,
     InputReason, LifecycleSignal, M3uFailureKind, Page, PageCursor, PageLimit, PageRequest,
     ProgrammeSummary, RedactedSourceConfiguration, RefreshOutcome, RefreshReport,
-    RefreshSkipReason, RefreshTrigger, SafeFailure, ScheduleQuery, SearchRequest, SearchResults,
-    SearchTerm, SnapshotOperation, SnapshotRecoveryDiagnostic, SnapshotRecoveryReason,
-    SourceAccessError, SourceAccessFailure, SourceConfiguration, SourceConfigurationInput,
-    SourceKind, SourceReadError, SourceState, StoreError,
+    RefreshSkipReason, RefreshTrigger, ResolvedPlaybackSource, SafeFailure, ScheduleQuery,
+    SearchRequest, SearchResults, SearchTerm, SnapshotOperation, SnapshotRecoveryDiagnostic,
+    SnapshotRecoveryReason, SourceAccessError, SourceAccessFailure, SourceConfiguration,
+    SourceConfigurationInput, SourceKind, SourceReadError, SourceState, StoreError,
 };
 pub use ports::{
     Clock, CoreAdapters, PrivateSourceValidators, PrivateValidatorError, SnapshotCandidate,

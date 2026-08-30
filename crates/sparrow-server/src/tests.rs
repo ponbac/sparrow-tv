@@ -1,3 +1,4 @@
+mod playback;
 mod programmes;
 mod search_lanes;
 

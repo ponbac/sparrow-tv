@@ -1602,6 +1602,7 @@ dependencies = [
  "futures-util",
  "proptest",
  "quick-xml",
+ "serde",
  "static_assertions",
  "thiserror",
  "tokio",
@@ -1656,6 +1657,7 @@ name = "sparrow-source-http"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "bytes",
  "flate2",
  "futures-util",
  "httpdate",

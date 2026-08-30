@@ -15,9 +15,10 @@ use crate::{
     domain::{
         CatalogStatus, ChannelDetails, ChannelGroupView, ChannelId, ChannelQuery, ChannelSummary,
         CoreError, CoreEvent, LifecycleSignal, Page, PageRequest, ProgrammeSummary, RefreshOutcome,
-        RefreshReport, RefreshTrigger, SafeFailure, ScheduleQuery, SearchRequest, SearchResults,
-        SearchTerm, SnapshotOperation, SnapshotRecoveryDiagnostic, SnapshotRecoveryReason,
-        SourceAccessError, SourceConfiguration, SourceConfigurationInput, SourceKind, SourceState,
+        RefreshReport, RefreshTrigger, ResolvedPlaybackSource, SafeFailure, ScheduleQuery,
+        SearchRequest, SearchResults, SearchTerm, SnapshotOperation, SnapshotRecoveryDiagnostic,
+        SnapshotRecoveryReason, SourceAccessError, SourceConfiguration, SourceConfigurationInput,
+        SourceKind, SourceState,
     },
     m3u,
     ports::{
@@ -136,6 +137,15 @@ impl SparrowCore {
 
     pub fn channel(&self, id: &ChannelId) -> Result<ChannelDetails, CoreError> {
         self.query_catalog(|catalog| catalog.channel(id))
+    }
+
+    /// Resolves one opaque Channel Identifier to a private, publication-pinned
+    /// Playback Source for a privileged Rust adapter.
+    ///
+    /// The adapter must acquire [`Self::begin_playback_activity`] before
+    /// resolution and retain that lease for the upstream connection lifetime.
+    pub fn resolve_playback(&self, id: &ChannelId) -> Result<ResolvedPlaybackSource, CoreError> {
+        self.query_catalog(|catalog| catalog.resolve_playback(id))
     }
 
     /// Returns a deterministic bounded Programme page for one Channel.

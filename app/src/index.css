@@ -266,6 +266,12 @@ button:focus-visible {
   background: var(--acid);
 }
 
+.playback-load-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
 .catalog-frame {
   position: relative;
   z-index: 1;

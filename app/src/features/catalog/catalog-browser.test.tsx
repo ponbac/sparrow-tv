@@ -23,14 +23,17 @@ import {
   type ListChannelsInput,
   type ListGroupsInput,
   type Page,
+  type PlaybackDescriptor,
   type ProgrammeSummary,
   type ScheduleInput,
   type SearchInput,
   type SearchPageInput,
   type SearchResults,
   type SparrowClient,
+  type StartPlaybackInput,
 } from "../../client/contracts";
 import { CatalogBrowser } from "./catalog-browser";
+import type { HostedPlaybackEngine } from "../playback/mpegts-engine";
 
 afterEach(cleanup);
 
@@ -189,6 +192,7 @@ class FakeSparrowClient implements SparrowClient {
   readonly searchInputs: SearchInput[] = [];
   readonly channelSearchInputs: SearchPageInput[] = [];
   readonly programmeSearchInputs: SearchPageInput[] = [];
+  readonly playbackInputs: StartPlaybackInput[] = [];
 
   constructor(private readonly behavior: FakeBehavior = {}) {}
 
@@ -258,6 +262,20 @@ class FakeSparrowClient implements SparrowClient {
   ): Promise<ClientResult<Page<ProgrammeSummary>>> {
     this.programmeSearchInputs.push(input);
     return Promise.resolve(success(EMPTY_SCHEDULE_PAGE));
+  }
+
+  startPlayback(
+    input: StartPlaybackInput,
+  ): Promise<ClientResult<PlaybackDescriptor>> {
+    this.playbackInputs.push(input);
+    return Promise.resolve(
+      success(
+        clientSchemas.playbackDescriptor.parse({
+          _tag: "same-origin-http",
+          endpoint: `/api/v1/play/${encodeURIComponent(input.id)}`,
+        }),
+      ),
+    );
   }
 }
 
@@ -356,6 +374,12 @@ describe("CatalogBrowser", () => {
       "expected a Channel detail request",
     );
     expect(detailRequest.id).toBe(CHANNEL_DETAILS.id);
+    expect(await screen.findByText("ON AIR")).toBeVisible();
+    const playbackRequest = requireFirst(
+      client.playbackInputs,
+      "expected a hosted playback descriptor request",
+    );
+    expect(playbackRequest.id).toBe(CHANNEL_DETAILS.id);
   });
 
   it("distinguishes an omitted all-groups filter from the empty Ungrouped name", async () => {
@@ -628,11 +652,18 @@ function renderBrowser(client: SparrowClient): QueryClient {
   });
   render(
     <QueryClientProvider client={queryClient}>
-      <CatalogBrowser client={client} />
+      <CatalogBrowser client={client} playbackEngine={TEST_PLAYBACK_ENGINE} />
     </QueryClientProvider>,
   );
   return queryClient;
 }
+
+const TEST_PLAYBACK_ENGINE: HostedPlaybackEngine = {
+  start: ({ video }) => {
+    video.dispatchEvent(new Event("playing"));
+    return { stop: () => undefined };
+  },
+};
 
 function success<Value>(
   value: Value,

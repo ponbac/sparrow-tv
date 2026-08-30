@@ -12,12 +12,14 @@ import {
   type ListChannelsInput,
   type ListGroupsInput,
   type Page,
+  type PlaybackDescriptor,
   type ProgrammeSummary,
   type ScheduleInput,
   type SearchInput,
   type SearchPageInput,
   type SearchResults,
   type SparrowClient,
+  type StartPlaybackInput,
 } from "./contracts";
 
 const API_ROOT = "/api/v1";
@@ -123,8 +125,12 @@ class HttpSparrowClient implements SparrowClient {
 
   /** Resolves browser-safe details for one channel. */
   channel(input: ChannelInput): Promise<ClientResult<ChannelDetails>> {
+    const encodedId = encodePathSegment(input.id);
+    if (encodedId === null) {
+      return Promise.resolve(invalidProtocolResponse(400));
+    }
     return this.#request(
-      `${API_ROOT}/channels/${encodeURIComponent(input.id)}`,
+      `${API_ROOT}/channels/${encodedId}`,
       clientSchemas.channel,
       input.signal,
     );
@@ -134,6 +140,10 @@ class HttpSparrowClient implements SparrowClient {
   schedule(
     input: ScheduleInput,
   ): Promise<ClientResult<Page<ProgrammeSummary>>> {
+    const encodedId = encodePathSegment(input.id);
+    if (encodedId === null) {
+      return Promise.resolve(invalidProtocolResponse(400));
+    }
     const query = new URLSearchParams();
     query.set("limit", String(input.limit));
     if (input.cursor !== undefined) {
@@ -141,7 +151,7 @@ class HttpSparrowClient implements SparrowClient {
     }
 
     return this.#request(
-      `${API_ROOT}/channels/${encodeURIComponent(input.id)}/schedule?${query.toString()}`,
+      `${API_ROOT}/channels/${encodedId}/schedule?${query.toString()}`,
       clientSchemas.schedulePageFor(input),
       input.signal,
     );
@@ -187,6 +197,31 @@ class HttpSparrowClient implements SparrowClient {
       clientSchemas.searchProgrammesPageFor(input),
       input.signal,
     );
+  }
+
+  /** Resolves an opaque Channel Identifier to Sparrow's fixed same-origin route. */
+  startPlayback(
+    input: StartPlaybackInput,
+  ): Promise<ClientResult<PlaybackDescriptor>> {
+    if (input.signal?.aborted === true) {
+      return Promise.resolve({
+        ok: false,
+        error: { _tag: "cancelled" },
+      });
+    }
+
+    const encodedId = encodePathSegment(input.id);
+    if (encodedId === null) {
+      return Promise.resolve(invalidProtocolResponse(400));
+    }
+    const parsed = clientSchemas.playbackDescriptor.safeParse({
+      _tag: "same-origin-http",
+      endpoint: `${API_ROOT}/play/${encodedId}`,
+    });
+    if (!parsed.success) {
+      return Promise.resolve(invalidProtocolResponse(500));
+    }
+    return Promise.resolve({ ok: true, value: parsed.data });
   }
 
   async #request<Value>(
@@ -249,6 +284,14 @@ function searchPageEndpoint(
     query.set("cursor", input.cursor);
   }
   return `${API_ROOT}/search/${lane}?${query.toString()}`;
+}
+
+function encodePathSegment(value: string): string | null {
+  try {
+    return encodeURIComponent(value);
+  } catch {
+    return null;
+  }
 }
 
 function classifyThrownRequestFailure(
