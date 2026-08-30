@@ -3,3 +3,13 @@
 playlist.m3u
 playlist_full.m3u
 /examples
+/release-candidates
+/app/src-tauri/gen/android/keystore.properties
+/app/src-tauri/gen/android/**/*.jks
+/app/src-tauri/gen/android/**/*.keystore
+/app/src-tauri/gen/android/**/*.p12
+/app/src-tauri/gen/android/**/*.pfx
+/release/**/*.jks
+/release/**/*.keystore
+/release/**/*.p12
+/release/**/*.pfx

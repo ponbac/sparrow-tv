@@ -31,10 +31,10 @@ The host needs Bun, adb, and `apkanalyzer`. Run from the repository root with a
 new evidence filename; the tool refuses to overwrite an existing file:
 
 ```sh
-mise exec -- just android-catalog-accept \
-  /absolute/path/to/app-universal-debug.apk \
-  REALME_ADB_SERIAL \
-  artifacts/android-catalog-acceptance.json
+ANDROID_ACCEPTANCE_APK=/absolute/path/to/app-universal-debug.apk \
+ANDROID_ACCEPTANCE_SERIAL=REALME_ADB_SERIAL \
+ANDROID_ACCEPTANCE_OUTPUT=artifacts/android-catalog-acceptance.json \
+  mise exec -- just android-catalog-accept
 ```
 
 Use the actual debuggable candidate path. The serial selects the device but is

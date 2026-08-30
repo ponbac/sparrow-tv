@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "accept:android:catalog": "bun scripts/android-catalog-acceptance.ts",
+    "release:contract": "bun scripts/release-contract.ts",
     "tauri": "tauri",
     "tauri:android:init": "tauri android init --ci",
     "tauri:android:build": "tauri android build --apk --debug --ci",

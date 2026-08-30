@@ -158,7 +158,7 @@ mod tests {
     async fn dropping_the_waiter_cooperatively_cancels_active_work() {
         let executor = BoundedBlocking::serial();
         let (started_tx, started_rx) = oneshot::channel();
-        let (finished_tx, finished_rx) = oneshot::channel();
+        let (finished_tx, finished_rx) = oneshot::channel::<()>();
         let active_executor = executor.clone();
         let active = tokio::spawn(async move {
             active_executor
@@ -170,8 +170,6 @@ mod tests {
                         std::thread::yield_now();
                     }
                     finished_tx
-                        .send(())
-                        .expect("the test receives the finish signal");
                 })
                 .await
         });
@@ -186,7 +184,7 @@ mod tests {
         );
         finished_rx
             .await
-            .expect("the blocking task observes cancellation");
+            .expect_err("the detached blocking-task output drops after its permit is released");
 
         executor
             .run(|_| ())

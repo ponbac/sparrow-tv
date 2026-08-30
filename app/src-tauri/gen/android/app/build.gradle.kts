@@ -1,4 +1,5 @@
 import groovy.json.JsonSlurper
+import org.gradle.api.artifacts.dsl.LockMode
 import java.io.File
 import java.util.Properties
 
@@ -46,6 +47,18 @@ fun findRustlsPlatformVerifierProject(): RustlsPlatformVerifierProject {
 
 val rustlsPlatformVerifierProject = findRustlsPlatformVerifierProject()
 
+val releaseSigningValues = mapOf(
+    "storeFile" to System.getenv("SPARROW_ANDROID_KEYSTORE_PATH"),
+    "storePassword" to System.getenv("SPARROW_ANDROID_KEYSTORE_PASSWORD"),
+    "keyAlias" to System.getenv("SPARROW_ANDROID_KEY_ALIAS"),
+    "keyPassword" to System.getenv("SPARROW_ANDROID_KEY_PASSWORD"),
+)
+val hasCompleteReleaseSigning = releaseSigningValues.values.all { !it.isNullOrBlank() }
+val hasPartialReleaseSigning = releaseSigningValues.values.any { !it.isNullOrBlank() }
+check(!hasPartialReleaseSigning || hasCompleteReleaseSigning) {
+    "Android release signing configuration is incomplete"
+}
+
 repositories {
     maven {
         url = uri(rustlsPlatformVerifierProject.repository)
@@ -55,6 +68,8 @@ repositories {
 
 android {
     compileSdk = 36
+    buildToolsVersion = "35.0.0"
+    ndkVersion = "29.0.14206865"
     namespace = "xyz.ponbac.sparrow"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
@@ -64,19 +79,33 @@ android {
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
     }
+    signingConfigs {
+        if (hasCompleteReleaseSigning) {
+            create("release") {
+                storeFile = file(checkNotNull(releaseSigningValues["storeFile"]))
+                storePassword = checkNotNull(releaseSigningValues["storePassword"])
+                keyAlias = checkNotNull(releaseSigningValues["keyAlias"])
+                keyPassword = checkNotNull(releaseSigningValues["keyPassword"])
+            }
+        }
+    }
     buildTypes {
         getByName("debug") {
             manifestPlaceholders["usesCleartextTraffic"] = "true"
             isDebuggable = true
             isJniDebuggable = true
             isMinifyEnabled = false
-            packaging {                jniLibs.keepDebugSymbols.add("*/arm64-v8a/*.so")
+            packaging {
+                jniLibs.keepDebugSymbols.add("*/arm64-v8a/*.so")
                 jniLibs.keepDebugSymbols.add("*/armeabi-v7a/*.so")
                 jniLibs.keepDebugSymbols.add("*/x86/*.so")
                 jniLibs.keepDebugSymbols.add("*/x86_64/*.so")
             }
         }
         getByName("release") {
+            if (hasCompleteReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = true
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }
@@ -90,6 +119,16 @@ android {
     }
     buildFeatures {
         buildConfig = true
+    }
+}
+
+gradle.taskGraph.whenReady {
+    val releaseOutputTask = Regex("^(?:assemble|package|bundle).+Release$", RegexOption.IGNORE_CASE)
+    val requestsReleaseOutput = gradle.startParameter.taskNames.any { requestedTask ->
+        releaseOutputTask.matches(requestedTask.substringAfterLast(':'))
+    }
+    check(!requestsReleaseOutput || hasCompleteReleaseSigning) {
+        "Android release signing configuration is required"
     }
 }
 
@@ -109,6 +148,45 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.4")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.0")
+}
+
+val lockedBuildClasspaths = listOf("arm64", "arm", "x86", "x86_64", "universal")
+    .flatMap { abi ->
+        listOf("Debug", "Release").flatMap { buildType ->
+            listOf("Compile", "Runtime").map { usage ->
+                "$abi$buildType${usage}Classpath"
+            }
+        }
+    }
+
+dependencyLocking {
+    lockMode.set(LockMode.STRICT)
+}
+
+configurations.configureEach {
+    if (name in lockedBuildClasspaths) {
+        resolutionStrategy.activateDependencyLocking()
+    }
+}
+
+tasks.register("resolveAndLockBuildClasspaths") {
+    notCompatibleWithConfigurationCache("Resolves the supported app build classpaths")
+    doFirst {
+        require(gradle.startParameter.isWriteDependencyLocks) {
+            "$path must be run with --write-locks"
+        }
+        val missing = lockedBuildClasspaths.filterNot(configurations.names::contains)
+        require(missing.isEmpty()) {
+            "Missing lockable app build classpaths: ${missing.joinToString()}"
+        }
+    }
+    doLast {
+        lockedBuildClasspaths.sorted().forEach { name ->
+            val components = configurations.getByName(name)
+                .incoming.resolutionResult.allComponents
+            require(components.isNotEmpty()) { "$name resolved no dependency components" }
+        }
+    }
 }
 
 apply(from = "tauri.build.gradle.kts")

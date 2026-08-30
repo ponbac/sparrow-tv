@@ -1,0 +1,452 @@
+name: Release candidates
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact app/package.json version to rehearse (build-only)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    outputs:
+      version: ${{ steps.preflight.outputs.version || steps.rehearsal-preflight.outputs.version }}
+      tag: ${{ steps.preflight.outputs.tag || steps.rehearsal-preflight.outputs.tag }}
+      publishable: ${{ steps.preflight.outputs.publishable || steps.rehearsal-preflight.outputs.publishable }}
+      appimage-name: ${{ steps.preflight.outputs.appimage_name || steps.rehearsal-preflight.outputs.appimage_name }}
+      apk-name: ${{ steps.preflight.outputs.apk_name || steps.rehearsal-preflight.outputs.apk_name }}
+    steps:
+      - name: Check out exact revision and tags
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch current master for revision binding
+        run: git fetch --no-tags origin +refs/heads/master:refs/remotes/origin/master
+
+      - name: Install pinned repository tools
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          version: 2026.8.12
+          sha256: f2092b1e67f0abc8803d3be120dd2bc5b656dd99680ba3159f710e149da10d05
+          cache: false
+
+      - name: Install frozen release-contract dependencies
+        run: cd app && bun install --frozen-lockfile
+
+      - name: Install Linux compile dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            clang \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            lld \
+            pkg-config
+
+      - name: Verify stable tag, version, and master
+        id: preflight
+        if: github.event_name == 'push'
+        run: |
+          existing_release_tags="$(git tag --list 'v*')"
+          cd app
+          bun run release:contract preflight \
+            --mode tag \
+            --commit "$GITHUB_SHA" \
+            --output "$RUNNER_TEMP/preflight.json" \
+            --ref-name "$GITHUB_REF_NAME" \
+            --master-commit "$(git rev-parse refs/remotes/origin/master)" \
+            --existing-tags "$existing_release_tags" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Verify build-only rehearsal version
+        id: rehearsal-preflight
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          cd app
+          bun run release:contract preflight \
+            --mode rehearsal \
+            --commit "$GITHUB_SHA" \
+            --output "$RUNNER_TEMP/preflight.json" \
+            --ref-name "$GITHUB_REF_NAME" \
+            --master-commit "$(git rev-parse refs/remotes/origin/master)" \
+            --requested-version "$REQUESTED_VERSION" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Run provider-free deterministic checks
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: just ci
+
+  appimage:
+    needs: check
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned repository tools
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          version: 2026.8.12
+          sha256: f2092b1e67f0abc8803d3be120dd2bc5b656dd99680ba3159f710e149da10d05
+          cache: false
+
+      - name: Install pinned AppImage build baseline
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            clang \
+            file \
+            gstreamer1.0-libav \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            lld \
+            patchelf \
+            pkg-config \
+            xvfb
+
+      - name: Build one x86_64 AppImage
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+          XDG_CACHE_HOME: ${{ runner.temp }}/sparrow-appimage-cache
+        run: just build-appimage
+
+      - name: Stage and verify AppImage candidate
+        env:
+          RELEASE_VERSION: ${{ needs.check.outputs.version }}
+          RELEASE_INPUT: ${{ github.workspace }}/target/release/bundle/appimage
+          RELEASE_OUTPUT: ${{ runner.temp }}/appimage
+          RELEASE_ARTIFACT: ${{ runner.temp }}/appimage/${{ needs.check.outputs.appimage-name }}
+        run: |
+          RELEASE_KIND=appimage just release-stage
+          just release-verify-appimage
+          xvfb-run --auto-servernum just release-smoke-appimage
+
+      - name: Attest AppImage build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/appimage/${{ needs.check.outputs.appimage-name }}
+
+      - name: Upload exact AppImage bytes
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: appimage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/appimage/${{ needs.check.outputs.appimage-name }}
+            ${{ runner.temp }}/appimage/${{ needs.check.outputs.appimage-name }}.sha256
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  apk:
+    needs: check
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    environment: release-signing
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned repository tools
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          version: 2026.8.12
+          sha256: f2092b1e67f0abc8803d3be120dd2bc5b656dd99680ba3159f710e149da10d05
+          cache: false
+
+      - name: Install frozen release-contract dependencies
+        run: cd app && bun install --frozen-lockfile
+
+      - name: Require exact protected signing environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          cd app && bun run release:contract verify-environment-protection
+          --repository "$GITHUB_REPOSITORY"
+          --environment release-signing
+
+      - name: Require a reviewed offline certificate identity
+        run: cd app && bun run release:contract verify-signing-identity
+
+      - name: Install pinned Android packages
+        run: |
+          set +o pipefail
+          yes | sdkmanager --licenses >/dev/null
+          set -o pipefail
+          sdkmanager \
+            "cmdline-tools;19.0" \
+            "platforms;android-36" \
+            "build-tools;35.0.0" \
+            "ndk;29.0.14206865"
+          echo "$ANDROID_HOME/cmdline-tools/19.0/bin" >> "$GITHUB_PATH"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
+          just release-verify-android-toolchain
+
+      - name: Restore protected key and build one signed universal APK
+        env:
+          ANDROID_RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          SPARROW_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
+          SPARROW_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          SPARROW_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          : "${ANDROID_RELEASE_KEYSTORE_BASE64:?missing release keystore}"
+          : "${SPARROW_ANDROID_KEYSTORE_PASSWORD:?missing keystore password}"
+          : "${SPARROW_ANDROID_KEY_ALIAS:?missing key alias}"
+          : "${SPARROW_ANDROID_KEY_PASSWORD:?missing key password}"
+          umask 077
+          export SPARROW_ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/sparrow-release.jks"
+          cleanup_key() {
+            shred --force --remove --zero "$SPARROW_ANDROID_KEYSTORE_PATH" 2>/dev/null || \
+              rm --force "$SPARROW_ANDROID_KEYSTORE_PATH"
+          }
+          trap cleanup_key EXIT
+          printf '%s' "$ANDROID_RELEASE_KEYSTORE_BASE64" | base64 --decode \
+            > "$SPARROW_ANDROID_KEYSTORE_PATH"
+          just build-android-release
+
+      - name: Stage and verify signed universal APK
+        env:
+          RELEASE_KIND: apk
+          RELEASE_VERSION: ${{ needs.check.outputs.version }}
+          RELEASE_INPUT: ${{ github.workspace }}/app/src-tauri/gen/android/app/build/outputs
+          RELEASE_OUTPUT: ${{ runner.temp }}/apk
+          RELEASE_ARTIFACT: ${{ runner.temp }}/apk/${{ needs.check.outputs.apk-name }}
+        run: |
+          just release-stage
+          just release-verify-apk
+
+      - name: Attest APK build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/apk/${{ needs.check.outputs.apk-name }}
+
+      - name: Upload exact APK bytes
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: apk-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/apk/${{ needs.check.outputs.apk-name }}
+            ${{ runner.temp }}/apk/${{ needs.check.outputs.apk-name }}.sha256
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  candidate:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [check, appimage, apk]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned repository tools
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          version: 2026.8.12
+          sha256: f2092b1e67f0abc8803d3be120dd2bc5b656dd99680ba3159f710e149da10d05
+          cache: false
+
+      - name: Install frozen release-contract dependencies
+        run: cd app && bun install --frozen-lockfile
+
+      - name: Install pinned Android verification tools
+        run: |
+          set +o pipefail
+          yes | sdkmanager --licenses >/dev/null
+          set -o pipefail
+          sdkmanager \
+            "cmdline-tools;19.0" \
+            "platforms;android-36" \
+            "build-tools;35.0.0" \
+            "ndk;29.0.14206865"
+          echo "$ANDROID_HOME/cmdline-tools/19.0/bin" >> "$GITHUB_PATH"
+          just release-verify-android-toolchain
+
+      - name: Download exact build artifacts by immutable IDs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.appimage.outputs.artifact-id }},${{ needs.apk.outputs.artifact-id }}
+          path: ${{ runner.temp }}/candidate
+          merge-multiple: true
+
+      - name: Verify build provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          cd app && bun run release:contract verify-attestations
+          --version "${{ needs.check.outputs.version }}"
+          --directory "$RUNNER_TEMP/candidate"
+          --repository "$GITHUB_REPOSITORY"
+          --commit "$GITHUB_SHA"
+          --tag "$GITHUB_REF_NAME"
+
+      - name: Reverify transferred package identities
+        env:
+          RELEASE_VERSION: ${{ needs.check.outputs.version }}
+          RELEASE_APPIMAGE_ARTIFACT: ${{ runner.temp }}/candidate/${{ needs.check.outputs.appimage-name }}
+          RELEASE_APK_ARTIFACT: ${{ runner.temp }}/candidate/${{ needs.check.outputs.apk-name }}
+        run: |
+          RELEASE_ARTIFACT="$RELEASE_APPIMAGE_ARTIFACT" just release-verify-appimage
+          RELEASE_ARTIFACT="$RELEASE_APK_ARTIFACT" just release-verify-apk
+
+      - name: Assemble exact-byte acceptance bundle
+        run: >-
+          cd app && bun run release:contract assemble
+          --version "${{ needs.check.outputs.version }}"
+          --directory "$RUNNER_TEMP/candidate"
+          --repository "$GITHUB_REPOSITORY"
+          --commit "$GITHUB_SHA"
+          --tag "$GITHUB_REF_NAME"
+          --run-id "$GITHUB_RUN_ID"
+          --run-attempt "$GITHUB_RUN_ATTEMPT"
+
+      - name: Verify candidate cardinality and checksums
+        env:
+          RELEASE_VERSION: ${{ needs.check.outputs.version }}
+          RELEASE_DIRECTORY: ${{ runner.temp }}/candidate
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ github.sha }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: just release-verify-candidate
+
+      - name: Show exact-byte manual gate
+        run: cat "$RUNNER_TEMP/candidate/CANDIDATE-ACCEPTANCE.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload candidate acceptance bundle
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [check, candidate]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    environment: release-publish
+    permissions:
+      actions: read
+      attestations: read
+      contents: write
+    steps:
+      - name: Check out exact accepted tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned repository tools
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          version: 2026.8.12
+          sha256: f2092b1e67f0abc8803d3be120dd2bc5b656dd99680ba3159f710e149da10d05
+          cache: false
+
+      - name: Install frozen release-contract dependencies
+        run: cd app && bun install --frozen-lockfile
+
+      - name: Require exact protected publication environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          cd app && bun run release:contract verify-environment-protection
+          --repository "$GITHUB_REPOSITORY"
+          --environment release-publish
+
+      - name: Download only the approved candidate artifact ID
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.candidate.outputs.artifact-id }}
+          path: ${{ runner.temp }}/candidate
+          merge-multiple: true
+
+      - name: Reverify exact bytes and provenance after approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.check.outputs.version }}
+          RELEASE_DIRECTORY: ${{ runner.temp }}/candidate
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ github.sha }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          just release-verify-candidate
+          cd app
+          bun run release:contract verify-attestations \
+            --version "${{ needs.check.outputs.version }}" \
+            --directory "$RUNNER_TEMP/candidate" \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$GITHUB_SHA" \
+            --tag "$GITHUB_REF_NAME"
+
+      - name: Publish existing tag without rebuilding
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          cd app && bun run release:contract publish
+          --version "${{ needs.check.outputs.version }}"
+          --directory "$RUNNER_TEMP/candidate"
+          --repository "$GITHUB_REPOSITORY"
+          --commit "$GITHUB_SHA"
+          --tag "$GITHUB_REF_NAME"
+          --run-id "$GITHUB_RUN_ID"
+          --run-attempt "$GITHUB_RUN_ATTEMPT"

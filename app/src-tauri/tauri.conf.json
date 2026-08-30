@@ -29,6 +29,12 @@
     }
   },
   "bundle": {
-    "active": false
+    "active": true,
+    "icon": ["icons/icon.png"],
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": true
+      }
+    }
   }
 }
