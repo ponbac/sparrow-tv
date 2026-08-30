@@ -24,9 +24,10 @@ build-hosted:
     cd app && bun run build
 
 build-appimage:
+    command -v patchelf >/dev/null || { echo "patchelf is required to bundle GStreamer (Arch: sudo pacman -S --needed patchelf)" >&2; exit 1; }
     cd app && bun install --frozen-lockfile
     cd app && bun run release:contract prepare-appimage-tools
-    cd app && bun run tauri build --bundles appimage
+    cd app && NO_STRIP=1 bun run tauri build --bundles appimage
 
 build-android-debug:
     cd app && bun install --frozen-lockfile
