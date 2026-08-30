@@ -1,4 +1,5 @@
 [tools]
 bun = "1.4.0"
+github-cli = "2.98.0"
 java = "temurin-17.0.20+8"
 just = "1.58.0"
