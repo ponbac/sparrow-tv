@@ -5,12 +5,14 @@ import type {
   ChannelId,
   ChannelSummary,
   ClientError,
-  ClientResult,
   PageCursor,
   ProgrammeSummary,
-  SearchResults,
   SparrowClient,
 } from "../../client/contracts";
+import {
+  clientErrorFromQuery,
+  successfulQueryResult,
+} from "../../client/query-result";
 import {
   emptyProgrammeSearchCopy,
   type GuidePresentation,
@@ -18,7 +20,6 @@ import {
 import { formatProgrammeTime, programmeKey } from "./programme-presentation";
 import {
   collectGenerationItems,
-  firstResultError,
   hasUnexpectedGeneration,
 } from "./generated-pages";
 import {
@@ -58,21 +59,17 @@ export function SearchResultsPanel({
   readonly onSelectChannel: (id: ChannelId) => void;
 }) {
   const initialQuery = useQuery({
-    queryKey: [
-      "catalog",
-      "search",
-      "initial",
-      term,
-      revision,
-      catalogGeneration,
-    ],
+    queryKey: ["catalog", "search", "initial", term, revision],
     queryFn: ({ signal }) =>
-      client.search({
-        term,
-        channelLimit: CHANNEL_PAGE_SIZE,
-        programmeLimit: PROGRAMME_PAGE_SIZE,
-        signal,
-      }),
+      successfulQueryResult(
+        client.search({
+          term,
+          channelLimit: CHANNEL_PAGE_SIZE,
+          programmeLimit: PROGRAMME_PAGE_SIZE,
+          signal,
+        }),
+      ),
+    retry: false,
   });
   const initialResult = initialQuery.data;
   const initialValue = initialResult?.ok === true ? initialResult.value : null;
@@ -86,26 +83,28 @@ export function SearchResultsPanel({
       "channel-continuations",
       term,
       revision,
-      catalogGeneration,
     ],
     initialPageParam: nextContinuation(channelStart, null),
     enabled: false,
     queryFn: ({ pageParam, signal }) =>
-      client.searchChannels({
-        term,
-        limit: CHANNEL_PAGE_SIZE,
-        ...(pageParam === null
-          ? {}
-          : {
-              cursor: pageParam.cursor,
-              previousCursors: pageParam.previousCursors,
-            }),
-        signal,
-      }),
+      successfulQueryResult(
+        client.searchChannels({
+          term,
+          limit: CHANNEL_PAGE_SIZE,
+          ...(pageParam === null
+            ? {}
+            : {
+                cursor: pageParam.cursor,
+                previousCursors: pageParam.previousCursors,
+              }),
+          signal,
+        }),
+      ),
     getNextPageParam: (lastPage, _pages, lastPageParam) =>
       lastPage.ok
         ? nextContinuation(lastPage.value.next, lastPageParam)
         : null,
+    retry: false,
   });
   const programmeQuery = useInfiniteQuery({
     queryKey: [
@@ -114,26 +113,28 @@ export function SearchResultsPanel({
       "programme-continuations",
       term,
       revision,
-      catalogGeneration,
     ],
     initialPageParam: nextContinuation(programmeStart, null),
     enabled: false,
     queryFn: ({ pageParam, signal }) =>
-      client.searchProgrammes({
-        term,
-        limit: PROGRAMME_PAGE_SIZE,
-        ...(pageParam === null
-          ? {}
-          : {
-              cursor: pageParam.cursor,
-              previousCursors: pageParam.previousCursors,
-            }),
-        signal,
-      }),
+      successfulQueryResult(
+        client.searchProgrammes({
+          term,
+          limit: PROGRAMME_PAGE_SIZE,
+          ...(pageParam === null
+            ? {}
+            : {
+                cursor: pageParam.cursor,
+                previousCursors: pageParam.previousCursors,
+              }),
+          signal,
+        }),
+      ),
     getNextPageParam: (lastPage, _pages, lastPageParam) =>
       lastPage.ok
         ? nextContinuation(lastPage.value.next, lastPageParam)
         : null,
+    retry: false,
   });
 
   const expectedGeneration = initialValue?.generation ?? null;
@@ -146,7 +147,14 @@ export function SearchResultsPanel({
     expectedGeneration,
   );
   const generationChanged =
-    channelGenerationChanged || programmeGenerationChanged;
+    channelGenerationChanged ||
+    programmeGenerationChanged ||
+    (catalogGeneration !== null &&
+      expectedGeneration !== null &&
+      catalogGeneration !== expectedGeneration);
+  const replacingGeneration =
+    initialValue !== null &&
+    initialQuery.isFetching;
   const channels = [
     ...(initialValue?.channels.items ?? []),
     ...collectGenerationItems(
@@ -163,16 +171,18 @@ export function SearchResultsPanel({
       (page) => page.items,
     ),
   ];
-  const initialError = resultError(initialResult);
-  const channelError = firstResultError(channelQuery.data?.pages);
-  const programmeError = firstResultError(programmeQuery.data?.pages);
+  const initialError = clientErrorFromQuery(initialQuery.error);
+  const channelError = clientErrorFromQuery(channelQuery.error);
+  const programmeError = clientErrorFromQuery(programmeQuery.error);
   const hasMoreChannels =
     !generationChanged &&
+    !replacingGeneration &&
     (channelQuery.data === undefined
       ? channelStart !== null
       : channelQuery.hasNextPage === true);
   const hasMoreProgrammes =
     !generationChanged &&
+    !replacingGeneration &&
     (programmeQuery.data === undefined
       ? programmeStart !== null
       : programmeQuery.hasNextPage === true);
@@ -198,7 +208,7 @@ export function SearchResultsPanel({
           <SearchLaneError
             error={initialError}
             onRestart={onRestart}
-            retained={false}
+            retained={initialValue !== null}
           />
         </div>
       )}
@@ -363,10 +373,6 @@ function ProgrammeResult({
 
 function SearchEmpty({ children }: { readonly children: ReactNode }) {
   return <p className="search-empty">{children}</p>;
-}
-
-function resultError(result: ClientResult<SearchResults> | undefined): ClientError | null {
-  return result !== undefined && !result.ok ? result.error : null;
 }
 
 function nextContinuation(

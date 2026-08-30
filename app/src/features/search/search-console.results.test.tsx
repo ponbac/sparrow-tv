@@ -208,6 +208,43 @@ describe("SearchConsole search results", () => {
     expect(client.searchInputs).toHaveLength(2);
   });
 
+  it("retains a submitted search and disables its old cursor when publication refetch fails", async () => {
+    const firstChannels = continuingChannelPage(WORLD_CHANNEL, "channel-next");
+    let published = false;
+    const client = new FakeSparrowClient({
+      search: () =>
+        Promise.resolve(
+          published
+            ? failure({
+                _tag: "transport",
+                retryable: true,
+                message: "Safe refetch failure.",
+              })
+            : success(searchResults(firstChannels, EMPTY_PROGRAMMES)),
+        ),
+    });
+    const user = userEvent.setup();
+    const rendered = renderConsole(client, FRESH_STATUS);
+    await submitSearch(user, "news");
+    expect(await screen.findByText("World News")).toBeVisible();
+    expect(screen.getByRole("button", { name: "More Channels +" })).toBeEnabled();
+
+    published = true;
+    rendered.rerenderStatus(statusAtGeneration(8));
+
+    expect(
+      await screen.findByText(/catalog changed during pagination/),
+    ).toBeVisible();
+    expect(screen.getByText("World News")).toBeVisible();
+    expect(
+      screen.getByText(/Earlier results remain visible/),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "More Channels +" }),
+    ).not.toBeInTheDocument();
+    expect(client.searchInputs).toHaveLength(2);
+  });
+
   it("renders an explicit no-results state for both live result lanes", async () => {
     const client = new FakeSparrowClient();
     const user = userEvent.setup();

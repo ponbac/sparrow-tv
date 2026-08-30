@@ -5,10 +5,16 @@ mod error;
 mod playback;
 mod programmes;
 mod query;
+mod refresh;
 
 use std::sync::Arc;
 
-use axum::{Json, Router, routing::get};
+use axum::{
+    Json, Router,
+    http::{HeaderValue, header},
+    response::Response,
+    routing::{get, post},
+};
 use sparrow_core::{
     ChannelSummary, Page, PageRequest, ProgrammeSummary, SearchRequest, SearchResults, SearchTerm,
     SparrowCore,
@@ -90,6 +96,8 @@ pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route("/capabilities", get(capabilities))
         .route("/status", get(status))
+        .route("/refresh", post(refresh::manual))
+        .route("/events", get(refresh::events))
         .route("/groups", get(browse::groups))
         .route("/channels", get(browse::channels))
         .route("/channels/{channel_id}", get(browse::channel))
@@ -105,10 +113,16 @@ async fn capabilities() -> Json<CapabilitiesDto> {
     Json(CapabilitiesDto::hosted())
 }
 
-async fn status(
-    axum::extract::State(state): axum::extract::State<AppState>,
-) -> Json<CatalogStatusDto> {
-    Json(CatalogStatusDto::from(state.core().status()))
+async fn status(axum::extract::State(state): axum::extract::State<AppState>) -> Response {
+    no_store(Json(CatalogStatusDto::from(state.core().status())))
+}
+
+pub(crate) fn no_store(response: impl axum::response::IntoResponse) -> Response {
+    let mut response = response.into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 async fn api_not_found() -> ApiError {

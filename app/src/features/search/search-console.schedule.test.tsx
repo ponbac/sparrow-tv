@@ -1,4 +1,4 @@
-import { cleanup, screen, within } from "@testing-library/react";
+import { act, cleanup, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -11,11 +11,13 @@ import {
   WORLD_CHANNEL_PAGE,
   FakeSparrowClient,
   continuingSchedulePage,
+  deferred,
   failure,
   programmeFixture,
   programmePage,
   renderConsole,
   searchResults,
+  statusAtGeneration,
   submitSearch,
   success,
 } from "./search-console.test-support";
@@ -90,15 +92,18 @@ describe("SearchConsole selected schedule", () => {
       ),
       7,
     );
+    const nextSchedule = deferred<
+      Awaited<ReturnType<FakeSparrowClient["schedule"]>>
+    >();
     const client = new FakeSparrowClient({
       search: () =>
         Promise.resolve(
           success(searchResults(WORLD_CHANNEL_PAGE, EMPTY_PROGRAMMES)),
         ),
       schedule: (input) =>
-        Promise.resolve(
-          success(input.cursor === firstSchedule.next ? evening : firstSchedule),
-        ),
+        input.cursor === firstSchedule.next
+          ? nextSchedule.promise
+          : Promise.resolve(success(firstSchedule)),
     });
     const user = userEvent.setup();
     renderConsole(client, FRESH_STATUS);
@@ -112,12 +117,71 @@ describe("SearchConsole selected schedule", () => {
     await user.click(
       screen.getByRole("button", { name: "Later Programmes +" }),
     );
+    expect(
+      screen.getByRole("button", { name: "Opening more Programme times…" }),
+    ).toBeDisabled();
+    expect(
+      screen.queryByRole("button", { name: "Updating catalog generation…" }),
+    ).not.toBeInTheDocument();
+
+    await act(async () => {
+      nextSchedule.resolve(success(evening));
+      await nextSchedule.promise;
+    });
+
     expect(await within(schedule).findByText("Evening News")).toBeVisible();
     expect(client.scheduleInputs[1]?.cursor).toBe(firstSchedule.next);
     expect(client.scheduleInputs[1]?.afterStartsAt).toBe(
       firstSchedule.items.at(-1)?.startsAt,
     );
     expect(client.scheduleInputs[1]?.previousCursors).toEqual([]);
+  });
+
+  it("retains a schedule and disables its old cursor when publication refetch fails", async () => {
+    const firstSchedule = continuingSchedulePage(MORNING_NEWS, "schedule-next");
+    let published = false;
+    const client = new FakeSparrowClient({
+      search: () =>
+        Promise.resolve(
+          success(searchResults(WORLD_CHANNEL_PAGE, EMPTY_PROGRAMMES)),
+        ),
+      schedule: () =>
+        Promise.resolve(
+          published
+            ? failure({
+                _tag: "transport",
+                retryable: true,
+                message: "Safe schedule refetch failure.",
+              })
+            : success(firstSchedule),
+        ),
+    });
+    const user = userEvent.setup();
+    const rendered = renderConsole(client, FRESH_STATUS);
+    await submitSearch(user, "world");
+    await user.click(await screen.findByRole("button", { name: /World News/ }));
+    const schedule = screen.getByRole("complementary", {
+      name: "Programme schedule",
+    });
+    expect(await within(schedule).findByText("Morning News")).toBeVisible();
+    expect(
+      within(schedule).getByRole("button", { name: "Later Programmes +" }),
+    ).toBeEnabled();
+
+    published = true;
+    rendered.rerenderStatus(statusAtGeneration(8));
+
+    expect(
+      await within(schedule).findByText(/catalog changed during pagination/),
+    ).toBeVisible();
+    expect(within(schedule).getByText("Morning News")).toBeVisible();
+    expect(
+      within(schedule).getByText(/Earlier results remain visible/),
+    ).toBeVisible();
+    expect(
+      within(schedule).queryByRole("button", { name: "Later Programmes +" }),
+    ).not.toBeInTheDocument();
+    expect(client.scheduleInputs).toHaveLength(2);
   });
 
   it("retains a schedule after stale-cursor failure and restarts at the current generation", async () => {

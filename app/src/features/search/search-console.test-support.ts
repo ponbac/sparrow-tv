@@ -16,6 +16,7 @@ import {
   type Page,
   type PlaybackDescriptor,
   type ProgrammeSummary,
+  type RefreshReport,
   type ScheduleInput,
   type SearchInput,
   type SearchPageInput,
@@ -68,7 +69,11 @@ export const FAILED_GUIDE_STATUS = clientSchemas.status.parse({
   epg: {
     _tag: "failed",
     validatedAt: null,
-    failure: { _tag: "invalid-epg-format" },
+    failure: {
+      _tag: "invalid-epg-format",
+      source: "epg",
+      reason: "malformed-xml",
+    },
     nextAttemptAt: "2026-08-30T10:10:00Z",
   },
 });
@@ -155,6 +160,29 @@ export class FakeSparrowClient implements SparrowClient {
 
   status(): Promise<ClientResult<CatalogStatus>> {
     return Promise.resolve(success(FRESH_STATUS));
+  }
+
+  refresh(): Promise<ClientResult<RefreshReport>> {
+    return Promise.resolve(
+      success(
+        clientSchemas.refreshReport.parse({
+          trigger: "manual",
+          m3u: {
+            _tag: "not-modified",
+            validatedAt: "2026-08-30T10:00:00Z",
+          },
+          epg: {
+            _tag: "not-modified",
+            validatedAt: "2026-08-30T10:00:01Z",
+          },
+          status: FRESH_STATUS,
+        }),
+      ),
+    );
+  }
+
+  subscribe(): () => void {
+    return () => undefined;
   }
 
   listGroups(): Promise<ClientResult<Page<ChannelGroup>>> {
@@ -285,7 +313,12 @@ export function renderConsole(
     );
   const rendered = render(tree(status));
   return {
-    rerenderStatus: (nextStatus) => rendered.rerender(tree(nextStatus)),
+    rerenderStatus: (nextStatus) => {
+      rendered.rerender(tree(nextStatus));
+      queryClient
+        .invalidateQueries({ queryKey: ["catalog"], refetchType: "active" })
+        .catch(() => undefined);
+    },
   };
 }
 

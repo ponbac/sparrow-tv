@@ -8,6 +8,7 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { StrictMode } from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   clientSchemas,
@@ -25,11 +26,13 @@ import {
   type Page,
   type PlaybackDescriptor,
   type ProgrammeSummary,
+  type RefreshReport,
   type ScheduleInput,
   type SearchInput,
   type SearchPageInput,
   type SearchResults,
   type SparrowClient,
+  type SparrowEvent,
   type StartPlaybackInput,
 } from "../../client/contracts";
 import { CatalogBrowser } from "./catalog-browser";
@@ -58,6 +61,19 @@ const NEXT_GENERATION_STATUS = clientSchemas.status.parse({
   epg: { _tag: "fresh", validatedAt: "2026-08-30T11:00:01Z" },
 });
 
+const DEFAULT_REFRESH_REPORT = clientSchemas.refreshReport.parse({
+  trigger: "manual",
+  m3u: {
+    _tag: "not-modified",
+    validatedAt: "2026-08-30T10:00:00Z",
+  },
+  epg: {
+    _tag: "not-modified",
+    validatedAt: "2026-08-30T10:00:01Z",
+  },
+  status: FRESH_STATUS,
+});
+
 const STALE_STATUS = clientSchemas.status.parse({
   generation: 7,
   configuration: { configured: true, epgConfigured: true },
@@ -72,7 +88,10 @@ const STALE_STATUS = clientSchemas.status.parse({
 const UNAVAILABLE_STATUS = clientSchemas.status.parse({
   generation: null,
   configuration: { configured: true, epgConfigured: false },
-  m3u: { _tag: "unavailable", failure: { _tag: "source-read" } },
+  m3u: {
+    _tag: "unavailable",
+    failure: { _tag: "source-read", source: "m3u", reason: "interrupted" },
+  },
   epg: null,
 });
 
@@ -146,6 +165,23 @@ const SECOND_CHANNELS_PAGE = clientSchemas.channelsPage.parse({
   next: null,
 });
 
+const SECOND_CONTINUING_CHANNELS_PAGE = clientSchemas.channelsPage.parse({
+  ...SECOND_CHANNELS_PAGE,
+  next: "channels-page-three",
+});
+
+const NEXT_GENERATION_FIRST_CHANNELS_PAGE = clientSchemas.channelsPage.parse({
+  generation: 8,
+  items: [{ id: "replacement", name: "Replacement Channel", group: "News" }],
+  next: FIRST_CHANNELS_PAGE.next,
+});
+
+const NEXT_GENERATION_CHANNELS_PAGE = clientSchemas.channelsPage.parse({
+  generation: 8,
+  items: [{ id: "replacement", name: "Replacement Channel", group: "News" }],
+  next: null,
+});
+
 const EMPTY_SCHEDULE_PAGE = clientSchemas.schedulePage.parse({
   generation: 7,
   items: [],
@@ -165,6 +201,9 @@ interface FakeBehavior {
   readonly status?: (
     options: ClientRequestOptions | undefined,
   ) => Promise<ClientResult<CatalogStatus>>;
+  readonly refresh?: (
+    options: ClientRequestOptions | undefined,
+  ) => Promise<ClientResult<RefreshReport>>;
   readonly groups?: (
     input: ListGroupsInput,
   ) => Promise<ClientResult<Page<ChannelGroup>>>;
@@ -193,6 +232,8 @@ class FakeSparrowClient implements SparrowClient {
   readonly channelSearchInputs: SearchPageInput[] = [];
   readonly programmeSearchInputs: SearchPageInput[] = [];
   readonly playbackInputs: StartPlaybackInput[] = [];
+  readonly refreshInputs: (ClientRequestOptions | undefined)[] = [];
+  readonly eventListeners = new Set<(event: SparrowEvent) => void>();
 
   constructor(private readonly behavior: FakeBehavior = {}) {}
 
@@ -210,6 +251,27 @@ class FakeSparrowClient implements SparrowClient {
   ): Promise<ClientResult<CatalogStatus>> {
     this.statusInputs.push(options);
     return this.behavior.status?.(options) ?? Promise.resolve(success(FRESH_STATUS));
+  }
+
+  refresh(
+    options?: ClientRequestOptions,
+  ): Promise<ClientResult<RefreshReport>> {
+    this.refreshInputs.push(options);
+    return (
+      this.behavior.refresh?.(options) ??
+      Promise.resolve(success(DEFAULT_REFRESH_REPORT))
+    );
+  }
+
+  subscribe(listener: (event: SparrowEvent) => void): () => void {
+    this.eventListeners.add(listener);
+    return () => this.eventListeners.delete(listener);
+  }
+
+  emit(event: SparrowEvent): void {
+    for (const listener of this.eventListeners) {
+      listener(event);
+    }
   }
 
   listGroups(
@@ -463,7 +525,7 @@ describe("CatalogBrowser", () => {
         ),
     });
     const user = userEvent.setup();
-    const queryClient = renderBrowser(client);
+    renderBrowser(client);
 
     await user.click(await screen.findByRole("button", { name: /World News/ }));
     const schedule = screen.getByRole("complementary", {
@@ -473,9 +535,12 @@ describe("CatalogBrowser", () => {
 
     currentGeneration = 8;
     await act(async () => {
-      queryClient.setQueryData(
-        ["catalog", "status"],
-        success(NEXT_GENERATION_STATUS),
+      client.emit(
+        clientSchemas.sparrowEvent.parse({
+          _tag: "catalog-status-changed",
+          occurredAt: "2026-08-30T11:00:02Z",
+          status: NEXT_GENERATION_STATUS,
+        }),
       );
     });
 
@@ -625,6 +690,174 @@ describe("CatalogBrowser", () => {
     expect(
       screen.getByText(/Reload to continue from its first page/),
     ).toBeVisible();
+  });
+
+  it("retains every loaded Channel page when a publication refetch later fails", async () => {
+    let published = false;
+    let currentStatus = FRESH_STATUS;
+    const client = new FakeSparrowClient({
+      status: () => Promise.resolve(success(currentStatus)),
+      channels: (input) => {
+        if (!published) {
+          return Promise.resolve(
+            success(
+              input.cursor === FIRST_CHANNELS_PAGE.next
+                ? SECOND_CONTINUING_CHANNELS_PAGE
+                : FIRST_CHANNELS_PAGE,
+            ),
+          );
+        }
+        return Promise.resolve(
+          input.cursor === FIRST_CHANNELS_PAGE.next
+            ? failure({
+                _tag: "transport",
+                retryable: true,
+                message: "A safe catalog refetch failed.",
+              })
+            : success(NEXT_GENERATION_FIRST_CHANNELS_PAGE),
+        );
+      },
+    });
+    const user = userEvent.setup();
+    renderBrowser(client);
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Receive next 24 channels",
+      }),
+    );
+    expect(await screen.findByText("Second Channel")).toBeVisible();
+
+    published = true;
+    currentStatus = NEXT_GENERATION_STATUS;
+    await act(async () => {
+      client.emit(
+        clientSchemas.sparrowEvent.parse({
+          _tag: "catalog-published",
+          occurredAt: "2026-08-30T11:00:02Z",
+          generation: 8,
+        }),
+      );
+    });
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "The hosted desk did not answer",
+      }),
+    ).toBeVisible();
+    expect(screen.getByText("First Channel")).toBeVisible();
+    expect(screen.getByText("Second Channel")).toBeVisible();
+    expect(screen.queryByText("Replacement Channel")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Updating catalog generation…" }),
+    ).toBeDisabled();
+    const retainedBanner = screen.getByText("RECORDED SIGNAL").closest("aside");
+    expect(retainedBanner).not.toBeNull();
+    if (retainedBanner === null) {
+      throw new Error("expected a retained catalog banner");
+    }
+    expect(within(retainedBanner).getByText(/generation 7/)).toBeVisible();
+    expect(within(retainedBanner).getByText(/generation is 8/)).toBeVisible();
+    expect(
+      client.channelListInputs.filter(
+        (input) => input.cursor === FIRST_CHANNELS_PAGE.next,
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("rechecks status after a failed manual refresh flight", async () => {
+    const refresh = deferred<ClientResult<RefreshReport>>();
+    let currentStatus = FRESH_STATUS;
+    const client = new FakeSparrowClient({
+      status: () => Promise.resolve(success(currentStatus)),
+      refresh: () => refresh.promise,
+    });
+    const user = userEvent.setup();
+    renderBrowser(client);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Refresh sources" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Refresh in progress" }),
+    ).toBeDisabled();
+
+    currentStatus = NEXT_GENERATION_STATUS;
+    await act(async () => {
+      refresh.resolve(
+        failure({
+          _tag: "transport",
+          retryable: true,
+          message: "Detached request status is unknown.",
+        }),
+      );
+      await refresh.promise;
+    });
+
+    expect(
+      await screen.findByText("Refresh result was not received"),
+    ).toBeVisible();
+    await waitFor(() => expect(client.statusInputs).toHaveLength(2));
+    expect(await screen.findByText("CATALOG / 8")).toBeVisible();
+    await waitFor(() => expect(client.channelListInputs.length).toBeGreaterThan(1));
+  });
+
+  it("resynchronizes a missed publication from a refresh-completed hint", async () => {
+    let currentStatus = FRESH_STATUS;
+    const client = new FakeSparrowClient({
+      status: () => Promise.resolve(success(currentStatus)),
+      channels: () =>
+        Promise.resolve(
+          success(
+            currentStatus.generation === NEXT_GENERATION_STATUS.generation
+              ? NEXT_GENERATION_CHANNELS_PAGE
+              : CHANNELS_PAGE,
+          ),
+        ),
+    });
+    renderBrowser(client);
+    expect(await screen.findByText("World News")).toBeVisible();
+
+    currentStatus = NEXT_GENERATION_STATUS;
+    await act(async () => {
+      client.emit(
+        clientSchemas.sparrowEvent.parse({
+          _tag: "refresh-completed",
+          occurredAt: "2026-08-30T11:00:03Z",
+          source: "m3u",
+          outcome: {
+            _tag: "updated",
+            validatedAt: "2026-08-30T11:00:00Z",
+          },
+        }),
+      );
+    });
+
+    expect(await screen.findByText("Replacement Channel")).toBeVisible();
+    expect(screen.queryByText("World News")).not.toBeInTheDocument();
+    expect(client.statusInputs).toHaveLength(2);
+    expect(client.channelListInputs).toHaveLength(2);
+  });
+
+  it("owns exactly one event subscription after StrictMode replay and releases it", async () => {
+    const client = new FakeSparrowClient();
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, refetchOnWindowFocus: false },
+      },
+    });
+    const view = render(
+      <StrictMode>
+        <QueryClientProvider client={queryClient}>
+          <CatalogBrowser client={client} playbackEngine={TEST_PLAYBACK_ENGINE} />
+        </QueryClientProvider>
+      </StrictMode>,
+    );
+
+    await screen.findByText("World News");
+    expect(client.eventListeners.size).toBe(1);
+    view.unmount();
+    expect(client.eventListeners.size).toBe(0);
   });
 
   it("warns about a retained stale source without hiding usable Channels", async () => {

@@ -10,6 +10,10 @@ import type {
   SparrowClient,
 } from "../../client/contracts";
 import {
+  clientErrorFromQuery,
+  successfulQueryResult,
+} from "../../client/query-result";
+import {
   emptyScheduleCopy,
   type GuidePresentation,
 } from "./guide-presentation";
@@ -17,7 +21,6 @@ import { formatProgrammeTime, programmeKey } from "./programme-presentation";
 import {
   collectGenerationItems,
   firstGeneration,
-  firstResultError,
   hasUnexpectedGeneration,
 } from "./generated-pages";
 import {
@@ -136,22 +139,23 @@ function ActiveSchedule({
       "schedule",
       selectedChannel,
       revision,
-      catalogGeneration,
     ],
     initialPageParam: FIRST_PAGE,
     queryFn: ({ pageParam, signal }) =>
-      client.schedule({
-        id: selectedChannel,
-        limit: PAGE_SIZE,
-        ...(pageParam === null
-          ? {}
-          : {
-              cursor: pageParam.cursor,
-              afterStartsAt: pageParam.afterStartsAt,
-              previousCursors: pageParam.previousCursors,
-            }),
-        signal,
-      }),
+      successfulQueryResult(
+        client.schedule({
+          id: selectedChannel,
+          limit: PAGE_SIZE,
+          ...(pageParam === null
+            ? {}
+            : {
+                cursor: pageParam.cursor,
+                afterStartsAt: pageParam.afterStartsAt,
+                previousCursors: pageParam.previousCursors,
+              }),
+          signal,
+        }),
+      ),
     getNextPageParam: (lastPage, _pages, lastPageParam) => {
       if (!lastPage.ok || lastPage.value.next === null) {
         return null;
@@ -171,18 +175,22 @@ function ActiveSchedule({
                   ],
           };
     },
+    retry: false,
   });
   const expectedGeneration = firstGeneration(scheduleQuery.data?.pages);
-  const generationChanged = hasUnexpectedGeneration(
-    scheduleQuery.data?.pages,
-    expectedGeneration,
-  );
+  const generationChanged =
+    hasUnexpectedGeneration(scheduleQuery.data?.pages, expectedGeneration) ||
+    (catalogGeneration !== null &&
+      expectedGeneration !== null &&
+      catalogGeneration !== expectedGeneration);
   const programmes = collectGenerationItems(
     scheduleQuery.data?.pages,
     expectedGeneration,
     (page) => page.items,
   );
-  const error = firstResultError(scheduleQuery.data?.pages);
+  const replacingGeneration =
+    programmes.length > 0 && scheduleQuery.isRefetching;
+  const error = clientErrorFromQuery(scheduleQuery.error);
   const channelName =
     selectedDetails?.ok === true ? selectedDetails.value.name : "Selected Channel";
   const detailError =
@@ -246,10 +254,12 @@ function ActiveSchedule({
         <button
           className="lane-more"
           type="button"
-          disabled={scheduleQuery.isFetchingNextPage}
+          disabled={scheduleQuery.isFetchingNextPage || replacingGeneration}
           onClick={loadMore}
         >
-          {scheduleQuery.isFetchingNextPage
+          {replacingGeneration
+            ? "Updating catalog generation…"
+            : scheduleQuery.isFetchingNextPage
             ? "Opening more Programme times…"
             : "Later Programmes +"}
         </button>

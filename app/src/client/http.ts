@@ -14,15 +14,18 @@ import {
   type Page,
   type PlaybackDescriptor,
   type ProgrammeSummary,
+  type RefreshReport,
   type ScheduleInput,
   type SearchInput,
   type SearchPageInput,
   type SearchResults,
   type SparrowClient,
+  type SparrowEvent,
   type StartPlaybackInput,
 } from "./contracts";
 
 const API_ROOT = "/api/v1";
+const MAX_EVENT_CHARACTERS = 65_536;
 
 interface RuntimeParser<Value> {
   safeParse(
@@ -36,7 +39,19 @@ interface RuntimeParser<Value> {
 export interface HttpSparrowClientOptions {
   /** Fetch implementation; defaults lazily to the current browser window. */
   readonly fetch?: typeof fetch;
+  /** EventSource constructor seam; defaults lazily to the current browser window. */
+  readonly eventSource?: HttpEventSourceFactory;
 }
+
+/** The EventSource surface needed for authenticated hosted catalog events. */
+export interface HttpEventSource {
+  readonly addEventListener: (type: "message", listener: EventListener) => void;
+  readonly removeEventListener: (type: "message", listener: EventListener) => void;
+  readonly close: () => void;
+}
+
+/** Creates one reconnecting same-origin event stream. */
+export type HttpEventSourceFactory = (endpoint: string) => HttpEventSource;
 
 /**
  * Creates a same-origin HTTP adapter for the transport-neutral Sparrow client.
@@ -47,7 +62,9 @@ export function createHttpSparrowClient(
   options: HttpSparrowClientOptions = {},
 ): SparrowClient {
   const fetchImplementation = options.fetch ?? fetchFromBrowserWindow;
-  return new HttpSparrowClient(fetchImplementation);
+  const eventSourceImplementation =
+    options.eventSource ?? eventSourceFromBrowserWindow;
+  return new HttpSparrowClient(fetchImplementation, eventSourceImplementation);
 }
 
 function fetchFromBrowserWindow(
@@ -57,11 +74,20 @@ function fetchFromBrowserWindow(
   return window.fetch(input, init);
 }
 
+function eventSourceFromBrowserWindow(endpoint: string): HttpEventSource {
+  return new window.EventSource(endpoint, { withCredentials: true });
+}
+
 class HttpSparrowClient implements SparrowClient {
   readonly #fetch: typeof fetch;
+  readonly #eventSource: HttpEventSourceFactory;
 
-  constructor(fetchImplementation: typeof fetch) {
+  constructor(
+    fetchImplementation: typeof fetch,
+    eventSourceImplementation: HttpEventSourceFactory,
+  ) {
     this.#fetch = fetchImplementation;
+    this.#eventSource = eventSourceImplementation;
   }
 
   /** Reads immutable deployment capabilities. */
@@ -84,6 +110,63 @@ class HttpSparrowClient implements SparrowClient {
       clientSchemas.status,
       options.signal,
     );
+  }
+
+  /** Requests one coalesced manual refresh of every configured Source. */
+  refresh(
+    options: ClientRequestOptions = {},
+  ): Promise<ClientResult<RefreshReport>> {
+    return this.#request(
+      `${API_ROOT}/refresh`,
+      clientSchemas.refreshReport,
+      options.signal,
+      "POST",
+      { "X-Sparrow-Request": "refresh" },
+    );
+  }
+
+  /** Subscribes to strict hosted catalog events; native EventSource owns reconnection. */
+  subscribe(listener: (event: SparrowEvent) => void): () => void {
+    let source: HttpEventSource;
+    try {
+      source = this.#eventSource(`${API_ROOT}/events`);
+    } catch {
+      return () => undefined;
+    }
+
+    let active = true;
+    const receive: EventListener = (event) => {
+      if (!active || !(event instanceof MessageEvent) || typeof event.data !== "string") {
+        return;
+      }
+      const parsedJson = parseEventJson(event.data);
+      if (parsedJson === undefined) {
+        return;
+      }
+      const parsed = clientSchemas.sparrowEvent.safeParse(parsedJson);
+      if (parsed.success) {
+        listener(parsed.data);
+      }
+    };
+    try {
+      source.addEventListener("message", receive);
+    } catch {
+      closeEventSource(source);
+      return () => undefined;
+    }
+
+    return () => {
+      if (!active) {
+        return;
+      }
+      active = false;
+      try {
+        source.removeEventListener("message", receive);
+      } catch {
+        // The stream is still closed below; cleanup remains idempotent.
+      }
+      closeEventSource(source);
+    };
   }
 
   /** Reads one generation-bound page of channel groups. */
@@ -228,15 +311,17 @@ class HttpSparrowClient implements SparrowClient {
     endpoint: string,
     successParser: RuntimeParser<Value>,
     signal: AbortSignal | undefined,
+    method: "GET" | "POST" = "GET",
+    requestHeaders: Readonly<Record<string, string>> = {},
   ): Promise<ClientResult<Value>> {
     let response: Response;
     let payload: unknown;
 
     try {
       response = await this.#fetch(endpoint, {
-        method: "GET",
+        method,
         credentials: "same-origin",
-        headers: { accept: "application/json" },
+        headers: { accept: "application/json", ...requestHeaders },
         signal,
       });
     } catch (error: unknown) {
@@ -270,6 +355,26 @@ class HttpSparrowClient implements SparrowClient {
     }
 
     return invalidProtocolResponse(response.status);
+  }
+}
+
+function parseEventJson(data: string): unknown | undefined {
+  if (data.length > MAX_EVENT_CHARACTERS) {
+    return undefined;
+  }
+  try {
+    const parsed: unknown = JSON.parse(data);
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+function closeEventSource(source: HttpEventSource): void {
+  try {
+    source.close();
+  } catch {
+    // A failed adapter cleanup must never expose transport diagnostics.
   }
 }
 
