@@ -355,6 +355,16 @@ export interface StopPlaybackInput extends ClientRequestOptions {
   readonly sessionId: PlaybackSessionId;
 }
 
+/** Input for creating one installed Playback Session around a Channel intent. */
+export interface CreatePlaybackSessionInput {
+  readonly id: ChannelId;
+}
+
+/** Input for reading the current transport owned by one installed session. */
+export interface ReadInstalledPlaybackInput extends ClientRequestOptions {
+  readonly streamHandle: NativeStreamHandle;
+}
+
 /** Transient source locations accepted only by the installed configuration command. */
 export interface SourceConfigurationInput extends ClientRequestOptions {
   readonly m3uLocation: string;
@@ -371,6 +381,12 @@ export interface HostedPlaybackDescriptor {
 export interface NativePlaybackDescriptor {
   readonly _tag: "tauri-native-stream";
   readonly sessionId: PlaybackSessionId;
+  readonly streamHandle: NativeStreamHandle;
+}
+
+/** Session-scoped installed transport projected without its private session identifier. */
+export interface InstalledPlaybackTransport {
+  readonly _tag: "tauri-native-stream";
   readonly streamHandle: NativeStreamHandle;
 }
 
@@ -505,6 +521,31 @@ export interface SparrowClient {
   ): Promise<ClientResult<PlaybackDescriptor>>;
 }
 
+/**
+ * Session-scoped installed playback capability. The opaque session identifier
+ * remains inside this resource while transports may be suspended and reopened.
+ */
+export interface InstalledPlaybackSession {
+  /** Opens this session once, pinning its private Playback Source even on a retryable failure. */
+  start(
+    options?: ClientRequestOptions,
+  ): Promise<ClientResult<InstalledPlaybackTransport>>;
+
+  /** Opens a fresh transport at the live edge for the already-pinned source. */
+  reopen(
+    options?: ClientRequestOptions,
+  ): Promise<ClientResult<InstalledPlaybackTransport>>;
+
+  /** Pulls at most 64 KiB from the exact current native stream handle. */
+  read(input: ReadInstalledPlaybackInput): Promise<ClientResult<ArrayBuffer>>;
+
+  /** Idempotently releases transport work while retaining the pinned session. */
+  suspend(options?: ClientRequestOptions): Promise<ClientResult<void>>;
+
+  /** Idempotently releases the transport and final session ownership. */
+  stop(options?: ClientRequestOptions): Promise<ClientResult<void>>;
+}
+
 /** Installed client extension for atomically replacing on-device source configuration. */
 export interface InstalledSparrowClient extends SparrowClient {
   /**
@@ -514,6 +555,11 @@ export interface InstalledSparrowClient extends SparrowClient {
   replaceSourceConfiguration(
     input: SourceConfigurationInput,
   ): Promise<ClientResult<CatalogStatus>>;
+
+  /** Creates a client-owned resource for one pinned installed playback intent. */
+  createPlaybackSession(
+    input: CreatePlaybackSessionInput,
+  ): InstalledPlaybackSession;
 
   /** Pulls at most 64 KiB from the exact active native stream. */
   readPlayback(input: ReadPlaybackInput): Promise<ClientResult<ArrayBuffer>>;

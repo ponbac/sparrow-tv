@@ -281,6 +281,20 @@ impl InstalledRuntime {
         self.playback.read(session_id, stream_handle).await
     }
 
+    pub(crate) async fn suspend_playback(
+        &self,
+        session_id: PlaybackSessionId,
+    ) -> Result<(), PlaybackManagerError> {
+        self.playback.suspend(session_id).await
+    }
+
+    pub(crate) async fn reopen_playback(
+        &self,
+        session_id: PlaybackSessionId,
+    ) -> Result<StartedPlayback, PlaybackManagerError> {
+        self.playback.reopen(session_id).await
+    }
+
     pub(crate) async fn stop_playback(
         &self,
         session_id: PlaybackSessionId,

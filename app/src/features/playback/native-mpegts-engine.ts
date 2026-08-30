@@ -1,12 +1,13 @@
 import mpegts from "mpegts.js";
 import type {
-  NativePlaybackDescriptor,
+  InstalledPlaybackTransport,
 } from "../../client/contracts";
 import type {
   HostedPlaybackFailure,
   HostedPlaybackHandle,
   MpegtsRuntime,
 } from "./mpegts-engine";
+import { clientPlaybackFailure } from "./playback-failure";
 import {
   createNativeMpegtsLoader,
   NATIVE_PLAYBACK_SENTINEL,
@@ -16,11 +17,15 @@ import {
 
 /** Inputs accepted by the installed MPEG-TS adapter. */
 export interface NativePlaybackRequest {
-  readonly client: NativePlaybackClient;
-  readonly descriptor: NativePlaybackDescriptor;
+  readonly session: NativePlaybackClient;
+  readonly descriptor: InstalledPlaybackTransport;
   readonly video: HTMLVideoElement;
-  readonly onFailure: (failure: HostedPlaybackFailure) => void;
+  readonly onFailure: (
+    failure: HostedPlaybackFailure,
+    retryable: boolean,
+  ) => void;
   readonly onAutoplayBlocked: () => void;
+  readonly onPlaying: () => void;
 }
 
 /** Narrow engine seam used by the installed player and deterministic UI tests. */
@@ -40,14 +45,25 @@ export function createNativeMpegtsPlaybackEngine(
 ): NativePlaybackEngine {
   return {
     start(request) {
-      const releaseSession = createSessionRelease(request);
       if (!runtime.getFeatureList().mseLivePlayback) {
-        void releaseSession();
         return "browser-unsupported";
       }
 
       let active = true;
       let player: ReturnType<MpegtsRuntime["createPlayer"]> | null = null;
+      let readFailure: {
+        readonly failure: HostedPlaybackFailure;
+        readonly retryable: boolean;
+      } | null = null;
+      const trackedSession: NativePlaybackClient = {
+        read: async (input) => {
+          const result = await request.session.read(input);
+          if (!result.ok && result.error._tag !== "cancelled") {
+            readFailure = clientPlaybackFailure(result.error);
+          }
+          return result;
+        },
+      };
       const stop = () => {
         if (!active) {
           return;
@@ -65,28 +81,32 @@ export function createNativeMpegtsPlaybackEngine(
           safely(() => current.detachMediaElement());
           safely(() => current.destroy());
         }
-        void releaseSession();
+        request.video.removeEventListener("playing", request.onPlaying);
       };
       const onError = (type: unknown) => {
         if (!active) {
           return;
         }
-        const failure: HostedPlaybackFailure =
+        const classified =
           type === runtime.ErrorTypes.MEDIA_ERROR
-            ? "media-unsupported"
-            : "stream-interrupted";
+            ? { failure: "media-unsupported" as const, retryable: false }
+            : (readFailure ?? {
+                failure: "stream-interrupted" as const,
+                retryable: true,
+              });
         stop();
-        request.onFailure(failure);
+        request.onFailure(classified.failure, classified.retryable);
       };
       const onLoadingComplete = () => {
         if (!active) {
           return;
         }
         stop();
-        request.onFailure("stream-interrupted");
+        request.onFailure("stream-interrupted", true);
       };
 
       try {
+        request.video.addEventListener("playing", request.onPlaying);
         player = runtime.createPlayer(
           {
             type: "mpegts",
@@ -103,10 +123,9 @@ export function createNativeMpegtsPlaybackEngine(
             autoCleanupSourceBuffer: true,
             enableWorker: false,
             customLoader: createNativeMpegtsLoader(
-              request.client,
+              trackedSession,
               request.descriptor,
               runtime,
-              releaseSession,
             ),
           },
         );
@@ -125,7 +144,7 @@ export function createNativeMpegtsPlaybackEngine(
               return;
             }
             stop();
-            request.onFailure("media-unsupported");
+            request.onFailure("media-unsupported", false);
           });
         }
       } catch {
@@ -138,25 +157,8 @@ export function createNativeMpegtsPlaybackEngine(
   };
 }
 
-/** Shared production instance; session ownership stays inside each start call. */
+/** Shared production instance; the Playback Session runner owns final cleanup. */
 export const nativeMpegtsPlaybackEngine = createNativeMpegtsPlaybackEngine();
-
-function createSessionRelease({
-  client,
-  descriptor,
-}: Pick<NativePlaybackRequest, "client" | "descriptor">): () => Promise<void> {
-  let flight: Promise<void> | null = null;
-  return () => {
-    if (flight !== null) {
-      return flight;
-    }
-    flight = client
-      .stopPlayback({ sessionId: descriptor.sessionId })
-      .then(() => undefined)
-      .catch(() => undefined);
-    return flight;
-  };
-}
 
 function isAutoplayRejection(error: unknown): boolean {
   return error instanceof Error && error.name === "NotAllowedError";

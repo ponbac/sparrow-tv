@@ -1,31 +1,31 @@
-import { useEffect, useRef, useState } from "react";
+import { Pause, Play, RotateCcw, ScrollText } from "lucide-react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import type {
   ChannelId,
   InstalledSparrowClient,
 } from "../../client/contracts";
-import { clientPlaybackFailure } from "./playback-failure";
-import type { HostedPlaybackHandle } from "./mpegts-engine";
+import { createInstalledPlaybackRunner } from "./installed-playback-runner";
+import { installedPlayerState } from "./installed-playback-state";
 import {
   nativeMpegtsPlaybackEngine,
   type NativePlaybackEngine,
 } from "./native-mpegts-engine";
-import {
-  isRetryable,
-  type PlayerState,
-} from "./playback-presentation";
 import { PlaybackSurface } from "./playback-surface";
 
 export interface InstalledPlayerProps {
   readonly channel: { readonly id: ChannelId; readonly name: string };
-  readonly client: Pick<
-    InstalledSparrowClient,
-    "startPlayback" | "readPlayback" | "stopPlayback"
-  >;
+  readonly client: Pick<InstalledSparrowClient, "createPlaybackSession">;
   readonly onStop: () => void;
   readonly engine?: NativePlaybackEngine;
 }
 
-/** Plays one Channel through an opaque, cancellable Rust-owned stream. */
+/** Plays one Channel through an owned, recoverable, opaque native session. */
 export function InstalledPlayer({
   channel,
   client,
@@ -33,97 +33,138 @@ export function InstalledPlayer({
   engine = nativeMpegtsPlaybackEngine,
 }: InstalledPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [attempt, setAttempt] = useState(0);
-  const [state, setState] = useState<PlayerState>({ _tag: "starting" });
+  const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  const runner = useMemo(
+    () =>
+      createInstalledPlaybackRunner({
+        client,
+        engine,
+        initiallyVisible: document.visibilityState !== "hidden",
+      }),
+    [client, engine],
+  );
+  const state = useSyncExternalStore(
+    runner.subscribe,
+    runner.getSnapshot,
+    runner.getSnapshot,
+  );
 
   useEffect(() => {
     const video = videoRef.current;
     if (video === null) {
       return;
     }
-
-    const controller = new AbortController();
-    let active = true;
-    let handle: HostedPlaybackHandle | null = null;
-    setState({ _tag: "starting" });
-
-    void client
-      .startPlayback({ id: channel.id, signal: controller.signal })
-      .then((result) => {
-        if (!active) {
-          return;
-        }
-        if (!result.ok) {
-          setState({
-            _tag: "failed",
-            ...clientPlaybackFailure(result.error),
-          });
-          return;
-        }
-        if (result.value._tag !== "tauri-native-stream") {
-          setState({
-            _tag: "failed",
-            failure: "source-invalid",
-            retryable: false,
-          });
-          return;
-        }
-
-        const started = engine.start({
-          client,
-          descriptor: result.value,
-          video,
-          onAutoplayBlocked: () => {
-            if (active) {
-              setState({ _tag: "autoplay-blocked" });
-            }
-          },
-          onFailure: (failure) => {
-            if (active) {
-              setState({
-                _tag: "failed",
-                failure,
-                retryable: isRetryable(failure),
-              });
-            }
-          },
-        });
-        if (typeof started === "string") {
-          setState({
-            _tag: "failed",
-            failure: started,
-            retryable: isRetryable(started),
-          });
-          return;
-        }
-        handle = started;
-      });
-
+    void runner.select({ id: channel.id, name: channel.name }, video);
     return () => {
-      active = false;
-      controller.abort();
-      handle?.stop();
+      void runner.stop();
     };
-  }, [attempt, channel.id, client, engine]);
+  }, [channel.id, channel.name, runner]);
+
+  useEffect(() => {
+    const updateVisibility = () => {
+      void runner.setVisible(document.visibilityState !== "hidden");
+    };
+    document.addEventListener("visibilitychange", updateVisibility);
+    updateVisibility();
+    return () => document.removeEventListener("visibilitychange", updateVisibility);
+  }, [runner]);
+
+  useEffect(() => {
+    const updateFullscreen = () => {
+      runner.setFullscreen(document.fullscreenElement === videoRef.current);
+    };
+    document.addEventListener("fullscreenchange", updateFullscreen);
+    return () => document.removeEventListener("fullscreenchange", updateFullscreen);
+  }, [runner]);
+
+  const phase = state.phase;
+  const overlayAction =
+    phase._tag === "paused"
+      ? { label: "Resume live signal", onAction: () => void runner.resume() }
+      : phase._tag === "failed" && phase.canRestart
+        ? { label: "Restart signal", onAction: () => void runner.restart() }
+        : undefined;
+  const canPause =
+    phase._tag === "starting" ||
+    phase._tag === "playing" ||
+    phase._tag === "autoplay-blocked" ||
+    phase._tag === "recovering";
+  const canRestart =
+    phase._tag !== "idle" &&
+    phase._tag !== "stopping" &&
+    !(phase._tag === "failed" && !phase.canRestart);
+
+  const copyDiagnostics = () => {
+    const clipboard = navigator.clipboard;
+    if (clipboard === undefined) {
+      setCopyStatus("Diagnostics copy unavailable");
+      return;
+    }
+    void runner
+      .copyDiagnostics({
+        writeText: (text) => clipboard.writeText(text),
+      })
+      .then(
+        () => setCopyStatus("Diagnostics copied"),
+        () => setCopyStatus("Diagnostics copy unavailable"),
+      );
+  };
+  const stop = () => {
+    void runner.stop().then((confirmed) => {
+      if (confirmed) {
+        onStop();
+      }
+    });
+  };
 
   return (
     <PlaybackSurface
       channel={channel}
-      state={state}
-      attempt={attempt}
+      state={installedPlayerState(state)}
+      videoKey={channel.id}
       videoRef={videoRef}
       transportLabel="native receiver"
       privacyCopy="Provider details remain inside the installed receiver."
-      onPlaying={() => setState({ _tag: "playing" })}
-      onRetry={() => setAttempt((current) => current + 1)}
-      onStop={onStop}
-      onAutoplayFailure={() =>
-        setState({
-          _tag: "failed",
-          failure: "media-unsupported",
-          retryable: false,
-        })
+      onPlaying={() => undefined}
+      {...(overlayAction === undefined ? {} : { overlayAction })}
+      additionalControls={
+        <>
+          {canPause ? (
+            <button type="button" onClick={() => void runner.pause()}>
+              <Pause aria-hidden="true" />
+              Pause
+            </button>
+          ) : phase._tag === "paused" ? (
+            <button type="button" onClick={() => void runner.resume()}>
+              <Play aria-hidden="true" />
+              Resume
+            </button>
+          ) : null}
+          {canRestart ? (
+            <button type="button" onClick={() => void runner.restart()}>
+              <RotateCcw aria-hidden="true" />
+              Restart
+            </button>
+          ) : null}
+          <button type="button" onClick={copyDiagnostics}>
+            <ScrollText aria-hidden="true" />
+            Copy diagnostics
+          </button>
+          {copyStatus === null ? null : (
+            <span className="hosted-player__copy-status" role="status">
+              {copyStatus}
+            </span>
+          )}
+        </>
       }
+      volume={state.controls.volume}
+      muted={state.controls.muted}
+      fullscreen={state.controls.fullscreen}
+      onVolumeChange={(volume) => runner.setVolume(volume)}
+      onToggleMuted={() => runner.toggleMuted()}
+      onRequestFullscreen={() => void runner.requestFullscreen()}
+      onStop={stop}
+      onAutoplayFailure={() => void runner.reportAutoplayFailure()}
     />
   );
 }

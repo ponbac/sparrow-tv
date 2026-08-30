@@ -672,6 +672,198 @@ describe("installed Tauri Sparrow client", () => {
     );
   });
 
+  it("owns suspend, reopen, read, and exact-once stop inside one session resource", async () => {
+    const chunk = Uint8Array.from([0x47, 0x40, 0x01]).buffer;
+    let reopenSequence = 1;
+    const ipc = new FakeNativeIpc((command, args) => {
+      switch (command) {
+        case NATIVE_COMMANDS.startPlayback:
+          return Promise.resolve({
+            _tag: "tauri-native-stream",
+            sessionId: requirePlaybackSessionId(args),
+            streamHandle: `stream1_${"1".repeat(16)}`,
+          });
+        case NATIVE_COMMANDS.reopenPlayback:
+          reopenSequence += 1;
+          return Promise.resolve({
+            _tag: "tauri-native-stream",
+            sessionId: requirePlaybackSessionId(args),
+            streamHandle: `stream1_${String(reopenSequence).repeat(16)}`,
+          });
+        case NATIVE_COMMANDS.readPlayback:
+          return Promise.resolve(chunk);
+        case NATIVE_COMMANDS.suspendPlayback:
+        case NATIVE_COMMANDS.stopPlayback:
+          return Promise.resolve(null);
+        default:
+          return Promise.reject(new Error("unexpected fixture command"));
+      }
+    });
+    const session = createNativeSparrowClient({ ipc }).createPlaybackSession({
+      id: CHANNEL.id,
+    });
+
+    const started = await session.start();
+    if (!started.ok) {
+      throw new Error("expected the session to start");
+    }
+    expect(started.value).toEqual({
+      _tag: "tauri-native-stream",
+      streamHandle: `stream1_${"1".repeat(16)}`,
+    });
+    expect(JSON.stringify(started.value)).not.toContain("play1_");
+    await expect(session.suspend()).resolves.toEqual({
+      ok: true,
+      value: undefined,
+    });
+    const reopened = await session.reopen();
+    if (!reopened.ok) {
+      throw new Error("expected the session to reopen");
+    }
+    expect(reopened.value.streamHandle).not.toBe(started.value.streamHandle);
+    await expect(
+      session.read({ streamHandle: reopened.value.streamHandle }),
+    ).resolves.toEqual({ ok: true, value: chunk });
+    const firstStop = session.stop();
+    const secondStop = session.stop();
+    await expect(firstStop).resolves.toEqual({ ok: true, value: undefined });
+    await expect(secondStop).resolves.toEqual({ ok: true, value: undefined });
+
+    const startInvoke = requireFirst(ipc.invokes);
+    const sessionId = requirePlaybackSessionId(startInvoke.args);
+    expect(ipc.invokes).toEqual([
+      {
+        command: NATIVE_COMMANDS.startPlayback,
+        args: { input: { id: CHANNEL.id, sessionId } },
+      },
+      {
+        command: NATIVE_COMMANDS.suspendPlayback,
+        args: { input: { sessionId } },
+      },
+      {
+        command: NATIVE_COMMANDS.reopenPlayback,
+        args: { input: { sessionId } },
+      },
+      {
+        command: NATIVE_COMMANDS.readPlayback,
+        args: {
+          input: {
+            sessionId,
+            streamHandle: reopened.value.streamHandle,
+          },
+        },
+      },
+      {
+        command: NATIVE_COMMANDS.stopPlayback,
+        args: { input: { sessionId } },
+      },
+    ]);
+  });
+
+  it("reopens the same pinned session after the initial open returns a safe failure", async () => {
+    const ipc = new FakeNativeIpc((command, args) => {
+      switch (command) {
+        case NATIVE_COMMANDS.startPlayback:
+          return Promise.reject({
+            _tag: "playback-failed",
+            reason: "unavailable",
+            retryable: true,
+          });
+        case NATIVE_COMMANDS.reopenPlayback:
+          return Promise.resolve({
+            _tag: "tauri-native-stream",
+            sessionId: requirePlaybackSessionId(args),
+            streamHandle: `stream1_${"4".repeat(16)}`,
+          });
+        default:
+          return Promise.reject(new Error("unexpected fixture command"));
+      }
+    });
+    const session = createNativeSparrowClient({ ipc }).createPlaybackSession({
+      id: CHANNEL.id,
+    });
+
+    await expect(session.start()).resolves.toEqual({
+      ok: false,
+      error: {
+        _tag: "playback-failed",
+        reason: "unavailable",
+        retryable: true,
+      },
+    });
+    await expect(session.reopen()).resolves.toMatchObject({
+      ok: true,
+      value: { _tag: "tauri-native-stream" },
+    });
+    const sessionIds = ipc.invokes.map(({ args }) =>
+      requirePlaybackSessionId(args),
+    );
+    expect(new Set(sessionIds).size).toBe(1);
+    expect(ipc.invokes.map(({ command }) => command)).toEqual([
+      NATIVE_COMMANDS.startPlayback,
+      NATIVE_COMMANDS.reopenPlayback,
+    ]);
+  });
+
+  it("waits for a cancelled initial open, suspends its late handle, and never final-stops implicitly", async () => {
+    const startFlight = deferred<unknown>();
+    const ipc = new FakeNativeIpc((command, args) => {
+      switch (command) {
+        case NATIVE_COMMANDS.startPlayback:
+          return startFlight.promise;
+        case NATIVE_COMMANDS.reopenPlayback:
+          return Promise.resolve({
+            _tag: "tauri-native-stream",
+            sessionId: requirePlaybackSessionId(args),
+            streamHandle: `stream1_${"6".repeat(16)}`,
+          });
+        case NATIVE_COMMANDS.suspendPlayback:
+        case NATIVE_COMMANDS.stopPlayback:
+          return Promise.resolve(null);
+        default:
+          return Promise.reject(new Error("unexpected fixture command"));
+      }
+    });
+    const session = createNativeSparrowClient({ ipc }).createPlaybackSession({
+      id: CHANNEL.id,
+    });
+    const controller = new AbortController();
+    const start = session.start({ signal: controller.signal });
+    const sessionId = requirePlaybackSessionId(requireFirst(ipc.invokes).args);
+    controller.abort();
+    await expect(start).resolves.toEqual({
+      ok: false,
+      error: { _tag: "cancelled" },
+    });
+
+    const reopen = session.reopen();
+    await Promise.resolve();
+    expect(ipc.invokes.map(({ command }) => command)).toEqual([
+      NATIVE_COMMANDS.startPlayback,
+    ]);
+    startFlight.resolve({
+      _tag: "tauri-native-stream",
+      sessionId,
+      streamHandle: `stream1_${"5".repeat(16)}`,
+    });
+    await startFlight.promise;
+    await reopen;
+    expect(ipc.invokes.map(({ command }) => command)).toEqual([
+      NATIVE_COMMANDS.startPlayback,
+      NATIVE_COMMANDS.suspendPlayback,
+      NATIVE_COMMANDS.reopenPlayback,
+    ]);
+    expect(
+      ipc.invokes.filter(({ command }) => command === NATIVE_COMMANDS.stopPlayback),
+    ).toHaveLength(0);
+
+    await session.stop();
+    await session.stop();
+    expect(
+      ipc.invokes.filter(({ command }) => command === NATIVE_COMMANDS.stopPlayback),
+    ).toHaveLength(1);
+  });
+
   it("delivers strict ordered Channel events and unsubscribes idempotently", async () => {
     const subscription = deferred<unknown>();
     const ipc = new FakeNativeIpc((command) =>

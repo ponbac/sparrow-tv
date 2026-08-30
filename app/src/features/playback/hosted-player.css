@@ -171,6 +171,31 @@
   background: var(--paper);
 }
 
+:where(.hosted-player) .hosted-player__volume {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: rgba(243, 237, 223, 0.78);
+  font-family: "JetBrains Mono Variable", monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+:where(.hosted-player) .hosted-player__volume input {
+  width: clamp(74px, 9vw, 118px);
+  accent-color: var(--acid);
+}
+
+:where(.hosted-player) .hosted-player__copy-status {
+  color: var(--acid);
+  font-family: "JetBrains Mono Variable", monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 :where(.hosted-player) .hosted-player__controls p {
   margin: 0 0 0 auto;
   color: rgba(243, 237, 223, 0.58);

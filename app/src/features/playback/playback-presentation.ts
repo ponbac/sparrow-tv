@@ -1,16 +1,28 @@
 import type { HostedPlaybackFailure } from "./mpegts-engine";
 
+/** Safe failure vocabulary renderable by the shared playback chrome. */
+export type PlaybackFailure = HostedPlaybackFailure | "cleanup-unconfirmed";
+
 /** User-visible state shared by hosted and installed live playback transports. */
 export type PlayerState =
   | { readonly _tag: "starting" }
   | { readonly _tag: "playing" }
   | { readonly _tag: "autoplay-blocked" }
+  | { readonly _tag: "suspending" }
+  | { readonly _tag: "paused" }
+  | {
+      readonly _tag: "recovering";
+      readonly attempt: number;
+      readonly failure: HostedPlaybackFailure;
+    }
+  | { readonly _tag: "stopping" }
   | {
       readonly _tag: "failed";
-      readonly failure: HostedPlaybackFailure;
+      readonly failure: PlaybackFailure;
       readonly retryable: boolean;
     };
 
+/** Produces safe status copy for every closed player state. */
 export function playerPresentation(state: PlayerState): {
   readonly status: string;
   readonly title: string;
@@ -35,12 +47,37 @@ export function playerPresentation(state: PlayerState): {
         title: "The signal is ready",
         detail: "Your browser needs one more gesture before playing sound.",
       };
+    case "suspending":
+      return {
+        status: "RELEASING",
+        title: "Releasing the live signal",
+        detail: "Sparrow is confirming that transport work has stopped.",
+      };
+    case "paused":
+      return {
+        status: "PAUSED",
+        title: "Live playback is paused",
+        detail: "The provider request is released. Resume to return at the live edge.",
+      };
+    case "recovering":
+      return {
+        status: "RECONNECTING",
+        title: `Recovery attempt ${state.attempt}`,
+        detail: "The prior request is released before Sparrow reconnects.",
+      };
+    case "stopping":
+      return {
+        status: "STOPPING",
+        title: "Closing the Playback Session",
+        detail: "Sparrow is confirming final resource cleanup.",
+      };
     case "failed":
       return failurePresentation(state.failure, state.retryable);
   }
 }
 
-export function isRetryable(failure: HostedPlaybackFailure): boolean {
+/** Returns whether a common failure may be retried by its owning policy. */
+export function isRetryable(failure: PlaybackFailure): boolean {
   switch (failure) {
     case "authentication-required":
     case "source-unavailable":
@@ -52,11 +89,13 @@ export function isRetryable(failure: HostedPlaybackFailure): boolean {
     case "source-invalid":
     case "media-unsupported":
     case "browser-unsupported":
+    case "cleanup-unconfirmed":
       return false;
   }
 }
 
-export function retryLabel(failure: HostedPlaybackFailure): string {
+/** Returns the hosted manual-retry label for a safe playback failure. */
+export function retryLabel(failure: PlaybackFailure): string {
   switch (failure) {
     case "authentication-required":
       return "Try after authentication";
@@ -70,12 +109,13 @@ export function retryLabel(failure: HostedPlaybackFailure): string {
     case "source-invalid":
     case "media-unsupported":
     case "browser-unsupported":
+    case "cleanup-unconfirmed":
       return "";
   }
 }
 
 function failurePresentation(
-  failure: HostedPlaybackFailure,
+  failure: PlaybackFailure,
   retryable: boolean,
 ): {
   readonly status: string;
@@ -138,6 +178,12 @@ function failurePresentation(
         status: "PLAYER MISSING",
         title: "This browser cannot play MPEG-TS",
         detail: "Open Sparrow in a browser with Media Source live playback support.",
+      };
+    case "cleanup-unconfirmed":
+      return {
+        status: "CLEANUP NEEDED",
+        title: "Playback cleanup was not confirmed",
+        detail: "Sparrow will not open another request until the installed receiver confirms cleanup.",
       };
   }
 }

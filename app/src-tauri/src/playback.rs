@@ -23,6 +23,7 @@ use tokio::{
 const COMMAND_CAPACITY: usize = 16;
 const READ_CAPACITY: usize = 16;
 const MAX_STOP_TOMBSTONES: usize = 64;
+const MAX_SUSPEND_INTENTS: usize = 64;
 const MAX_NATIVE_PULL_BYTES: usize = 64 * 1024;
 const SESSION_ID_PREFIX: &str = "play1_";
 const SESSION_ID_NONCE_HEX_BYTES: usize = 32;
@@ -32,6 +33,8 @@ const STREAM_HANDLE_HEX_BYTES: usize = 16;
 
 type AccessOpenFuture =
     Pin<Box<dyn Future<Output = Result<PlaybackByteStream, PlaybackAccessError>> + Send + 'static>>;
+type DescriptorReply = oneshot::Sender<Result<StartedPlayback, PlaybackManagerError>>;
+type UnitReply = oneshot::Sender<Result<(), PlaybackManagerError>>;
 
 trait NativePlaybackAccess: Send + Sync + 'static {
     fn open(&self, source: Arc<ResolvedPlaybackSource>) -> AccessOpenFuture;
@@ -48,7 +51,7 @@ impl NativePlaybackAccess for HttpPlaybackAccess {
     }
 }
 
-/// A client-created identifier that correlates reordered start and stop invokes.
+/// A client-created identifier that correlates reordered playback invokes.
 ///
 /// It is deliberately opaque in diagnostics and cannot be serialized from the
 /// native playback layer.
@@ -85,7 +88,7 @@ impl Debug for PlaybackSessionId {
     }
 }
 
-/// A Rust-generated handle for one native provider stream.
+/// A Rust-generated handle for exactly one native provider stream.
 #[derive(Clone, Eq, Hash, PartialEq)]
 pub(crate) struct NativeStreamHandle(String);
 
@@ -224,6 +227,34 @@ impl PlaybackManager {
             .map_err(|_| PlaybackManagerError::Unavailable)?
     }
 
+    pub(crate) async fn suspend(
+        &self,
+        session_id: PlaybackSessionId,
+    ) -> Result<(), PlaybackManagerError> {
+        let (reply, response) = oneshot::channel();
+        self.controls
+            .send(ControlCommand::Suspend { session_id, reply })
+            .await
+            .map_err(|_| PlaybackManagerError::Unavailable)?;
+        response
+            .await
+            .map_err(|_| PlaybackManagerError::Unavailable)?
+    }
+
+    pub(crate) async fn reopen(
+        &self,
+        session_id: PlaybackSessionId,
+    ) -> Result<StartedPlayback, PlaybackManagerError> {
+        let (reply, response) = oneshot::channel();
+        self.controls
+            .send(ControlCommand::Reopen { session_id, reply })
+            .await
+            .map_err(|_| PlaybackManagerError::Unavailable)?;
+        response
+            .await
+            .map_err(|_| PlaybackManagerError::Unavailable)?
+    }
+
     pub(crate) async fn stop(
         &self,
         session_id: PlaybackSessionId,
@@ -249,11 +280,19 @@ enum ControlCommand {
     Start {
         session_id: PlaybackSessionId,
         channel_id: ChannelId,
-        reply: oneshot::Sender<Result<StartedPlayback, PlaybackManagerError>>,
+        reply: DescriptorReply,
+    },
+    Suspend {
+        session_id: PlaybackSessionId,
+        reply: UnitReply,
+    },
+    Reopen {
+        session_id: PlaybackSessionId,
+        reply: DescriptorReply,
     },
     Stop {
         session_id: PlaybackSessionId,
-        reply: oneshot::Sender<Result<(), PlaybackManagerError>>,
+        reply: UnitReply,
     },
 }
 
@@ -269,6 +308,7 @@ struct PlaybackActor {
     controls: mpsc::Receiver<ControlCommand>,
     reads: mpsc::Receiver<ReadCommand>,
     tombstones: VecDeque<PlaybackSessionId>,
+    suspend_intents: VecDeque<PlaybackSessionId>,
     next_handle: u64,
 }
 
@@ -285,6 +325,7 @@ impl PlaybackActor {
             controls,
             reads,
             tombstones: VecDeque::with_capacity(MAX_STOP_TOMBSTONES),
+            suspend_intents: VecDeque::with_capacity(MAX_SUSPEND_INTENTS),
             next_handle: 1,
         }
     }
@@ -309,13 +350,9 @@ impl PlaybackActor {
                             None => return,
                         },
                         () = opening.reply.as_mut().expect("opening reply exists").closed() => {
-                            self.retire(opening.session_id.clone());
-                            drop(opening);
-                            ActorState::Idle
+                            self.drop_abandoned_open(opening)
                         }
-                        result = &mut opening.pending => {
-                            self.finish_open(opening, result)
-                        }
+                        result = &mut opening.pending => self.finish_open(opening, result),
                         read = self.reads.recv() => match read {
                             Some(read) => {
                                 let _ = read.reply.send(Err(PlaybackManagerError::Cancelled));
@@ -325,15 +362,15 @@ impl PlaybackActor {
                         },
                     }
                 }
-                ActorState::Active(active) => {
+                ActorState::Streaming(streaming) => {
                     tokio::select! {
                         biased;
                         command = self.controls.recv() => match command {
-                            Some(command) => self.control_active(active, command),
+                            Some(command) => self.control_streaming(streaming, command),
                             None => return,
                         },
                         read = self.reads.recv() => match read {
-                            Some(read) => self.begin_read(active, read),
+                            Some(read) => self.begin_read(streaming, read),
                             None => return,
                         },
                     }
@@ -345,12 +382,8 @@ impl PlaybackActor {
                             Some(command) => self.control_reading(reading, command),
                             None => return,
                         },
-                        () = reading.reply.closed() => {
-                            self.abandon_read(reading)
-                        }
-                        result = &mut reading.pending => {
-                            self.finish_read(reading, result)
-                        }
+                        () = reading.reply.closed() => self.drop_abandoned_read(reading),
+                        result = &mut reading.pending => self.finish_read(reading, result),
                         read = self.reads.recv() => match read {
                             Some(read) => {
                                 let _ = read.reply.send(Err(PlaybackManagerError::Cancelled));
@@ -360,6 +393,14 @@ impl PlaybackActor {
                         },
                     }
                 }
+                ActorState::Dormant(session) => match self.next_command().await {
+                    Some(ActorCommand::Control(command)) => self.control_dormant(session, command),
+                    Some(ActorCommand::Read(command)) => {
+                        let _ = command.reply.send(Err(PlaybackManagerError::Cancelled));
+                        ActorState::Dormant(session)
+                    }
+                    None => return,
+                },
             };
         }
     }
@@ -385,6 +426,15 @@ impl PlaybackActor {
                     self.begin_start(session_id, channel_id, reply)
                 }
             }
+            ControlCommand::Suspend { session_id, reply } => {
+                self.remember_suspend(session_id);
+                let _ = reply.send(Ok(()));
+                ActorState::Idle
+            }
+            ControlCommand::Reopen { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Idle
+            }
             ControlCommand::Stop { session_id, reply } => {
                 self.retire(session_id);
                 let _ = reply.send(Ok(()));
@@ -404,15 +454,7 @@ impl PlaybackActor {
             }
             ControlCommand::Start {
                 session_id, reply, ..
-            } if self.tombstones.contains(&session_id) => {
-                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
-                ActorState::Opening(opening)
-            }
-            ControlCommand::Start {
-                session_id,
-                channel_id: _,
-                reply,
-            } if session_id == opening.session_id => {
+            } if self.tombstones.contains(&session_id) || session_id == opening.session.id => {
                 let _ = reply.send(Err(PlaybackManagerError::Cancelled));
                 ActorState::Opening(opening)
             }
@@ -421,23 +463,57 @@ impl PlaybackActor {
                 channel_id,
                 reply,
             } => {
-                self.retire(opening.session_id.clone());
+                let old_id = opening.session.id.clone();
+                drop(opening.pending);
                 let _ = opening
                     .reply
                     .take()
                     .expect("opening reply exists")
                     .send(Err(PlaybackManagerError::Cancelled));
-                drop(opening);
+                drop(opening.session);
+                self.retire(old_id);
                 self.begin_start(session_id, channel_id, reply)
             }
-            ControlCommand::Stop { session_id, reply } if session_id == opening.session_id => {
-                self.retire(session_id);
+            ControlCommand::Suspend { session_id, reply } if session_id == opening.session.id => {
+                drop(opening.pending);
                 let _ = opening
                     .reply
                     .take()
                     .expect("opening reply exists")
                     .send(Err(PlaybackManagerError::Cancelled));
-                drop(opening);
+                let _ = reply.send(Ok(()));
+                ActorState::Dormant(opening.session)
+            }
+            ControlCommand::Suspend { session_id, reply } => {
+                self.remember_suspend(session_id);
+                let _ = reply.send(Ok(()));
+                ActorState::Opening(opening)
+            }
+            ControlCommand::Reopen { reply, .. } if reply.is_closed() => {
+                ActorState::Opening(opening)
+            }
+            ControlCommand::Reopen { session_id, reply } if session_id == opening.session.id => {
+                drop(opening.pending);
+                let _ = opening
+                    .reply
+                    .take()
+                    .expect("opening reply exists")
+                    .send(Err(PlaybackManagerError::Cancelled));
+                self.begin_reopen(opening.session, reply)
+            }
+            ControlCommand::Reopen { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Opening(opening)
+            }
+            ControlCommand::Stop { session_id, reply } if session_id == opening.session.id => {
+                drop(opening.pending);
+                let _ = opening
+                    .reply
+                    .take()
+                    .expect("opening reply exists")
+                    .send(Err(PlaybackManagerError::Cancelled));
+                drop(opening.session);
+                self.retire(session_id);
                 let _ = reply.send(Ok(()));
                 ActorState::Idle
             }
@@ -449,42 +525,64 @@ impl PlaybackActor {
         }
     }
 
-    fn control_active(&mut self, active: ActiveState, command: ControlCommand) -> ActorState {
+    fn control_streaming(
+        &mut self,
+        streaming: StreamingState,
+        command: ControlCommand,
+    ) -> ActorState {
         match command {
-            ControlCommand::Start { reply, .. } if reply.is_closed() => ActorState::Active(active),
-            ControlCommand::Start {
-                session_id, reply, ..
-            } if self.tombstones.contains(&session_id) => {
-                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
-                ActorState::Active(active)
+            ControlCommand::Start { reply, .. } if reply.is_closed() => {
+                ActorState::Streaming(streaming)
             }
             ControlCommand::Start {
-                session_id,
-                channel_id: _,
-                reply,
-            } if session_id == active.session.id => {
+                session_id, reply, ..
+            } if self.tombstones.contains(&session_id) || session_id == streaming.session.id => {
                 let _ = reply.send(Err(PlaybackManagerError::Cancelled));
-                ActorState::Active(active)
+                ActorState::Streaming(streaming)
             }
             ControlCommand::Start {
                 session_id,
                 channel_id,
                 reply,
             } => {
-                self.retire(active.session.id.clone());
-                drop(active);
+                let old_id = streaming.session.id.clone();
+                drop(streaming.stream);
+                drop(streaming.session);
+                self.retire(old_id);
                 self.begin_start(session_id, channel_id, reply)
             }
-            ControlCommand::Stop { session_id, reply } if session_id == active.session.id => {
+            ControlCommand::Suspend { session_id, reply } if session_id == streaming.session.id => {
+                drop(streaming.stream);
+                let _ = reply.send(Ok(()));
+                ActorState::Dormant(streaming.session)
+            }
+            ControlCommand::Suspend { session_id, reply } => {
+                self.remember_suspend(session_id);
+                let _ = reply.send(Ok(()));
+                ActorState::Streaming(streaming)
+            }
+            ControlCommand::Reopen { reply, .. } if reply.is_closed() => {
+                ActorState::Streaming(streaming)
+            }
+            ControlCommand::Reopen { session_id, reply } if session_id == streaming.session.id => {
+                drop(streaming.stream);
+                self.begin_reopen(streaming.session, reply)
+            }
+            ControlCommand::Reopen { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Streaming(streaming)
+            }
+            ControlCommand::Stop { session_id, reply } if session_id == streaming.session.id => {
+                drop(streaming.stream);
+                drop(streaming.session);
                 self.retire(session_id);
-                drop(active);
                 let _ = reply.send(Ok(()));
                 ActorState::Idle
             }
             ControlCommand::Stop { session_id, reply } => {
                 self.retire(session_id);
                 let _ = reply.send(Ok(()));
-                ActorState::Active(active)
+                ActorState::Streaming(streaming)
             }
         }
     }
@@ -496,15 +594,7 @@ impl PlaybackActor {
             }
             ControlCommand::Start {
                 session_id, reply, ..
-            } if self.tombstones.contains(&session_id) => {
-                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
-                ActorState::Reading(reading)
-            }
-            ControlCommand::Start {
-                session_id,
-                channel_id: _,
-                reply,
-            } if session_id == reading.session.id => {
+            } if self.tombstones.contains(&session_id) || session_id == reading.session.id => {
                 let _ = reply.send(Err(PlaybackManagerError::Cancelled));
                 ActorState::Reading(reading)
             }
@@ -513,17 +603,41 @@ impl PlaybackActor {
                 channel_id,
                 reply,
             } => {
-                self.retire(reading.session.id.clone());
-                let _ = reading.reply.send(Err(PlaybackManagerError::Cancelled));
+                let old_id = reading.session.id.clone();
                 drop(reading.pending);
+                let _ = reading.reply.send(Err(PlaybackManagerError::Cancelled));
                 drop(reading.session);
+                self.retire(old_id);
                 self.begin_start(session_id, channel_id, reply)
             }
-            ControlCommand::Stop { session_id, reply } if session_id == reading.session.id => {
-                self.retire(session_id);
-                let _ = reading.reply.send(Err(PlaybackManagerError::Cancelled));
+            ControlCommand::Suspend { session_id, reply } if session_id == reading.session.id => {
                 drop(reading.pending);
+                let _ = reading.reply.send(Err(PlaybackManagerError::Cancelled));
+                let _ = reply.send(Ok(()));
+                ActorState::Dormant(reading.session)
+            }
+            ControlCommand::Suspend { session_id, reply } => {
+                self.remember_suspend(session_id);
+                let _ = reply.send(Ok(()));
+                ActorState::Reading(reading)
+            }
+            ControlCommand::Reopen { reply, .. } if reply.is_closed() => {
+                ActorState::Reading(reading)
+            }
+            ControlCommand::Reopen { session_id, reply } if session_id == reading.session.id => {
+                drop(reading.pending);
+                let _ = reading.reply.send(Err(PlaybackManagerError::Cancelled));
+                self.begin_reopen(reading.session, reply)
+            }
+            ControlCommand::Reopen { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Reading(reading)
+            }
+            ControlCommand::Stop { session_id, reply } if session_id == reading.session.id => {
+                drop(reading.pending);
+                let _ = reading.reply.send(Err(PlaybackManagerError::Cancelled));
                 drop(reading.session);
+                self.retire(session_id);
                 let _ = reply.send(Ok(()));
                 ActorState::Idle
             }
@@ -535,11 +649,65 @@ impl PlaybackActor {
         }
     }
 
+    fn control_dormant(&mut self, session: Session, command: ControlCommand) -> ActorState {
+        match command {
+            ControlCommand::Start { reply, .. } if reply.is_closed() => {
+                ActorState::Dormant(session)
+            }
+            ControlCommand::Start {
+                session_id, reply, ..
+            } if self.tombstones.contains(&session_id) || session_id == session.id => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Dormant(session)
+            }
+            ControlCommand::Start {
+                session_id,
+                channel_id,
+                reply,
+            } => {
+                let old_id = session.id.clone();
+                drop(session);
+                self.retire(old_id);
+                self.begin_start(session_id, channel_id, reply)
+            }
+            ControlCommand::Suspend { session_id, reply } if session_id == session.id => {
+                let _ = reply.send(Ok(()));
+                ActorState::Dormant(session)
+            }
+            ControlCommand::Suspend { session_id, reply } => {
+                self.remember_suspend(session_id);
+                let _ = reply.send(Ok(()));
+                ActorState::Dormant(session)
+            }
+            ControlCommand::Reopen { reply, .. } if reply.is_closed() => {
+                ActorState::Dormant(session)
+            }
+            ControlCommand::Reopen { session_id, reply } if session_id == session.id => {
+                self.begin_reopen(session, reply)
+            }
+            ControlCommand::Reopen { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Dormant(session)
+            }
+            ControlCommand::Stop { session_id, reply } if session_id == session.id => {
+                drop(session);
+                self.retire(session_id);
+                let _ = reply.send(Ok(()));
+                ActorState::Idle
+            }
+            ControlCommand::Stop { session_id, reply } => {
+                self.retire(session_id);
+                let _ = reply.send(Ok(()));
+                ActorState::Dormant(session)
+            }
+        }
+    }
+
     fn begin_start(
         &mut self,
         session_id: PlaybackSessionId,
         channel_id: ChannelId,
-        reply: oneshot::Sender<Result<StartedPlayback, PlaybackManagerError>>,
+        reply: DescriptorReply,
     ) -> ActorState {
         if self.tombstones.contains(&session_id) {
             let _ = reply.send(Err(PlaybackManagerError::Cancelled));
@@ -555,21 +723,44 @@ impl PlaybackActor {
                 return ActorState::Idle;
             }
         };
+        let session = Session {
+            id: session_id,
+            source,
+        };
+        if self.take_suspend(&session.id) {
+            drop(activity);
+            return self.reply_with_dormant(reply, Err(PlaybackManagerError::Cancelled), session);
+        }
+        self.begin_open(session, activity, reply)
+    }
+
+    fn begin_reopen(&mut self, session: Session, reply: DescriptorReply) -> ActorState {
+        let activity = self.core.begin_playback_activity();
+        self.begin_open(session, activity, reply)
+    }
+
+    fn begin_open(
+        &mut self,
+        session: Session,
+        activity: PlaybackActivityLease,
+        reply: DescriptorReply,
+    ) -> ActorState {
         let stream_handle = match self.allocate_handle() {
             Some(stream_handle) => stream_handle,
             None => {
-                drop(source);
                 drop(activity);
-                let _ = reply.send(Err(PlaybackManagerError::Unavailable));
-                return ActorState::Idle;
+                return self.reply_with_dormant(
+                    reply,
+                    Err(PlaybackManagerError::Unavailable),
+                    session,
+                );
             }
         };
-        let pending = PendingOpen::new(self.access.open(Arc::clone(&source)), activity);
+        let pending = PendingOpen::new(self.access.open(Arc::clone(&session.source)), activity);
         ActorState::Opening(OpeningState {
             pending: Box::pin(pending),
-            session_id,
+            session,
             stream_handle,
-            source,
             reply: Some(reply),
         })
     }
@@ -583,106 +774,107 @@ impl PlaybackActor {
         match result {
             Ok((body, activity)) => {
                 let descriptor = StartedPlayback {
-                    session_id: opening.session_id.clone(),
+                    session_id: opening.session.id.clone(),
                     stream_handle: opening.stream_handle.clone(),
                 };
-                let session = Session {
-                    id: opening.session_id,
-                    _source: opening.source,
-                };
-                let stream = StreamStatus::Open(StreamInstance {
+                let stream = StreamInstance {
                     body,
                     remainder: Bytes::new(),
                     _activity: activity,
                     handle: opening.stream_handle,
-                });
+                };
                 match reply.send(Ok(descriptor)) {
-                    Ok(()) => ActorState::Active(ActiveState { session, stream }),
+                    Ok(()) => ActorState::Streaming(StreamingState {
+                        stream,
+                        session: opening.session,
+                    }),
                     Err(_) => {
-                        self.retire(session.id.clone());
                         drop(stream);
-                        drop(session);
-                        ActorState::Idle
+                        self.drop_session(opening.session)
                     }
                 }
             }
-            Err(error) => {
-                let _ = reply.send(Err(PlaybackManagerError::Access(error)));
-                ActorState::Idle
-            }
+            Err(error) => self.reply_with_dormant(
+                reply,
+                Err(PlaybackManagerError::Access(error)),
+                opening.session,
+            ),
         }
     }
 
-    fn begin_read(&mut self, active: ActiveState, read: ReadCommand) -> ActorState {
+    fn begin_read(&mut self, streaming: StreamingState, read: ReadCommand) -> ActorState {
         if read.reply.is_closed() {
-            return ActorState::Active(active);
+            return ActorState::Streaming(streaming);
         }
-        if read.session_id != active.session.id || read.stream_handle != *active.stream.handle() {
+        if read.session_id != streaming.session.id || read.stream_handle != streaming.stream.handle
+        {
             let _ = read.reply.send(Err(PlaybackManagerError::Cancelled));
-            return ActorState::Active(active);
+            return ActorState::Streaming(streaming);
         }
-        match active.stream {
-            StreamStatus::Open(stream) => ActorState::Reading(ReadingState {
-                pending: Box::pin(PendingRead::new(stream)),
-                session: active.session,
-                reply: read.reply,
-            }),
-            StreamStatus::Ended(handle) => {
-                let _ = read.reply.send(Ok(Vec::new()));
-                ActorState::Active(ActiveState {
-                    session: active.session,
-                    stream: StreamStatus::Ended(handle),
-                })
-            }
-            StreamStatus::Failed(handle, error) => {
-                let _ = read.reply.send(Err(PlaybackManagerError::Read(error)));
-                ActorState::Active(ActiveState {
-                    session: active.session,
-                    stream: StreamStatus::Failed(handle, error),
-                })
-            }
-        }
+        ActorState::Reading(ReadingState {
+            pending: Box::pin(PendingRead::new(streaming.stream)),
+            session: streaming.session,
+            reply: read.reply,
+        })
     }
 
     fn finish_read(&mut self, reading: ReadingState, result: ReadCompletion) -> ActorState {
         match result {
             ReadCompletion::Chunk(bytes, stream) => match reading.reply.send(Ok(bytes)) {
-                Ok(()) => ActorState::Active(ActiveState {
+                Ok(()) => ActorState::Streaming(StreamingState {
+                    stream,
                     session: reading.session,
-                    stream: StreamStatus::Open(stream),
                 }),
                 Err(_) => {
                     drop(stream);
-                    self.drop_abandoned_session(reading.session)
+                    self.drop_session(reading.session)
                 }
             },
-            ReadCompletion::Eof(handle) => match reading.reply.send(Ok(Vec::new())) {
-                Ok(()) => ActorState::Active(ActiveState {
-                    session: reading.session,
-                    stream: StreamStatus::Ended(handle),
-                }),
-                Err(_) => self.drop_abandoned_session(reading.session),
-            },
-            ReadCompletion::Failed(handle, error) => {
-                match reading.reply.send(Err(PlaybackManagerError::Read(error))) {
-                    Ok(()) => ActorState::Active(ActiveState {
-                        session: reading.session,
-                        stream: StreamStatus::Failed(handle, error),
-                    }),
-                    Err(_) => self.drop_abandoned_session(reading.session),
-                }
+            ReadCompletion::Eof => {
+                self.reply_with_dormant(reading.reply, Ok(Vec::new()), reading.session)
             }
+            ReadCompletion::Failed(error) => self.reply_with_dormant(
+                reading.reply,
+                Err(PlaybackManagerError::Read(error)),
+                reading.session,
+            ),
         }
     }
 
-    fn abandon_read(&mut self, reading: ReadingState) -> ActorState {
-        drop(reading.pending);
-        self.drop_abandoned_session(reading.session)
+    fn drop_abandoned_open(&mut self, mut opening: OpeningState) -> ActorState {
+        let id = opening.session.id.clone();
+        drop(opening.pending);
+        drop(opening.reply.take());
+        drop(opening.session);
+        self.retire(id);
+        ActorState::Idle
     }
 
-    fn drop_abandoned_session(&mut self, session: Session) -> ActorState {
-        self.retire(session.id.clone());
+    fn drop_abandoned_read(&mut self, reading: ReadingState) -> ActorState {
+        let id = reading.session.id.clone();
+        drop(reading.pending);
+        drop(reading.reply);
+        drop(reading.session);
+        self.retire(id);
+        ActorState::Idle
+    }
+
+    fn reply_with_dormant<T>(
+        &mut self,
+        reply: oneshot::Sender<Result<T, PlaybackManagerError>>,
+        result: Result<T, PlaybackManagerError>,
+        session: Session,
+    ) -> ActorState {
+        match reply.send(result) {
+            Ok(()) => ActorState::Dormant(session),
+            Err(_) => self.drop_session(session),
+        }
+    }
+
+    fn drop_session(&mut self, session: Session) -> ActorState {
+        let id = session.id.clone();
         drop(session);
+        self.retire(id);
         ActorState::Idle
     }
 
@@ -692,7 +884,36 @@ impl PlaybackActor {
         Some(NativeStreamHandle::from_sequence(sequence))
     }
 
+    fn remember_suspend(&mut self, session_id: PlaybackSessionId) {
+        if self.tombstones.contains(&session_id) || self.suspend_intents.contains(&session_id) {
+            return;
+        }
+        if self.suspend_intents.len() == MAX_SUSPEND_INTENTS {
+            self.suspend_intents.pop_front();
+        }
+        self.suspend_intents.push_back(session_id);
+    }
+
+    fn take_suspend(&mut self, session_id: &PlaybackSessionId) -> bool {
+        let Some(index) = self
+            .suspend_intents
+            .iter()
+            .position(|candidate| candidate == session_id)
+        else {
+            return false;
+        };
+        self.suspend_intents.remove(index);
+        true
+    }
+
     fn retire(&mut self, session_id: PlaybackSessionId) {
+        if let Some(index) = self
+            .suspend_intents
+            .iter()
+            .position(|candidate| candidate == &session_id)
+        {
+            self.suspend_intents.remove(index);
+        }
         if self.tombstones.contains(&session_id) {
             return;
         }
@@ -711,22 +932,22 @@ enum ActorCommand {
 enum ActorState {
     Idle,
     Opening(OpeningState),
-    Active(ActiveState),
+    Streaming(StreamingState),
     Reading(ReadingState),
+    Dormant(Session),
 }
 
 struct OpeningState {
-    // The upstream future is dropped before the pinned source on cancellation.
+    // The upstream future is dropped before the pinned Session source.
     pending: Pin<Box<PendingOpen>>,
-    session_id: PlaybackSessionId,
+    session: Session,
     stream_handle: NativeStreamHandle,
-    source: Arc<ResolvedPlaybackSource>,
-    reply: Option<oneshot::Sender<Result<StartedPlayback, PlaybackManagerError>>>,
+    reply: Option<DescriptorReply>,
 }
 
-struct ActiveState {
+struct StreamingState {
     // Provider resources always drop before their pinned Session source.
-    stream: StreamStatus,
+    stream: StreamInstance,
     session: Session,
 }
 
@@ -737,26 +958,10 @@ struct ReadingState {
     reply: oneshot::Sender<Result<Vec<u8>, PlaybackManagerError>>,
 }
 
-/// Pins one resolved source independently of its replaceable transport. #28 can
-/// replace `StreamStatus` without resolving the catalog again.
+/// Pins one resolved source independently of its replaceable transport.
 struct Session {
     id: PlaybackSessionId,
-    _source: Arc<ResolvedPlaybackSource>,
-}
-
-enum StreamStatus {
-    Open(StreamInstance),
-    Ended(NativeStreamHandle),
-    Failed(NativeStreamHandle, PlaybackReadError),
-}
-
-impl StreamStatus {
-    fn handle(&self) -> &NativeStreamHandle {
-        match self {
-            Self::Open(stream) => &stream.handle,
-            Self::Ended(handle) | Self::Failed(handle, _) => handle,
-        }
-    }
+    source: Arc<ResolvedPlaybackSource>,
 }
 
 struct StreamInstance {
@@ -837,16 +1042,12 @@ impl Future for PendingRead {
                 Poll::Ready(ReadCompletion::Chunk(chunk, stream))
             }
             Some(Err(error)) => {
-                let stream = self.stream.take().expect("pending read owns stream");
-                let handle = stream.handle.clone();
-                drop(stream);
-                Poll::Ready(ReadCompletion::Failed(handle, error))
+                drop(self.stream.take());
+                Poll::Ready(ReadCompletion::Failed(error))
             }
             None => {
-                let stream = self.stream.take().expect("pending read owns stream");
-                let handle = stream.handle.clone();
-                drop(stream);
-                Poll::Ready(ReadCompletion::Eof(handle))
+                drop(self.stream.take());
+                Poll::Ready(ReadCompletion::Eof)
             }
         }
     }
@@ -854,9 +1055,10 @@ impl Future for PendingRead {
 
 enum ReadCompletion {
     Chunk(Vec<u8>, StreamInstance),
-    Eof(NativeStreamHandle),
-    Failed(NativeStreamHandle, PlaybackReadError),
+    Eof,
+    Failed(PlaybackReadError),
 }
 
 #[cfg(test)]
+#[path = "playback/tests.rs"]
 mod tests;

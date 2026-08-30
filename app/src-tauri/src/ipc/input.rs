@@ -129,6 +129,30 @@ impl PlaybackStopInput {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PlaybackSuspendInput {
+    session_id: String,
+}
+
+impl PlaybackSuspendInput {
+    pub(crate) fn into_session_id(self) -> Result<PlaybackSessionId, ClientErrorDto> {
+        PlaybackSessionId::parse(self.session_id).map_err(|_| ClientErrorDto::service_unavailable())
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PlaybackReopenInput {
+    session_id: String,
+}
+
+impl PlaybackReopenInput {
+    pub(crate) fn into_session_id(self) -> Result<PlaybackSessionId, ClientErrorDto> {
+        PlaybackSessionId::parse(self.session_id).map_err(|_| ClientErrorDto::service_unavailable())
+    }
+}
+
 impl ChannelInput {
     pub(crate) fn into_core(self) -> Result<ChannelId, ClientErrorDto> {
         ChannelId::parse(self.id).map_err(ClientErrorDto::from)
@@ -425,6 +449,18 @@ mod tests {
         .expect("stop shape parses");
         assert!(stop.into_session_id().is_ok());
 
+        let suspend: PlaybackSuspendInput = serde_json::from_value(json!({
+            "sessionId": "play1_0123456789abcdef0123456789abcdef_a"
+        }))
+        .expect("suspend shape parses");
+        assert!(suspend.into_session_id().is_ok());
+
+        let reopen: PlaybackReopenInput = serde_json::from_value(json!({
+            "sessionId": "play1_0123456789abcdef0123456789abcdef_a"
+        }))
+        .expect("reopen shape parses");
+        assert!(reopen.into_session_id().is_ok());
+
         assert!(
             serde_json::from_value::<PlaybackStartInput>(json!({
                 "id": format!("ch1_{}", "a".repeat(64)),
@@ -448,6 +484,20 @@ mod tests {
             }))
             .is_err()
         );
+        assert!(
+            serde_json::from_value::<PlaybackSuspendInput>(json!({
+                "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
+                "streamHandle": "stream1_0123456789abcdef"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<PlaybackReopenInput>(json!({
+                "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
+                "id": format!("ch1_{}", "a".repeat(64))
+            }))
+            .is_err()
+        );
 
         for invalid in [
             "play1_0123456789abcdef0123456789abcde_a",
@@ -460,6 +510,20 @@ mod tests {
                 serde_json::from_value(json!({ "sessionId": invalid })).expect("stop shape parses");
             assert!(matches!(
                 input.into_session_id(),
+                Err(ClientErrorDto::ServiceUnavailable)
+            ));
+            let suspend: PlaybackSuspendInput =
+                serde_json::from_value(json!({ "sessionId": invalid }))
+                    .expect("suspend shape parses");
+            assert!(matches!(
+                suspend.into_session_id(),
+                Err(ClientErrorDto::ServiceUnavailable)
+            ));
+            let reopen: PlaybackReopenInput =
+                serde_json::from_value(json!({ "sessionId": invalid }))
+                    .expect("reopen shape parses");
+            assert!(matches!(
+                reopen.into_session_id(),
                 Err(ClientErrorDto::ServiceUnavailable)
             ));
         }
