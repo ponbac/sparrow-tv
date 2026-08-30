@@ -33,12 +33,14 @@ export function SearchLaneError({
   error,
   onRestart,
   retained,
+  runtime = "hosted",
 }: {
   readonly error: ClientError;
   readonly onRestart: () => void;
   readonly retained: boolean;
+  readonly runtime?: "hosted" | "installed";
 }) {
-  const copy = searchErrorCopy(error);
+  const copy = searchErrorCopy(error, runtime);
   return (
     <div className="lane-error" role="alert">
       <strong>{copy.title}</strong>
@@ -53,7 +55,10 @@ export function SearchLaneError({
   );
 }
 
-function searchErrorCopy(error: ClientError): {
+function searchErrorCopy(
+  error: ClientError,
+  runtime: "hosted" | "installed",
+): {
   readonly title: string;
   readonly detail: string;
 } {
@@ -100,7 +105,10 @@ function searchErrorCopy(error: ClientError): {
       };
     case "transport":
       return {
-        title: "The hosted desk did not answer",
+        title:
+          runtime === "hosted"
+            ? "The hosted desk did not answer"
+            : "The installed catalog did not answer",
         detail: "The request can be retried without changing catalog state.",
       };
     case "cancelled":

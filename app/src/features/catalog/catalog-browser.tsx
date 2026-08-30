@@ -34,7 +34,6 @@ import { InstalledSourceSettings } from "../configuration/installed-source-setti
 const GROUP_PAGE_SIZE = 100;
 const CHANNEL_PAGE_SIZE = 24;
 const FIRST_PAGE: PageCursor | null = null;
-const NO_MANUAL_REFRESH = () => undefined;
 const HostedPlayer = lazy(async () => {
   const module = await import("../playback/hosted-player");
   return { default: module.HostedPlayer };
@@ -266,11 +265,11 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
           />
           <SourceStatusDesk
             status={status}
-            refreshing={false}
-            refreshResult={null}
+            refreshing={synchronization.refreshing}
+            refreshResult={synchronization.refreshResult}
             latestEvent={synchronization.latestEvent}
-            onRefresh={NO_MANUAL_REFRESH}
-            manualRefresh={false}
+            onRefresh={synchronization.requestRefresh}
+            playbackAvailable={false}
           />
         </>
       ) : (
@@ -283,9 +282,10 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
         />
       )}
 
-      {runtime === "hosted" ? (
+      {runtime === "hosted" || browseEnabled ? (
         <SearchConsole
           client={client}
+          runtime={runtime}
           status={status}
           catalogGeneration={authoritativeGeneration}
           selectedChannel={selectedChannel}
@@ -572,7 +572,7 @@ function ChannelInspector({
           <p className="inspector-note">
             {runtime === "hosted"
               ? "Its matched Programme schedule is open in the search desk above."
-              : "Channel selection stays local; this installed catalog does not start playback."}
+              : "Its matched Programme schedule is open above. This installed catalog keeps selection local and does not start playback."}
           </p>
         </div>
       ) : (

@@ -21,6 +21,8 @@ export interface SourceStatusDeskProps {
   readonly latestEvent: SparrowEvent | null;
   readonly onRefresh: () => void;
   readonly manualRefresh?: boolean;
+  /** Whether the current runtime can play Channels after browse succeeds. */
+  readonly playbackAvailable?: boolean;
 }
 
 /** Renders independent M3U/EPG state, manual refresh feedback, and safe diagnostics. */
@@ -31,6 +33,7 @@ export function SourceStatusDesk({
   latestEvent,
   onRefresh,
   manualRefresh = true,
+  playbackAvailable = true,
 }: SourceStatusDeskProps) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
     "idle",
@@ -106,10 +109,14 @@ export function SourceStatusDesk({
           state={status?.epg ?? null}
           configured={status?.configuration.epgConfigured ?? null}
           catalogAvailable={status !== null && status.generation !== null}
+          playbackAvailable={playbackAvailable}
         />
       </div>
 
-      <RefreshFeedback result={refreshResult} />
+      <RefreshFeedback
+        result={refreshResult}
+        playbackAvailable={playbackAvailable}
+      />
 
       <details className="source-desk__diagnostics">
         <summary>Safe diagnostics / copyable</summary>
@@ -145,14 +152,21 @@ function SourceCard({
   state,
   configured = true,
   catalogAvailable = false,
+  playbackAvailable = true,
 }: {
   readonly code: "M3U" | "EPG";
   readonly title: string;
   readonly state: SourceState | null;
   readonly configured?: boolean | null;
   readonly catalogAvailable?: boolean;
+  readonly playbackAvailable?: boolean;
 }) {
-  const presentation = sourcePresentation(state, configured, catalogAvailable);
+  const presentation = sourcePresentation(
+    state,
+    configured,
+    catalogAvailable,
+    playbackAvailable,
+  );
   return (
     <article className="source-card" data-state={presentation.tone}>
       <div className="source-card__topline">
@@ -180,8 +194,10 @@ function SourceCard({
 
 function RefreshFeedback({
   result,
+  playbackAvailable,
 }: {
   readonly result: ClientResult<RefreshReport> | null;
+  readonly playbackAvailable: boolean;
 }) {
   if (result === null) {
     return null;
@@ -222,7 +238,7 @@ function RefreshFeedback({
       <p>
         {failed.length === 0
           ? `${outcomes}. ${refreshSuccessCopy(result.value)}`
-          : `${outcomes}. Any last validated snapshot remains in service. Browsing and playback stay available when the Guide alone fails.`}
+          : `${outcomes}. ${refreshFailureDetail(result.value, playbackAvailable)}`}
       </p>
     </div>
   );
@@ -252,14 +268,19 @@ function sourcePresentation(
   state: SourceState | null,
   configured: boolean | null,
   catalogAvailable: boolean,
+  playbackAvailable: boolean,
 ): SourcePresentation {
   if (configured === false) {
     return sourcePresentationValue(
       "absent",
       "NOT CONFIGURED",
       catalogAvailable
-        ? "This deployment has no Guide source. Channel browse, search, and playback remain available."
-        : "This deployment has no Guide source. Browse, search, and playback require a validated Channel snapshot.",
+        ? playbackAvailable
+          ? "This deployment has no Guide source. Channel browse, search, and playback remain available."
+          : "This device has no Guide source. Channel browse and search remain available."
+        : playbackAvailable
+          ? "This deployment has no Guide source. Browse, search, and playback require a validated Channel snapshot."
+          : "This device has no Guide source. Browse and search require a validated Channel snapshot.",
     );
   }
   if (state === null || configured === null) {
@@ -362,6 +383,26 @@ function refreshSuccessCopy(report: RefreshReport): string {
     return "The Channel source was revalidated without replacing its snapshot.";
   }
   return `Catalog generation ${report.status.generation ?? "unavailable"} now reflects the completed source outcomes.`;
+}
+
+function refreshFailureDetail(
+  report: RefreshReport,
+  playbackAvailable: boolean,
+): string {
+  const availableFeatures = playbackAvailable
+    ? "Browsing and playback"
+    : "Channel browsing and search";
+  const catalogAvailable = report.status.generation !== null;
+
+  if (report.m3u._tag !== "failed") {
+    return catalogAvailable
+      ? `Any last validated Guide snapshot remains in service. ${availableFeatures} stay available because the Channel source completed independently.`
+      : `The Guide failed independently, but no validated Channel snapshot is available. ${availableFeatures} remain unavailable.`;
+  }
+
+  return catalogAvailable
+    ? `The Channel source failed, but its last validated snapshot remains in service. ${availableFeatures} stay available from that retained snapshot.`
+    : `The Channel source failed without a retained snapshot. ${availableFeatures} remain unavailable until a Channel refresh succeeds.`;
 }
 
 function refreshOutcomeSummary(outcome: RefreshOutcome): string {

@@ -918,6 +918,7 @@ async fn snapshot_only_bootstrap_returns_before_a_missing_catalog_fetch_complete
         core.list_channels(ChannelQuery::all(PageRequest::first(limit()))),
         Err(CoreError::CatalogUnavailable { .. })
     ));
+    core.activate_automation();
     wait_for(|| source.opens(SourceKind::M3u) == 1).await;
     gate.add_permits(1);
     wait_for(|| {
@@ -925,6 +926,103 @@ async fn snapshot_only_bootstrap_returns_before_a_missing_catalog_fetch_complete
             .is_ok_and(|page| page.items()[0].name() == "Alpha")
     })
     .await;
+}
+
+#[tokio::test]
+async fn snapshot_only_bootstrap_exposes_stale_catalog_before_revalidation_outcome() {
+    let clock = ControlledClock::at("2026-08-29T12:00:00Z");
+    let snapshots = MemorySnapshotStore::default();
+    let seeded_source = RefreshSource::default();
+    seeded_source.push_modified(SourceKind::M3u, INITIAL_M3U);
+    let seeded = bootstrap(&seeded_source, &snapshots, &clock, false).await;
+    let generation = seeded
+        .status()
+        .generation()
+        .expect("seeded catalog has a generation");
+    drop(seeded);
+
+    let successful_source = RefreshSource::default();
+    successful_source.push(
+        SourceKind::M3u,
+        SourceAction::NotModified(PrivateSourceValidators::default()),
+    );
+    let revalidated = SparrowCore::bootstrap_from_snapshots(
+        Some(configuration(
+            "https://provider.fixture.invalid/channels.m3u",
+            None,
+        )),
+        CoreAdapters::new(
+            Arc::new(successful_source.clone()),
+            Arc::new(snapshots.clone()),
+            Arc::new(clock.clone()),
+        ),
+    )
+    .await
+    .expect("snapshot-only core bootstraps");
+
+    tokio::task::yield_now().await;
+    assert_eq!(successful_source.opens(SourceKind::M3u), 0);
+    assert_eq!(revalidated.status().generation(), Some(generation));
+    assert!(matches!(
+        revalidated.status().m3u(),
+        SourceState::Stale {
+            validated_at,
+            next_attempt_at: Some(next_attempt_at),
+        } if *validated_at == clock.now() && *next_attempt_at == clock.now()
+    ));
+    assert_eq!(channel_names(&revalidated), vec!["Alpha"]);
+
+    revalidated.activate_automation();
+    wait_for(|| successful_source.opens(SourceKind::M3u) == 1).await;
+    wait_for(|| {
+        matches!(
+            revalidated.status().m3u(),
+            SourceState::Fresh { validated_at } if *validated_at == clock.now()
+        )
+    })
+    .await;
+    assert_eq!(revalidated.status().generation(), Some(generation));
+    drop(revalidated);
+
+    let failed_source = RefreshSource::default();
+    failed_source.push(
+        SourceKind::M3u,
+        SourceAction::Failed(SourceAccessFailure::new(SourceAccessError::Unavailable)),
+    );
+    let degraded = SparrowCore::bootstrap_from_snapshots(
+        Some(configuration(
+            "https://provider.fixture.invalid/channels.m3u",
+            None,
+        )),
+        CoreAdapters::new(
+            Arc::new(failed_source.clone()),
+            Arc::new(snapshots),
+            Arc::new(clock.clone()),
+        ),
+    )
+    .await
+    .expect("snapshot-only core bootstraps");
+
+    assert_eq!(failed_source.opens(SourceKind::M3u), 0);
+    assert!(matches!(degraded.status().m3u(), SourceState::Stale { .. }));
+    assert_eq!(channel_names(&degraded), vec!["Alpha"]);
+    degraded.activate_automation();
+    wait_for(|| {
+        matches!(
+            degraded.status().m3u(),
+            SourceState::Failed {
+                validated_at: Some(_),
+                failure: SafeFailure::SourceAccess {
+                    reason: SourceAccessError::Unavailable,
+                    ..
+                },
+                ..
+            }
+        )
+    })
+    .await;
+    assert_eq!(degraded.status().generation(), Some(generation));
+    assert_eq!(channel_names(&degraded), vec!["Alpha"]);
 }
 
 #[tokio::test]

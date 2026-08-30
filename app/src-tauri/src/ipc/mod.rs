@@ -4,14 +4,17 @@ pub(crate) mod subscriptions;
 
 use tauri::{State, ipc::Channel};
 
-use crate::runtime::InstalledRuntime;
+use crate::runtime::{InstalledRuntime, InstalledRuntimeSlot};
 
 use self::{
     dto::{
         CapabilitiesDto, CatalogStatusDto, ChannelDetailsDto, ChannelGroupDto, ChannelSummaryDto,
-        ClientErrorDto, CoreEventDto, PageDto,
+        ClientErrorDto, CoreEventDto, PageDto, ProgrammeDto, RefreshReportDto, SearchResultsDto,
     },
-    input::{ChannelInput, ListChannelsInput, ListGroupsInput, SourceConfigurationInputDto},
+    input::{
+        ChannelInput, ListChannelsInput, ListGroupsInput, ScheduleInput, SearchCancellationInput,
+        SearchInput, SearchPageInput, SourceConfigurationInputDto,
+    },
 };
 
 #[tauri::command]
@@ -20,16 +23,19 @@ pub(crate) fn installed_capabilities() -> CapabilitiesDto {
 }
 
 #[tauri::command]
-pub(crate) fn catalog_status(state: State<'_, InstalledRuntime>) -> CatalogStatusDto {
-    CatalogStatusDto::from(state.core().status())
+pub(crate) async fn catalog_status(
+    slot: State<'_, InstalledRuntimeSlot>,
+) -> Result<CatalogStatusDto, ClientErrorDto> {
+    Ok(CatalogStatusDto::from(slot.wait().await.status()))
 }
 
 #[tauri::command]
-pub(crate) fn catalog_list_groups(
-    state: State<'_, InstalledRuntime>,
+pub(crate) async fn catalog_list_groups(
+    slot: State<'_, InstalledRuntimeSlot>,
     input: ListGroupsInput,
 ) -> Result<PageDto<ChannelGroupDto>, ClientErrorDto> {
-    list_groups(state.inner(), input)
+    let runtime = slot.wait().await;
+    list_groups(runtime.as_ref(), input)
 }
 
 pub(crate) fn list_groups(
@@ -45,11 +51,12 @@ pub(crate) fn list_groups(
 }
 
 #[tauri::command]
-pub(crate) fn catalog_list_channels(
-    state: State<'_, InstalledRuntime>,
+pub(crate) async fn catalog_list_channels(
+    slot: State<'_, InstalledRuntimeSlot>,
     input: ListChannelsInput,
 ) -> Result<PageDto<ChannelSummaryDto>, ClientErrorDto> {
-    list_channels(state.inner(), input)
+    let runtime = slot.wait().await;
+    list_channels(runtime.as_ref(), input)
 }
 
 pub(crate) fn list_channels(
@@ -65,11 +72,12 @@ pub(crate) fn list_channels(
 }
 
 #[tauri::command]
-pub(crate) fn catalog_channel(
-    state: State<'_, InstalledRuntime>,
+pub(crate) async fn catalog_channel(
+    slot: State<'_, InstalledRuntimeSlot>,
     input: ChannelInput,
 ) -> Result<ChannelDetailsDto, ClientErrorDto> {
-    channel(state.inner(), input)
+    let runtime = slot.wait().await;
+    channel(runtime.as_ref(), input)
 }
 
 pub(crate) fn channel(
@@ -85,22 +93,131 @@ pub(crate) fn channel(
 }
 
 #[tauri::command]
+pub(crate) async fn catalog_schedule(
+    slot: State<'_, InstalledRuntimeSlot>,
+    input: ScheduleInput,
+) -> Result<PageDto<ProgrammeDto>, ClientErrorDto> {
+    let runtime = slot.wait().await;
+    schedule(runtime.as_ref(), input)
+}
+
+pub(crate) fn schedule(
+    state: &InstalledRuntime,
+    input: ScheduleInput,
+) -> Result<PageDto<ProgrammeDto>, ClientErrorDto> {
+    let query = input.into_core()?;
+    state
+        .core()
+        .schedule(query)
+        .map(|page| PageDto::programmes(&page))
+        .map_err(ClientErrorDto::from)
+}
+
+#[tauri::command]
+pub(crate) async fn catalog_search(
+    slot: State<'_, InstalledRuntimeSlot>,
+    input: SearchInput,
+) -> Result<SearchResultsDto, ClientErrorDto> {
+    let runtime = slot.wait().await;
+    search(runtime.as_ref(), input).await
+}
+
+pub(crate) async fn search(
+    state: &InstalledRuntime,
+    input: SearchInput,
+) -> Result<SearchResultsDto, ClientErrorDto> {
+    let (request_id, request) = input.into_core()?;
+    state
+        .search(request_id, request)
+        .await
+        .map(|results| SearchResultsDto::from(&results))
+}
+
+#[tauri::command]
+pub(crate) async fn catalog_search_channels(
+    slot: State<'_, InstalledRuntimeSlot>,
+    input: SearchPageInput,
+) -> Result<PageDto<ChannelSummaryDto>, ClientErrorDto> {
+    let runtime = slot.wait().await;
+    search_channels(runtime.as_ref(), input).await
+}
+
+pub(crate) async fn search_channels(
+    state: &InstalledRuntime,
+    input: SearchPageInput,
+) -> Result<PageDto<ChannelSummaryDto>, ClientErrorDto> {
+    let (request_id, term, page) = input.into_core()?;
+    state
+        .search_channels(request_id, term, page)
+        .await
+        .map(|page| PageDto::channels(&page))
+}
+
+#[tauri::command]
+pub(crate) async fn catalog_search_programmes(
+    slot: State<'_, InstalledRuntimeSlot>,
+    input: SearchPageInput,
+) -> Result<PageDto<ProgrammeDto>, ClientErrorDto> {
+    let runtime = slot.wait().await;
+    search_programmes(runtime.as_ref(), input).await
+}
+
+pub(crate) async fn search_programmes(
+    state: &InstalledRuntime,
+    input: SearchPageInput,
+) -> Result<PageDto<ProgrammeDto>, ClientErrorDto> {
+    let (request_id, term, page) = input.into_core()?;
+    state
+        .search_programmes(request_id, term, page)
+        .await
+        .map(|page| PageDto::programmes(&page))
+}
+
+#[tauri::command]
+pub(crate) async fn catalog_search_cancel(
+    slot: State<'_, InstalledRuntimeSlot>,
+    input: SearchCancellationInput,
+) -> Result<(), ClientErrorDto> {
+    let runtime = slot.wait().await;
+    cancel_search(runtime.as_ref(), input)
+}
+
+pub(crate) fn cancel_search(
+    state: &InstalledRuntime,
+    input: SearchCancellationInput,
+) -> Result<(), ClientErrorDto> {
+    state.cancel_search(input.into_request_id()?);
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn catalog_refresh(
+    slot: State<'_, InstalledRuntimeSlot>,
+) -> Result<RefreshReportDto, ClientErrorDto> {
+    Ok(RefreshReportDto::from(slot.wait().await.refresh().await))
+}
+
+#[tauri::command]
 pub(crate) async fn source_configuration_replace(
-    state: State<'_, InstalledRuntime>,
+    slot: State<'_, InstalledRuntimeSlot>,
     input: SourceConfigurationInputDto,
 ) -> Result<CatalogStatusDto, ClientErrorDto> {
-    state.replace_configuration(input).await
+    slot.wait().await.replace_configuration(input).await
 }
 
 #[tauri::command]
-pub(crate) fn catalog_subscribe(
-    state: State<'_, InstalledRuntime>,
+pub(crate) async fn catalog_subscribe(
+    slot: State<'_, InstalledRuntimeSlot>,
     events: Channel<CoreEventDto>,
 ) -> Result<String, ClientErrorDto> {
-    state.subscribe(events)
+    slot.wait().await.subscribe(events)
 }
 
 #[tauri::command]
-pub(crate) fn catalog_unsubscribe(state: State<'_, InstalledRuntime>, subscription_id: String) {
-    state.unsubscribe(&subscription_id);
+pub(crate) async fn catalog_unsubscribe(
+    slot: State<'_, InstalledRuntimeSlot>,
+    subscription_id: String,
+) -> Result<(), ClientErrorDto> {
+    slot.wait().await.unsubscribe(&subscription_id);
+    Ok(())
 }

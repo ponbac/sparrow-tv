@@ -43,6 +43,41 @@ const CHANNEL = clientSchemas.channel.parse({
   group: "News",
 });
 
+const PROGRAMME_PAYLOAD = {
+  channelId: CHANNEL.id,
+  title: "Evening Report",
+  description: "Headlines and analysis.",
+  startsAt: "2026-08-30T19:00:00Z",
+  endsAt: "2026-08-30T20:00:00Z",
+} as const;
+
+const SCHEDULE_PAGE = clientSchemas.schedulePage.parse({
+  generation: 7,
+  items: [PROGRAMME_PAYLOAD],
+  next: null,
+});
+
+const PROGRAMME = requireFirst(SCHEDULE_PAGE.items);
+
+const SEARCH_RESULTS = clientSchemas.searchResults.parse({
+  generation: 7,
+  channels: CHANNELS_PAGE,
+  programmes: SCHEDULE_PAGE,
+});
+
+const REFRESH_REPORT = clientSchemas.refreshReport.parse({
+  trigger: "manual",
+  m3u: {
+    _tag: "not-modified",
+    validatedAt: "2026-08-30T10:00:00Z",
+  },
+  epg: {
+    _tag: "not-modified",
+    validatedAt: "2026-08-30T10:00:01Z",
+  },
+  status: FRESH_STATUS,
+});
+
 interface RecordedInvoke {
   readonly command: string;
   readonly args: Readonly<Record<string, unknown>> | undefined;
@@ -82,12 +117,22 @@ describe("installed Tauri Sparrow client", () => {
           ? INSTALLED_CAPABILITIES
           : command === NATIVE_COMMANDS.status
             ? FRESH_STATUS
+            : command === NATIVE_COMMANDS.refresh
+              ? REFRESH_REPORT
             : command === NATIVE_COMMANDS.groups
               ? GROUPS_PAGE
               : command === NATIVE_COMMANDS.channels
                 ? CHANNELS_PAGE
                 : command === NATIVE_COMMANDS.channel
                   ? CHANNEL
+                  : command === NATIVE_COMMANDS.schedule
+                    ? SCHEDULE_PAGE
+                    : command === NATIVE_COMMANDS.search
+                      ? SEARCH_RESULTS
+                      : command === NATIVE_COMMANDS.searchChannels
+                        ? CHANNELS_PAGE
+                        : command === NATIVE_COMMANDS.searchProgrammes
+                          ? SCHEDULE_PAGE
                   : FRESH_STATUS,
       ),
     );
@@ -101,6 +146,10 @@ describe("installed Tauri Sparrow client", () => {
       ok: true,
       value: FRESH_STATUS,
     });
+    await expect(client.refresh()).resolves.toEqual({
+      ok: true,
+      value: REFRESH_REPORT,
+    });
     await expect(client.listGroups({ limit: 100 })).resolves.toEqual({
       ok: true,
       value: GROUPS_PAGE,
@@ -112,10 +161,42 @@ describe("installed Tauri Sparrow client", () => {
       ok: true,
       value: CHANNEL,
     });
+    await expect(
+      client.schedule({
+        id: CHANNEL.id,
+        limit: 1,
+        afterStartsAt: PROGRAMME.startsAt,
+        previousCursors: [],
+      }),
+    ).resolves.toEqual({ ok: true, value: SCHEDULE_PAGE });
+    await expect(
+      client.search({
+        term: "news",
+        channelLimit: 1,
+        channelPreviousCursors: [],
+        programmeLimit: 1,
+        programmePreviousCursors: [],
+      }),
+    ).resolves.toEqual({ ok: true, value: SEARCH_RESULTS });
+    await expect(
+      client.searchChannels({
+        term: "news",
+        limit: 1,
+        previousCursors: [],
+      }),
+    ).resolves.toEqual({ ok: true, value: CHANNELS_PAGE });
+    await expect(
+      client.searchProgrammes({
+        term: "report",
+        limit: 1,
+        previousCursors: [],
+      }),
+    ).resolves.toEqual({ ok: true, value: SCHEDULE_PAGE });
 
     expect(ipc.invokes).toEqual([
       { command: NATIVE_COMMANDS.capabilities, args: undefined },
       { command: NATIVE_COMMANDS.status, args: undefined },
+      { command: NATIVE_COMMANDS.refresh, args: undefined },
       {
         command: NATIVE_COMMANDS.groups,
         args: { input: { limit: 100 } },
@@ -128,7 +209,144 @@ describe("installed Tauri Sparrow client", () => {
         command: NATIVE_COMMANDS.channel,
         args: { input: { id: CHANNEL.id } },
       },
+      {
+        command: NATIVE_COMMANDS.schedule,
+        args: { input: { id: CHANNEL.id, limit: 1 } },
+      },
+      {
+        command: NATIVE_COMMANDS.search,
+        args: {
+          input: {
+            requestId: searchRequestId(),
+            term: "news",
+            channelLimit: 1,
+            programmeLimit: 1,
+          },
+        },
+      },
+      {
+        command: NATIVE_COMMANDS.searchChannels,
+        args: {
+          input: { requestId: searchRequestId(), term: "news", limit: 1 },
+        },
+      },
+      {
+        command: NATIVE_COMMANDS.searchProgrammes,
+        args: {
+          input: { requestId: searchRequestId(), term: "report", limit: 1 },
+        },
+      },
     ]);
+  });
+
+  it("sends continuation cursors without leaking client-only correlation state", async () => {
+    const scheduleCursor = parsedCursor("schedule-current");
+    const channelCursor = parsedCursor("channel-current");
+    const programmeCursor = parsedCursor("programme-current");
+    const earlierCursor = parsedCursor("earlier-page");
+    const ipc = new FakeNativeIpc((command) =>
+      Promise.resolve(
+        command === NATIVE_COMMANDS.schedule ||
+          command === NATIVE_COMMANDS.searchProgrammes
+          ? SCHEDULE_PAGE
+          : command === NATIVE_COMMANDS.search
+            ? SEARCH_RESULTS
+            : CHANNELS_PAGE,
+      ),
+    );
+    const client = createNativeSparrowClient({ ipc });
+
+    await client.schedule({
+      id: CHANNEL.id,
+      limit: 1,
+      cursor: scheduleCursor,
+      afterStartsAt: PROGRAMME.startsAt,
+      previousCursors: [earlierCursor],
+    });
+    await client.search({
+      term: "news",
+      channelLimit: 1,
+      channelCursor,
+      channelPreviousCursors: [earlierCursor],
+      programmeLimit: 1,
+      programmeCursor,
+      programmePreviousCursors: [earlierCursor],
+    });
+    await client.searchChannels({
+      term: "news",
+      limit: 1,
+      cursor: channelCursor,
+      previousCursors: [earlierCursor],
+    });
+    await client.searchProgrammes({
+      term: "report",
+      limit: 1,
+      cursor: programmeCursor,
+      previousCursors: [earlierCursor],
+    });
+
+    expect(ipc.invokes).toEqual([
+      {
+        command: NATIVE_COMMANDS.schedule,
+        args: {
+          input: { id: CHANNEL.id, limit: 1, cursor: scheduleCursor },
+        },
+      },
+      {
+        command: NATIVE_COMMANDS.search,
+        args: {
+          input: {
+            requestId: searchRequestId(),
+            term: "news",
+            channelLimit: 1,
+            channelCursor,
+            programmeLimit: 1,
+            programmeCursor,
+          },
+        },
+      },
+      {
+        command: NATIVE_COMMANDS.searchChannels,
+        args: {
+          input: {
+            requestId: searchRequestId(),
+            term: "news",
+            limit: 1,
+            cursor: channelCursor,
+          },
+        },
+      },
+      {
+        command: NATIVE_COMMANDS.searchProgrammes,
+        args: {
+          input: {
+            requestId: searchRequestId(),
+            term: "report",
+            limit: 1,
+            cursor: programmeCursor,
+          },
+        },
+      },
+    ]);
+  });
+
+  it("rejects continuation responses that repeat a submitted native cursor", async () => {
+    const cursor = parsedCursor("submitted-page");
+    const ipc = new FakeNativeIpc((command) =>
+      Promise.resolve(
+        command === NATIVE_COMMANDS.schedule
+          ? { ...SCHEDULE_PAGE, next: cursor }
+          : { ...CHANNELS_PAGE, next: cursor },
+      ),
+    );
+    const client = createNativeSparrowClient({ ipc });
+
+    await expect(
+      client.schedule({ id: CHANNEL.id, limit: 1, cursor }),
+    ).resolves.toEqual(invalidResponse());
+    await expect(
+      client.searchChannels({ term: "news", limit: 1, cursor }),
+    ).resolves.toEqual(invalidResponse());
   });
 
   it("passes transient source locations only to replace and accepts only safe status", async () => {
@@ -262,6 +480,43 @@ describe("installed Tauri Sparrow client", () => {
     expect(ipc.invokes).toHaveLength(1);
   });
 
+  it("cancels an active native search with its exact opaque request identifier", async () => {
+    const searchFlight = deferred<unknown>();
+    const ipc = new FakeNativeIpc((command) =>
+      command === NATIVE_COMMANDS.search
+        ? searchFlight.promise
+        : Promise.resolve(null),
+    );
+    const client = createNativeSparrowClient({ ipc });
+    const controller = new AbortController();
+
+    const result = client.search({
+      term: "news",
+      channelLimit: 1,
+      programmeLimit: 1,
+      signal: controller.signal,
+    });
+    controller.abort();
+
+    await expect(result).resolves.toEqual({
+      ok: false,
+      error: { _tag: "cancelled" },
+    });
+    const searchInvoke = requireFirst(ipc.invokes);
+    const requestId = requireSearchRequestId(searchInvoke);
+    expect(requestId).toEqual(searchRequestId());
+    expect(ipc.invokes).toEqual([
+      searchInvoke,
+      {
+        command: NATIVE_COMMANDS.cancelSearch,
+        args: { input: { requestId } },
+      },
+    ]);
+
+    searchFlight.resolve(SEARCH_RESULTS);
+    await searchFlight.promise;
+  });
+
   it("delivers strict ordered Channel events and unsubscribes idempotently", async () => {
     const subscription = deferred<unknown>();
     const ipc = new FakeNativeIpc((command) =>
@@ -379,6 +634,22 @@ function invalidResponse(): ClientResult<never> {
   };
 }
 
+function searchRequestId() {
+  return expect.stringMatching(/^srch1_[0-9a-f]{32}_[0-9a-f]+$/u);
+}
+
+function requireSearchRequestId(invoke: RecordedInvoke): unknown {
+  const input = invoke.args?.input;
+  if (
+    typeof input !== "object" ||
+    input === null ||
+    !("requestId" in input)
+  ) {
+    throw new Error("expected a native search request identifier");
+  }
+  return input.requestId;
+}
+
 interface Deferred<Value> {
   readonly promise: Promise<Value>;
   readonly resolve: (value: Value) => void;
@@ -406,4 +677,16 @@ function requireFirst<Value>(values: readonly Value[]): Value {
     throw new Error("expected one recorded value");
   }
   return first;
+}
+
+function parsedCursor(value: string) {
+  const parsed = clientSchemas.groupsPage.safeParse({
+    generation: 7,
+    items: [],
+    next: value,
+  });
+  if (!parsed.success || parsed.data.next === null) {
+    throw new Error("expected a valid page cursor fixture");
+  }
+  return parsed.data.next;
 }

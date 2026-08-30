@@ -43,6 +43,7 @@ interface SearchContinuation {
  */
 export function SearchResultsPanel({
   client,
+  runtime,
   guide,
   term,
   revision,
@@ -51,6 +52,7 @@ export function SearchResultsPanel({
   onSelectChannel,
 }: {
   readonly client: SparrowClient;
+  readonly runtime: "hosted" | "installed";
   readonly guide: GuidePresentation;
   readonly term: string;
   readonly revision: number;
@@ -209,6 +211,7 @@ export function SearchResultsPanel({
             error={initialError}
             onRestart={onRestart}
             retained={initialValue !== null}
+            runtime={runtime}
           />
         </div>
       )}
@@ -222,6 +225,7 @@ export function SearchResultsPanel({
         error={channelError}
         onLoadMore={loadMoreChannels}
         onRestart={onRestart}
+        runtime={runtime}
       >
         {initialError === null &&
         channels.length === 0 &&
@@ -253,6 +257,7 @@ export function SearchResultsPanel({
         error={programmeError}
         onLoadMore={loadMoreProgrammes}
         onRestart={onRestart}
+        runtime={runtime}
       >
         {initialError === null &&
         programmes.length === 0 &&
@@ -285,6 +290,7 @@ function ResultLane({
   error,
   onLoadMore,
   onRestart,
+  runtime,
   children,
 }: {
   readonly title: string;
@@ -296,6 +302,7 @@ function ResultLane({
   readonly error: ClientError | null;
   readonly onLoadMore: () => void;
   readonly onRestart: () => void;
+  readonly runtime: "hosted" | "installed";
   readonly children: ReactNode;
 }) {
   const headingId = `lane-${title.toLowerCase()}`;
@@ -313,7 +320,12 @@ function ResultLane({
       </header>
       {loading ? <SearchLaneLoading label={`Searching ${title}`} /> : children}
       {error === null ? null : (
-        <SearchLaneError error={error} onRestart={onRestart} retained={count > 0} />
+        <SearchLaneError
+          error={error}
+          onRestart={onRestart}
+          retained={count > 0}
+          runtime={runtime}
+        />
       )}
       {hasNextPage ? (
         <button

@@ -119,34 +119,43 @@ impl SparrowCore {
 
     /// Builds a usable core strictly from eligible on-device snapshots.
     ///
-    /// Source access is never awaited by this call. Once the recovered view is
-    /// published, normal startup automation refreshes configured sources in the
-    /// background. This keeps an installed shell responsive when a provider is
-    /// offline while preserving any matching catalog snapshot.
+    /// Source access is never awaited by this call. The caller hands the recovered
+    /// view to its client, then calls [`Self::activate_automation`] to refresh
+    /// configured sources in the background. This keeps an installed shell
+    /// responsive when a provider is offline while preserving any matching
+    /// catalog snapshot.
     pub async fn bootstrap_from_snapshots(
         configuration: Option<SourceConfiguration>,
         adapters: CoreAdapters,
     ) -> Result<Self, CoreError> {
         let Some(configuration) = configuration else {
-            let core = Self::from_runtime(CoreRuntime::new(
+            return Ok(Self::from_runtime(CoreRuntime::new(
                 None,
                 adapters,
                 CoreView::not_configured(),
                 BootstrapFailures::default(),
-            ));
-            core.runtime.start_automation();
-            return Ok(core);
+            )));
         };
 
-        let recovered = recover_configuration(&configuration, &adapters).await;
+        let recovered = recover_configuration(
+            &configuration,
+            &adapters,
+            RecoveredFreshness::PendingRevalidation,
+        )
+        .await;
         let core = Self::from_runtime(CoreRuntime::new(
             Some(configuration),
             adapters,
             recovered.view,
             BootstrapFailures::default(),
         ));
-        core.runtime.start_automation();
         Ok(core)
+    }
+
+    /// Starts background source automation once the snapshot-backed status has
+    /// been handed to the installed client. Repeated calls are harmless.
+    pub fn activate_automation(&self) {
+        self.runtime.start_automation();
     }
 
     /// Replaces the private Source Configuration through one serialized transition.
@@ -378,6 +387,7 @@ struct CoreRuntime {
     activity_changed: watch::Sender<u64>,
     shutdown: watch::Sender<bool>,
     events: broadcast::Sender<CoreEvent>,
+    automation_started: AtomicBool,
 }
 
 struct ConfigurationState {
@@ -608,6 +618,7 @@ impl CoreRuntime {
             activity_changed: watch::channel(0).0,
             shutdown: watch::channel(false).0,
             events,
+            automation_started: AtomicBool::new(false),
         };
         runtime.seed_bootstrap_failures(0, bootstrap_failures);
         runtime
@@ -657,7 +668,12 @@ impl CoreRuntime {
             return self.view.load().status.clone();
         };
 
-        let recovered = recover_configuration(configuration.as_ref(), &self.adapters).await;
+        let recovered = recover_configuration(
+            configuration.as_ref(),
+            &self.adapters,
+            RecoveredFreshness::AgeBased,
+        )
+        .await;
         if !self.publish_recovered_configuration(epoch, recovered) {
             return self.view.load().status.clone();
         }
@@ -878,6 +894,9 @@ impl CoreRuntime {
 
     fn start_automation(self: &Arc<Self>) {
         if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        if self.automation_started.swap(true, Ordering::AcqRel) {
             return;
         }
         self.spawn_scheduler(SourceKind::M3u);
@@ -1536,9 +1555,12 @@ impl CoreRuntime {
     ) {
         let now = self.adapters.clock().now();
         let freshness_at = self
-            .current_validated_at(kind)
-            .filter(|validated_at| *validated_at <= now)
-            .and_then(|validated_at| validated_at.checked_add_signed(FRESHNESS))
+            .current_stale_attempt_at(kind)
+            .or_else(|| {
+                self.current_validated_at(kind)
+                    .filter(|validated_at| *validated_at <= now)
+                    .and_then(|validated_at| validated_at.checked_add_signed(FRESHNESS))
+            })
             .unwrap_or(now);
         let retry_at = self
             .control(kind)
@@ -1550,6 +1572,21 @@ impl CoreRuntime {
             (freshness_at, crate::domain::RefreshSkipReason::Fresh),
             |retry_at| (retry_at, crate::domain::RefreshSkipReason::Backoff),
         )
+    }
+
+    fn current_stale_attempt_at(&self, kind: SourceKind) -> Option<chrono::DateTime<chrono::Utc>> {
+        let view = self.view.load();
+        let state = match kind {
+            SourceKind::M3u => Some(view.status.m3u()),
+            SourceKind::Epg => view.status.epg(),
+        };
+        match state {
+            Some(SourceState::Stale {
+                next_attempt_at: Some(next_attempt_at),
+                ..
+            }) => Some(*next_attempt_at),
+            _ => None,
+        }
     }
 
     fn record_failure(
@@ -1648,9 +1685,16 @@ struct RecoveredConfiguration {
     view: CoreView,
 }
 
+#[derive(Clone, Copy)]
+enum RecoveredFreshness {
+    AgeBased,
+    PendingRevalidation,
+}
+
 async fn recover_configuration(
     configuration: &SourceConfiguration,
     adapters: &CoreAdapters,
+    freshness: RecoveredFreshness,
 ) -> RecoveredConfiguration {
     let m3u_recovery = recover_source(
         adapters,
@@ -1696,13 +1740,13 @@ async fn recover_configuration(
     });
     let m3u_state = m3u
         .as_ref()
-        .map(|m3u| source_state(m3u.validated_at, adapters.clock().now()));
+        .map(|m3u| recovered_source_state(m3u.validated_at, adapters.clock().now(), freshness));
     let epg_state = configuration.has_epg().then(|| {
         epg.as_ref().map_or_else(
             || SourceState::Unavailable {
                 failure: epg_failure.clone(),
             },
-            |epg| source_state(epg.validated_at, adapters.clock().now()),
+            |epg| recovered_source_state(epg.validated_at, adapters.clock().now(), freshness),
         )
     });
     let mut status = match (generation, m3u_state) {
@@ -2131,6 +2175,20 @@ fn source_state(
             validated_at,
             next_attempt_at: Some(now),
         }
+    }
+}
+
+fn recovered_source_state(
+    validated_at: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+    freshness: RecoveredFreshness,
+) -> SourceState {
+    match freshness {
+        RecoveredFreshness::AgeBased => source_state(validated_at, now),
+        RecoveredFreshness::PendingRevalidation => SourceState::Stale {
+            validated_at,
+            next_attempt_at: Some(now),
+        },
     }
 }
 

@@ -417,6 +417,9 @@ async fn query_and_identifier_failures_are_bounded_typed_responses() {
         ("/api/v1/groups?limit=0", "page-limit", "out-of-range"),
         ("/api/v1/groups?limit=101", "page-limit", "out-of-range"),
         ("/api/v1/groups?limit=nope", "page-limit", "invalid-format"),
+        ("/api/v1/groups?limit=-1", "page-limit", "invalid-format"),
+        ("/api/v1/groups?limit=1.5", "page-limit", "invalid-format"),
+        ("/api/v1/groups?limit=65536", "page-limit", "invalid-format"),
         (
             "/api/v1/groups?cursor=not-a-cursor",
             "page-cursor",

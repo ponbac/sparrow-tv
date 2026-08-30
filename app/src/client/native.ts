@@ -15,6 +15,7 @@ import {
   type ListChannelsInput,
   type ListGroupsInput,
   type Page,
+  type PageCursor,
   type PlaybackDescriptor,
   type ProgrammeSummary,
   type RefreshReport,
@@ -31,9 +32,15 @@ import {
 export const NATIVE_COMMANDS = Object.freeze({
   capabilities: "installed_capabilities",
   status: "catalog_status",
+  refresh: "catalog_refresh",
   groups: "catalog_list_groups",
   channels: "catalog_list_channels",
   channel: "catalog_channel",
+  schedule: "catalog_schedule",
+  search: "catalog_search",
+  searchChannels: "catalog_search_channels",
+  searchProgrammes: "catalog_search_programmes",
+  cancelSearch: "catalog_search_cancel",
   replaceSourceConfiguration: "source_configuration_replace",
   subscribe: "catalog_subscribe",
   unsubscribe: "catalog_unsubscribe",
@@ -94,6 +101,7 @@ export function createNativeSparrowClient(
 
 class TauriSparrowClient implements InstalledSparrowClient {
   readonly #ipc: NativeIpc;
+  readonly #nextSearchRequestId = createSearchRequestIdFactory();
 
   constructor(ipc: NativeIpc) {
     this.#ipc = ipc;
@@ -124,7 +132,12 @@ class TauriSparrowClient implements InstalledSparrowClient {
   refresh(
     options: ClientRequestOptions = {},
   ): Promise<ClientResult<RefreshReport>> {
-    return Promise.resolve(unsupportedResult(options.signal));
+    return this.#request(
+      NATIVE_COMMANDS.refresh,
+      undefined,
+      clientSchemas.refreshReport,
+      options.signal,
+    );
   }
 
   subscribe(listener: (event: SparrowEvent) => void): () => void {
@@ -223,23 +236,59 @@ class TauriSparrowClient implements InstalledSparrowClient {
   schedule(
     input: ScheduleInput,
   ): Promise<ClientResult<Page<ProgrammeSummary>>> {
-    return Promise.resolve(unsupportedResult(input.signal));
+    return this.#request(
+      NATIVE_COMMANDS.schedule,
+      {
+        input: {
+          id: input.id,
+          limit: input.limit,
+          ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+        },
+      },
+      clientSchemas.schedulePageFor(input),
+      input.signal,
+    );
   }
 
   search(input: SearchInput): Promise<ClientResult<SearchResults>> {
-    return Promise.resolve(unsupportedResult(input.signal));
+    return this.#searchRequest(
+      NATIVE_COMMANDS.search,
+      {
+        term: input.term,
+        channelLimit: input.channelLimit,
+        ...(input.channelCursor === undefined
+          ? {}
+          : { channelCursor: input.channelCursor }),
+        programmeLimit: input.programmeLimit,
+        ...(input.programmeCursor === undefined
+          ? {}
+          : { programmeCursor: input.programmeCursor }),
+      },
+      clientSchemas.searchResultsFor(input),
+      input.signal,
+    );
   }
 
   searchChannels(
     input: SearchPageInput,
   ): Promise<ClientResult<Page<ChannelSummary>>> {
-    return Promise.resolve(unsupportedResult(input.signal));
+    return this.#searchRequest(
+      NATIVE_COMMANDS.searchChannels,
+      searchPageCommandInput(input),
+      clientSchemas.searchChannelsPageFor(input),
+      input.signal,
+    );
   }
 
   searchProgrammes(
     input: SearchPageInput,
   ): Promise<ClientResult<Page<ProgrammeSummary>>> {
-    return Promise.resolve(unsupportedResult(input.signal));
+    return this.#searchRequest(
+      NATIVE_COMMANDS.searchProgrammes,
+      searchPageCommandInput(input),
+      clientSchemas.searchProgrammesPageFor(input),
+      input.signal,
+    );
   }
 
   startPlayback(
@@ -300,10 +349,12 @@ class TauriSparrowClient implements InstalledSparrowClient {
     args: Readonly<Record<string, unknown>> | undefined,
     parser: RuntimeParser<Value>,
     signal: AbortSignal | undefined,
+    cancelActive?: () => void,
   ): Promise<ClientResult<Value>> {
     const outcome = await invokeWithCancellation(
       () => this.#ipc.invoke(command, args),
       signal,
+      cancelActive,
     );
     switch (outcome._tag) {
       case "cancelled":
@@ -322,6 +373,22 @@ class TauriSparrowClient implements InstalledSparrowClient {
       }
     }
   }
+
+  #searchRequest<Value>(
+    command: string,
+    input: Readonly<Record<string, unknown>>,
+    parser: RuntimeParser<Value>,
+    signal: AbortSignal | undefined,
+  ): Promise<ClientResult<Value>> {
+    const requestId = this.#nextSearchRequestId();
+    return this.#request(
+      command,
+      { input: { requestId, ...input } },
+      parser,
+      signal,
+      () => cancelNativeSearch(this.#ipc, requestId),
+    );
+  }
 }
 
 type InvokeOutcome =
@@ -332,6 +399,7 @@ type InvokeOutcome =
 function invokeWithCancellation(
   start: () => Promise<unknown>,
   signal: AbortSignal | undefined,
+  cancelActive?: () => void,
 ): Promise<InvokeOutcome> {
   if (signal?.aborted === true) {
     return Promise.resolve({ _tag: "cancelled" });
@@ -347,7 +415,13 @@ function invokeWithCancellation(
       signal?.removeEventListener("abort", cancel);
       resolve(outcome);
     };
-    const cancel = () => finish({ _tag: "cancelled" });
+    const cancel = () => {
+      if (settled) {
+        return;
+      }
+      finish({ _tag: "cancelled" });
+      cancelActive?.();
+    };
     signal?.addEventListener("abort", cancel, { once: true });
 
     let flight: Promise<unknown>;
@@ -364,6 +438,29 @@ function invokeWithCancellation(
   });
 }
 
+function createSearchRequestIdFactory(): () => string {
+  const nonceBytes = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(nonceBytes);
+  const nonce = Array.from(nonceBytes, (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  let sequence = 0;
+  return () => {
+    sequence += 1;
+    return `srch1_${nonce}_${sequence.toString(16)}`;
+  };
+}
+
+function cancelNativeSearch(ipc: NativeIpc, requestId: string): void {
+  try {
+    ipc
+      .invoke(NATIVE_COMMANDS.cancelSearch, { input: { requestId } })
+      .catch(() => undefined);
+  } catch {
+    // Cancellation is best effort after the caller has already stopped waiting.
+  }
+}
+
 function releaseSubscription(ipc: NativeIpc, subscriptionId: string): void {
   try {
     ipc
@@ -374,12 +471,16 @@ function releaseSubscription(ipc: NativeIpc, subscriptionId: string): void {
   }
 }
 
-function unsupportedResult(
-  signal: AbortSignal | undefined,
-): ClientResult<never> {
-  return signal?.aborted === true
-    ? { ok: false, error: { _tag: "cancelled" } }
-    : { ok: false, error: { _tag: "service-unavailable" } };
+function searchPageCommandInput(input: SearchPageInput): {
+  readonly term: string;
+  readonly limit: number;
+  readonly cursor?: PageCursor;
+} {
+  return {
+    term: input.term,
+    limit: input.limit,
+    ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+  };
 }
 
 function invalidLocationError(
