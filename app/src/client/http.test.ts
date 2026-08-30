@@ -239,6 +239,7 @@ describe("hosted HTTP Sparrow client", () => {
 
   it("runtime-parses every remaining typed server error", async () => {
     const errors: readonly unknown[] = [
+      { _tag: "service-unavailable" },
       { _tag: "invalid-input", field: "page-limit", reason: "out-of-range" },
       { _tag: "invalid-input", field: "route", reason: "invalid-format" },
       { _tag: "not-configured" },

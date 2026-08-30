@@ -27,6 +27,7 @@ const GROUP_CHANNELS_QUERY_TAG: u8 = 2;
 const SCHEDULE_QUERY_TAG: u8 = 3;
 const CHANNEL_SEARCH_QUERY_TAG: u8 = 4;
 const PROGRAMME_SEARCH_QUERY_TAG: u8 = 5;
+const SEARCH_CANCELLATION_CHECKPOINT_BYTES: usize = 4 * 1024;
 
 pub(crate) struct ChannelCatalog {
     generation: CatalogGeneration,
@@ -211,28 +212,77 @@ impl ChannelCatalog {
     }
 
     pub(crate) fn search(&self, request: &SearchRequest) -> Result<SearchResults, CoreError> {
-        // Ranking allocates one small index record per match. Page construction
-        // shallow-clones at most PageLimit read models, whose strings remain
-        // shared with the immutable catalog through Arc.
-        let channel_matches = ranked_indices(&self.channel_search, request.term());
-        let channel_page = Page::from_selection(
-            self.generation,
-            &self.summaries,
-            &channel_matches,
-            request.channels(),
-            query_hash(CHANNEL_SEARCH_QUERY_TAG, Some(request.term().as_str())),
-        )?;
+        self.search_with_cancellation(request, &never_cancelled)
+    }
 
-        let programme_matches = ranked_indices(&self.programme_search, request.term());
-        let programme_page = Page::from_selection(
-            self.generation,
-            &self.programmes,
-            &programme_matches,
+    pub(crate) fn search_with_cancellation(
+        &self,
+        request: &SearchRequest,
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<SearchResults, CoreError> {
+        let channel_page = self.search_channels_with_cancellation(
+            request.term(),
+            request.channels(),
+            is_cancelled,
+        )?;
+        let programme_page = self.search_programmes_with_cancellation(
+            request.term(),
             request.programmes(),
-            query_hash(PROGRAMME_SEARCH_QUERY_TAG, Some(request.term().as_str())),
+            is_cancelled,
         )?;
 
         Ok(SearchResults::new(channel_page, programme_page))
+    }
+
+    pub(crate) fn search_channels(
+        &self,
+        term: &SearchTerm,
+        page: &PageRequest,
+    ) -> Result<Page<ChannelSummary>, CoreError> {
+        self.search_channels_with_cancellation(term, page, &never_cancelled)
+    }
+
+    pub(crate) fn search_channels_with_cancellation(
+        &self,
+        term: &SearchTerm,
+        page: &PageRequest,
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<Page<ChannelSummary>, CoreError> {
+        // Ranking allocates one small index record per match. Page construction
+        // shallow-clones at most PageLimit read models, whose strings remain
+        // shared with the immutable catalog through Arc.
+        let matches = ranked_indices(&self.channel_search, term, is_cancelled)?;
+        Page::from_selection(
+            self.generation,
+            &self.summaries,
+            &matches,
+            page,
+            query_hash(CHANNEL_SEARCH_QUERY_TAG, Some(term.as_str())),
+        )
+    }
+
+    pub(crate) fn search_programmes(
+        &self,
+        term: &SearchTerm,
+        page: &PageRequest,
+    ) -> Result<Page<ProgrammeSummary>, CoreError> {
+        self.search_programmes_with_cancellation(term, page, &never_cancelled)
+    }
+
+    pub(crate) fn search_programmes_with_cancellation(
+        &self,
+        term: &SearchTerm,
+        page: &PageRequest,
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<Page<ProgrammeSummary>, CoreError> {
+        let matches = ranked_indices(&self.programme_search, term, is_cancelled)?;
+        Page::from_selection(
+            self.generation,
+            &self.programmes,
+            &matches,
+            page,
+            query_hash(PROGRAMME_SEARCH_QUERY_TAG, Some(term.as_str())),
+        )
     }
 }
 
@@ -249,17 +299,26 @@ impl SearchDocument {
         }
     }
 
-    fn rank(&self, term: &SearchTerm) -> Option<SearchRank> {
-        std::iter::once(self.primary.as_str())
+    fn rank(
+        &self,
+        term: &SearchTerm,
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<Option<SearchRank>, CoreError> {
+        let mut best: Option<SearchRank> = None;
+        for (field_index, field) in std::iter::once(self.primary.as_str())
             .chain(self.secondary.as_deref())
             .enumerate()
-            .filter_map(|(field_index, field)| {
-                field_rank(field, term.as_str()).map(|category| SearchRank {
-                    category,
-                    field_index,
-                })
-            })
-            .min()
+        {
+            let Some(category) = field_rank(field, term.as_str(), is_cancelled)? else {
+                continue;
+            };
+            let candidate = SearchRank {
+                category,
+                field_index,
+            };
+            best = Some(best.map_or(candidate, |current| current.min(candidate)));
+        }
+        Ok(best)
     }
 }
 
@@ -277,34 +336,160 @@ enum MatchCategory {
     Substring,
 }
 
-fn ranked_indices(documents: &[SearchDocument], term: &SearchTerm) -> Vec<usize> {
-    let mut ranked = documents
-        .iter()
-        .enumerate()
-        .filter_map(|(item_index, document)| document.rank(term).map(|rank| (rank, item_index)))
-        .collect::<Vec<_>>();
-    // The deterministic catalog item index is the final total-order tie breaker.
-    ranked.sort_unstable();
-    ranked
-        .into_iter()
-        .map(|(_, item_index)| item_index)
-        .collect()
+fn ranked_indices(
+    documents: &[SearchDocument],
+    term: &SearchTerm,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<usize>, CoreError> {
+    const SEARCH_FIELDS: usize = 2;
+    const RANK_BUCKETS: usize = 4 * SEARCH_FIELDS;
+
+    // SearchRank has a small finite range. Bucketing keeps the same total order
+    // as sorting `(SearchRank, catalog index)` while giving cancellation a
+    // checkpoint for every document and every emitted match.
+    let mut buckets: [Vec<usize>; RANK_BUCKETS] = std::array::from_fn(|_| Vec::new());
+    for (item_index, document) in documents.iter().enumerate() {
+        if is_cancelled() {
+            return Err(CoreError::Cancelled);
+        }
+        if let Some(rank) = document.rank(term, is_cancelled)? {
+            buckets[rank.bucket_index()].push(item_index);
+        }
+    }
+
+    let match_count = buckets.iter().map(Vec::len).sum();
+    let mut ranked = Vec::with_capacity(match_count);
+    for bucket in buckets {
+        // Items enter each bucket in catalog order, preserving the catalog index
+        // as the deterministic final tie breaker without an uninterruptible sort.
+        for item_index in bucket {
+            if is_cancelled() {
+                return Err(CoreError::Cancelled);
+            }
+            ranked.push(item_index);
+        }
+    }
+    Ok(ranked)
 }
 
-fn field_rank(field: &str, term: &str) -> Option<MatchCategory> {
+impl SearchRank {
+    fn bucket_index(self) -> usize {
+        let category = match self.category {
+            MatchCategory::Exact => 0,
+            MatchCategory::Prefix => 1,
+            MatchCategory::Token => 2,
+            MatchCategory::Substring => 3,
+        };
+        category * 2 + self.field_index
+    }
+}
+
+fn never_cancelled() -> bool {
+    false
+}
+
+fn field_rank(
+    field: &str,
+    term: &str,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<Option<MatchCategory>, CoreError> {
     if field == term {
-        return Some(MatchCategory::Exact);
+        return Ok(Some(MatchCategory::Exact));
     }
     if field.starts_with(term) {
-        return Some(MatchCategory::Prefix);
+        return Ok(Some(MatchCategory::Prefix));
     }
-    if term
-        .split(' ')
-        .all(|query_token| field.split(' ').any(|token| token == query_token))
+    if contains_all_tokens(field, term, is_cancelled)? {
+        return Ok(Some(MatchCategory::Token));
+    }
+    Ok(contains_substring(field, term, is_cancelled)?.then_some(MatchCategory::Substring))
+}
+
+fn contains_all_tokens(
+    field: &str,
+    term: &str,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<bool, CoreError> {
+    if is_cancelled() {
+        return Err(CoreError::Cancelled);
+    }
+    let mut missing = term.split(' ').collect::<HashSet<_>>();
+    let longest = missing.iter().map(|token| token.len()).max().unwrap_or(0);
+    let mut token_start = 0;
+
+    for (chunk_index, chunk) in field
+        .as_bytes()
+        .chunks(SEARCH_CANCELLATION_CHECKPOINT_BYTES)
+        .enumerate()
     {
-        return Some(MatchCategory::Token);
+        if chunk_index != 0 && is_cancelled() {
+            return Err(CoreError::Cancelled);
+        }
+        let chunk_start = chunk_index * SEARCH_CANCELLATION_CHECKPOINT_BYTES;
+        for (offset, byte) in chunk.iter().enumerate() {
+            if *byte != b' ' {
+                continue;
+            }
+            let token_end = chunk_start + offset;
+            if token_end - token_start <= longest {
+                missing.remove(&field[token_start..token_end]);
+                if missing.is_empty() {
+                    return Ok(true);
+                }
+            }
+            token_start = token_end + 1;
+        }
     }
-    field.contains(term).then_some(MatchCategory::Substring)
+
+    if field.len() - token_start <= longest {
+        missing.remove(&field[token_start..]);
+    }
+    Ok(missing.is_empty())
+}
+
+fn contains_substring(
+    field: &str,
+    term: &str,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<bool, CoreError> {
+    if is_cancelled() {
+        return Err(CoreError::Cancelled);
+    }
+    let needle = term.as_bytes();
+    let mut fallback = vec![0; needle.len()];
+    let mut prefix_length = 0;
+    for index in 1..needle.len() {
+        while prefix_length > 0 && needle[index] != needle[prefix_length] {
+            prefix_length = fallback[prefix_length - 1];
+        }
+        if needle[index] == needle[prefix_length] {
+            prefix_length += 1;
+            fallback[index] = prefix_length;
+        }
+    }
+
+    let mut matched = 0;
+    for (chunk_index, chunk) in field
+        .as_bytes()
+        .chunks(SEARCH_CANCELLATION_CHECKPOINT_BYTES)
+        .enumerate()
+    {
+        if chunk_index != 0 && is_cancelled() {
+            return Err(CoreError::Cancelled);
+        }
+        for byte in chunk {
+            while matched > 0 && *byte != needle[matched] {
+                matched = fallback[matched - 1];
+            }
+            if *byte == needle[matched] {
+                matched += 1;
+                if matched == needle.len() {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 
 struct PendingChannel {
@@ -483,6 +668,7 @@ impl fmt::Debug for SecretPlaybackLocation {
 #[cfg(test)]
 mod tests {
     use std::{
+        cell::Cell,
         collections::{BTreeMap, HashSet},
         sync::Arc,
     };
@@ -715,18 +901,69 @@ mod tests {
     fn search_ranking_is_exact_then_prefix_then_token_then_substring() {
         use super::MatchCategory::{Exact, Prefix, Substring, Token};
 
-        assert_eq!(super::field_rank("news", "news"), Some(Exact));
-        assert_eq!(super::field_rank("news tonight", "news"), Some(Prefix));
-        assert_eq!(super::field_rank("newsroom evening", "news"), Some(Prefix));
-        assert_eq!(
-            super::field_rank("evening news bulletin", "news"),
-            Some(Token)
-        );
-        assert_eq!(
-            super::field_rank("goodnews bulletin", "news"),
-            Some(Substring)
-        );
-        assert_eq!(super::field_rank("weather bulletin", "news"), None);
+        let rank = |field, term| {
+            super::field_rank(field, term, &super::never_cancelled)
+                .expect("an uncancelled rank succeeds")
+        };
+
+        assert_eq!(rank("news", "news"), Some(Exact));
+        assert_eq!(rank("news tonight", "news"), Some(Prefix));
+        assert_eq!(rank("newsroom evening", "news"), Some(Prefix));
+        assert_eq!(rank("evening news bulletin", "news"), Some(Token));
+        assert_eq!(rank("goodnews bulletin", "news"), Some(Substring));
+        assert_eq!(rank("weather bulletin", "news"), None);
+    }
+
+    #[test]
+    fn search_observes_cancellation_while_emitting_ranked_matches() {
+        let documents = [
+            super::SearchDocument::new("News", None),
+            super::SearchDocument::new("News", None),
+            super::SearchDocument::new("News", None),
+        ];
+        let term = SearchTerm::parse("news").expect("fixture term is valid");
+        let checkpoints = Cell::new(0_usize);
+
+        let result = super::ranked_indices(&documents, &term, &|| {
+            let next = checkpoints.get() + 1;
+            checkpoints.set(next);
+            next > documents.len()
+        });
+
+        assert_eq!(result, Err(CoreError::Cancelled));
+        assert_eq!(checkpoints.get(), documents.len() + 1);
+    }
+
+    #[test]
+    fn search_observes_cancellation_inside_one_pathological_field() {
+        let oversized_field = "x".repeat(super::SEARCH_CANCELLATION_CHECKPOINT_BYTES * 3);
+        let documents = [super::SearchDocument::new(&oversized_field, None)];
+        let term = SearchTerm::parse("needle").expect("fixture term is valid");
+        let checkpoints = Cell::new(0_u8);
+
+        let result = super::ranked_indices(&documents, &term, &|| {
+            let next = checkpoints.get() + 1;
+            checkpoints.set(next);
+            next >= 3
+        });
+
+        assert_eq!(result, Err(CoreError::Cancelled));
+        assert_eq!(checkpoints.get(), 3);
+    }
+
+    #[test]
+    fn substring_matching_observes_cancellation_inside_one_pathological_field() {
+        let oversized_field = "x".repeat(super::SEARCH_CANCELLATION_CHECKPOINT_BYTES * 3);
+        let checkpoints = Cell::new(0_u8);
+
+        let result = super::contains_substring(&oversized_field, "needle", &|| {
+            let next = checkpoints.get() + 1;
+            checkpoints.set(next);
+            next >= 2
+        });
+
+        assert_eq!(result, Err(CoreError::Cancelled));
+        assert_eq!(checkpoints.get(), 2);
     }
 
     fn catalog(parsed: Vec<ParsedChannel>, generation: CatalogGeneration) -> ChannelCatalog {

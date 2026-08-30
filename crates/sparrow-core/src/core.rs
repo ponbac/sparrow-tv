@@ -16,8 +16,8 @@ use crate::{
         CatalogStatus, ChannelDetails, ChannelGroupView, ChannelId, ChannelQuery, ChannelSummary,
         CoreError, CoreEvent, LifecycleSignal, Page, PageRequest, ProgrammeSummary, RefreshOutcome,
         RefreshReport, RefreshTrigger, SafeFailure, ScheduleQuery, SearchRequest, SearchResults,
-        SnapshotOperation, SnapshotRecoveryDiagnostic, SnapshotRecoveryReason, SourceAccessError,
-        SourceConfiguration, SourceConfigurationInput, SourceKind, SourceState,
+        SearchTerm, SnapshotOperation, SnapshotRecoveryDiagnostic, SnapshotRecoveryReason,
+        SourceAccessError, SourceConfiguration, SourceConfigurationInput, SourceKind, SourceState,
     },
     m3u,
     ports::{
@@ -146,6 +146,57 @@ impl SparrowCore {
     /// Searches Channels and Programmes without reparsing the active Sources.
     pub fn search(&self, request: SearchRequest) -> Result<SearchResults, CoreError> {
         self.query_catalog(|catalog| catalog.search(&request))
+    }
+
+    /// Searches both result lanes while cooperatively observing adapter cancellation.
+    pub fn search_with_cancellation(
+        &self,
+        request: SearchRequest,
+        is_cancelled: impl Fn() -> bool,
+    ) -> Result<SearchResults, CoreError> {
+        self.query_catalog(|catalog| catalog.search_with_cancellation(&request, &is_cancelled))
+    }
+
+    /// Searches only Channels without ranking Programme documents.
+    pub fn search_channels(
+        &self,
+        term: SearchTerm,
+        page: PageRequest,
+    ) -> Result<Page<ChannelSummary>, CoreError> {
+        self.query_catalog(|catalog| catalog.search_channels(&term, &page))
+    }
+
+    /// Searches only Channels while cooperatively observing adapter cancellation.
+    pub fn search_channels_with_cancellation(
+        &self,
+        term: SearchTerm,
+        page: PageRequest,
+        is_cancelled: impl Fn() -> bool,
+    ) -> Result<Page<ChannelSummary>, CoreError> {
+        self.query_catalog(|catalog| {
+            catalog.search_channels_with_cancellation(&term, &page, &is_cancelled)
+        })
+    }
+
+    /// Searches only Programmes without ranking Channel documents.
+    pub fn search_programmes(
+        &self,
+        term: SearchTerm,
+        page: PageRequest,
+    ) -> Result<Page<ProgrammeSummary>, CoreError> {
+        self.query_catalog(|catalog| catalog.search_programmes(&term, &page))
+    }
+
+    /// Searches only Programmes while cooperatively observing adapter cancellation.
+    pub fn search_programmes_with_cancellation(
+        &self,
+        term: SearchTerm,
+        page: PageRequest,
+        is_cancelled: impl Fn() -> bool,
+    ) -> Result<Page<ProgrammeSummary>, CoreError> {
+        self.query_catalog(|catalog| {
+            catalog.search_programmes_with_cancellation(&term, &page, &is_cancelled)
+        })
     }
 
     /// Refreshes configured Sources independently. Concurrent requests for one

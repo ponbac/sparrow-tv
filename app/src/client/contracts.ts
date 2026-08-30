@@ -135,6 +135,15 @@ export interface ChannelDetails {
   readonly group: string;
 }
 
+/** Browser-safe Programme metadata associated with one catalog Channel. */
+export interface ProgrammeSummary {
+  readonly channelId: ChannelId;
+  readonly title: string;
+  readonly description: string | null;
+  readonly startsAt: IsoInstant;
+  readonly endsAt: IsoInstant;
+}
+
 /** One generation-bound page of immutable catalog values. */
 export interface Page<Item> {
   readonly generation: CatalogGeneration;
@@ -166,10 +175,51 @@ export interface ChannelInput extends ClientRequestOptions {
   readonly id: ChannelId;
 }
 
+/** Input for reading one generation-bound page of a Channel's schedule. */
+export interface ScheduleInput extends ClientRequestOptions {
+  readonly id: ChannelId;
+  readonly limit: number;
+  readonly cursor?: PageCursor;
+  /** Last Programme start from the preceding page; used only for response correlation. */
+  readonly afterStartsAt?: IsoInstant;
+  /** Earlier submitted cursors; used only to reject malformed response cycles. */
+  readonly previousCursors?: readonly PageCursor[];
+}
+
+/** Input for independently paginating Channel and Programme search results. */
+export interface SearchInput extends ClientRequestOptions {
+  readonly term: string;
+  readonly channelLimit: number;
+  readonly channelCursor?: PageCursor;
+  readonly channelPreviousCursors?: readonly PageCursor[];
+  readonly programmeLimit: number;
+  readonly programmeCursor?: PageCursor;
+  readonly programmePreviousCursors?: readonly PageCursor[];
+}
+
+/** Input for reading one independently paginated search-result lane. */
+export interface SearchPageInput extends ClientRequestOptions {
+  readonly term: string;
+  readonly limit: number;
+  readonly cursor?: PageCursor;
+  /** Earlier submitted cursors; used only to reject malformed response cycles. */
+  readonly previousCursors?: readonly PageCursor[];
+}
+
+/** Independently paginated Channel and Programme matches from one catalog generation. */
+export interface SearchResults {
+  readonly generation: CatalogGeneration;
+  readonly channels: Page<ChannelSummary>;
+  readonly programmes: Page<ProgrammeSummary>;
+}
+
 /** Expected, browser-safe failures returned by every client operation. */
 export type ClientError =
   | {
       readonly _tag: "authentication-required";
+    }
+  | {
+      readonly _tag: "service-unavailable";
     }
   | {
       readonly _tag: "invalid-input";
@@ -244,6 +294,24 @@ export interface SparrowClient {
 
   /** Resolves browser-safe details for one channel. */
   channel(input: ChannelInput): Promise<ClientResult<ChannelDetails>>;
+
+  /** Reads a generation-bound page of Programmes for one Channel. */
+  schedule(
+    input: ScheduleInput,
+  ): Promise<ClientResult<Page<ProgrammeSummary>>>;
+
+  /** Searches Channels and Programmes with independent continuation tokens. */
+  search(input: SearchInput): Promise<ClientResult<SearchResults>>;
+
+  /** Searches only the Channel lane with its own continuation token. */
+  searchChannels(
+    input: SearchPageInput,
+  ): Promise<ClientResult<Page<ChannelSummary>>>;
+
+  /** Searches only the Programme lane with its own continuation token. */
+  searchProgrammes(
+    input: SearchPageInput,
+  ): Promise<ClientResult<Page<ProgrammeSummary>>>;
 }
 
 const capabilitiesSchema: z.ZodType<Capabilities> = z.strictObject({
@@ -327,14 +395,173 @@ const channelDetailsSchema: z.ZodType<ChannelDetails> = z.strictObject({
   group: channelGroupNameSchema,
 });
 
+const programmeSummarySchema: z.ZodType<ProgrammeSummary> = z
+  .strictObject({
+    channelId: channelIdSchema,
+    title: z.string().min(1),
+    description: z.string().nullable(),
+    startsAt: timestampSchema,
+    endsAt: timestampSchema,
+  })
+  .refine(
+    (programme) =>
+      Date.parse(programme.endsAt) > Date.parse(programme.startsAt),
+    { message: "Programme end must follow its start." },
+  );
+
 const pageSchema = <Item>(
   itemSchema: z.ZodType<Item>,
 ): z.ZodType<Page<Item>> =>
   z.strictObject({
     generation: catalogGenerationSchema,
-    items: z.array(itemSchema),
+    items: z.array(itemSchema).max(100),
     next: pageCursorSchema.nullable(),
   });
+
+const requestedPageSchema = <Item>(
+  itemSchema: z.ZodType<Item>,
+  requestedLimit: number,
+): z.ZodType<Page<Item>> =>
+  pageSchema(itemSchema).refine(
+    (page) =>
+      isPageLimit(requestedLimit) &&
+      page.items.length <= requestedLimit &&
+      (page.next === null || page.items.length === requestedLimit),
+    {
+      message:
+        "A response page must honor its requested limit and fill every continuing page.",
+    },
+  );
+
+const schedulePageSchemaFor = (
+  input: Pick<
+    ScheduleInput,
+    "id" | "limit" | "cursor" | "afterStartsAt" | "previousCursors"
+  >,
+): z.ZodType<Page<ProgrammeSummary>> =>
+  requestedPageSchema(programmeSummarySchema, input.limit)
+    .refine(
+      (page) =>
+        isNewCursor(page.next, input.cursor, input.previousCursors),
+      { message: "A schedule continuation cannot repeat an earlier cursor." },
+    )
+    .refine(
+      (page) => page.items.every((programme) => programme.channelId === input.id),
+      { message: "Every scheduled Programme must belong to the requested Channel." },
+    )
+    .refine(
+      (page) => isNondecreasingByStart(page.items),
+      { message: "A schedule page must be ordered by Programme start." },
+    )
+    .refine(
+      (page) =>
+        input.afterStartsAt === undefined ||
+        page.items[0] === undefined ||
+        Date.parse(page.items[0].startsAt) >= Date.parse(input.afterStartsAt),
+      { message: "A schedule continuation cannot precede its prior page." },
+    );
+
+const searchResultsSchema: z.ZodType<SearchResults> = z
+  .strictObject({
+    generation: catalogGenerationSchema,
+    channels: pageSchema(channelSummarySchema),
+    programmes: pageSchema(programmeSummarySchema),
+  })
+  .refine(
+    (results) =>
+      results.channels.generation === results.generation &&
+      results.programmes.generation === results.generation,
+    { message: "Search result pages must share the outer generation." },
+  );
+
+const searchResultsSchemaFor = (
+  input: Pick<
+    SearchInput,
+    | "channelLimit"
+    | "channelCursor"
+    | "channelPreviousCursors"
+    | "programmeLimit"
+    | "programmeCursor"
+    | "programmePreviousCursors"
+  >,
+): z.ZodType<SearchResults> =>
+  z
+    .strictObject({
+      generation: catalogGenerationSchema,
+      channels: requestedPageSchema(channelSummarySchema, input.channelLimit),
+      programmes: requestedPageSchema(
+        programmeSummarySchema,
+        input.programmeLimit,
+      ),
+    })
+    .refine(
+      (results) =>
+        results.channels.generation === results.generation &&
+        results.programmes.generation === results.generation,
+      { message: "Search result pages must share the outer generation." },
+    )
+    .refine(
+      (results) =>
+        isNewCursor(
+          results.channels.next,
+          input.channelCursor,
+          input.channelPreviousCursors,
+        ) &&
+        isNewCursor(
+          results.programmes.next,
+          input.programmeCursor,
+          input.programmePreviousCursors,
+        ),
+      { message: "A search continuation cannot repeat an earlier cursor." },
+    );
+
+const searchPageSchemaFor = <Item>(
+  itemSchema: z.ZodType<Item>,
+  input: Pick<SearchPageInput, "limit" | "cursor" | "previousCursors">,
+): z.ZodType<Page<Item>> =>
+  requestedPageSchema(itemSchema, input.limit).refine(
+    (page) => isNewCursor(page.next, input.cursor, input.previousCursors),
+    { message: "A search continuation cannot repeat an earlier cursor." },
+  );
+
+const searchChannelsPageSchemaFor = (
+  input: Pick<SearchPageInput, "limit" | "cursor" | "previousCursors">,
+): z.ZodType<Page<ChannelSummary>> =>
+  searchPageSchemaFor(channelSummarySchema, input);
+
+const searchProgrammesPageSchemaFor = (
+  input: Pick<SearchPageInput, "limit" | "cursor" | "previousCursors">,
+): z.ZodType<Page<ProgrammeSummary>> =>
+  searchPageSchemaFor(programmeSummarySchema, input);
+
+function isNewCursor(
+  next: PageCursor | null,
+  submitted: PageCursor | undefined,
+  previous: readonly PageCursor[] | undefined,
+): boolean {
+  return (
+    next === null ||
+    (next !== submitted && previous?.includes(next) !== true)
+  );
+}
+
+function isPageLimit(value: number): boolean {
+  return Number.isInteger(value) && value >= 1 && value <= 100;
+}
+
+function isNondecreasingByStart(
+  programmes: readonly ProgrammeSummary[],
+): boolean {
+  let previousStart: number | undefined;
+  for (const programme of programmes) {
+    const currentStart = Date.parse(programme.startsAt);
+    if (previousStart !== undefined && currentStart < previousStart) {
+      return false;
+    }
+    previousStart = currentStart;
+  }
+  return true;
+}
 
 type ServerClientError = Exclude<
   ClientError,
@@ -344,6 +571,9 @@ type ServerClientError = Exclude<
 const serverClientErrorSchema: z.ZodType<ServerClientError> = z.discriminatedUnion("_tag", [
   z.strictObject({
     _tag: z.literal("authentication-required"),
+  }),
+  z.strictObject({
+    _tag: z.literal("service-unavailable"),
   }),
   z.strictObject({
     _tag: z.literal("invalid-input"),
@@ -393,12 +623,18 @@ const clientErrorEnvelopeSchema: z.ZodType<{
     error: serverClientErrorSchema,
   });
 
-/** Runtime parsers for every success payload and the shared error envelope value. */
+/** Runtime parsers and request-aware parser factories for hosted protocol payloads. */
 export const clientSchemas = Object.freeze({
   capabilities: capabilitiesSchema,
   status: catalogStatusSchema,
   groupsPage: pageSchema(channelGroupSchema),
   channelsPage: pageSchema(channelSummarySchema),
   channel: channelDetailsSchema,
+  schedulePage: pageSchema(programmeSummarySchema),
+  searchResults: searchResultsSchema,
+  schedulePageFor: schedulePageSchemaFor,
+  searchResultsFor: searchResultsSchemaFor,
+  searchChannelsPageFor: searchChannelsPageSchemaFor,
+  searchProgrammesPageFor: searchProgrammesPageSchemaFor,
   errorEnvelope: clientErrorEnvelopeSchema,
 });

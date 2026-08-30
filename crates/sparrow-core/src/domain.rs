@@ -1400,6 +1400,8 @@ pub enum CoreError {
     ChannelNotFound { id: ChannelId },
     #[error("the page cursor is stale")]
     StaleCursor { current: CatalogGeneration },
+    #[error("the catalog query was cancelled")]
+    Cancelled,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

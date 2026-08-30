@@ -1,5 +1,7 @@
 mod support;
 
+use std::cell::Cell;
+
 use sparrow_core::{
     CoreError, InputField, InputReason, PageCursor, PageLimit, PageRequest, SearchRequest,
     SearchTerm, SourceConfigurationInput, SourceKind, SparrowCore,
@@ -139,6 +141,79 @@ async fn channels_and_programmes_are_ranked_and_paginated_independently() {
         .expect("Programme descriptions are indexed without reparsing EPG");
     assert!(description_match.channels().items().is_empty());
     assert_eq!(titles(description_match.programmes()), ["News"]);
+    assert_eq!(source.open_count_for(SourceKind::M3u), 1);
+    assert_eq!(source.open_count_for(SourceKind::Epg), 1);
+}
+
+#[tokio::test]
+async fn lane_searches_page_only_the_requested_result_kind() {
+    let (core, source) = core_with_guide(CHANNELS, GUIDE).await;
+    let term = SearchTerm::parse("news").expect("fixture term is valid");
+
+    let channels = core
+        .search_channels(term.clone(), PageRequest::first(limit(2)))
+        .expect("the Channel lane is searchable");
+    let programmes = core
+        .search_programmes(term.clone(), PageRequest::first(limit(1)))
+        .expect("the Programme lane is searchable");
+    let combined = core
+        .search(SearchRequest::new(
+            term.clone(),
+            PageRequest::first(limit(2)),
+            PageRequest::first(limit(1)),
+        ))
+        .expect("the combined search remains available");
+
+    assert_eq!(names(&channels), ["News", "Newsroom"]);
+    assert_eq!(titles(&programmes), ["News"]);
+    assert_eq!(channels.generation(), programmes.generation());
+    assert_eq!(channels.next(), combined.channels().next());
+    assert_eq!(programmes.next(), combined.programmes().next());
+
+    let channel_cursor = round_trip(channels.next().expect("Channel matches remain"));
+    let programme_cursor = round_trip(programmes.next().expect("Programme matches remain"));
+    let remaining_channels = core
+        .search_channels(term.clone(), PageRequest::after(channel_cursor, limit(2)))
+        .expect("the Channel lane cursor continues independently");
+    let remaining_programmes = core
+        .search_programmes(
+            term.clone(),
+            PageRequest::after(programme_cursor.clone(), limit(3)),
+        )
+        .expect("the Programme lane cursor continues independently");
+
+    assert_eq!(
+        names(&remaining_channels),
+        ["Daily News Europe", "Goodnews Archive"]
+    );
+    assert_eq!(
+        titles(&remaining_programmes),
+        ["News Tonight", "Evening News Bulletin", "Goodnews Story"]
+    );
+    assert!(matches!(
+        core.search_channels(term, PageRequest::after(programme_cursor, limit(1))),
+        Err(CoreError::InvalidInput {
+            field: InputField::PageCursor,
+            reason: InputReason::CursorQueryMismatch,
+        })
+    ));
+    assert_eq!(source.open_count_for(SourceKind::M3u), 1);
+    assert_eq!(source.open_count_for(SourceKind::Epg), 1);
+}
+
+#[tokio::test]
+async fn search_cooperatively_stops_after_adapter_cancellation() {
+    let (core, source) = core_with_guide(CHANNELS, GUIDE).await;
+    let probes = Cell::new(0_u8);
+
+    let result = core.search_with_cancellation(request("news", 100, 100), || {
+        let next = probes.get().saturating_add(1);
+        probes.set(next);
+        next >= 3
+    });
+
+    assert!(matches!(result, Err(CoreError::Cancelled)));
+    assert_eq!(probes.get(), 3);
     assert_eq!(source.open_count_for(SourceKind::M3u), 1);
     assert_eq!(source.open_count_for(SourceKind::Epg), 1);
 }

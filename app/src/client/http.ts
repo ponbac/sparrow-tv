@@ -12,6 +12,11 @@ import {
   type ListChannelsInput,
   type ListGroupsInput,
   type Page,
+  type ProgrammeSummary,
+  type ScheduleInput,
+  type SearchInput,
+  type SearchPageInput,
+  type SearchResults,
   type SparrowClient,
 } from "./contracts";
 
@@ -125,6 +130,65 @@ class HttpSparrowClient implements SparrowClient {
     );
   }
 
+  /** Reads one generation-bound page of a Channel's Programme schedule. */
+  schedule(
+    input: ScheduleInput,
+  ): Promise<ClientResult<Page<ProgrammeSummary>>> {
+    const query = new URLSearchParams();
+    query.set("limit", String(input.limit));
+    if (input.cursor !== undefined) {
+      query.set("cursor", input.cursor);
+    }
+
+    return this.#request(
+      `${API_ROOT}/channels/${encodeURIComponent(input.id)}/schedule?${query.toString()}`,
+      clientSchemas.schedulePageFor(input),
+      input.signal,
+    );
+  }
+
+  /** Searches Channels and Programmes with independent pagination. */
+  search(input: SearchInput): Promise<ClientResult<SearchResults>> {
+    const query = new URLSearchParams();
+    query.set("term", input.term);
+    query.set("channelLimit", String(input.channelLimit));
+    if (input.channelCursor !== undefined) {
+      query.set("channelCursor", input.channelCursor);
+    }
+    query.set("programmeLimit", String(input.programmeLimit));
+    if (input.programmeCursor !== undefined) {
+      query.set("programmeCursor", input.programmeCursor);
+    }
+
+    return this.#request(
+      `${API_ROOT}/search?${query.toString()}`,
+      clientSchemas.searchResultsFor(input),
+      input.signal,
+    );
+  }
+
+  /** Searches only the Channel lane with its own continuation token. */
+  searchChannels(
+    input: SearchPageInput,
+  ): Promise<ClientResult<Page<ChannelSummary>>> {
+    return this.#request(
+      searchPageEndpoint("channels", input),
+      clientSchemas.searchChannelsPageFor(input),
+      input.signal,
+    );
+  }
+
+  /** Searches only the Programme lane with its own continuation token. */
+  searchProgrammes(
+    input: SearchPageInput,
+  ): Promise<ClientResult<Page<ProgrammeSummary>>> {
+    return this.#request(
+      searchPageEndpoint("programmes", input),
+      clientSchemas.searchProgrammesPageFor(input),
+      input.signal,
+    );
+  }
+
   async #request<Value>(
     endpoint: string,
     successParser: RuntimeParser<Value>,
@@ -172,6 +236,19 @@ class HttpSparrowClient implements SparrowClient {
 
     return invalidProtocolResponse(response.status);
   }
+}
+
+function searchPageEndpoint(
+  lane: "channels" | "programmes",
+  input: SearchPageInput,
+): string {
+  const query = new URLSearchParams();
+  query.set("term", input.term);
+  query.set("limit", String(input.limit));
+  if (input.cursor !== undefined) {
+    query.set("cursor", input.cursor);
+  }
+  return `${API_ROOT}/search/${lane}?${query.toString()}`;
 }
 
 function classifyThrownRequestFailure(
