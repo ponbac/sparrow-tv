@@ -6,6 +6,7 @@ import {
 } from "@tanstack/react-query";
 import { lazy, Suspense, useState } from "react";
 import type { HostedPlaybackEngine } from "../playback/mpegts-engine";
+import type { NativePlaybackEngine } from "../playback/native-mpegts-engine";
 import { PlaybackLoadBoundary } from "../playback/playback-load-boundary";
 import { SearchConsole } from "../search/search-console";
 import type {
@@ -38,6 +39,10 @@ const HostedPlayer = lazy(async () => {
   const module = await import("../playback/hosted-player");
   return { default: module.HostedPlayer };
 });
+const InstalledPlayer = lazy(async () => {
+  const module = await import("../playback/installed-player");
+  return { default: module.InstalledPlayer };
+});
 
 type CatalogBrowserProps =
   | {
@@ -47,21 +52,19 @@ type CatalogBrowserProps =
       readonly sourceConfiguration?: never;
     }
   | {
-      readonly client: SparrowClient;
+      readonly client: InstalledSparrowClient;
       readonly runtime: "installed";
-      readonly sourceConfiguration: Pick<
+      readonly sourceConfiguration?: Pick<
         InstalledSparrowClient,
         "replaceSourceConfiguration"
       >;
-      readonly playbackEngine?: never;
+      readonly playbackEngine?: NativePlaybackEngine;
     };
 
 /** Browses generation-bound Channel Groups and Channels through a Sparrow client. */
 export function CatalogBrowser(props: CatalogBrowserProps) {
   const { client } = props;
   const runtime = props.runtime ?? "hosted";
-  const playbackEngine =
-    props.runtime === "installed" ? undefined : props.playbackEngine;
   const queryClient = useQueryClient();
   const synchronization = useCatalogSynchronization(client);
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
@@ -174,9 +177,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   };
   const selectChannel = (id: ChannelId) => {
     setSelectedChannel(id);
-    if (runtime === "hosted") {
-      setPlaybackChannel(id);
-    }
+    setPlaybackChannel(id);
   };
   const applyInstalledConfiguration = (nextStatus: CatalogStatus) => {
     setActiveGroup(null);
@@ -259,7 +260,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
       {props.runtime === "installed" ? (
         <>
           <InstalledSourceSettings
-            client={props.sourceConfiguration}
+            client={props.sourceConfiguration ?? props.client}
             status={status}
             onApplied={applyInstalledConfiguration}
           />
@@ -269,7 +270,8 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
             refreshResult={synchronization.refreshResult}
             latestEvent={synchronization.latestEvent}
             onRefresh={synchronization.requestRefresh}
-            playbackAvailable={false}
+            playbackAvailable
+            sourceScope="device"
           />
         </>
       ) : (
@@ -296,26 +298,46 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
         />
       ) : null}
 
-      {runtime !== "hosted" || playbackChannel === null ? null : (
+      {playbackChannel === null ? null : (
         <PlaybackLoadBoundary
           resetKey={playbackChannel}
           onStop={() => setPlaybackChannel(null)}
           onReload={reloadSparrow}
         >
           <Suspense fallback={<InlineLoading label="Preparing live player" />}>
-            <HostedPlayer
-              channel={{
-                id: playbackChannel,
-                name: playbackChannelName(
-                  playbackChannel,
-                  channels,
-                  channelQuery.data,
-                ),
-              }}
-              client={client}
-              onStop={() => setPlaybackChannel(null)}
-              {...(playbackEngine === undefined ? {} : { engine: playbackEngine })}
-            />
+            {props.runtime === "installed" ? (
+              <InstalledPlayer
+                channel={{
+                  id: playbackChannel,
+                  name: playbackChannelName(
+                    playbackChannel,
+                    channels,
+                    channelQuery.data,
+                  ),
+                }}
+                client={props.client}
+                onStop={() => setPlaybackChannel(null)}
+                {...(props.playbackEngine === undefined
+                  ? {}
+                  : { engine: props.playbackEngine })}
+              />
+            ) : (
+              <HostedPlayer
+                channel={{
+                  id: playbackChannel,
+                  name: playbackChannelName(
+                    playbackChannel,
+                    channels,
+                    channelQuery.data,
+                  ),
+                }}
+                client={props.client}
+                onStop={() => setPlaybackChannel(null)}
+                {...(props.playbackEngine === undefined
+                  ? {}
+                  : { engine: props.playbackEngine })}
+              />
+            )}
           </Suspense>
         </PlaybackLoadBoundary>
       )}
@@ -572,7 +594,7 @@ function ChannelInspector({
           <p className="inspector-note">
             {runtime === "hosted"
               ? "Its matched Programme schedule is open in the search desk above."
-              : "Its matched Programme schedule is open above. This installed catalog keeps selection local and does not start playback."}
+              : "Its matched Programme schedule is open above. Playback stays inside the native receiver."}
           </p>
         </div>
       ) : (

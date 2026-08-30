@@ -23,6 +23,8 @@ export interface SourceStatusDeskProps {
   readonly manualRefresh?: boolean;
   /** Whether the current runtime can play Channels after browse succeeds. */
   readonly playbackAvailable?: boolean;
+  /** Ownership language for source state; defaults compatibly from playback. */
+  readonly sourceScope?: "deployment" | "device";
 }
 
 /** Renders independent M3U/EPG state, manual refresh feedback, and safe diagnostics. */
@@ -34,6 +36,7 @@ export function SourceStatusDesk({
   onRefresh,
   manualRefresh = true,
   playbackAvailable = true,
+  sourceScope = playbackAvailable ? "deployment" : "device",
 }: SourceStatusDeskProps) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
     "idle",
@@ -110,6 +113,7 @@ export function SourceStatusDesk({
           configured={status?.configuration.epgConfigured ?? null}
           catalogAvailable={status !== null && status.generation !== null}
           playbackAvailable={playbackAvailable}
+          sourceScope={sourceScope}
         />
       </div>
 
@@ -153,6 +157,7 @@ function SourceCard({
   configured = true,
   catalogAvailable = false,
   playbackAvailable = true,
+  sourceScope,
 }: {
   readonly code: "M3U" | "EPG";
   readonly title: string;
@@ -160,12 +165,14 @@ function SourceCard({
   readonly configured?: boolean | null;
   readonly catalogAvailable?: boolean;
   readonly playbackAvailable?: boolean;
+  readonly sourceScope?: "deployment" | "device";
 }) {
   const presentation = sourcePresentation(
     state,
     configured,
     catalogAvailable,
     playbackAvailable,
+    sourceScope ?? (playbackAvailable ? "deployment" : "device"),
   );
   return (
     <article className="source-card" data-state={presentation.tone}>
@@ -269,18 +276,13 @@ function sourcePresentation(
   configured: boolean | null,
   catalogAvailable: boolean,
   playbackAvailable: boolean,
+  sourceScope: "deployment" | "device",
 ): SourcePresentation {
   if (configured === false) {
     return sourcePresentationValue(
       "absent",
       "NOT CONFIGURED",
-      catalogAvailable
-        ? playbackAvailable
-          ? "This deployment has no Guide source. Channel browse, search, and playback remain available."
-          : "This device has no Guide source. Channel browse and search remain available."
-        : playbackAvailable
-          ? "This deployment has no Guide source. Browse, search, and playback require a validated Channel snapshot."
-          : "This device has no Guide source. Browse and search require a validated Channel snapshot.",
+      absentGuideCopy(sourceScope, catalogAvailable, playbackAvailable),
     );
   }
   if (state === null || configured === null) {
@@ -354,6 +356,22 @@ function sourcePresentation(
         { time: { label: "Deferred", value: state.deferredAt } },
       );
   }
+}
+
+function absentGuideCopy(
+  sourceScope: "deployment" | "device",
+  catalogAvailable: boolean,
+  playbackAvailable: boolean,
+): string {
+  const owner = sourceScope === "device" ? "This device" : "This deployment";
+  if (catalogAvailable) {
+    return playbackAvailable
+      ? `${owner} has no Guide source. Channel browse, search, and playback remain available.`
+      : `${owner} has no Guide source. Channel browse and search remain available.`;
+  }
+  return playbackAvailable
+    ? `${owner} has no Guide source. Browse, search, and playback require a validated Channel snapshot.`
+    : `${owner} has no Guide source. Browse and search require a validated Channel snapshot.`;
 }
 
 function sourcePresentationValue(

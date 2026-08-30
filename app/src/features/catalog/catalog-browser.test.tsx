@@ -27,6 +27,7 @@ import {
   type Page,
   type PlaybackDescriptor,
   type ProgrammeSummary,
+  type ReadPlaybackInput,
   type RefreshReport,
   type ScheduleInput,
   type SearchInput,
@@ -35,9 +36,12 @@ import {
   type SparrowClient,
   type SparrowEvent,
   type StartPlaybackInput,
+  type StopPlaybackInput,
+  type SourceConfigurationInput,
 } from "../../client/contracts";
 import { CatalogBrowser } from "./catalog-browser";
 import type { HostedPlaybackEngine } from "../playback/mpegts-engine";
+import type { NativePlaybackEngine } from "../playback/native-mpegts-engine";
 
 afterEach(cleanup);
 
@@ -50,7 +54,7 @@ const CAPABILITIES = clientSchemas.capabilities.parse({
 
 const INSTALLED_CAPABILITIES = clientSchemas.capabilities.parse({
   sourceConfiguration: "device-writable",
-  playbackTransport: "unavailable",
+  playbackTransport: "tauri-native-stream",
   audioTrackSelection: false,
   mpvFailover: false,
 });
@@ -328,7 +332,7 @@ interface FakeBehavior {
   ) => Promise<ClientResult<SearchResults>>;
 }
 
-class FakeSparrowClient implements SparrowClient {
+class FakeSparrowClient implements InstalledSparrowClient {
   readonly capabilityInputs: (ClientRequestOptions | undefined)[] = [];
   readonly statusInputs: (ClientRequestOptions | undefined)[] = [];
   readonly groupInputs: ListGroupsInput[] = [];
@@ -339,6 +343,9 @@ class FakeSparrowClient implements SparrowClient {
   readonly channelSearchInputs: SearchPageInput[] = [];
   readonly programmeSearchInputs: SearchPageInput[] = [];
   readonly playbackInputs: StartPlaybackInput[] = [];
+  readonly playbackReadInputs: ReadPlaybackInput[] = [];
+  readonly playbackStopInputs: StopPlaybackInput[] = [];
+  playbackTransport: "hosted" | "installed" = "hosted";
   readonly refreshInputs: (ClientRequestOptions | undefined)[] = [];
   readonly eventListeners = new Set<(event: SparrowEvent) => void>();
 
@@ -439,12 +446,37 @@ class FakeSparrowClient implements SparrowClient {
     this.playbackInputs.push(input);
     return Promise.resolve(
       success(
-        clientSchemas.playbackDescriptor.parse({
-          _tag: "same-origin-http",
-          endpoint: `/api/v1/play/${encodeURIComponent(input.id)}`,
-        }),
+        this.playbackTransport === "installed"
+          ? clientSchemas.nativePlaybackDescriptor.parse({
+              _tag: "tauri-native-stream",
+              sessionId: `play1_${"a".repeat(32)}_1`,
+              streamHandle: `stream1_${"b".repeat(16)}`,
+            })
+          : clientSchemas.hostedPlaybackDescriptor.parse({
+              _tag: "same-origin-http",
+              endpoint: `/api/v1/play/${encodeURIComponent(input.id)}`,
+            }),
       ),
     );
+  }
+
+  readPlayback(
+    input: ReadPlaybackInput,
+  ): Promise<ClientResult<ArrayBuffer>> {
+    this.playbackReadInputs.push(input);
+    return Promise.resolve(success(new ArrayBuffer(0)));
+  }
+
+  stopPlayback(input: StopPlaybackInput): Promise<ClientResult<void>> {
+    this.playbackStopInputs.push(input);
+    return Promise.resolve(success(undefined));
+  }
+
+  replaceSourceConfiguration(
+    input: SourceConfigurationInput,
+  ): Promise<ClientResult<CatalogStatus>> {
+    void input;
+    return Promise.resolve(success(FRESH_STATUS));
   }
 }
 
@@ -577,7 +609,7 @@ describe("CatalogBrowser", () => {
     ).toBeDisabled();
   });
 
-  it("browses a valid local catalog without starting hosted playback", async () => {
+  it("starts native playback when a local Channel is selected", async () => {
     const client = new FakeSparrowClient({
       capabilities: () => Promise.resolve(success(INSTALLED_CAPABILITIES)),
     });
@@ -593,11 +625,11 @@ describe("CatalogBrowser", () => {
       await within(inspector).findByRole("heading", { name: "World News" }),
     ).toBeVisible();
     expect(client.channelInputs).toHaveLength(1);
-    expect(client.playbackInputs).toHaveLength(0);
     expect(client.scheduleInputs).toHaveLength(1);
-    expect(screen.queryByText("ON AIR")).not.toBeInTheDocument();
+    expect(await screen.findByText("ON AIR")).toBeVisible();
+    expect(client.playbackInputs).toHaveLength(1);
     expect(
-      within(inspector).getByText(/does not start playback/),
+      within(inspector).getByText(/Playback stays inside the native receiver/),
     ).toBeVisible();
     expect(screen.getByRole("search")).toBeVisible();
     expect(
@@ -669,7 +701,7 @@ describe("CatalogBrowser", () => {
       within(refreshFailure).getByText("Guide source refresh failed"),
     ).toBeVisible();
     expect(
-      within(refreshFailure).getByText(/Channel browsing and search stay available/),
+      within(refreshFailure).getByText(/Browsing and playback stay available/),
     ).toBeVisible();
     expect(screen.getByRole("search")).toBeVisible();
     expect(screen.getByRole("button", { name: /World News/ })).toBeVisible();
@@ -696,7 +728,9 @@ describe("CatalogBrowser", () => {
 
     expect(await screen.findByText("GUIDE ABSENT")).toBeVisible();
     expect(
-      screen.getByText("This device has no Guide source. Channel browse and search remain available."),
+      screen.getByText(
+        "This device has no Guide source. Channel browse, search, and playback remain available.",
+      ),
     ).toBeVisible();
     await user.type(
       screen.getByRole("searchbox", { name: "Channel or Programme" }),
@@ -1292,7 +1326,7 @@ function renderBrowser(client: SparrowClient): QueryClient {
 }
 
 function renderInstalledBrowser(
-  client: SparrowClient,
+  client: FakeSparrowClient,
   sourceConfiguration: Pick<
     InstalledSparrowClient,
     "replaceSourceConfiguration"
@@ -1301,6 +1335,7 @@ function renderInstalledBrowser(
       Promise.resolve(success(FRESH_STATUS)),
   },
 ): QueryClient {
+  client.playbackTransport = "installed";
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
@@ -1315,6 +1350,7 @@ function renderInstalledBrowser(
         client={client}
         runtime="installed"
         sourceConfiguration={sourceConfiguration}
+        playbackEngine={TEST_NATIVE_PLAYBACK_ENGINE}
       />
     </QueryClientProvider>,
   );
@@ -1322,6 +1358,13 @@ function renderInstalledBrowser(
 }
 
 const TEST_PLAYBACK_ENGINE: HostedPlaybackEngine = {
+  start: ({ video }) => {
+    video.dispatchEvent(new Event("playing"));
+    return { stop: () => undefined };
+  },
+};
+
+const TEST_NATIVE_PLAYBACK_ENGINE: NativePlaybackEngine = {
   start: ({ video }) => {
     video.dispatchEvent(new Event("playing"));
     return { stop: () => undefined };

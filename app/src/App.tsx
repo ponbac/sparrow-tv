@@ -11,10 +11,6 @@ export default function App({ runtime }: AppProps) {
   return runtime._tag === "hosted" ? (
     <CatalogBrowser client={runtime.client} runtime="hosted" />
   ) : (
-    <CatalogBrowser
-      client={runtime.client}
-      runtime="installed"
-      sourceConfiguration={runtime.client}
-    />
+    <CatalogBrowser client={runtime.client} runtime="installed" />
   );
 }

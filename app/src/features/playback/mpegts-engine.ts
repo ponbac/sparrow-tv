@@ -1,5 +1,6 @@
 import mpegts from "mpegts.js";
 import type { SameOriginPlaybackEndpoint } from "../../client/contracts";
+import type { NativeLoaderConstructor } from "./native-mpegts-loader";
 
 /** Safe terminal failures emitted by the hosted MPEG-TS adapter. */
 export type HostedPlaybackFailure =
@@ -61,6 +62,8 @@ export interface MpegtsRuntime {
       readonly lazyLoad: boolean;
       readonly liveBufferLatencyChasing: boolean;
       readonly autoCleanupSourceBuffer: boolean;
+      readonly enableWorker?: false;
+      readonly customLoader?: NativeLoaderConstructor;
     },
   ) => EnginePlayer;
   readonly getFeatureList: () => { readonly mseLivePlayback: boolean };

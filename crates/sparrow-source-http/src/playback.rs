@@ -49,7 +49,7 @@ impl HttpPlaybackAccess {
     /// the hosted client.
     pub async fn open(
         &self,
-        source: ResolvedPlaybackSource,
+        source: &ResolvedPlaybackSource,
     ) -> Result<PlaybackResponse, PlaybackAccessError> {
         self.fetch(source.location_for_adapter()).await
     }

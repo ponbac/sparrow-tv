@@ -11,6 +11,7 @@ use sparrow_core::{
     RefreshTrigger, SearchRequest, SearchResults, SearchTerm, SparrowCore, SystemClock,
 };
 use sparrow_snapshot_store::AtomicFileSnapshotStore;
+use sparrow_source_http::HttpPlaybackAccess;
 use sparrow_source_http::HttpSourceAccess;
 use tokio::sync::{Mutex, watch};
 
@@ -25,6 +26,10 @@ use crate::{
         dto::{CatalogStatusDto, ClientErrorDto, CoreEventDto},
         input::{SearchRequestId, SourceConfigurationInputDto},
         subscriptions::SubscriptionRegistry,
+    },
+    playback::{
+        NativeStreamHandle, PlaybackManager, PlaybackManagerError, PlaybackSessionId,
+        StartedPlayback,
     },
 };
 
@@ -89,6 +94,7 @@ impl InstalledRuntimeSlot {
 
 /// The complete on-device catalog composition managed by Tauri.
 pub(crate) struct InstalledRuntime {
+    playback: PlaybackManager,
     core: Arc<SparrowCore>,
     configuration_store: SourceConfigurationStore,
     configuration_mutation: Mutex<()>,
@@ -123,8 +129,12 @@ impl InstalledRuntime {
             .await
             .map_err(|_| InstalledStartupError::Core)?,
         );
+        let playback_access =
+            HttpPlaybackAccess::new().map_err(|_| InstalledStartupError::PlaybackAdapter)?;
+        let playback = PlaybackManager::new(Arc::clone(&core), playback_access);
 
         Ok(Self {
+            playback,
             core,
             configuration_store,
             configuration_mutation: Mutex::new(()),
@@ -253,6 +263,29 @@ impl InstalledRuntime {
 
     pub(crate) fn unsubscribe(&self, subscription_id: &str) {
         self.subscriptions.unsubscribe(subscription_id);
+    }
+
+    pub(crate) async fn start_playback(
+        &self,
+        session_id: PlaybackSessionId,
+        channel_id: sparrow_core::ChannelId,
+    ) -> Result<StartedPlayback, PlaybackManagerError> {
+        self.playback.start(session_id, channel_id).await
+    }
+
+    pub(crate) async fn read_playback(
+        &self,
+        session_id: PlaybackSessionId,
+        stream_handle: NativeStreamHandle,
+    ) -> Result<Vec<u8>, PlaybackManagerError> {
+        self.playback.read(session_id, stream_handle).await
+    }
+
+    pub(crate) async fn stop_playback(
+        &self,
+        session_id: PlaybackSessionId,
+    ) -> Result<(), PlaybackManagerError> {
+        self.playback.stop(session_id).await
     }
 }
 
@@ -422,6 +455,8 @@ pub(crate) enum InstalledStartupError {
     SourceAdapter,
     #[error("the snapshot adapter could not be initialized")]
     SnapshotAdapter,
+    #[error("the playback adapter could not be initialized")]
+    PlaybackAdapter,
     #[error("the catalog core could not be initialized")]
     Core,
 }
@@ -1092,6 +1127,7 @@ mod tests {
             InstalledStartupError::Configuration,
             InstalledStartupError::SourceAdapter,
             InstalledStartupError::SnapshotAdapter,
+            InstalledStartupError::PlaybackAdapter,
             InstalledStartupError::Core,
         ] {
             assert!(!format!("{error:?} {error}").contains(private_canary));

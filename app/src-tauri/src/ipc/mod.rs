@@ -2,18 +2,23 @@ pub(crate) mod dto;
 pub(crate) mod input;
 pub(crate) mod subscriptions;
 
-use tauri::{State, ipc::Channel};
+use tauri::{
+    State,
+    ipc::{Channel, Response},
+};
 
 use crate::runtime::{InstalledRuntime, InstalledRuntimeSlot};
 
 use self::{
     dto::{
         CapabilitiesDto, CatalogStatusDto, ChannelDetailsDto, ChannelGroupDto, ChannelSummaryDto,
-        ClientErrorDto, CoreEventDto, PageDto, ProgrammeDto, RefreshReportDto, SearchResultsDto,
+        ClientErrorDto, CoreEventDto, PageDto, PlaybackDescriptorDto, ProgrammeDto,
+        RefreshReportDto, SearchResultsDto,
     },
     input::{
-        ChannelInput, ListChannelsInput, ListGroupsInput, ScheduleInput, SearchCancellationInput,
-        SearchInput, SearchPageInput, SourceConfigurationInputDto,
+        ChannelInput, ListChannelsInput, ListGroupsInput, PlaybackReadInput, PlaybackStartInput,
+        PlaybackStopInput, ScheduleInput, SearchCancellationInput, SearchInput, SearchPageInput,
+        SourceConfigurationInputDto,
     },
 };
 
@@ -220,4 +225,82 @@ pub(crate) async fn catalog_unsubscribe(
 ) -> Result<(), ClientErrorDto> {
     slot.wait().await.unsubscribe(&subscription_id);
     Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn playback_start(
+    slot: State<'_, InstalledRuntimeSlot>,
+    input: PlaybackStartInput,
+) -> Result<PlaybackDescriptorDto, ClientErrorDto> {
+    let runtime = slot.wait().await;
+    start_playback(runtime.as_ref(), input).await
+}
+
+pub(crate) async fn start_playback(
+    state: &InstalledRuntime,
+    input: PlaybackStartInput,
+) -> Result<PlaybackDescriptorDto, ClientErrorDto> {
+    let (channel_id, session_id) = input.into_playback()?;
+    state
+        .start_playback(session_id, channel_id)
+        .await
+        .map(PlaybackDescriptorDto::from)
+        .map_err(ClientErrorDto::from)
+}
+
+#[tauri::command]
+pub(crate) async fn playback_read(
+    slot: State<'_, InstalledRuntimeSlot>,
+    input: PlaybackReadInput,
+) -> Result<Response, ClientErrorDto> {
+    let runtime = slot.wait().await;
+    read_playback(runtime.as_ref(), input).await
+}
+
+pub(crate) async fn read_playback(
+    state: &InstalledRuntime,
+    input: PlaybackReadInput,
+) -> Result<Response, ClientErrorDto> {
+    let (session_id, stream_handle) = input.into_playback()?;
+    state
+        .read_playback(session_id, stream_handle)
+        .await
+        .map(Response::new)
+        .map_err(ClientErrorDto::from)
+}
+
+#[tauri::command]
+pub(crate) async fn playback_stop(
+    slot: State<'_, InstalledRuntimeSlot>,
+    input: PlaybackStopInput,
+) -> Result<(), ClientErrorDto> {
+    let runtime = slot.wait().await;
+    stop_playback(runtime.as_ref(), input).await
+}
+
+pub(crate) async fn stop_playback(
+    state: &InstalledRuntime,
+    input: PlaybackStopInput,
+) -> Result<(), ClientErrorDto> {
+    state
+        .stop_playback(input.into_session_id()?)
+        .await
+        .map_err(ClientErrorDto::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use tauri::ipc::{InvokeResponseBody, IpcResponse as _};
+
+    use super::*;
+
+    #[test]
+    fn playback_bytes_use_tauri_raw_responses_including_eof() {
+        for expected in [vec![0_u8, 1, 2, 255], Vec::new()] {
+            let body = Response::new(expected.clone())
+                .body()
+                .expect("raw IPC response is valid");
+            assert!(matches!(body, InvokeResponseBody::Raw(bytes) if bytes == expected));
+        }
+    }
 }

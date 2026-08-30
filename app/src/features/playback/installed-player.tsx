@@ -1,31 +1,37 @@
 import { useEffect, useRef, useState } from "react";
-import type { ChannelId, SparrowClient } from "../../client/contracts";
+import type {
+  ChannelId,
+  InstalledSparrowClient,
+} from "../../client/contracts";
 import { clientPlaybackFailure } from "./playback-failure";
+import type { HostedPlaybackHandle } from "./mpegts-engine";
 import {
-  mpegtsPlaybackEngine,
-  type HostedPlaybackEngine,
-  type HostedPlaybackHandle,
-} from "./mpegts-engine";
+  nativeMpegtsPlaybackEngine,
+  type NativePlaybackEngine,
+} from "./native-mpegts-engine";
 import {
   isRetryable,
   type PlayerState,
 } from "./playback-presentation";
 import { PlaybackSurface } from "./playback-surface";
 
-export interface HostedPlayerProps {
+export interface InstalledPlayerProps {
   readonly channel: { readonly id: ChannelId; readonly name: string };
-  readonly client: SparrowClient;
+  readonly client: Pick<
+    InstalledSparrowClient,
+    "startPlayback" | "readPlayback" | "stopPlayback"
+  >;
   readonly onStop: () => void;
-  readonly engine?: HostedPlaybackEngine;
+  readonly engine?: NativePlaybackEngine;
 }
 
-/** Plays one hosted Channel while keeping the provider source outside React. */
-export function HostedPlayer({
+/** Plays one Channel through an opaque, cancellable Rust-owned stream. */
+export function InstalledPlayer({
   channel,
   client,
   onStop,
-  engine = mpegtsPlaybackEngine,
-}: HostedPlayerProps) {
+  engine = nativeMpegtsPlaybackEngine,
+}: InstalledPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [attempt, setAttempt] = useState(0);
   const [state, setState] = useState<PlayerState>({ _tag: "starting" });
@@ -54,7 +60,7 @@ export function HostedPlayer({
           });
           return;
         }
-        if (result.value._tag !== "same-origin-http") {
+        if (result.value._tag !== "tauri-native-stream") {
           setState({
             _tag: "failed",
             failure: "source-invalid",
@@ -64,7 +70,8 @@ export function HostedPlayer({
         }
 
         const started = engine.start({
-          endpoint: result.value.endpoint,
+          client,
+          descriptor: result.value,
           video,
           onAutoplayBlocked: () => {
             if (active) {
@@ -105,8 +112,8 @@ export function HostedPlayer({
       state={state}
       attempt={attempt}
       videoRef={videoRef}
-      transportLabel="same-origin relay"
-      privacyCopy="Provider details remain behind the Sparrow relay."
+      transportLabel="native receiver"
+      privacyCopy="Provider details remain inside the installed receiver."
       onPlaying={() => setState({ _tag: "playing" })}
       onRetry={() => setAttempt((current) => current + 1)}
       onStop={onStop}

@@ -17,7 +17,9 @@ import {
   type Page,
   type PageCursor,
   type PlaybackDescriptor,
+  type PlaybackSessionId,
   type ProgrammeSummary,
+  type ReadPlaybackInput,
   type RefreshReport,
   type ScheduleInput,
   type SearchInput,
@@ -26,6 +28,7 @@ import {
   type SourceConfigurationInput,
   type SparrowEvent,
   type StartPlaybackInput,
+  type StopPlaybackInput,
 } from "./contracts";
 
 /** Fixed Tauri command names shared with the installed shell composition. */
@@ -44,6 +47,9 @@ export const NATIVE_COMMANDS = Object.freeze({
   replaceSourceConfiguration: "source_configuration_replace",
   subscribe: "catalog_subscribe",
   unsubscribe: "catalog_unsubscribe",
+  startPlayback: "playback_start",
+  readPlayback: "playback_read",
+  stopPlayback: "playback_stop",
 } as const);
 
 /** Channel surface required by the ordered Tauri subscription adapter. */
@@ -76,6 +82,8 @@ interface RuntimeParser<Value> {
 }
 
 const subscriptionIdSchema = z.string().regex(/^sub1_[0-9a-f]{16}$/u);
+const voidResponseSchema = z.null().transform(() => undefined);
+const MAX_NATIVE_CHUNK_BYTES = 64 * 1024;
 const SOURCE_LOCATION_MAX_UTF8_BYTES = 16_384;
 const sourceTextEncoder = new TextEncoder();
 const sourceLocationSchema = z
@@ -102,6 +110,7 @@ export function createNativeSparrowClient(
 class TauriSparrowClient implements InstalledSparrowClient {
   readonly #ipc: NativeIpc;
   readonly #nextSearchRequestId = createSearchRequestIdFactory();
+  readonly #nextPlaybackSessionId = createPlaybackSessionIdFactory();
 
   constructor(ipc: NativeIpc) {
     this.#ipc = ipc;
@@ -294,17 +303,65 @@ class TauriSparrowClient implements InstalledSparrowClient {
   startPlayback(
     input: StartPlaybackInput,
   ): Promise<ClientResult<PlaybackDescriptor>> {
-    if (input.signal?.aborted === true) {
-      return Promise.resolve({ ok: false, error: { _tag: "cancelled" } });
-    }
-    return Promise.resolve({
-      ok: false,
-      error: {
-        _tag: "playback-failed",
-        reason: "unavailable",
-        retryable: false,
+    const sessionId = this.#nextPlaybackSessionId();
+    const release = createNativePlaybackStop(this.#ipc, sessionId);
+    const parser = clientSchemas.nativePlaybackDescriptor.refine(
+      (descriptor) => descriptor.sessionId === sessionId,
+    );
+    return this.#request(
+      NATIVE_COMMANDS.startPlayback,
+      { input: { id: input.id, sessionId } },
+      parser,
+      input.signal,
+      release,
+      (value) => {
+        const descriptor = parser.safeParse(value);
+        if (descriptor.success) {
+          release();
+        }
       },
-    });
+      release,
+    );
+  }
+
+  async readPlayback(
+    input: ReadPlaybackInput,
+  ): Promise<ClientResult<ArrayBuffer>> {
+    const outcome = await invokeWithCancellation(
+      () =>
+        this.#ipc.invoke(NATIVE_COMMANDS.readPlayback, {
+          input: {
+            sessionId: input.sessionId,
+            streamHandle: input.streamHandle,
+          },
+        }),
+      input.signal,
+      () => stopNativePlayback(this.#ipc, input.sessionId),
+    );
+    switch (outcome._tag) {
+      case "cancelled":
+        return { ok: false, error: { _tag: "cancelled" } };
+      case "rejected": {
+        const parsedError = clientSchemas.serverError.safeParse(outcome.error);
+        return parsedError.success
+          ? { ok: false, error: parsedError.data }
+          : invalidNativeResponse();
+      }
+      case "resolved":
+        return outcome.value instanceof ArrayBuffer &&
+          outcome.value.byteLength <= MAX_NATIVE_CHUNK_BYTES
+          ? { ok: true, value: outcome.value }
+          : invalidNativeResponse();
+    }
+  }
+
+  stopPlayback(input: StopPlaybackInput): Promise<ClientResult<void>> {
+    return this.#request(
+      NATIVE_COMMANDS.stopPlayback,
+      { input: { sessionId: input.sessionId } },
+      voidResponseSchema,
+      input.signal,
+    );
   }
 
   replaceSourceConfiguration(
@@ -350,11 +407,14 @@ class TauriSparrowClient implements InstalledSparrowClient {
     parser: RuntimeParser<Value>,
     signal: AbortSignal | undefined,
     cancelActive?: () => void,
+    onLateResolved?: (value: unknown) => void,
+    onInvalidResolved?: (value: unknown) => void,
   ): Promise<ClientResult<Value>> {
     const outcome = await invokeWithCancellation(
       () => this.#ipc.invoke(command, args),
       signal,
       cancelActive,
+      onLateResolved,
     );
     switch (outcome._tag) {
       case "cancelled":
@@ -367,9 +427,11 @@ class TauriSparrowClient implements InstalledSparrowClient {
       }
       case "resolved": {
         const parsed = parser.safeParse(outcome.value);
-        return parsed.success
-          ? { ok: true, value: parsed.data }
-          : invalidNativeResponse();
+        if (parsed.success) {
+          return { ok: true, value: parsed.data };
+        }
+        onInvalidResolved?.(outcome.value);
+        return invalidNativeResponse();
       }
     }
   }
@@ -400,6 +462,7 @@ function invokeWithCancellation(
   start: () => Promise<unknown>,
   signal: AbortSignal | undefined,
   cancelActive?: () => void,
+  onLateResolved?: (value: unknown) => void,
 ): Promise<InvokeOutcome> {
   if (signal?.aborted === true) {
     return Promise.resolve({ _tag: "cancelled" });
@@ -432,7 +495,13 @@ function invokeWithCancellation(
       return;
     }
     flight.then(
-      (value) => finish({ _tag: "resolved", value }),
+      (value) => {
+        if (settled) {
+          onLateResolved?.(value);
+          return;
+        }
+        finish({ _tag: "resolved", value });
+      },
       (error: unknown) => finish({ _tag: "rejected", error }),
     );
   });
@@ -451,6 +520,21 @@ function createSearchRequestIdFactory(): () => string {
   };
 }
 
+function createPlaybackSessionIdFactory(): () => PlaybackSessionId {
+  const nonceBytes = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(nonceBytes);
+  const nonce = Array.from(nonceBytes, (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  let sequence = 0;
+  return () => {
+    sequence += 1;
+    return clientSchemas.playbackSessionId.parse(
+      `play1_${nonce}_${sequence.toString(16)}`,
+    );
+  };
+}
+
 function cancelNativeSearch(ipc: NativeIpc, requestId: string): void {
   try {
     ipc
@@ -459,6 +543,30 @@ function cancelNativeSearch(ipc: NativeIpc, requestId: string): void {
   } catch {
     // Cancellation is best effort after the caller has already stopped waiting.
   }
+}
+
+function stopNativePlayback(ipc: NativeIpc, sessionId: PlaybackSessionId): void {
+  try {
+    ipc
+      .invoke(NATIVE_COMMANDS.stopPlayback, { input: { sessionId } })
+      .catch(() => undefined);
+  } catch {
+    // The caller has already released ownership; native cleanup remains best effort.
+  }
+}
+
+function createNativePlaybackStop(
+  ipc: NativeIpc,
+  sessionId: PlaybackSessionId,
+): () => void {
+  let requested = false;
+  return () => {
+    if (requested) {
+      return;
+    }
+    requested = true;
+    stopNativePlayback(ipc, sessionId);
+  };
 }
 
 function releaseSubscription(ipc: NativeIpc, subscriptionId: string): void {

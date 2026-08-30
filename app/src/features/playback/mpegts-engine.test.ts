@@ -235,7 +235,7 @@ function runtimeFixture(mseLivePlayback = true): {
 }
 
 function playbackEndpoint() {
-  return clientSchemas.playbackDescriptor.parse({
+  return clientSchemas.hostedPlaybackDescriptor.parse({
     _tag: "same-origin-http",
     endpoint: "/api/v1/play/channel-one",
   }).endpoint;

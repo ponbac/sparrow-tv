@@ -297,7 +297,7 @@ class HttpSparrowClient implements SparrowClient {
     if (encodedId === null) {
       return Promise.resolve(invalidProtocolResponse(400));
     }
-    const parsed = clientSchemas.playbackDescriptor.safeParse({
+    const parsed = clientSchemas.hostedPlaybackDescriptor.safeParse({
       _tag: "same-origin-http",
       endpoint: `${API_ROOT}/play/${encodedId}`,
     });

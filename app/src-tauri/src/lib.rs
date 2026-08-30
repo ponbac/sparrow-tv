@@ -4,6 +4,7 @@ mod bounded_blocking;
 mod config_store;
 mod instance_lock;
 mod ipc;
+mod playback;
 mod runtime;
 
 /// Runs the installed Sparrow shell.
@@ -18,6 +19,8 @@ pub fn run() {
             #[cfg(target_os = "android")]
             initialize_android_certificate_verifier()
                 .map_err(|_| runtime::InstalledStartupError::SourceAdapter)?;
+            #[cfg(target_os = "linux")]
+            enable_linux_media_source(app)?;
             let app_data = app
                 .path()
                 .app_data_dir()
@@ -45,6 +48,9 @@ pub fn run() {
             ipc::source_configuration_replace,
             ipc::catalog_subscribe,
             ipc::catalog_unsubscribe,
+            ipc::playback_start,
+            ipc::playback_read,
+            ipc::playback_stop,
         ])
         .build(tauri::generate_context!())
     {
@@ -61,6 +67,24 @@ fn configure_platform_before_webview() {
     unsafe {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
+}
+
+#[cfg(target_os = "linux")]
+fn enable_linux_media_source(app: &tauri::App) -> Result<(), runtime::InstalledStartupError> {
+    use tauri::Manager as _;
+
+    let webview = app
+        .get_webview_window("main")
+        .ok_or(runtime::InstalledStartupError::PlaybackAdapter)?;
+    webview
+        .with_webview(|platform_webview| {
+            use webkit2gtk::{SettingsExt as _, WebViewExt as _};
+
+            if let Some(settings) = platform_webview.inner().settings() {
+                settings.set_enable_mediasource(true);
+            }
+        })
+        .map_err(|_| runtime::InstalledStartupError::PlaybackAdapter)
 }
 
 #[cfg(target_os = "android")]

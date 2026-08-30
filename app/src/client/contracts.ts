@@ -14,6 +14,15 @@ const sameOriginPlaybackEndpointSchema = z
   .max(4096)
   .regex(/^\/api\/v1\/play\/[^/?#]+$/)
   .brand<"SameOriginPlaybackEndpoint">();
+const playbackSessionIdSchema = z
+  .string()
+  .max(64)
+  .regex(/^play1_[0-9a-f]{32}_[0-9a-f]+$/u)
+  .brand<"PlaybackSessionId">();
+const nativeStreamHandleSchema = z
+  .string()
+  .regex(/^stream1_[0-9a-f]{16}$/u)
+  .brand<"NativeStreamHandle">();
 const catalogGenerationSchema = z
   .number()
   .int()
@@ -50,6 +59,12 @@ export type SameOriginPlaybackEndpoint = z.output<
   typeof sameOriginPlaybackEndpointSchema
 >;
 
+/** An opaque identifier for one installed playback intent and pinned source. */
+export type PlaybackSessionId = z.output<typeof playbackSessionIdSchema>;
+
+/** An opaque identifier for one native transport generation within a session. */
+export type NativeStreamHandle = z.output<typeof nativeStreamHandleSchema>;
+
 /** A positive, JavaScript-safe integer identifying one immutable catalog view. */
 export type CatalogGeneration = z.output<typeof catalogGenerationSchema>;
 
@@ -70,7 +85,7 @@ export interface HostedCapabilities {
 /** Installed deployment capabilities exposed by the local Tauri shell. */
 export interface InstalledCapabilities {
   readonly sourceConfiguration: "device-writable";
-  readonly playbackTransport: "unavailable";
+  readonly playbackTransport: "tauri-native-stream";
   readonly audioTrackSelection: false;
   readonly mpvFailover: false;
 }
@@ -329,6 +344,17 @@ export interface StartPlaybackInput extends ClientRequestOptions {
   readonly id: ChannelId;
 }
 
+/** Input for pulling one bounded native stream chunk. */
+export interface ReadPlaybackInput extends ClientRequestOptions {
+  readonly sessionId: PlaybackSessionId;
+  readonly streamHandle: NativeStreamHandle;
+}
+
+/** Input for stopping one installed Playback Session. */
+export interface StopPlaybackInput extends ClientRequestOptions {
+  readonly sessionId: PlaybackSessionId;
+}
+
 /** Transient source locations accepted only by the installed configuration command. */
 export interface SourceConfigurationInput extends ClientRequestOptions {
   readonly m3uLocation: string;
@@ -336,10 +362,22 @@ export interface SourceConfigurationInput extends ClientRequestOptions {
 }
 
 /** The browser-safe transport needed to start one hosted live stream. */
-export interface PlaybackDescriptor {
+export interface HostedPlaybackDescriptor {
   readonly _tag: "same-origin-http";
   readonly endpoint: SameOriginPlaybackEndpoint;
 }
+
+/** Opaque access to one Rust-owned installed stream; it names no provider. */
+export interface NativePlaybackDescriptor {
+  readonly _tag: "tauri-native-stream";
+  readonly sessionId: PlaybackSessionId;
+  readonly streamHandle: NativeStreamHandle;
+}
+
+/** A capability-selected playback transport that never contains a provider URL. */
+export type PlaybackDescriptor =
+  | HostedPlaybackDescriptor
+  | NativePlaybackDescriptor;
 
 /** Independently paginated Channel and Programme matches from one catalog generation. */
 export interface SearchResults {
@@ -476,6 +514,12 @@ export interface InstalledSparrowClient extends SparrowClient {
   replaceSourceConfiguration(
     input: SourceConfigurationInput,
   ): Promise<ClientResult<CatalogStatus>>;
+
+  /** Pulls at most 64 KiB from the exact active native stream. */
+  readPlayback(input: ReadPlaybackInput): Promise<ClientResult<ArrayBuffer>>;
+
+  /** Idempotently stops the exact installed Playback Session. */
+  stopPlayback(input: StopPlaybackInput): Promise<ClientResult<void>>;
 }
 
 const hostedCapabilitiesSchema: z.ZodType<HostedCapabilities> = z.strictObject({
@@ -487,7 +531,7 @@ const hostedCapabilitiesSchema: z.ZodType<HostedCapabilities> = z.strictObject({
 const installedCapabilitiesSchema: z.ZodType<InstalledCapabilities> =
   z.strictObject({
     sourceConfiguration: z.literal("device-writable"),
-    playbackTransport: z.literal("unavailable"),
+    playbackTransport: z.literal("tauri-native-stream"),
     audioTrackSelection: z.literal(false),
     mpvFailover: z.literal(false),
   });
@@ -746,10 +790,19 @@ const programmeSummarySchema: z.ZodType<ProgrammeSummary> = z
     { message: "Programme end must follow its start." },
   );
 
-const playbackDescriptorSchema: z.ZodType<PlaybackDescriptor> = z.strictObject({
+const hostedPlaybackDescriptorSchema: z.ZodType<HostedPlaybackDescriptor> = z.strictObject({
   _tag: z.literal("same-origin-http"),
   endpoint: sameOriginPlaybackEndpointSchema,
 });
+const nativePlaybackDescriptorSchema: z.ZodType<NativePlaybackDescriptor> = z.strictObject({
+  _tag: z.literal("tauri-native-stream"),
+  sessionId: playbackSessionIdSchema,
+  streamHandle: nativeStreamHandleSchema,
+});
+const playbackDescriptorSchema: z.ZodType<PlaybackDescriptor> = z.union([
+  hostedPlaybackDescriptorSchema,
+  nativePlaybackDescriptorSchema,
+]);
 
 const pageSchema = <Item>(
   itemSchema: z.ZodType<Item>,
@@ -990,6 +1043,9 @@ export const clientSchemas = Object.freeze({
   searchChannelsPageFor: searchChannelsPageSchemaFor,
   searchProgrammesPageFor: searchProgrammesPageSchemaFor,
   playbackDescriptor: playbackDescriptorSchema,
+  playbackSessionId: playbackSessionIdSchema,
+  hostedPlaybackDescriptor: hostedPlaybackDescriptorSchema,
+  nativePlaybackDescriptor: nativePlaybackDescriptorSchema,
   serverError: serverClientErrorSchema,
   errorEnvelope: clientErrorEnvelopeSchema,
 });
