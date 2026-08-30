@@ -1,6 +1,7 @@
 import {
   mkdtemp,
   mkdir,
+  open,
   readFile,
   readdir,
   rename,
@@ -13,6 +14,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   prepareReleaseOutput,
+  readReleasePrivateRegularFile,
   snapshotReleaseFiles,
   writeReleasePrivateDirectory,
   writeReleasePrivateFile,
@@ -52,6 +54,26 @@ describe("release filesystem trust boundary", () => {
     await expect(
       snapshotReleaseFiles(candidate, ["artifact"], { exact: true }),
     ).rejects.toThrow(/entry/u);
+  });
+
+  it("rejects a nested symlink below an inherited directory descriptor", async () => {
+    const root = await temporaryRoot();
+    const held = join(root, "held");
+    const outside = join(root, "outside");
+    await Promise.all([mkdir(held), mkdir(outside)]);
+    await writeFile(join(outside, "key"), "private", { mode: 0o600 });
+    await symlink(outside, join(held, "linked"), "dir");
+    const directory = await open(held, "r");
+
+    try {
+      await expect(
+        readReleasePrivateRegularFile(
+          `/proc/${process.pid}/fd/${directory.fd}/linked/key`,
+        ),
+      ).rejects.toThrow(/directory|entry/u);
+    } finally {
+      await directory.close();
+    }
   });
 
   it("rejects a symlinked output ancestor even when it aliases outside containment", async () => {
@@ -176,7 +198,10 @@ describe("release filesystem trust boundary", () => {
       expect((await readdir(root)).sort()).toEqual(["continuity.json"]);
 
       await rm(output);
-      await writeReleasePrivateFile(target, "trusted");
+      const originalPath = process.env.PATH;
+      process.env.PATH = join(root, "attacker-bin");
+      try { await writeReleasePrivateFile(target, "trusted"); }
+      finally { process.env.PATH = originalPath; }
       expect(await readFile(output, "utf8")).toBe("trusted");
       expect(parentSyncs).toBe(1);
       expect((await readdir(root)).sort()).toEqual(["continuity.json"]);

@@ -14,7 +14,7 @@ check-app:
     cd app && bun run test
     cd app && bun run build
 
-ci: check release-contract-check
+ci: check release-contract-check hosted-shell-check
 
 release-contract-check:
     cd app && bun run release:contract static-check
@@ -77,8 +77,32 @@ release-acceptance-approve:
 container-repro:
     bash scripts/verify-container-reproducibility.sh "${CONTAINER_REVISION:?CONTAINER_REVISION is required}" "${CONTAINER_OUTPUT:?CONTAINER_OUTPUT is required}"
 
-container-rehearse:
-    bash scripts/rehearse-hosted-container.sh "${CONTAINER_IMAGE:?CONTAINER_IMAGE is required}" "${CONTAINER_REVISION:?CONTAINER_REVISION is required}" "${CONTAINER_MANIFEST:?CONTAINER_MANIFEST is required}" "${CONTAINER_ENVIRONMENT_FILE:-.env.local}"
+hosted-candidate-accept:
+    bash scripts/accept-hosted-candidate.sh "${HOSTED_REPLACEMENT_IMAGE:?HOSTED_REPLACEMENT_IMAGE is required}" "${HOSTED_REPLACEMENT_REVISION:?HOSTED_REPLACEMENT_REVISION is required}" "${HOSTED_REPRODUCED_MANIFEST:?HOSTED_REPRODUCED_MANIFEST is required}" "${HOSTED_ACCEPTANCE_OUTPUT:?HOSTED_ACCEPTANCE_OUTPUT is required}"
+
+hosted-shell-check:
+    shellcheck scripts/accept-hosted-candidate.sh scripts/rehearse-hosted-cutover.sh scripts/verify-hosted-endpoint.sh
+
+hosted-cutover-prepare:
+    cd app && bun run hosted:cutover prepare --hosted-acceptance "${HOSTED_ACCEPTANCE:?HOSTED_ACCEPTANCE is required}" --baseline-compose "${HOSTED_BASELINE_COMPOSE:?HOSTED_BASELINE_COMPOSE is required}" --candidate-compose "${HOSTED_CANDIDATE_COMPOSE:?HOSTED_CANDIDATE_COMPOSE is required}" --environment-backup "${HOSTED_ENVIRONMENT_BACKUP:?HOSTED_ENVIRONMENT_BACKUP is required}" --caddy-backup "${HOSTED_CADDY_BACKUP:?HOSTED_CADDY_BACKUP is required}" --evidence-key "${HOSTED_EVIDENCE_KEY:?HOSTED_EVIDENCE_KEY is required}" --container "${HOSTED_CONTAINER:?HOSTED_CONTAINER is required}" --replacement-image "${HOSTED_REPLACEMENT_IMAGE:?HOSTED_REPLACEMENT_IMAGE is required}" --output "${HOSTED_OUTPUT:?HOSTED_OUTPUT is required}"
+
+hosted-cutover-rehearse:
+    bash scripts/rehearse-hosted-cutover.sh "${HOSTED_PLAN:?HOSTED_PLAN is required}" "${HOSTED_EVIDENCE_KEY:?HOSTED_EVIDENCE_KEY is required}" "${HOSTED_OUTPUT:?HOSTED_OUTPUT is required}"
+
+hosted-cutover-readiness:
+    cd app && bun run hosted:cutover verify-readiness --plan "${HOSTED_PLAN:?HOSTED_PLAN is required}" --rehearsal "${HOSTED_REHEARSAL:?HOSTED_REHEARSAL is required}" --hosted-acceptance "${HOSTED_ACCEPTANCE:?HOSTED_ACCEPTANCE is required}" --candidate "${RELEASE_CANDIDATE_MANIFEST:?RELEASE_CANDIDATE_MANIFEST is required}" --acceptance-verdict "${RELEASE_ACCEPTANCE_VERDICT:?RELEASE_ACCEPTANCE_VERDICT is required}" --baseline-compose "${HOSTED_BASELINE_COMPOSE:?HOSTED_BASELINE_COMPOSE is required}" --candidate-compose "${HOSTED_CANDIDATE_COMPOSE:?HOSTED_CANDIDATE_COMPOSE is required}" --environment-backup "${HOSTED_ENVIRONMENT_BACKUP:?HOSTED_ENVIRONMENT_BACKUP is required}" --caddy-backup "${HOSTED_CADDY_BACKUP:?HOSTED_CADDY_BACKUP is required}" --evidence-key "${HOSTED_EVIDENCE_KEY:?HOSTED_EVIDENCE_KEY is required}" --container "${HOSTED_CONTAINER:?HOSTED_CONTAINER is required}" --output "${HOSTED_OUTPUT:?HOSTED_OUTPUT is required}"
+
+hosted-cutover-seal:
+    cd app && bun run hosted:cutover seal-production-evidence --readiness "${HOSTED_READINESS:?HOSTED_READINESS is required}" --event "${HOSTED_PRODUCTION_EVENT:?HOSTED_PRODUCTION_EVENT is required}" --endpoint "${HOSTED_PRODUCTION_ENDPOINT:-}" --route-binding "${HOSTED_ROUTE_BINDING:-}" --baseline-compose "${HOSTED_BASELINE_COMPOSE:?HOSTED_BASELINE_COMPOSE is required}" --candidate-compose "${HOSTED_CANDIDATE_COMPOSE:?HOSTED_CANDIDATE_COMPOSE is required}" --environment-backup "${HOSTED_ENVIRONMENT_BACKUP:?HOSTED_ENVIRONMENT_BACKUP is required}" --caddy-backup "${HOSTED_CADDY_BACKUP:?HOSTED_CADDY_BACKUP is required}" --evidence-key "${HOSTED_EVIDENCE_KEY:?HOSTED_EVIDENCE_KEY is required}" --container "${HOSTED_CONTAINER:?HOSTED_CONTAINER is required}" --output "${HOSTED_OUTPUT:?HOSTED_OUTPUT is required}"
+
+hosted-cutover-bind-route:
+    cd app && bun run hosted:cutover record-route-binding --readiness "${HOSTED_READINESS:?HOSTED_READINESS is required}" --start "${HOSTED_OBSERVATION_START:?HOSTED_OBSERVATION_START is required}" --endpoint "${HOSTED_PRODUCTION_ENDPOINT:?HOSTED_PRODUCTION_ENDPOINT is required}" --caddy-backup "${HOSTED_CADDY_BACKUP:?HOSTED_CADDY_BACKUP is required}" --evidence-key "${HOSTED_EVIDENCE_KEY:?HOSTED_EVIDENCE_KEY is required}" --container "${HOSTED_CONTAINER:?HOSTED_CONTAINER is required}" --image-role "${HOSTED_IMAGE_ROLE:?HOSTED_IMAGE_ROLE is required}" --acknowledgement "${HOSTED_ROUTE_ACKNOWLEDGEMENT:?HOSTED_ROUTE_ACKNOWLEDGEMENT is required}" --output "${HOSTED_OUTPUT:?HOSTED_OUTPUT is required}"
+
+hosted-cutover-observe-start:
+    cd app && bun run hosted:cutover start-production-observation --readiness "${HOSTED_READINESS:?HOSTED_READINESS is required}" --evidence-key "${HOSTED_EVIDENCE_KEY:?HOSTED_EVIDENCE_KEY is required}" --output "${HOSTED_OUTPUT:?HOSTED_OUTPUT is required}"
+
+hosted-cutover-observe-finish:
+    cd app && bun run hosted:cutover finish-production-observation --start "${HOSTED_OBSERVATION_START:?HOSTED_OBSERVATION_START is required}" --route-binding "${HOSTED_ROUTE_BINDING:-}" --result "${HOSTED_RESULT:?HOSTED_RESULT is required}" --failure "${HOSTED_FAILURE:-}" --incident-reference "${HOSTED_INCIDENT_REFERENCE:-}" --evidence-key "${HOSTED_EVIDENCE_KEY:?HOSTED_EVIDENCE_KEY is required}" --output "${HOSTED_OUTPUT:?HOSTED_OUTPUT is required}"
 
 android-catalog-accept:
     cd app && bun run accept:android:catalog -- --apk "${ANDROID_ACCEPTANCE_APK:?ANDROID_ACCEPTANCE_APK is required}" --serial "${ANDROID_ACCEPTANCE_SERIAL:?ANDROID_ACCEPTANCE_SERIAL is required}" --output "${ANDROID_ACCEPTANCE_OUTPUT:?ANDROID_ACCEPTANCE_OUTPUT is required}"
