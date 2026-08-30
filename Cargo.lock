@@ -3631,7 +3631,9 @@ dependencies = [
 name = "sparrow-installed"
 version = "0.0.0"
 dependencies = [
+ "bytes",
  "chrono",
+ "futures-util",
  "jni 0.22.4",
  "libc",
  "rustls-platform-verifier",
@@ -3645,6 +3647,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "webkit2gtk",
 ]
 
 [[package]]

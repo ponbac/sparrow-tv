@@ -1,0 +1,53 @@
+diff --git a/src/utils/polyfill.js b/src/utils/polyfill.js
+index 7d250df3af446bcac3646fdd21649f7382cbdeaf..e00a6135a015fe3288571f3c73e5662ebc4401e4 100644
+--- a/src/utils/polyfill.js
++++ b/src/utils/polyfill.js
+@@ -22,5 +22,7 @@ class Polyfill {
+         // ES6 Object.setPrototypeOf
+-        Object.setPrototypeOf = Object.setPrototypeOf || function (obj, proto) {
+-            obj.__proto__ = proto;
+-            return obj;
+-        };
++        if (typeof Object.setPrototypeOf !== 'function') {
++            Object.setPrototypeOf = function (obj, proto) {
++                obj.__proto__ = proto;
++                return obj;
++            };
++        }
+@@ -28,19 +30,21 @@ class Polyfill {
+         // ES6 Object.assign
+-        Object.assign = Object.assign || function (target) {
+-            if (target === undefined || target === null) {
+-                throw new TypeError('Cannot convert undefined or null to object');
+-            }
+-
+-            let output = Object(target);
+-            for (let i = 1; i < arguments.length; i++) {
+-                let source = arguments[i];
+-                if (source !== undefined && source !== null) {
+-                    for (let key in source) {
+-                        if (source.hasOwnProperty(key)) {
+-                            output[key] = source[key];
++        if (typeof Object.assign !== 'function') {
++            Object.assign = function (target) {
++                if (target === undefined || target === null) {
++                    throw new TypeError('Cannot convert undefined or null to object');
++                }
++
++                let output = Object(target);
++                for (let i = 1; i < arguments.length; i++) {
++                    let source = arguments[i];
++                    if (source !== undefined && source !== null) {
++                        for (let key in source) {
++                            if (source.hasOwnProperty(key)) {
++                                output[key] = source[key];
++                            }
+                         }
+                     }
+                 }
+-            }
+-            return output;
+-        };
++                return output;
++            };
++        }

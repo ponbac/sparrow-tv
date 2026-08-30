@@ -31,7 +31,7 @@ pub(crate) async fn play(
     let source = state.core().resolve_playback(&id).map_err(ApiError::from)?;
     let upstream = state
         .playback()
-        .open(source)
+        .open(&source)
         .await
         .map_err(ApiError::from)?;
     let body = Body::from_stream(PlaybackBodyStream::new(upstream.into_body(), activity));

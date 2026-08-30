@@ -5,6 +5,7 @@ use sparrow_core::{
 };
 
 use crate::config_store::StoredSourceConfiguration;
+use crate::playback::{NativeStreamHandle, PlaybackSessionId};
 
 use super::dto::ClientErrorDto;
 
@@ -77,6 +78,55 @@ impl ListChannelsInput {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ChannelInput {
     id: String,
+}
+
+/// The provider location is resolved natively from `id`; no destination or
+/// transport policy can enter through this command.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PlaybackStartInput {
+    id: String,
+    session_id: String,
+}
+
+impl PlaybackStartInput {
+    pub(crate) fn into_playback(self) -> Result<(ChannelId, PlaybackSessionId), ClientErrorDto> {
+        let channel_id = ChannelId::parse(self.id).map_err(ClientErrorDto::from)?;
+        let session_id = PlaybackSessionId::parse(self.session_id)
+            .map_err(|_| ClientErrorDto::service_unavailable())?;
+        Ok((channel_id, session_id))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PlaybackReadInput {
+    session_id: String,
+    stream_handle: String,
+}
+
+impl PlaybackReadInput {
+    pub(crate) fn into_playback(
+        self,
+    ) -> Result<(PlaybackSessionId, NativeStreamHandle), ClientErrorDto> {
+        let session_id = PlaybackSessionId::parse(self.session_id)
+            .map_err(|_| ClientErrorDto::service_unavailable())?;
+        let stream_handle = NativeStreamHandle::parse(self.stream_handle)
+            .map_err(|_| ClientErrorDto::service_unavailable())?;
+        Ok((session_id, stream_handle))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PlaybackStopInput {
+    session_id: String,
+}
+
+impl PlaybackStopInput {
+    pub(crate) fn into_session_id(self) -> Result<PlaybackSessionId, ClientErrorDto> {
+        PlaybackSessionId::parse(self.session_id).map_err(|_| ClientErrorDto::service_unavailable())
+    }
 }
 
 impl ChannelInput {
@@ -348,6 +398,86 @@ mod tests {
                     field: "page-limit",
                     reason: "invalid-format"
                 })
+            ));
+        }
+    }
+
+    #[test]
+    fn playback_inputs_are_strict_and_refine_only_bounded_opaque_ids() {
+        let channel_id = format!("ch1_{}", "a".repeat(64));
+        let start: PlaybackStartInput = serde_json::from_value(json!({
+            "id": channel_id,
+            "sessionId": "play1_0123456789abcdef0123456789abcdef_a"
+        }))
+        .expect("start shape parses");
+        assert!(start.into_playback().is_ok());
+
+        let read: PlaybackReadInput = serde_json::from_value(json!({
+            "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
+            "streamHandle": "stream1_0123456789abcdef"
+        }))
+        .expect("read shape parses");
+        assert!(read.into_playback().is_ok());
+
+        let stop: PlaybackStopInput = serde_json::from_value(json!({
+            "sessionId": "play1_0123456789abcdef0123456789abcdef_a"
+        }))
+        .expect("stop shape parses");
+        assert!(stop.into_session_id().is_ok());
+
+        assert!(
+            serde_json::from_value::<PlaybackStartInput>(json!({
+                "id": format!("ch1_{}", "a".repeat(64)),
+                "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
+                "url": "https://provider.invalid/private"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<PlaybackReadInput>(json!({
+                "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
+                "streamHandle": "stream1_0123456789abcdef",
+                "size": 1048576
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<PlaybackStopInput>(json!({
+                "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
+                "streamHandle": "stream1_0123456789abcdef"
+            }))
+            .is_err()
+        );
+
+        for invalid in [
+            "play1_0123456789abcdef0123456789abcde_a",
+            "play1_0123456789abcdef0123456789abcdef_",
+            "play1_0123456789abcdef0123456789abcdef_A",
+            "play1_0123456789abcdef0123456789abcdef_a_extra",
+            "play2_0123456789abcdef0123456789abcdef_a",
+        ] {
+            let input: PlaybackStopInput =
+                serde_json::from_value(json!({ "sessionId": invalid })).expect("stop shape parses");
+            assert!(matches!(
+                input.into_session_id(),
+                Err(ClientErrorDto::ServiceUnavailable)
+            ));
+        }
+
+        for invalid in [
+            "stream1_0123456789abcde",
+            "stream1_0123456789abcdef0",
+            "stream1_0123456789abcdeF",
+            "stream2_0123456789abcdef",
+        ] {
+            let input: PlaybackReadInput = serde_json::from_value(json!({
+                "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
+                "streamHandle": invalid
+            }))
+            .expect("read shape parses");
+            assert!(matches!(
+                input.into_playback(),
+                Err(ClientErrorDto::ServiceUnavailable)
             ));
         }
     }

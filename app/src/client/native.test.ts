@@ -13,7 +13,7 @@ afterEach(() => vi.restoreAllMocks());
 
 const INSTALLED_CAPABILITIES = {
   sourceConfiguration: "device-writable",
-  playbackTransport: "unavailable",
+  playbackTransport: "tauri-native-stream",
   audioTrackSelection: false,
   mpvFailover: false,
 } as const;
@@ -517,6 +517,161 @@ describe("installed Tauri Sparrow client", () => {
     await searchFlight.promise;
   });
 
+  it("opens, reads, and stops only one correlated opaque playback session", async () => {
+    const chunk = Uint8Array.from([0x47, 0x40, 0x00]).buffer;
+    const streamHandle = `stream1_${"b".repeat(16)}`;
+    const ipc = new FakeNativeIpc((command, args) => {
+      switch (command) {
+        case NATIVE_COMMANDS.startPlayback:
+          return Promise.resolve({
+            _tag: "tauri-native-stream",
+            sessionId: requirePlaybackSessionId(args),
+            streamHandle,
+          });
+        case NATIVE_COMMANDS.readPlayback:
+          return Promise.resolve(chunk);
+        case NATIVE_COMMANDS.stopPlayback:
+          return Promise.resolve(null);
+        default:
+          return Promise.reject(new Error("unexpected fixture command"));
+      }
+    });
+    const client = createNativeSparrowClient({ ipc });
+
+    const started = await client.startPlayback({ id: CHANNEL.id });
+    if (!started.ok || started.value._tag !== "tauri-native-stream") {
+      throw new Error("expected a native playback descriptor");
+    }
+    const descriptor = started.value;
+    await expect(
+      client.readPlayback({
+        sessionId: descriptor.sessionId,
+        streamHandle: descriptor.streamHandle,
+      }),
+    ).resolves.toEqual({ ok: true, value: chunk });
+    await expect(
+      client.stopPlayback({ sessionId: descriptor.sessionId }),
+    ).resolves.toEqual({ ok: true, value: undefined });
+
+    expect(ipc.invokes).toEqual([
+      {
+        command: NATIVE_COMMANDS.startPlayback,
+        args: {
+          input: { id: CHANNEL.id, sessionId: descriptor.sessionId },
+        },
+      },
+      {
+        command: NATIVE_COMMANDS.readPlayback,
+        args: {
+          input: {
+            sessionId: descriptor.sessionId,
+            streamHandle: descriptor.streamHandle,
+          },
+        },
+      },
+      {
+        command: NATIVE_COMMANDS.stopPlayback,
+        args: { input: { sessionId: descriptor.sessionId } },
+      },
+    ]);
+  });
+
+  it("stops an opening session exactly once when the caller cancels", async () => {
+    const startFlight = deferred<unknown>();
+    const ipc = new FakeNativeIpc((command) =>
+      command === NATIVE_COMMANDS.startPlayback
+        ? startFlight.promise
+        : Promise.resolve(null),
+    );
+    const client = createNativeSparrowClient({ ipc });
+    const controller = new AbortController();
+
+    const result = client.startPlayback({
+      id: CHANNEL.id,
+      signal: controller.signal,
+    });
+    const sessionId = requirePlaybackSessionId(requireFirst(ipc.invokes).args);
+    controller.abort();
+    await expect(result).resolves.toEqual({
+      ok: false,
+      error: { _tag: "cancelled" },
+    });
+    expect(ipc.invokes).toEqual([
+      {
+        command: NATIVE_COMMANDS.startPlayback,
+        args: { input: { id: CHANNEL.id, sessionId } },
+      },
+      {
+        command: NATIVE_COMMANDS.stopPlayback,
+        args: { input: { sessionId } },
+      },
+    ]);
+
+    startFlight.resolve({
+      _tag: "tauri-native-stream",
+      sessionId,
+      streamHandle: `stream1_${"c".repeat(16)}`,
+    });
+    await startFlight.promise;
+    await Promise.resolve();
+    expect(
+      ipc.invokes.filter(({ command }) => command === NATIVE_COMMANDS.stopPlayback),
+    ).toHaveLength(1);
+  });
+
+  it("releases malformed start successes and rejects malformed stream chunks", async () => {
+    const secret = "https://user:secret@provider.invalid/live";
+    const oversized = new ArrayBuffer(64 * 1024 + 1);
+    let readResponse: unknown = new Uint8Array([1, 2, 3]);
+    const ipc = new FakeNativeIpc((command, args) => {
+      switch (command) {
+        case NATIVE_COMMANDS.startPlayback:
+          return Promise.resolve({
+            _tag: "tauri-native-stream",
+            sessionId: requirePlaybackSessionId(args),
+            streamHandle: `stream1_${"d".repeat(16)}`,
+            source: secret,
+          });
+        case NATIVE_COMMANDS.readPlayback:
+          return Promise.resolve(readResponse);
+        case NATIVE_COMMANDS.stopPlayback:
+          return Promise.resolve(null);
+        default:
+          return Promise.reject(new Error("unexpected fixture command"));
+      }
+    });
+    const client = createNativeSparrowClient({ ipc });
+    const invalidStart = await client.startPlayback({ id: CHANNEL.id });
+    const sessionId = requirePlaybackSessionId(requireFirst(ipc.invokes).args);
+
+    expect(invalidStart).toEqual(invalidResponse());
+    expect(JSON.stringify(invalidStart)).not.toContain("provider.invalid");
+    expect(ipc.invokes.at(-1)).toEqual({
+      command: NATIVE_COMMANDS.stopPlayback,
+      args: { input: { sessionId } },
+    });
+
+    const readInput = {
+      sessionId: clientSchemas.nativePlaybackDescriptor.parse({
+        _tag: "tauri-native-stream",
+        sessionId,
+        streamHandle: `stream1_${"e".repeat(16)}`,
+      }).sessionId,
+      streamHandle: clientSchemas.nativePlaybackDescriptor.parse({
+        _tag: "tauri-native-stream",
+        sessionId,
+        streamHandle: `stream1_${"e".repeat(16)}`,
+      }).streamHandle,
+    };
+    await expect(client.readPlayback(readInput)).resolves.toEqual(
+      invalidResponse(),
+    );
+    readResponse = oversized;
+    await expect(client.readPlayback(readInput)).resolves.toEqual(
+      invalidResponse(),
+    );
+  });
+
   it("delivers strict ordered Channel events and unsubscribes idempotently", async () => {
     const subscription = deferred<unknown>();
     const ipc = new FakeNativeIpc((command) =>
@@ -648,6 +803,22 @@ function requireSearchRequestId(invoke: RecordedInvoke): unknown {
     throw new Error("expected a native search request identifier");
   }
   return input.requestId;
+}
+
+function requirePlaybackSessionId(
+  args: Readonly<Record<string, unknown>> | undefined,
+): string {
+  const input = args?.input;
+  if (
+    typeof input !== "object" ||
+    input === null ||
+    !("sessionId" in input) ||
+    typeof input.sessionId !== "string" ||
+    !/^play1_[0-9a-f]{32}_[0-9a-f]+$/u.test(input.sessionId)
+  ) {
+    throw new Error("expected a native playback session identifier");
+  }
+  return input.sessionId;
 }
 
 interface Deferred<Value> {

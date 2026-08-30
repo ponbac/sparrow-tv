@@ -6,6 +6,8 @@ use sparrow_core::{
     RefreshSkipReason, SafeFailure, SearchResults, SourceKind, SourceState,
 };
 
+use crate::playback::{PlaybackManagerError, StartedPlayback};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CapabilitiesDto {
@@ -19,9 +21,28 @@ impl CapabilitiesDto {
     pub(crate) const fn installed_catalog() -> Self {
         Self {
             source_configuration: "device-writable",
-            playback_transport: "unavailable",
+            playback_transport: "tauri-native-stream",
             audio_track_selection: false,
             mpv_failover: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PlaybackDescriptorDto {
+    #[serde(rename = "_tag")]
+    tag: &'static str,
+    session_id: String,
+    stream_handle: String,
+}
+
+impl From<StartedPlayback> for PlaybackDescriptorDto {
+    fn from(started: StartedPlayback) -> Self {
+        Self {
+            tag: "tauri-native-stream",
+            session_id: started.session_id().as_str().to_owned(),
+            stream_handle: started.stream_handle().as_str().to_owned(),
         }
     }
 }
@@ -532,6 +553,36 @@ pub(crate) enum ClientErrorDto {
     StaleCursor {
         current: u64,
     },
+    PlaybackFailed {
+        reason: &'static str,
+        retryable: bool,
+    },
+    Cancelled,
+}
+
+impl From<PlaybackManagerError> for ClientErrorDto {
+    fn from(error: PlaybackManagerError) -> Self {
+        match error {
+            PlaybackManagerError::Core(error) => Self::from(error),
+            PlaybackManagerError::Access(error) => Self::PlaybackFailed {
+                reason: match error {
+                    sparrow_source_http::PlaybackAccessError::Rejected => "rejected",
+                    sparrow_source_http::PlaybackAccessError::TimedOut => "timed-out",
+                    sparrow_source_http::PlaybackAccessError::Unavailable => "unavailable",
+                    sparrow_source_http::PlaybackAccessError::InvalidResponse => "invalid-response",
+                },
+                retryable: error.retryable(),
+            },
+            PlaybackManagerError::Read(sparrow_source_http::PlaybackReadError::Interrupted) => {
+                Self::PlaybackFailed {
+                    reason: "unavailable",
+                    retryable: true,
+                }
+            }
+            PlaybackManagerError::Cancelled => Self::Cancelled,
+            PlaybackManagerError::Unavailable => Self::ServiceUnavailable,
+        }
+    }
 }
 
 impl ClientErrorDto {
@@ -650,17 +701,70 @@ mod tests {
     use super::*;
 
     #[test]
-    fn installed_capabilities_are_closed_and_do_not_grant_playback_yet() {
+    fn installed_capabilities_grant_only_the_native_playback_transport() {
         assert_eq!(
             serde_json::to_value(CapabilitiesDto::installed_catalog())
                 .expect("capabilities serialize"),
             json!({
                 "sourceConfiguration": "device-writable",
-                "playbackTransport": "unavailable",
+                "playbackTransport": "tauri-native-stream",
                 "audioTrackSelection": false,
                 "mpvFailover": false,
             })
         );
+    }
+
+    #[test]
+    fn native_playback_descriptor_and_failures_match_the_closed_contract() {
+        let descriptor = PlaybackDescriptorDto {
+            tag: "tauri-native-stream",
+            session_id: "play1_0123456789abcdef0123456789abcdef_a".to_owned(),
+            stream_handle: "stream1_0123456789abcdef".to_owned(),
+        };
+        assert_eq!(
+            serde_json::to_value(descriptor).expect("descriptor serializes"),
+            json!({
+                "_tag": "tauri-native-stream",
+                "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
+                "streamHandle": "stream1_0123456789abcdef"
+            })
+        );
+
+        for (error, expected) in [
+            (
+                PlaybackManagerError::Access(sparrow_source_http::PlaybackAccessError::Rejected),
+                json!({
+                    "_tag": "playback-failed",
+                    "reason": "rejected",
+                    "retryable": false
+                }),
+            ),
+            (
+                PlaybackManagerError::Access(sparrow_source_http::PlaybackAccessError::TimedOut),
+                json!({
+                    "_tag": "playback-failed",
+                    "reason": "timed-out",
+                    "retryable": true
+                }),
+            ),
+            (
+                PlaybackManagerError::Read(sparrow_source_http::PlaybackReadError::Interrupted),
+                json!({
+                    "_tag": "playback-failed",
+                    "reason": "unavailable",
+                    "retryable": true
+                }),
+            ),
+            (
+                PlaybackManagerError::Cancelled,
+                json!({ "_tag": "cancelled" }),
+            ),
+        ] {
+            assert_eq!(
+                serde_json::to_value(ClientErrorDto::from(error)).expect("client error serializes"),
+                expected
+            );
+        }
     }
 
     #[tokio::test]
