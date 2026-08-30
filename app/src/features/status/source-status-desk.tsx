@@ -13,13 +13,14 @@ import type {
 } from "../../client/contracts";
 import "./source-status-desk.css";
 
-/** Inputs for the independent hosted Source telemetry and refresh controls. */
+/** Inputs for independent source telemetry and an optional manual refresh control. */
 export interface SourceStatusDeskProps {
   readonly status: CatalogStatus | null;
   readonly refreshing: boolean;
   readonly refreshResult: ClientResult<RefreshReport> | null;
   readonly latestEvent: SparrowEvent | null;
   readonly onRefresh: () => void;
+  readonly manualRefresh?: boolean;
 }
 
 /** Renders independent M3U/EPG state, manual refresh feedback, and safe diagnostics. */
@@ -29,6 +30,7 @@ export function SourceStatusDesk({
   refreshResult,
   latestEvent,
   onRefresh,
+  manualRefresh = true,
 }: SourceStatusDeskProps) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
     "idle",
@@ -78,16 +80,18 @@ export function SourceStatusDesk({
           <p className="eyebrow">Independent source telemetry</p>
           <h2 id="source-desk-heading">Signal condition</h2>
         </div>
-        <button
-          className="source-desk__refresh"
-          type="button"
-          disabled={refreshDisabled}
-          aria-busy={refreshing}
-          onClick={onRefresh}
-        >
-          <RefreshCw aria-hidden="true" />
-          {refreshing ? "Refresh in progress" : "Refresh sources"}
-        </button>
+        {manualRefresh ? (
+          <button
+            className="source-desk__refresh"
+            type="button"
+            disabled={refreshDisabled}
+            aria-busy={refreshing}
+            onClick={onRefresh}
+          >
+            <RefreshCw aria-hidden="true" />
+            {refreshing ? "Refresh in progress" : "Refresh sources"}
+          </button>
+        ) : null}
       </header>
 
       <div className="source-desk__grid" aria-live="polite">

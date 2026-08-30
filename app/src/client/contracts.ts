@@ -59,13 +59,24 @@ export type PageCursor = z.output<typeof pageCursorSchema>;
 /** An RFC 3339 instant carrying an explicit UTC offset. */
 export type IsoInstant = z.output<typeof timestampSchema>;
 
-/** Deployment capabilities that determine which client controls may be offered. */
-export interface Capabilities {
+/** Hosted deployment capabilities exposed by the authenticated HTTP adapter. */
+export interface HostedCapabilities {
   readonly sourceConfiguration: "deployment-readonly";
   readonly playbackTransport: "same-origin-http";
   readonly audioTrackSelection: false;
   readonly mpvFailover: false;
 }
+
+/** Installed deployment capabilities exposed by the local Tauri shell. */
+export interface InstalledCapabilities {
+  readonly sourceConfiguration: "device-writable";
+  readonly playbackTransport: "unavailable";
+  readonly audioTrackSelection: false;
+  readonly mpvFailover: false;
+}
+
+/** Deployment capabilities that determine which client controls may be offered. */
+export type Capabilities = HostedCapabilities | InstalledCapabilities;
 
 /** A minimized, closed source failure safe to render or retain in browser state. */
 export type SafeFailure =
@@ -318,6 +329,12 @@ export interface StartPlaybackInput extends ClientRequestOptions {
   readonly id: ChannelId;
 }
 
+/** Transient source locations accepted only by the installed configuration command. */
+export interface SourceConfigurationInput extends ClientRequestOptions {
+  readonly m3uLocation: string;
+  readonly epgLocation: string | null;
+}
+
 /** The browser-safe transport needed to start one hosted live stream. */
 export interface PlaybackDescriptor {
   readonly _tag: "same-origin-http";
@@ -450,12 +467,34 @@ export interface SparrowClient {
   ): Promise<ClientResult<PlaybackDescriptor>>;
 }
 
-const capabilitiesSchema: z.ZodType<Capabilities> = z.strictObject({
+/** Installed client extension for atomically replacing on-device source configuration. */
+export interface InstalledSparrowClient extends SparrowClient {
+  /**
+   * Replaces persisted source configuration and returns only browser-safe catalog status.
+   * Source locations are never returned from this operation.
+   */
+  replaceSourceConfiguration(
+    input: SourceConfigurationInput,
+  ): Promise<ClientResult<CatalogStatus>>;
+}
+
+const hostedCapabilitiesSchema: z.ZodType<HostedCapabilities> = z.strictObject({
   sourceConfiguration: z.literal("deployment-readonly"),
   playbackTransport: z.literal("same-origin-http"),
   audioTrackSelection: z.literal(false),
   mpvFailover: z.literal(false),
 });
+const installedCapabilitiesSchema: z.ZodType<InstalledCapabilities> =
+  z.strictObject({
+    sourceConfiguration: z.literal("device-writable"),
+    playbackTransport: z.literal("unavailable"),
+    audioTrackSelection: z.literal(false),
+    mpvFailover: z.literal(false),
+  });
+const capabilitiesSchema: z.ZodType<Capabilities> = z.union([
+  hostedCapabilitiesSchema,
+  installedCapabilitiesSchema,
+]);
 
 const sourceKindSchema = z.enum(["m3u", "epg"]);
 const safeUnsignedIntegerSchema = z
@@ -936,6 +975,7 @@ const clientErrorEnvelopeSchema: z.ZodType<{
 /** Runtime parsers and request-aware parser factories for hosted protocol payloads. */
 export const clientSchemas = Object.freeze({
   capabilities: capabilitiesSchema,
+  installedCapabilities: installedCapabilitiesSchema,
   status: catalogStatusSchema,
   refreshOutcome: refreshOutcomeSchema,
   refreshReport: refreshReportSchema,
@@ -950,5 +990,6 @@ export const clientSchemas = Object.freeze({
   searchChannelsPageFor: searchChannelsPageSchemaFor,
   searchProgrammesPageFor: searchProgrammesPageSchemaFor,
   playbackDescriptor: playbackDescriptorSchema,
+  serverError: serverClientErrorSchema,
   errorEnvelope: clientErrorEnvelopeSchema,
 });

@@ -4,11 +4,11 @@ use std::{
     io::{self, BufRead, Read},
     panic::{AssertUnwindSafe, resume_unwind},
     sync::{
-        Arc, Mutex, Weak,
+        Arc, Mutex, RwLock, Weak,
         atomic::{AtomicBool, Ordering},
     },
 };
-use tokio::sync::{Notify, broadcast, watch};
+use tokio::sync::{Mutex as AsyncMutex, Notify, broadcast, oneshot, watch};
 
 use crate::{
     catalog::ChannelCatalog,
@@ -56,12 +56,14 @@ impl SparrowCore {
         adapters: CoreAdapters,
     ) -> Result<Self, CoreError> {
         let Some(configuration) = configuration else {
-            return Ok(Self::from_runtime(CoreRuntime::new(
+            let core = Self::from_runtime(CoreRuntime::new(
                 None,
                 adapters,
                 CoreView::not_configured(),
                 BootstrapFailures::default(),
-            )));
+            ));
+            core.runtime.start_automation();
+            return Ok(core);
         };
 
         let redacted = configuration.redacted();
@@ -113,6 +115,52 @@ impl SparrowCore {
         core.runtime.start_automation();
 
         Ok(core)
+    }
+
+    /// Builds a usable core strictly from eligible on-device snapshots.
+    ///
+    /// Source access is never awaited by this call. Once the recovered view is
+    /// published, normal startup automation refreshes configured sources in the
+    /// background. This keeps an installed shell responsive when a provider is
+    /// offline while preserving any matching catalog snapshot.
+    pub async fn bootstrap_from_snapshots(
+        configuration: Option<SourceConfiguration>,
+        adapters: CoreAdapters,
+    ) -> Result<Self, CoreError> {
+        let Some(configuration) = configuration else {
+            let core = Self::from_runtime(CoreRuntime::new(
+                None,
+                adapters,
+                CoreView::not_configured(),
+                BootstrapFailures::default(),
+            ));
+            core.runtime.start_automation();
+            return Ok(core);
+        };
+
+        let recovered = recover_configuration(&configuration, &adapters).await;
+        let core = Self::from_runtime(CoreRuntime::new(
+            Some(configuration),
+            adapters,
+            recovered.view,
+            BootstrapFailures::default(),
+        ));
+        core.runtime.start_automation();
+        Ok(core)
+    }
+
+    /// Replaces the private Source Configuration through one serialized transition.
+    ///
+    /// The previous catalog becomes ineligible before this method waits for old
+    /// refresh work. A configured replacement recovers matching on-device
+    /// snapshots, then performs a foreground refresh. Fetch failure is represented
+    /// in the returned safe status while the newly selected configuration remains
+    /// active. Passing `None` removes the configuration.
+    pub async fn replace_source_configuration(
+        &self,
+        configuration: Option<SourceConfiguration>,
+    ) -> CatalogStatus {
+        self.runtime.replace_configuration(configuration).await
     }
 
     fn from_runtime(runtime: CoreRuntime) -> Self {
@@ -316,7 +364,11 @@ impl CoreEventStream {
 }
 
 struct CoreRuntime {
-    configuration: Option<SourceConfiguration>,
+    configuration: RwLock<ConfigurationState>,
+    configuration_transition: AsyncMutex<()>,
+    // Linearizes epoch invalidation with insertion of a new Source flight.
+    configuration_admission: Mutex<()>,
+    configuration_changed: watch::Sender<u64>,
     adapters: CoreAdapters,
     view: ArcSwap<CoreView>,
     publication: Mutex<()>,
@@ -326,6 +378,18 @@ struct CoreRuntime {
     activity_changed: watch::Sender<u64>,
     shutdown: watch::Sender<bool>,
     events: broadcast::Sender<CoreEvent>,
+}
+
+struct ConfigurationState {
+    epoch: u64,
+    configuration: Option<Arc<SourceConfiguration>>,
+    ready: bool,
+}
+
+#[derive(Clone)]
+struct ConfigurationContext {
+    epoch: u64,
+    configuration: Arc<SourceConfiguration>,
 }
 
 struct CoreView {
@@ -393,6 +457,7 @@ struct RefreshPolicy {
 }
 
 struct RefreshFlight {
+    context: ConfigurationContext,
     manual: AtomicBool,
     decision: Mutex<FlightDecision>,
     promoted: watch::Sender<bool>,
@@ -441,8 +506,9 @@ impl Drop for AutomaticRefreshAdmission<'_> {
 }
 
 impl RefreshFlight {
-    fn new(manual: bool) -> Self {
+    fn new(context: ConfigurationContext, manual: bool) -> Self {
         Self {
+            context,
             manual: AtomicBool::new(manual),
             decision: Mutex::new(FlightDecision::Pending),
             promoted: watch::channel(manual).0,
@@ -493,6 +559,18 @@ impl RefreshFlight {
         }
     }
 
+    async fn wait_until_finished(&self) {
+        let mut result = self.result.subscribe();
+        loop {
+            if result.borrow().is_some() {
+                return;
+            }
+            if result.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
     fn complete(&self, result: RefreshOutcome) {
         self.result
             .send_replace(Some(RefreshFlightResult::Completed(result)));
@@ -513,7 +591,14 @@ impl CoreRuntime {
     ) -> Self {
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
         let runtime = Self {
-            configuration,
+            configuration: RwLock::new(ConfigurationState {
+                epoch: 0,
+                configuration: configuration.map(Arc::new),
+                ready: true,
+            }),
+            configuration_transition: AsyncMutex::new(()),
+            configuration_admission: Mutex::new(()),
+            configuration_changed: watch::channel(0).0,
             adapters,
             view: ArcSwap::from_pointee(view),
             publication: Mutex::new(()),
@@ -524,11 +609,11 @@ impl CoreRuntime {
             shutdown: watch::channel(false).0,
             events,
         };
-        runtime.seed_bootstrap_failures(bootstrap_failures);
+        runtime.seed_bootstrap_failures(0, bootstrap_failures);
         runtime
     }
 
-    fn seed_bootstrap_failures(&self, failures: BootstrapFailures) {
+    fn seed_bootstrap_failures(&self, epoch: u64, failures: BootstrapFailures) {
         for (kind, failure) in [
             (SourceKind::M3u, failures.m3u),
             (SourceKind::Epg, failures.epg),
@@ -536,16 +621,173 @@ impl CoreRuntime {
             let Some(failure) = failure else {
                 continue;
             };
-            let next_attempt_at = self.record_failure(kind, &failure);
-            self.set_source_state(
-                kind,
-                SourceState::Failed {
-                    validated_at: self.current_validated_at(kind),
-                    failure,
-                    next_attempt_at,
-                },
-            );
+            let _ = self.record_failure(epoch, kind, &failure);
         }
+    }
+
+    async fn replace_configuration(
+        self: &Arc<Self>,
+        configuration: Option<SourceConfiguration>,
+    ) -> CatalogStatus {
+        let (completed, result) = oneshot::channel();
+        let runtime = Arc::clone(self);
+        tokio::spawn(async move {
+            let status = runtime.run_configuration_replacement(configuration).await;
+            let _ = completed.send(status);
+        });
+        result
+            .await
+            .expect("the owned Source Configuration transition completes")
+    }
+
+    async fn run_configuration_replacement(
+        self: &Arc<Self>,
+        configuration: Option<SourceConfiguration>,
+    ) -> CatalogStatus {
+        let _transition = self.configuration_transition.lock().await;
+        let configuration = configuration.map(Arc::new);
+        let epoch = self.invalidate_configuration(configuration.clone());
+        let ((), ()) = futures_util::future::join(
+            self.wait_for_previous_flight(SourceKind::M3u, epoch),
+            self.wait_for_previous_flight(SourceKind::Epg, epoch),
+        )
+        .await;
+
+        let Some(configuration) = configuration else {
+            return self.view.load().status.clone();
+        };
+
+        let recovered = recover_configuration(configuration.as_ref(), &self.adapters).await;
+        if !self.publish_recovered_configuration(epoch, recovered) {
+            return self.view.load().status.clone();
+        }
+        let Some(context) = self.mark_configuration_ready(epoch) else {
+            return self.view.load().status.clone();
+        };
+        let _ = self.refresh_in(RefreshTrigger::Manual, context).await;
+        self.view.load().status.clone()
+    }
+
+    fn invalidate_configuration(&self, configuration: Option<Arc<SourceConfiguration>>) -> u64 {
+        let status = configuration
+            .as_ref()
+            .map_or_else(CatalogStatus::not_configured, |configuration| {
+                CatalogStatus::unavailable(configuration.redacted(), None)
+            });
+        let _admission = self
+            .configuration_admission
+            .lock()
+            .expect("Source Configuration admission poisoned");
+        let publication = self.publication.lock().expect("publication lock poisoned");
+        let epoch = {
+            let mut state = self
+                .configuration
+                .write()
+                .expect("Source Configuration state poisoned");
+            state.epoch = state
+                .epoch
+                .checked_add(1)
+                .expect("Source Configuration epoch overflowed");
+            state.configuration = configuration;
+            state.ready = state.configuration.is_none();
+            state.epoch
+        };
+        for kind in [SourceKind::M3u, SourceKind::Epg] {
+            let control = self.control(kind);
+            *control.policy.lock().expect("refresh policy poisoned") = RefreshPolicy::default();
+            control.reschedule.notify_one();
+        }
+        self.view.store(Arc::new(CoreView {
+            status: status.clone(),
+            catalog: None,
+            sources: PublishedSources::default(),
+        }));
+        let _ = self.events.send(CoreEvent::CatalogStatusChanged {
+            occurred_at: self.adapters.clock().now(),
+            status,
+        });
+        drop(publication);
+        drop(_admission);
+        self.configuration_changed
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
+        self.activity_changed
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
+        epoch
+    }
+
+    async fn wait_for_previous_flight(&self, kind: SourceKind, epoch: u64) {
+        loop {
+            let previous = self
+                .control(kind)
+                .flight
+                .lock()
+                .expect("refresh flight poisoned")
+                .as_ref()
+                .filter(|flight| flight.context.epoch != epoch)
+                .cloned();
+            let Some(previous) = previous else {
+                return;
+            };
+            previous.wait_until_finished().await;
+        }
+    }
+
+    fn publish_recovered_configuration(
+        &self,
+        epoch: u64,
+        recovered: RecoveredConfiguration,
+    ) -> bool {
+        let _publication = self.publication.lock().expect("publication lock poisoned");
+        let current = self
+            .configuration
+            .read()
+            .expect("Source Configuration state poisoned");
+        if current.epoch != epoch || current.ready || current.configuration.is_none() {
+            return false;
+        }
+        let status = recovered.view.status.clone();
+        let generation = status.generation();
+        self.view.store(Arc::new(recovered.view));
+        let occurred_at = self.adapters.clock().now();
+        let _ = self.events.send(CoreEvent::CatalogStatusChanged {
+            occurred_at,
+            status,
+        });
+        if let Some(generation) = generation {
+            let _ = self.events.send(CoreEvent::CatalogPublished {
+                occurred_at,
+                generation,
+            });
+        }
+        true
+    }
+
+    fn mark_configuration_ready(&self, epoch: u64) -> Option<ConfigurationContext> {
+        let _admission = self
+            .configuration_admission
+            .lock()
+            .expect("Source Configuration admission poisoned");
+        let publication = self.publication.lock().expect("publication lock poisoned");
+        let context = {
+            let mut state = self
+                .configuration
+                .write()
+                .expect("Source Configuration state poisoned");
+            if state.epoch != epoch || state.ready {
+                return None;
+            }
+            let configuration = state.configuration.clone()?;
+            state.ready = true;
+            ConfigurationContext {
+                epoch,
+                configuration,
+            }
+        };
+        drop(publication);
+        drop(_admission);
+        self.configuration_changed
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
+        Some(context)
     }
 
     fn control(&self, kind: SourceKind) -> &SourceRefreshControl {
@@ -589,21 +831,60 @@ impl CoreRuntime {
         Some(AutomaticRefreshAdmission { runtime: self })
     }
 
-    fn source_is_configured(&self, kind: SourceKind) -> bool {
-        self.configuration
-            .as_ref()
-            .is_some_and(|configuration| kind == SourceKind::M3u || configuration.has_epg())
+    fn ready_configuration(&self, kind: SourceKind) -> Option<ConfigurationContext> {
+        let state = self
+            .configuration
+            .read()
+            .expect("Source Configuration state poisoned");
+        let configuration = state.ready.then(|| state.configuration.clone()).flatten()?;
+        (kind == SourceKind::M3u || configuration.has_epg()).then_some(ConfigurationContext {
+            epoch: state.epoch,
+            configuration,
+        })
+    }
+
+    async fn await_ready_configuration(&self, kind: SourceKind) -> Option<ConfigurationContext> {
+        loop {
+            let mut changed = self.configuration_changed.subscribe();
+            let snapshot = {
+                let state = self
+                    .configuration
+                    .read()
+                    .expect("Source Configuration state poisoned");
+                (state.ready, state.epoch, state.configuration.clone())
+            };
+            if snapshot.0 {
+                let configuration = snapshot.2?;
+                return (kind == SourceKind::M3u || configuration.has_epg()).then_some(
+                    ConfigurationContext {
+                        epoch: snapshot.1,
+                        configuration,
+                    },
+                );
+            }
+            if changed.changed().await.is_err() {
+                return None;
+            }
+        }
+    }
+
+    fn context_is_current(&self, context: &ConfigurationContext) -> bool {
+        let state = self
+            .configuration
+            .read()
+            .expect("Source Configuration state poisoned");
+        state.ready && state.epoch == context.epoch
     }
 
     fn start_automation(self: &Arc<Self>) {
-        if self.configuration.is_none() || tokio::runtime::Handle::try_current().is_err() {
+        if tokio::runtime::Handle::try_current().is_err() {
             return;
         }
         self.spawn_scheduler(SourceKind::M3u);
-        if self.source_is_configured(SourceKind::Epg) {
-            self.spawn_scheduler(SourceKind::Epg);
+        self.spawn_scheduler(SourceKind::Epg);
+        if self.ready_configuration(SourceKind::M3u).is_some() {
+            self.spawn_refresh(RefreshTrigger::Startup);
         }
-        self.spawn_refresh(RefreshTrigger::Startup);
     }
 
     fn spawn_refresh(self: &Arc<Self>, trigger: RefreshTrigger) {
@@ -621,11 +902,28 @@ impl CoreRuntime {
         let clock = self.adapters.clock_arc();
         let reschedule = Arc::clone(&self.control(kind).reschedule);
         let mut shutdown = self.shutdown.subscribe();
+        let mut configuration_changed = self.configuration_changed.subscribe();
         tokio::spawn(async move {
             loop {
                 let Some(runtime) = weak.upgrade() else {
                     break;
                 };
+                if runtime.ready_configuration(kind).is_none() {
+                    drop(runtime);
+                    tokio::select! {
+                        result = configuration_changed.changed() => {
+                            if result.is_err() {
+                                break;
+                            }
+                        }
+                        result = shutdown.changed() => {
+                            if result.is_err() || *shutdown.borrow() {
+                                break;
+                            }
+                        }
+                    }
+                    continue;
+                }
                 let deadline = runtime.next_automatic_attempt(kind).0;
                 drop(runtime);
 
@@ -639,6 +937,11 @@ impl CoreRuntime {
                             .await;
                     }
                     () = reschedule.notified() => {}
+                    result = configuration_changed.changed() => {
+                        if result.is_err() {
+                            break;
+                        }
+                    }
                     result = shutdown.changed() => {
                         if result.is_err() || *shutdown.borrow() {
                             break;
@@ -650,18 +953,26 @@ impl CoreRuntime {
     }
 
     async fn refresh(self: &Arc<Self>, trigger: RefreshTrigger) -> RefreshReport {
-        if self.configuration.is_none() {
+        let Some(context) = self.await_ready_configuration(SourceKind::M3u).await else {
             return RefreshReport::new(
                 trigger,
                 RefreshOutcome::NotConfigured,
                 None,
                 self.view.load().status.clone(),
             );
-        }
+        };
 
-        let m3u = self.refresh_source(SourceKind::M3u, trigger);
-        let (m3u, epg) = if self.source_is_configured(SourceKind::Epg) {
-            let epg = self.refresh_source(SourceKind::Epg, trigger);
+        self.refresh_in(trigger, context).await
+    }
+
+    async fn refresh_in(
+        self: &Arc<Self>,
+        trigger: RefreshTrigger,
+        context: ConfigurationContext,
+    ) -> RefreshReport {
+        let m3u = self.refresh_source_in(SourceKind::M3u, trigger, context.clone());
+        let (m3u, epg) = if context.configuration.has_epg() {
+            let epg = self.refresh_source_in(SourceKind::Epg, trigger, context);
             let (m3u, epg) = futures_util::future::join(m3u, epg).await;
             (m3u, Some(epg))
         } else {
@@ -675,31 +986,55 @@ impl CoreRuntime {
         kind: SourceKind,
         trigger: RefreshTrigger,
     ) -> RefreshOutcome {
-        if !self.source_is_configured(kind) {
+        let Some(context) = self.await_ready_configuration(kind).await else {
+            return RefreshOutcome::NotConfigured;
+        };
+        self.refresh_source_in(kind, trigger, context).await
+    }
+
+    async fn refresh_source_in(
+        self: &Arc<Self>,
+        kind: SourceKind,
+        trigger: RefreshTrigger,
+        context: ConfigurationContext,
+    ) -> RefreshOutcome {
+        if !self.context_is_current(&context) {
             return RefreshOutcome::NotConfigured;
         }
 
         let control = self.control(kind);
         let (flight, leader) = loop {
-            let skipped = {
+            let stale = {
+                let _admission = self
+                    .configuration_admission
+                    .lock()
+                    .expect("Source Configuration admission poisoned");
+                if !self.context_is_current(&context) {
+                    return RefreshOutcome::NotConfigured;
+                }
                 let mut current = control.flight.lock().expect("refresh flight poisoned");
                 if let Some(flight) = current.as_ref() {
                     let flight = Arc::clone(flight);
-                    if trigger.is_manual() && !flight.try_promote() {
+                    if flight.context.epoch != context.epoch
+                        || (trigger.is_manual() && !flight.try_promote())
+                    {
                         Some(flight)
                     } else {
                         break (flight, false);
                     }
                 } else {
-                    let flight = Arc::new(RefreshFlight::new(trigger.is_manual()));
+                    let flight = Arc::new(RefreshFlight::new(context.clone(), trigger.is_manual()));
                     *current = Some(Arc::clone(&flight));
                     break (flight, true);
                 }
             };
-            let _ = skipped
-                .expect("only a committed automatic skip is retried")
-                .wait()
+            stale
+                .expect("a stale or committed-skipped flight is retried")
+                .wait_until_finished()
                 .await;
+            if !self.context_is_current(&context) {
+                return RefreshOutcome::NotConfigured;
+            }
         };
 
         if leader {
@@ -712,7 +1047,12 @@ impl CoreRuntime {
                 let control = runtime.control(kind);
                 let mut current = control.flight.lock().expect("refresh flight poisoned");
                 if let Ok(outcome) = &result {
-                    runtime.publish_refresh_completed(&current, kind, outcome);
+                    runtime.publish_refresh_completed(
+                        &current,
+                        task_flight.context.epoch,
+                        kind,
+                        outcome,
+                    );
                 }
                 if current
                     .as_ref()
@@ -740,6 +1080,9 @@ impl CoreRuntime {
         kind: SourceKind,
         flight: &RefreshFlight,
     ) -> RefreshOutcome {
+        if !self.context_is_current(&flight.context) {
+            return RefreshOutcome::NotConfigured;
+        }
         let mut automatic_admission = None;
         if !flight.manual.load(Ordering::Acquire) {
             let (next_attempt_at, reason) = self.next_automatic_attempt(kind);
@@ -757,6 +1100,10 @@ impl CoreRuntime {
             loop {
                 let mut activity_changed = self.activity_changed.subscribe();
                 let mut promoted = flight.promoted.subscribe();
+                let mut configuration_changed = self.configuration_changed.subscribe();
+                if !self.context_is_current(&flight.context) {
+                    return RefreshOutcome::NotConfigured;
+                }
                 if flight.manual.load(Ordering::Acquire) {
                     break;
                 }
@@ -765,13 +1112,16 @@ impl CoreRuntime {
                     break;
                 }
                 if !reported_deferred {
-                    self.set_source_state(
+                    if !self.set_source_state(
+                        flight.context.epoch,
                         kind,
                         SourceState::Deferred {
                             validated_at: self.current_validated_at(kind),
                             deferred_at: self.adapters.clock().now(),
                         },
-                    );
+                    ) {
+                        return RefreshOutcome::NotConfigured;
+                    }
                     reported_deferred = true;
                 }
                 tokio::select! {
@@ -781,57 +1131,60 @@ impl CoreRuntime {
                     result = promoted.changed() => {
                         result.expect("refresh flight exists while it is pending");
                     }
+                    result = configuration_changed.changed() => {
+                        if result.is_err() || !self.context_is_current(&flight.context) {
+                            return RefreshOutcome::NotConfigured;
+                        }
+                    }
                 }
             }
         }
         flight.admit();
 
-        self.set_source_state(
+        if !self.set_source_state(
+            flight.context.epoch,
             kind,
             SourceState::Refreshing {
                 validated_at: self.current_validated_at(kind),
                 started_at: self.adapters.clock().now(),
             },
-        );
+        ) {
+            return RefreshOutcome::NotConfigured;
+        }
 
         let result = match kind {
-            SourceKind::M3u => self.refresh_m3u().await,
-            SourceKind::Epg => self.refresh_epg().await,
+            SourceKind::M3u => self.refresh_m3u(&flight.context).await,
+            SourceKind::Epg => self.refresh_epg(&flight.context).await,
         };
         drop(automatic_admission);
         match result {
             Ok(outcome) => {
-                let control = self.control(kind);
-                let mut policy = control.policy.lock().expect("refresh policy poisoned");
-                policy.consecutive_failures = 0;
-                policy.next_attempt_at = None;
-                drop(policy);
-                control.reschedule.notify_one();
-                outcome
+                if self.reset_policy(flight.context.epoch, kind) {
+                    outcome
+                } else {
+                    RefreshOutcome::NotConfigured
+                }
             }
             Err(failure) => {
-                let next_attempt_at = self.record_failure(kind, &failure);
-                self.set_source_state(
-                    kind,
-                    SourceState::Failed {
-                        validated_at: self.current_validated_at(kind),
-                        failure: failure.clone(),
+                if let Some(next_attempt_at) =
+                    self.record_failure(flight.context.epoch, kind, &failure)
+                {
+                    RefreshOutcome::Failed {
+                        failure,
                         next_attempt_at,
-                    },
-                );
-                RefreshOutcome::Failed {
-                    failure,
-                    next_attempt_at,
+                    }
+                } else {
+                    RefreshOutcome::NotConfigured
                 }
             }
         }
     }
 
-    async fn refresh_m3u(&self) -> Result<RefreshOutcome, SafeFailure> {
-        let configuration = self
-            .configuration
-            .as_ref()
-            .expect("a configured refresh has a Source Configuration");
+    async fn refresh_m3u(
+        &self,
+        context: &ConfigurationContext,
+    ) -> Result<RefreshOutcome, SafeFailure> {
+        let configuration = context.configuration.as_ref();
         let current = self.view.load().sources.m3u.clone();
         let validators = current
             .as_ref()
@@ -850,24 +1203,35 @@ impl CoreRuntime {
         match fetched {
             FetchedSource::Modified(loaded) => {
                 let validated_at = loaded.validated_at;
-                self.publish_m3u(loaded);
-                Ok(RefreshOutcome::Updated { validated_at })
+                Ok(if self.publish_m3u(context, loaded) {
+                    RefreshOutcome::Updated { validated_at }
+                } else {
+                    RefreshOutcome::NotConfigured
+                })
             }
             FetchedSource::NotModified {
                 candidate,
                 validated_at,
-            } => {
-                self.publish_revalidation(SourceKind::M3u, candidate, validated_at);
-                Ok(RefreshOutcome::NotModified { validated_at })
-            }
+            } => Ok(
+                if self.publish_revalidation(
+                    context.epoch,
+                    SourceKind::M3u,
+                    candidate,
+                    validated_at,
+                ) {
+                    RefreshOutcome::NotModified { validated_at }
+                } else {
+                    RefreshOutcome::NotConfigured
+                },
+            ),
         }
     }
 
-    async fn refresh_epg(&self) -> Result<RefreshOutcome, SafeFailure> {
-        let configuration = self
-            .configuration
-            .as_ref()
-            .expect("a configured refresh has a Source Configuration");
+    async fn refresh_epg(
+        &self,
+        context: &ConfigurationContext,
+    ) -> Result<RefreshOutcome, SafeFailure> {
+        let configuration = context.configuration.as_ref();
         let current = self.view.load().sources.epg.clone();
         let validators = current
             .as_ref()
@@ -890,21 +1254,39 @@ impl CoreRuntime {
         match fetched {
             FetchedSource::Modified(loaded) => {
                 let validated_at = loaded.validated_at;
-                self.publish_epg(loaded);
-                Ok(RefreshOutcome::Updated { validated_at })
+                Ok(if self.publish_epg(context, loaded) {
+                    RefreshOutcome::Updated { validated_at }
+                } else {
+                    RefreshOutcome::NotConfigured
+                })
             }
             FetchedSource::NotModified {
                 candidate,
                 validated_at,
-            } => {
-                self.publish_revalidation(SourceKind::Epg, candidate, validated_at);
-                Ok(RefreshOutcome::NotModified { validated_at })
-            }
+            } => Ok(
+                if self.publish_revalidation(
+                    context.epoch,
+                    SourceKind::Epg,
+                    candidate,
+                    validated_at,
+                ) {
+                    RefreshOutcome::NotModified { validated_at }
+                } else {
+                    RefreshOutcome::NotConfigured
+                },
+            ),
         }
     }
 
-    fn publish_m3u(&self, loaded: LoadedSource<Vec<m3u::ParsedChannel>>) {
+    fn publish_m3u(
+        &self,
+        context: &ConfigurationContext,
+        loaded: LoadedSource<Vec<m3u::ParsedChannel>>,
+    ) -> bool {
         let _publication = self.publication.lock().expect("publication lock poisoned");
+        if !self.epoch_is_current_ready(context.epoch) {
+            return false;
+        }
         let current = self.view.load_full();
         let mut sources = current.sources.clone();
         let content_changed = sources.m3u.as_ref().is_none_or(|source| {
@@ -926,16 +1308,25 @@ impl CoreRuntime {
             candidate: loaded.candidate,
         });
         self.publish_sources(
+            context.configuration.as_ref(),
             current.as_ref(),
             sources,
             SourceKind::M3u,
             loaded.validated_at,
             content_changed,
         );
+        true
     }
 
-    fn publish_epg(&self, loaded: LoadedSource<xmltv::ParsedGuide>) {
+    fn publish_epg(
+        &self,
+        context: &ConfigurationContext,
+        loaded: LoadedSource<xmltv::ParsedGuide>,
+    ) -> bool {
         let _publication = self.publication.lock().expect("publication lock poisoned");
+        if !self.epoch_is_current_ready(context.epoch) {
+            return false;
+        }
         let current = self.view.load_full();
         let mut sources = current.sources.clone();
         let content_changed = sources.epg.as_ref().is_none_or(|source| {
@@ -957,16 +1348,19 @@ impl CoreRuntime {
             candidate: loaded.candidate,
         });
         self.publish_sources(
+            context.configuration.as_ref(),
             current.as_ref(),
             sources,
             SourceKind::Epg,
             loaded.validated_at,
             content_changed,
         );
+        true
     }
 
     fn publish_sources(
         &self,
+        configuration: &SourceConfiguration,
         current: &CoreView,
         sources: PublishedSources,
         refreshed: SourceKind,
@@ -978,7 +1372,8 @@ impl CoreRuntime {
             refreshed,
             source_state(validated_at, self.adapters.clock().now()),
         );
-        let (catalog, generation) = self.build_catalog(&sources, current, content_changed);
+        let (catalog, generation) =
+            self.build_catalog(configuration, &sources, current, content_changed);
         status.set_generation(generation);
         self.view.store(Arc::new(CoreView {
             status: status.clone(),
@@ -1000,6 +1395,7 @@ impl CoreRuntime {
 
     fn build_catalog(
         &self,
+        configuration: &SourceConfiguration,
         sources: &PublishedSources,
         current: &CoreView,
         content_changed: bool,
@@ -1013,10 +1409,6 @@ impl CoreRuntime {
         if !content_changed {
             return (current.catalog.clone(), current.status.generation());
         }
-        let configuration = self
-            .configuration
-            .as_ref()
-            .expect("published Sources have a Source Configuration");
         let epg_checksum = sources
             .epg
             .as_ref()
@@ -1034,11 +1426,15 @@ impl CoreRuntime {
 
     fn publish_revalidation(
         &self,
+        epoch: u64,
         kind: SourceKind,
         candidate: SnapshotCandidate,
         validated_at: chrono::DateTime<chrono::Utc>,
-    ) {
+    ) -> bool {
         let _publication = self.publication.lock().expect("publication lock poisoned");
+        if !self.epoch_is_current_ready(epoch) {
+            return false;
+        }
         let current = self.view.load_full();
         let mut sources = current.sources.clone();
         match kind {
@@ -1071,10 +1467,14 @@ impl CoreRuntime {
             occurred_at: self.adapters.clock().now(),
             status,
         });
+        true
     }
 
-    fn set_source_state(&self, kind: SourceKind, state: SourceState) {
+    fn set_source_state(&self, epoch: u64, kind: SourceKind, state: SourceState) -> bool {
         let _publication = self.publication.lock().expect("publication lock poisoned");
+        if !self.epoch_is_current_ready(epoch) {
+            return false;
+        }
         let current = self.view.load_full();
         let mut status = current.status.clone();
         status.set_source_state(kind, state);
@@ -1087,6 +1487,7 @@ impl CoreRuntime {
             occurred_at: self.adapters.clock().now(),
             status,
         });
+        true
     }
 
     /// Publishes while the caller still excludes the completed source flight.
@@ -1095,10 +1496,14 @@ impl CoreRuntime {
     fn publish_refresh_completed(
         &self,
         _flight: &std::sync::MutexGuard<'_, Option<Arc<RefreshFlight>>>,
+        epoch: u64,
         kind: SourceKind,
         outcome: &RefreshOutcome,
     ) {
         let _publication = self.publication.lock().expect("publication lock poisoned");
+        if !self.epoch_is_current_ready(epoch) {
+            return;
+        }
         let _ = self.events.send(CoreEvent::RefreshCompleted {
             occurred_at: self.adapters.clock().now(),
             kind,
@@ -1149,9 +1554,14 @@ impl CoreRuntime {
 
     fn record_failure(
         &self,
+        epoch: u64,
         kind: SourceKind,
         failure: &SafeFailure,
-    ) -> chrono::DateTime<chrono::Utc> {
+    ) -> Option<chrono::DateTime<chrono::Utc>> {
+        let _publication = self.publication.lock().expect("publication lock poisoned");
+        if !self.epoch_is_current_ready(epoch) {
+            return None;
+        }
         let control = self.control(kind);
         let mut policy = control.policy.lock().expect("refresh policy poisoned");
         let index = policy
@@ -1171,14 +1581,165 @@ impl CoreRuntime {
             .unwrap_or(chrono::DateTime::<chrono::Utc>::MAX_UTC);
         policy.next_attempt_at = Some(next_attempt_at);
         drop(policy);
+        let current = self.view.load_full();
+        let mut status = current.status.clone();
+        status.set_source_state(
+            kind,
+            SourceState::Failed {
+                validated_at: match kind {
+                    SourceKind::M3u => current
+                        .sources
+                        .m3u
+                        .as_ref()
+                        .map(|source| source.candidate.metadata().validated_at()),
+                    SourceKind::Epg => current
+                        .sources
+                        .epg
+                        .as_ref()
+                        .map(|source| source.candidate.metadata().validated_at()),
+                },
+                failure: failure.clone(),
+                next_attempt_at,
+            },
+        );
+        self.view.store(Arc::new(CoreView {
+            status: status.clone(),
+            catalog: current.catalog.clone(),
+            sources: current.sources.clone(),
+        }));
+        let _ = self.events.send(CoreEvent::CatalogStatusChanged {
+            occurred_at: now,
+            status,
+        });
         control.reschedule.notify_one();
-        next_attempt_at
+        Some(next_attempt_at)
+    }
+
+    fn reset_policy(&self, epoch: u64, kind: SourceKind) -> bool {
+        let _publication = self.publication.lock().expect("publication lock poisoned");
+        if !self.epoch_is_current_ready(epoch) {
+            return false;
+        }
+        let control = self.control(kind);
+        let mut policy = control.policy.lock().expect("refresh policy poisoned");
+        policy.consecutive_failures = 0;
+        policy.next_attempt_at = None;
+        drop(policy);
+        control.reschedule.notify_one();
+        true
+    }
+
+    fn epoch_is_current_ready(&self, epoch: u64) -> bool {
+        let state = self
+            .configuration
+            .read()
+            .expect("Source Configuration state poisoned");
+        state.ready && state.epoch == epoch
     }
 }
 
 impl Drop for CoreRuntime {
     fn drop(&mut self) {
         self.shutdown.send_replace(true);
+    }
+}
+
+struct RecoveredConfiguration {
+    view: CoreView,
+}
+
+async fn recover_configuration(
+    configuration: &SourceConfiguration,
+    adapters: &CoreAdapters,
+) -> RecoveredConfiguration {
+    let m3u_recovery = recover_source(
+        adapters,
+        SnapshotSource::m3u(configuration),
+        M3U_DECODED_LIMIT,
+        m3u::parse,
+    );
+    let epg_recovery = async {
+        match SnapshotSource::epg(configuration) {
+            Some(source) => recover_source(adapters, source, EPG_DECODED_LIMIT, xmltv::parse).await,
+            None => RecoveryAttempt {
+                loaded: None,
+                diagnostic: None,
+                terminal_failure: None,
+            },
+        }
+    };
+    let (m3u_recovery, epg_recovery) = futures_util::future::join(m3u_recovery, epg_recovery).await;
+    let RecoveryAttempt {
+        loaded: m3u,
+        diagnostic: m3u_diagnostic,
+        terminal_failure: m3u_failure,
+    } = m3u_recovery;
+    let RecoveryAttempt {
+        loaded: epg,
+        diagnostic: epg_diagnostic,
+        terminal_failure: epg_failure,
+    } = epg_recovery;
+
+    let generation = m3u.as_ref().map(|m3u| {
+        configuration.catalog_generation(&m3u.checksum, epg.as_ref().map(|epg| &epg.checksum))
+    });
+    let catalog = generation.map(|generation| {
+        Arc::new(ChannelCatalog::from_parsed(
+            configuration,
+            m3u.as_ref()
+                .expect("a recovered generation has an M3U contribution")
+                .value
+                .as_slice(),
+            epg.as_ref().map(|epg| epg.value.as_ref()),
+            generation,
+        ))
+    });
+    let m3u_state = m3u
+        .as_ref()
+        .map(|m3u| source_state(m3u.validated_at, adapters.clock().now()));
+    let epg_state = configuration.has_epg().then(|| {
+        epg.as_ref().map_or_else(
+            || SourceState::Unavailable {
+                failure: epg_failure.clone(),
+            },
+            |epg| source_state(epg.validated_at, adapters.clock().now()),
+        )
+    });
+    let mut status = match (generation, m3u_state) {
+        (Some(generation), Some(m3u)) => CatalogStatus::published(
+            generation,
+            configuration.redacted(),
+            m3u,
+            epg_state,
+            m3u_diagnostic.clone(),
+            epg_diagnostic.clone(),
+        ),
+        _ => {
+            let mut status = CatalogStatus::unavailable(configuration.redacted(), m3u_failure);
+            if let Some(epg) = epg_state {
+                status.set_source_state(SourceKind::Epg, epg);
+            }
+            status
+        }
+    };
+    status.set_recovery(SourceKind::M3u, m3u_diagnostic);
+    status.set_recovery(SourceKind::Epg, epg_diagnostic);
+    let sources = PublishedSources {
+        m3u: m3u.map(|m3u| SourceContribution {
+            parsed: m3u.value,
+            candidate: m3u.candidate,
+        }),
+        epg: epg.map(|epg| SourceContribution {
+            parsed: epg.value,
+            candidate: epg.candidate,
+        }),
+    };
+    RecoveredConfiguration {
+        view: CoreView {
+            status,
+            catalog,
+            sources,
+        },
     }
 }
 
@@ -1892,7 +2453,10 @@ mod refresh_concurrency_tests {
     use chrono::{DateTime, Utc};
 
     use crate::{
-        domain::{RefreshOutcome, SourceAccessFailure, SourceKind, StoreError},
+        domain::{
+            RefreshOutcome, SourceAccessFailure, SourceConfiguration, SourceConfigurationInput,
+            SourceKind, StoreError,
+        },
         ports::{
             Clock, CoreAdapters, SnapshotCandidate, SnapshotStage, SnapshotStageRequest,
             SnapshotStore, SourceAccess, SourceRequest, SourceResponse, ValidatedStage,
@@ -1900,17 +2464,18 @@ mod refresh_concurrency_tests {
     };
 
     use super::{
-        BootstrapFailures, CoreRuntime, CoreView, FlightDecision, RefreshFlight, SparrowCore,
+        BootstrapFailures, ConfigurationContext, CoreRuntime, CoreView, FlightDecision,
+        RefreshFlight, SparrowCore,
     };
 
     #[test]
     fn manual_promotion_and_automatic_skip_have_one_linearized_winner() {
-        let promoted_first = RefreshFlight::new(false);
+        let promoted_first = RefreshFlight::new(configuration_context(), false);
         assert!(promoted_first.try_promote());
         assert!(!promoted_first.try_commit_skip());
         assert!(promoted_first.manual.load(Ordering::Acquire));
 
-        let skipped_first = RefreshFlight::new(false);
+        let skipped_first = RefreshFlight::new(configuration_context(), false);
         assert!(skipped_first.try_commit_skip());
         assert!(!skipped_first.try_promote());
         assert_eq!(
@@ -1925,7 +2490,7 @@ mod refresh_concurrency_tests {
     #[tokio::test]
     #[should_panic(expected = "the shared refresh task panicked")]
     async fn a_panicked_shared_task_wakes_waiters_instead_of_hanging() {
-        let flight = RefreshFlight::new(false);
+        let flight = RefreshFlight::new(configuration_context(), false);
         flight.fail_panicked();
         let _ = flight.wait().await;
     }
@@ -1954,6 +2519,7 @@ mod refresh_concurrency_tests {
                 .expect("refresh flight is not poisoned");
             publishing_runtime.publish_refresh_completed(
                 &flight,
+                0,
                 SourceKind::M3u,
                 &RefreshOutcome::NotConfigured,
             );
@@ -1990,6 +2556,18 @@ mod refresh_concurrency_tests {
             events.receiver.try_recv(),
             Err(tokio::sync::broadcast::error::TryRecvError::Empty)
         ));
+    }
+
+    fn configuration_context() -> ConfigurationContext {
+        let configuration = SourceConfiguration::parse(SourceConfigurationInput::new(
+            "https://provider.fixture.invalid/channels.m3u",
+            None::<String>,
+        ))
+        .expect("fixture Source Configuration is valid");
+        ConfigurationContext {
+            epoch: 0,
+            configuration: Arc::new(configuration),
+        }
     }
 
     struct CompletionBlockingClock {

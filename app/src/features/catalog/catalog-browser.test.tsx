@@ -47,6 +47,13 @@ const CAPABILITIES = clientSchemas.capabilities.parse({
   mpvFailover: false,
 });
 
+const INSTALLED_CAPABILITIES = clientSchemas.capabilities.parse({
+  sourceConfiguration: "device-writable",
+  playbackTransport: "unavailable",
+  audioTrackSelection: false,
+  mpvFailover: false,
+});
+
 const FRESH_STATUS = clientSchemas.status.parse({
   generation: 7,
   configuration: { configured: true, epgConfigured: true },
@@ -92,6 +99,13 @@ const UNAVAILABLE_STATUS = clientSchemas.status.parse({
     _tag: "unavailable",
     failure: { _tag: "source-read", source: "m3u", reason: "interrupted" },
   },
+  epg: null,
+});
+
+const NOT_CONFIGURED_STATUS = clientSchemas.status.parse({
+  generation: null,
+  configuration: { configured: false, epgConfigured: false },
+  m3u: { _tag: "unavailable", failure: null },
   epg: null,
 });
 
@@ -442,6 +456,84 @@ describe("CatalogBrowser", () => {
       "expected a hosted playback descriptor request",
     );
     expect(playbackRequest.id).toBe(CHANNEL_DETAILS.id);
+  });
+
+  it("keeps every native browse command off until a local catalog exists", async () => {
+    const client = new FakeSparrowClient({
+      capabilities: () => Promise.resolve(success(INSTALLED_CAPABILITIES)),
+      status: () => Promise.resolve(success(NOT_CONFIGURED_STATUS)),
+    });
+
+    renderInstalledBrowser(client);
+
+    expect(
+      await screen.findByRole("heading", { name: "Receiver not configured" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("heading", { name: "Tune this receiver" }),
+    ).toBeVisible();
+    expect(screen.getByText("LOCAL IPC")).toBeVisible();
+    expect(client.groupInputs).toHaveLength(0);
+    expect(client.channelListInputs).toHaveLength(0);
+    expect(client.searchInputs).toHaveLength(0);
+    expect(client.scheduleInputs).toHaveLength(0);
+    expect(client.playbackInputs).toHaveLength(0);
+    expect(screen.queryByRole("search")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Refresh sources" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("browses a valid local catalog without starting hosted playback", async () => {
+    const client = new FakeSparrowClient({
+      capabilities: () => Promise.resolve(success(INSTALLED_CAPABILITIES)),
+    });
+    const user = userEvent.setup();
+    renderInstalledBrowser(client);
+
+    await user.click(await screen.findByRole("button", { name: /World News/ }));
+
+    const inspector = screen.getByRole("complementary", {
+      name: "Selected channel",
+    });
+    expect(
+      await within(inspector).findByRole("heading", { name: "World News" }),
+    ).toBeVisible();
+    expect(client.channelInputs).toHaveLength(1);
+    expect(client.playbackInputs).toHaveLength(0);
+    expect(client.scheduleInputs).toHaveLength(0);
+    expect(screen.queryByText("ON AIR")).not.toBeInTheDocument();
+    expect(
+      within(inspector).getByText(/does not start playback/),
+    ).toBeVisible();
+    expect(screen.queryByRole("search")).not.toBeInTheDocument();
+  });
+
+  it("begins local browse only after configuration returns a valid catalog", async () => {
+    const client = new FakeSparrowClient({
+      capabilities: () => Promise.resolve(success(INSTALLED_CAPABILITIES)),
+      status: () => Promise.resolve(success(NOT_CONFIGURED_STATUS)),
+    });
+    const user = userEvent.setup();
+    renderInstalledBrowser(client);
+    expect(
+      await screen.findByRole("heading", { name: "Receiver not configured" }),
+    ).toBeVisible();
+    expect(client.groupInputs).toHaveLength(0);
+    expect(client.channelListInputs).toHaveLength(0);
+
+    await user.type(
+      screen.getByLabelText("Required / Channel source"),
+      "https://provider.invalid/list.m3u",
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Build local catalog" }),
+    );
+
+    expect(await screen.findByText("World News")).toBeVisible();
+    expect(client.groupInputs).toHaveLength(1);
+    expect(client.channelListInputs).toHaveLength(1);
+    expect(client.playbackInputs).toHaveLength(0);
   });
 
   it("distinguishes an omitted all-groups filter from the empty Ungrouped name", async () => {
@@ -886,6 +978,30 @@ function renderBrowser(client: SparrowClient): QueryClient {
   render(
     <QueryClientProvider client={queryClient}>
       <CatalogBrowser client={client} playbackEngine={TEST_PLAYBACK_ENGINE} />
+    </QueryClientProvider>,
+  );
+  return queryClient;
+}
+
+function renderInstalledBrowser(client: SparrowClient): QueryClient {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+        refetchOnWindowFocus: false,
+      },
+    },
+  });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <CatalogBrowser
+        client={client}
+        runtime="installed"
+        sourceConfiguration={{
+          replaceSourceConfiguration: () =>
+            Promise.resolve(success(FRESH_STATUS)),
+        }}
+      />
     </QueryClientProvider>,
   );
   return queryClient;

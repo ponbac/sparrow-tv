@@ -105,6 +105,31 @@ https://playback-user:playback-secret@private-media.fixture.invalid/live?token=p
         }
     }
 
+    let replacement = SparrowCore::parse_source_configuration(SourceConfigurationInput::new(
+        "https://configuration-user:configuration-secret@private-provider.fixture.invalid/fingerprint-canary.m3u",
+        None::<String>,
+    ))
+    .expect("the replacement fixture configuration is valid");
+    let mut replacement_events = core.subscribe();
+    let replacement_status = core.replace_source_configuration(Some(replacement)).await;
+    assert_private_markers_absent(&format!("{replacement_status:?}"));
+    loop {
+        let event = replacement_events
+            .recv()
+            .await
+            .expect("the replacement event feed is open");
+        assert_private_markers_absent(&format!("{event:?}"));
+        if matches!(
+            event,
+            CoreEvent::RefreshCompleted {
+                kind: SourceKind::M3u,
+                ..
+            }
+        ) {
+            break;
+        }
+    }
+
     let malformed = b"#EXTM3U\n#EXTINF:-1,payload-canary\nhttps://playback-user:playback-secret@private-media.fixture.invalid/live\n#EXTINF:-1,broken";
     let failing_configuration =
         SparrowCore::parse_source_configuration(SourceConfigurationInput::new(

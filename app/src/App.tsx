@@ -1,12 +1,20 @@
 import { CatalogBrowser } from "./features/catalog/catalog-browser";
-import type { SparrowClient } from "./client/contracts";
+import type { SparrowRuntime } from "./client/runtime";
 
-/** Dependencies owned by the hosted React composition root. */
+/** Dependencies owned by the selected React composition root. */
 export interface AppProps {
-  readonly client: SparrowClient;
+  readonly runtime: SparrowRuntime;
 }
 
 /** Renders the capability-driven Sparrow catalog application. */
-export default function App({ client }: AppProps) {
-  return <CatalogBrowser client={client} />;
+export default function App({ runtime }: AppProps) {
+  return runtime._tag === "hosted" ? (
+    <CatalogBrowser client={runtime.client} runtime="hosted" />
+  ) : (
+    <CatalogBrowser
+      client={runtime.client}
+      runtime="installed"
+      sourceConfiguration={runtime.client}
+    />
+  );
 }

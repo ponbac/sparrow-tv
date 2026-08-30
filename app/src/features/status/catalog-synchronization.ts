@@ -21,7 +21,7 @@ import {
 
 const STATUS_QUERY_KEY = ["catalog", "status"] as const;
 
-/** Refresh and event state owned by the hosted catalog synchronization hook. */
+/** Status, event, and optional refresh state owned by catalog synchronization. */
 export interface CatalogSynchronization {
   readonly status: CatalogStatus | null;
   readonly statusError: ClientError | null;
@@ -35,7 +35,7 @@ export interface CatalogSynchronization {
 }
 
 /**
- * Reconciles manual refreshes and reconnecting hosted events into React Query.
+ * Reconciles manual refreshes and ordered transport events into React Query.
  * Successful cached catalog data remains present while active reads refetch.
  */
 export function useCatalogSynchronization(
