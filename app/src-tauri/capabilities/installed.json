@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "installed",
+  "description": "The Sparrow catalog window can invoke only app-owned commands. No frontend filesystem, HTTP, or shell capability is granted.",
+  "windows": ["main"],
+  "permissions": []
+}

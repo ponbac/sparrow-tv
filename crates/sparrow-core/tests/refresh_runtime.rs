@@ -14,10 +14,11 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use futures_util::stream;
 use sparrow_core::{
-    ChannelQuery, Clock, CoreAdapters, CoreEvent, LifecycleSignal, PageLimit, PageRequest,
-    PrivateSourceValidators, RefreshOutcome, RefreshSkipReason, RefreshTrigger, SafeFailure,
-    ScheduleQuery, SourceAccess, SourceAccessError, SourceAccessFailure, SourceByteStream,
-    SourceConfigurationInput, SourceKind, SourceRequest, SourceResponse, SourceState, SparrowCore,
+    ChannelQuery, Clock, CoreAdapters, CoreError, CoreEvent, LifecycleSignal, PageLimit,
+    PageRequest, PrivateSourceValidators, RefreshOutcome, RefreshSkipReason, RefreshTrigger,
+    SafeFailure, ScheduleQuery, SourceAccess, SourceAccessError, SourceAccessFailure,
+    SourceByteStream, SourceConfiguration, SourceConfigurationInput, SourceKind, SourceRequest,
+    SourceResponse, SourceState, SparrowCore,
 };
 use tokio::sync::{Semaphore, watch};
 
@@ -881,6 +882,325 @@ async fn refresh_is_closed_and_safe_when_no_source_is_configured() {
     assert_eq!(source.opens(SourceKind::M3u), 0);
 }
 
+#[tokio::test]
+async fn snapshot_only_bootstrap_returns_before_a_missing_catalog_fetch_completes() {
+    let clock = ControlledClock::at("2026-08-29T12:00:00Z");
+    let source = RefreshSource::default();
+    let snapshots = MemorySnapshotStore::default();
+    let gate = Arc::new(Semaphore::new(0));
+    source.push_modified_with(
+        SourceKind::M3u,
+        INITIAL_M3U,
+        PrivateSourceValidators::default(),
+        Some(Arc::clone(&gate)),
+    );
+
+    let core = tokio::time::timeout(
+        Duration::from_secs(1),
+        SparrowCore::bootstrap_from_snapshots(
+            Some(configuration(
+                "https://offline-at-startup.fixture.invalid/channels.m3u",
+                None,
+            )),
+            CoreAdapters::new(
+                Arc::new(source.clone()),
+                Arc::new(snapshots),
+                Arc::new(clock),
+            ),
+        ),
+    )
+    .await
+    .expect("bootstrap never awaits source access")
+    .expect("snapshot-only core bootstraps");
+
+    assert!(core.status().configuration().is_configured());
+    assert!(matches!(
+        core.list_channels(ChannelQuery::all(PageRequest::first(limit()))),
+        Err(CoreError::CatalogUnavailable { .. })
+    ));
+    wait_for(|| source.opens(SourceKind::M3u) == 1).await;
+    gate.add_permits(1);
+    wait_for(|| {
+        core.list_channels(ChannelQuery::all(PageRequest::first(limit())))
+            .is_ok_and(|page| page.items()[0].name() == "Alpha")
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn configuration_can_be_added_removed_and_added_again_from_an_empty_bootstrap() {
+    let clock = ControlledClock::at("2026-08-29T12:00:00Z");
+    let source = RefreshSource::default();
+    let snapshots = MemorySnapshotStore::default();
+    let core = unconfigured(&source, &snapshots, &clock).await;
+    source.push_modified(SourceKind::M3u, INITIAL_M3U);
+
+    let status = core
+        .replace_source_configuration(Some(configuration(
+            "https://first-provider.fixture.invalid/channels.m3u",
+            None,
+        )))
+        .await;
+    assert!(status.configuration().is_configured());
+    assert_eq!(source.opens(SourceKind::M3u), 1);
+    assert_eq!(channel_names(&core), vec!["Alpha"]);
+
+    source.push_modified(SourceKind::M3u, UPDATED_M3U);
+    clock.set("2026-08-29T18:00:00Z");
+    wait_for(|| source.opens(SourceKind::M3u) == 2).await;
+    wait_for(|| channel_names(&core) == vec!["Beta"]).await;
+
+    let removed = core.replace_source_configuration(None).await;
+    assert!(!removed.configuration().is_configured());
+    assert!(matches!(
+        core.list_channels(ChannelQuery::all(PageRequest::first(limit()))),
+        Err(CoreError::NotConfigured)
+    ));
+    clock.set("2026-08-30T00:00:00Z");
+    settle_scheduler().await;
+    assert_eq!(source.opens(SourceKind::M3u), 2);
+
+    source.push_modified(SourceKind::M3u, EXPANDED_M3U);
+    let replaced = core
+        .replace_source_configuration(Some(configuration(
+            "https://second-provider.fixture.invalid/channels.m3u",
+            None,
+        )))
+        .await;
+    assert!(replaced.configuration().is_configured());
+    assert_eq!(source.opens(SourceKind::M3u), 3);
+    assert_eq!(channel_names(&core), vec!["Alpha", "Beta"]);
+}
+
+#[tokio::test]
+async fn failed_replacement_retains_the_new_configuration_as_unavailable() {
+    let clock = ControlledClock::at("2026-08-29T12:00:00Z");
+    let source = RefreshSource::default();
+    let snapshots = MemorySnapshotStore::default();
+    let core = unconfigured(&source, &snapshots, &clock).await;
+    source.push(
+        SourceKind::M3u,
+        SourceAction::Failed(SourceAccessFailure::new(SourceAccessError::Unavailable)),
+    );
+
+    let status = core
+        .replace_source_configuration(Some(configuration(
+            "https://unavailable-provider.fixture.invalid/channels.m3u",
+            None,
+        )))
+        .await;
+
+    assert!(status.configuration().is_configured());
+    assert!(matches!(
+        status.m3u(),
+        SourceState::Failed {
+            validated_at: None,
+            failure: SafeFailure::SourceAccess {
+                reason: SourceAccessError::Unavailable,
+                ..
+            },
+            ..
+        }
+    ));
+    assert!(matches!(
+        core.list_channels(ChannelQuery::all(PageRequest::first(limit()))),
+        Err(CoreError::CatalogUnavailable { .. })
+    ));
+}
+
+#[tokio::test]
+async fn aborting_the_replacement_caller_does_not_cancel_the_owned_transition() {
+    let clock = ControlledClock::at("2026-08-29T12:00:00Z");
+    let source = RefreshSource::default();
+    let snapshots = MemorySnapshotStore::default();
+    let core = unconfigured(&source, &snapshots, &clock).await;
+    let gate = Arc::new(Semaphore::new(0));
+    source.push_modified_with(
+        SourceKind::M3u,
+        INITIAL_M3U,
+        PrivateSourceValidators::default(),
+        Some(Arc::clone(&gate)),
+    );
+    let replacement = tokio::spawn({
+        let core = core.clone();
+        async move {
+            core.replace_source_configuration(Some(configuration(
+                "https://owned-transition.fixture.invalid/channels.m3u",
+                None,
+            )))
+            .await
+        }
+    });
+    wait_for(|| source.opens(SourceKind::M3u) == 1).await;
+    replacement.abort();
+    gate.add_permits(1);
+
+    wait_for(|| {
+        core.list_channels(ChannelQuery::all(PageRequest::first(limit())))
+            .is_ok_and(|page| page.items()[0].name() == "Alpha")
+    })
+    .await;
+    assert!(core.status().configuration().is_configured());
+}
+
+#[tokio::test]
+async fn replacement_recovers_an_eligible_snapshot_before_a_failed_foreground_fetch() {
+    let clock = ControlledClock::at("2026-08-29T12:00:00Z");
+    let source = RefreshSource::default();
+    let snapshots = MemorySnapshotStore::default();
+    let core = unconfigured(&source, &snapshots, &clock).await;
+    let location = "https://offline-provider.fixture.invalid/channels.m3u";
+    source.push_modified(SourceKind::M3u, INITIAL_M3U);
+    let _ = core
+        .replace_source_configuration(Some(configuration(location, None)))
+        .await;
+    let _ = core.replace_source_configuration(None).await;
+    source.push(
+        SourceKind::M3u,
+        SourceAction::Failed(SourceAccessFailure::new(SourceAccessError::Unavailable)),
+    );
+
+    let recovered = core
+        .replace_source_configuration(Some(configuration(location, None)))
+        .await;
+
+    assert!(matches!(
+        recovered.m3u(),
+        SourceState::Failed {
+            validated_at: Some(_),
+            ..
+        }
+    ));
+    assert_eq!(channel_names(&core), vec!["Alpha"]);
+    assert_eq!(snapshots.activation_count(), 1);
+    assert_eq!(source.opens(SourceKind::M3u), 2);
+}
+
+#[tokio::test]
+async fn replacement_invalidates_immediately_and_fences_the_old_refresh_epoch() {
+    let clock = ControlledClock::at("2026-08-29T12:00:00Z");
+    let source = RefreshSource::default();
+    let snapshots = MemorySnapshotStore::default();
+    let core = unconfigured(&source, &snapshots, &clock).await;
+    source.push_modified(SourceKind::M3u, INITIAL_M3U);
+    let _ = core
+        .replace_source_configuration(Some(configuration(
+            "https://old-provider.fixture.invalid/channels.m3u",
+            None,
+        )))
+        .await;
+    let mut events = core.subscribe();
+    let _ = events.recv().await;
+
+    let old_gate = Arc::new(Semaphore::new(0));
+    source.push_modified_with(
+        SourceKind::M3u,
+        UPDATED_M3U,
+        PrivateSourceValidators::default(),
+        Some(Arc::clone(&old_gate)),
+    );
+    let old_refresh = tokio::spawn({
+        let core = core.clone();
+        async move { core.refresh(RefreshTrigger::Manual).await }
+    });
+    wait_for(|| source.opens(SourceKind::M3u) == 2).await;
+
+    source.push_modified(SourceKind::M3u, EXPANDED_M3U);
+    source.push_modified(SourceKind::Epg, INITIAL_EPG);
+    let replacement = tokio::spawn({
+        let core = core.clone();
+        async move {
+            core.replace_source_configuration(Some(configuration(
+                "https://new-provider.fixture.invalid/channels.m3u",
+                Some("https://new-provider.fixture.invalid/guide.xml"),
+            )))
+            .await
+        }
+    });
+    wait_for(|| core.status().configuration().has_epg()).await;
+    assert!(matches!(
+        core.list_channels(ChannelQuery::all(PageRequest::first(limit()))),
+        Err(CoreError::CatalogUnavailable { .. })
+    ));
+    assert!(!old_refresh.is_finished());
+    assert_eq!(source.opens(SourceKind::M3u), 2);
+
+    old_gate.add_permits(1);
+    let old_report = old_refresh.await.expect("old refresh task completes");
+    assert_eq!(old_report.m3u(), &RefreshOutcome::NotConfigured);
+    let status = replacement.await.expect("replacement task completes");
+    assert!(status.configuration().has_epg());
+    assert_eq!(channel_names(&core), vec!["Alpha", "Beta"]);
+    assert_eq!(source.max_in_flight(SourceKind::M3u), 1);
+
+    let mut m3u_completions = 0;
+    while let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(25), events.recv()).await
+    {
+        if matches!(
+            event,
+            CoreEvent::RefreshCompleted {
+                kind: SourceKind::M3u,
+                ..
+            }
+        ) {
+            m3u_completions += 1;
+        }
+    }
+    assert_eq!(
+        m3u_completions, 1,
+        "only the replacement epoch publishes refresh completion"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_replacements_are_serialized_through_the_public_transition() {
+    let clock = ControlledClock::at("2026-08-29T12:00:00Z");
+    let source = RefreshSource::default();
+    let snapshots = MemorySnapshotStore::default();
+    let core = unconfigured(&source, &snapshots, &clock).await;
+    let first_gate = Arc::new(Semaphore::new(0));
+    source.push_modified_with(
+        SourceKind::M3u,
+        INITIAL_M3U,
+        PrivateSourceValidators::default(),
+        Some(Arc::clone(&first_gate)),
+    );
+    let first = tokio::spawn({
+        let core = core.clone();
+        async move {
+            core.replace_source_configuration(Some(configuration(
+                "https://first-provider.fixture.invalid/channels.m3u",
+                None,
+            )))
+            .await
+        }
+    });
+    wait_for(|| source.opens(SourceKind::M3u) == 1).await;
+
+    source.push_modified(SourceKind::M3u, UPDATED_M3U);
+    let second = tokio::spawn({
+        let core = core.clone();
+        async move {
+            core.replace_source_configuration(Some(configuration(
+                "https://second-provider.fixture.invalid/channels.m3u",
+                None,
+            )))
+            .await
+        }
+    });
+    settle_scheduler().await;
+    assert_eq!(source.opens(SourceKind::M3u), 1);
+    first_gate.add_permits(1);
+
+    let first_status = first.await.expect("first replacement completes");
+    let second_status = second.await.expect("second replacement completes");
+    assert!(first_status.configuration().is_configured());
+    assert!(second_status.configuration().is_configured());
+    assert_eq!(source.opens(SourceKind::M3u), 2);
+    assert_eq!(source.max_in_flight(SourceKind::M3u), 1);
+    assert_eq!(channel_names(&core), vec!["Beta"]);
+}
+
 async fn bootstrap(
     source: &RefreshSource,
     snapshots: &MemorySnapshotStore,
@@ -902,6 +1222,37 @@ async fn bootstrap(
     )
     .await
     .expect("core bootstraps")
+}
+
+async fn unconfigured(
+    source: &RefreshSource,
+    snapshots: &MemorySnapshotStore,
+    clock: &ControlledClock,
+) -> SparrowCore {
+    SparrowCore::bootstrap(
+        None,
+        CoreAdapters::new(
+            Arc::new(source.clone()),
+            Arc::new(snapshots.clone()),
+            Arc::new(clock.clone()),
+        ),
+    )
+    .await
+    .expect("not-configured core bootstraps")
+}
+
+fn configuration(m3u: &str, epg: Option<&str>) -> SourceConfiguration {
+    SparrowCore::parse_source_configuration(SourceConfigurationInput::new(m3u, epg))
+        .expect("fixture Source Configuration is valid")
+}
+
+fn channel_names(core: &SparrowCore) -> Vec<String> {
+    core.list_channels(ChannelQuery::all(PageRequest::first(limit())))
+        .expect("configured catalog is browsable")
+        .items()
+        .iter()
+        .map(|channel| channel.name().to_owned())
+        .collect()
 }
 
 fn validators(etag: Option<&str>, last_modified: Option<&str>) -> PrivateSourceValidators {

@@ -12,6 +12,9 @@ export type {
   ClientResult,
   ListChannelsInput,
   ListGroupsInput,
+  HostedCapabilities,
+  InstalledCapabilities,
+  InstalledSparrowClient,
   IsoInstant,
   Page,
   PageCursor,
@@ -26,6 +29,7 @@ export type {
   SearchPageInput,
   SearchResults,
   SourceState,
+  SourceConfigurationInput,
   StartPlaybackInput,
   SparrowClient,
   SparrowEvent,
@@ -36,3 +40,11 @@ export {
   type HttpEventSourceFactory,
   type HttpSparrowClientOptions,
 } from "./http";
+export {
+  createSparrowRuntime,
+  isInstalledPlatform,
+  type HostedRuntime,
+  type InstalledRuntime,
+  type SparrowRuntime,
+  type SparrowRuntimeOptions,
+} from "./runtime";

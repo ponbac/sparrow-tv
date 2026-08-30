@@ -21,6 +21,7 @@ import type {
   PageCursor,
   SourceState,
   SparrowClient,
+  InstalledSparrowClient,
 } from "../../client/contracts";
 import {
   clientErrorFromQuery,
@@ -28,22 +29,40 @@ import {
 } from "../../client/query-result";
 import { useCatalogSynchronization } from "../status/catalog-synchronization";
 import { SourceStatusDesk } from "../status/source-status-desk";
+import { InstalledSourceSettings } from "../configuration/installed-source-settings";
 
 const GROUP_PAGE_SIZE = 100;
 const CHANNEL_PAGE_SIZE = 24;
 const FIRST_PAGE: PageCursor | null = null;
+const NO_MANUAL_REFRESH = () => undefined;
 const HostedPlayer = lazy(async () => {
   const module = await import("../playback/hosted-player");
   return { default: module.HostedPlayer };
 });
 
-interface CatalogBrowserProps {
-  readonly client: SparrowClient;
-  readonly playbackEngine?: HostedPlaybackEngine;
-}
+type CatalogBrowserProps =
+  | {
+      readonly client: SparrowClient;
+      readonly runtime?: "hosted";
+      readonly playbackEngine?: HostedPlaybackEngine;
+      readonly sourceConfiguration?: never;
+    }
+  | {
+      readonly client: SparrowClient;
+      readonly runtime: "installed";
+      readonly sourceConfiguration: Pick<
+        InstalledSparrowClient,
+        "replaceSourceConfiguration"
+      >;
+      readonly playbackEngine?: never;
+    };
 
 /** Browses generation-bound Channel Groups and Channels through a Sparrow client. */
-export function CatalogBrowser({ client, playbackEngine }: CatalogBrowserProps) {
+export function CatalogBrowser(props: CatalogBrowserProps) {
+  const { client } = props;
+  const runtime = props.runtime ?? "hosted";
+  const playbackEngine =
+    props.runtime === "installed" ? undefined : props.playbackEngine;
   const queryClient = useQueryClient();
   const synchronization = useCatalogSynchronization(client);
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
@@ -58,6 +77,10 @@ export function CatalogBrowser({ client, playbackEngine }: CatalogBrowserProps) 
     retry: false,
   });
   const catalogGeneration = synchronization.status?.generation ?? null;
+  const browseEnabled =
+    runtime === "hosted" ||
+    (synchronization.status?.configuration.configured === true &&
+      catalogGeneration !== null);
   const authoritativeGeneration =
     synchronization.generationHint === undefined
       ? catalogGeneration
@@ -75,6 +98,7 @@ export function CatalogBrowser({ client, playbackEngine }: CatalogBrowserProps) 
       ),
     getNextPageParam: (lastPage) =>
       lastPage.ok ? lastPage.value.next : null,
+    enabled: browseEnabled,
     retry: false,
   });
   const channelsQuery = useInfiniteQuery({
@@ -91,6 +115,7 @@ export function CatalogBrowser({ client, playbackEngine }: CatalogBrowserProps) 
       ),
     getNextPageParam: (lastPage) =>
       lastPage.ok ? lastPage.value.next : null,
+    enabled: browseEnabled,
     retry: false,
   });
   const channelQuery = useQuery({
@@ -138,8 +163,7 @@ export function CatalogBrowser({ client, playbackEngine }: CatalogBrowserProps) 
   const initialLoading =
     (capabilitiesQuery.isPending ||
       synchronization.statusPending ||
-      groupsQuery.isPending ||
-      channelsQuery.isPending) &&
+      (browseEnabled && (groupsQuery.isPending || channelsQuery.isPending))) &&
     groups.length === 0 &&
     channels.length === 0 &&
     browseError === null;
@@ -151,7 +175,24 @@ export function CatalogBrowser({ client, playbackEngine }: CatalogBrowserProps) 
   };
   const selectChannel = (id: ChannelId) => {
     setSelectedChannel(id);
-    setPlaybackChannel(id);
+    if (runtime === "hosted") {
+      setPlaybackChannel(id);
+    }
+  };
+  const applyInstalledConfiguration = (nextStatus: CatalogStatus) => {
+    setActiveGroup(null);
+    setSelectedChannel(null);
+    setPlaybackChannel(null);
+    queryClient.removeQueries({
+      predicate: ({ queryKey }) =>
+        queryKey[0] === "catalog" &&
+        queryKey[1] !== "status" &&
+        queryKey[1] !== "capabilities",
+    });
+    queryClient.setQueryData<ClientResult<CatalogStatus>>(
+      ["catalog", "status"],
+      { ok: true, value: nextStatus },
+    );
   };
   const retryCatalog = () => {
     queryClient
@@ -169,7 +210,7 @@ export function CatalogBrowser({ client, playbackEngine }: CatalogBrowserProps) 
   };
 
   if (initialLoading) {
-    return <CatalogLoading />;
+    return <CatalogLoading runtime={runtime} />;
   }
 
   return (
@@ -179,14 +220,21 @@ export function CatalogBrowser({ client, playbackEngine }: CatalogBrowserProps) 
         <div className="wordmark-lockup">
           <span className="signal-lamp" aria-hidden="true" />
           <div>
-            <p className="eyebrow">Live signal index · hosted desk</p>
+            <p className="eyebrow">
+              Live signal index ·{" "}
+              {runtime === "hosted" ? "hosted desk" : "installed receiver"}
+            </p>
             <h1>SPARROW</h1>
           </div>
         </div>
         <div className="masthead-meta">
           <StatusReadout status={status} />
           <span className="transport-chip">
-            {capabilities === null ? "LINK —" : "SAME ORIGIN"}
+            {capabilities === null
+              ? "LINK —"
+              : runtime === "hosted"
+                ? "SAME ORIGIN"
+                : "LOCAL IPC"}
           </span>
         </div>
       </header>
@@ -206,29 +254,49 @@ export function CatalogBrowser({ client, playbackEngine }: CatalogBrowserProps) 
       ) : null}
 
       {browseError !== null ? (
-        <ErrorNotice error={browseError} onRetry={retryCatalog} />
+        <ErrorNotice error={browseError} runtime={runtime} onRetry={retryCatalog} />
       ) : null}
 
-      <SourceStatusDesk
-        status={status}
-        refreshing={synchronization.refreshing}
-        refreshResult={synchronization.refreshResult}
-        latestEvent={synchronization.latestEvent}
-        onRefresh={synchronization.requestRefresh}
-      />
+      {props.runtime === "installed" ? (
+        <>
+          <InstalledSourceSettings
+            client={props.sourceConfiguration}
+            status={status}
+            onApplied={applyInstalledConfiguration}
+          />
+          <SourceStatusDesk
+            status={status}
+            refreshing={false}
+            refreshResult={null}
+            latestEvent={synchronization.latestEvent}
+            onRefresh={NO_MANUAL_REFRESH}
+            manualRefresh={false}
+          />
+        </>
+      ) : (
+        <SourceStatusDesk
+          status={status}
+          refreshing={synchronization.refreshing}
+          refreshResult={synchronization.refreshResult}
+          latestEvent={synchronization.latestEvent}
+          onRefresh={synchronization.requestRefresh}
+        />
+      )}
 
-      <SearchConsole
-        client={client}
-        status={status}
-        catalogGeneration={authoritativeGeneration}
-        selectedChannel={selectedChannel}
-        selectedDetails={selectedDetails}
-        selectedLoading={channelQuery.isPending && selectedChannel !== null}
-        onSelectChannel={selectChannel}
-        onRetrySelectedDetails={retrySelectedDetails}
-      />
+      {runtime === "hosted" ? (
+        <SearchConsole
+          client={client}
+          status={status}
+          catalogGeneration={authoritativeGeneration}
+          selectedChannel={selectedChannel}
+          selectedDetails={selectedDetails}
+          selectedLoading={channelQuery.isPending && selectedChannel !== null}
+          onSelectChannel={selectChannel}
+          onRetrySelectedDetails={retrySelectedDetails}
+        />
+      ) : null}
 
-      {playbackChannel === null ? null : (
+      {runtime !== "hosted" || playbackChannel === null ? null : (
         <PlaybackLoadBoundary
           resetKey={playbackChannel}
           onStop={() => setPlaybackChannel(null)}
@@ -252,7 +320,8 @@ export function CatalogBrowser({ client, playbackEngine }: CatalogBrowserProps) 
         </PlaybackLoadBoundary>
       )}
 
-      <main className="catalog-frame">
+      {browseEnabled ? (
+        <main className="catalog-frame">
         <GroupRail
           groups={groups}
           activeGroup={activeGroup}
@@ -321,14 +390,41 @@ export function CatalogBrowser({ client, playbackEngine }: CatalogBrowserProps) 
           selected={selectedChannel}
           result={selectedDetails}
           loading={channelQuery.isPending && selectedChannel !== null}
+          runtime={runtime}
         />
-      </main>
+        </main>
+      ) : (
+        <NativeCatalogStandby
+          configured={status?.configuration.configured === true}
+        />
+      )}
 
       <footer className="catalog-footer">
         <span>CATALOG / {status?.generation ?? "NO SIGNAL"}</span>
-        <span>PRIVATE SOURCES STAY SERVER-SIDE</span>
+        <span>
+          {runtime === "hosted"
+            ? "PRIVATE SOURCES STAY SERVER-SIDE"
+            : "SOURCE LOCATIONS STAY ON THIS DEVICE"}
+        </span>
       </footer>
     </div>
+  );
+}
+
+function NativeCatalogStandby({ configured }: { readonly configured: boolean }) {
+  return (
+    <main className="native-standby">
+      <span aria-hidden="true">LOCAL / 00</span>
+      <div>
+        <p className="eyebrow">On-device catalog</p>
+        <h2>{configured ? "Waiting for a valid snapshot" : "Receiver not configured"}</h2>
+        <p>
+          {configured
+            ? "The saved sources have not produced a browseable catalog. Check the safe status above or replace the source configuration."
+            : "Add a Channel source above. Browse requests stay off until the installed app reports a valid local catalog."}
+        </p>
+      </div>
+    </main>
   );
 }
 
@@ -432,10 +528,12 @@ function ChannelInspector({
   selected,
   result,
   loading,
+  runtime,
 }: {
   readonly selected: ChannelId | null;
   readonly result: ClientResult<ChannelDetails> | undefined;
   readonly loading: boolean;
+  readonly runtime: "hosted" | "installed";
 }) {
   return (
     <aside
@@ -472,21 +570,29 @@ function ChannelInspector({
             </div>
           </dl>
           <p className="inspector-note">
-            Its matched Programme schedule is open in the search desk above.
+            {runtime === "hosted"
+              ? "Its matched Programme schedule is open in the search desk above."
+              : "Channel selection stays local; this installed catalog does not start playback."}
           </p>
         </div>
       ) : (
-        <CompactError error={result.error} />
+        <CompactError error={result.error} runtime={runtime} />
       )}
     </aside>
   );
 }
 
-function CatalogLoading() {
+function CatalogLoading({
+  runtime,
+}: {
+  readonly runtime: "hosted" | "installed";
+}) {
   return (
     <main className="catalog-loading" aria-live="polite">
       <div className="loading-dial" aria-hidden="true" />
-      <p className="eyebrow">Sparrow hosted desk</p>
+      <p className="eyebrow">
+        Sparrow {runtime === "hosted" ? "hosted desk" : "installed receiver"}
+      </p>
       <h1>Tuning catalog</h1>
       <p>Negotiating the private signal index.</p>
     </main>
@@ -518,12 +624,14 @@ function EmptyChannels({ group }: { readonly group: string | null }) {
 
 function ErrorNotice({
   error,
+  runtime,
   onRetry,
 }: {
   readonly error: ClientError;
+  readonly runtime: "hosted" | "installed";
   readonly onRetry: () => void;
 }) {
-  const copy = errorCopy(error);
+  const copy = errorCopy(error, runtime);
   return (
     <section className="error-notice" role="alert">
       <div>
@@ -538,8 +646,14 @@ function ErrorNotice({
   );
 }
 
-function CompactError({ error }: { readonly error: ClientError }) {
-  const copy = errorCopy(error);
+function CompactError({
+  error,
+  runtime = "hosted",
+}: {
+  readonly error: ClientError;
+  readonly runtime?: "hosted" | "installed";
+}) {
+  const copy = errorCopy(error, runtime);
   return (
     <div className="compact-error" role="alert">
       <strong>{copy.title}</strong>
@@ -659,7 +773,10 @@ function abbreviateId(id: ChannelId): string {
   return `${id.slice(0, 12)}…${id.slice(-8)}`;
 }
 
-function errorCopy(error: ClientError): {
+function errorCopy(
+  error: ClientError,
+  runtime: "hosted" | "installed",
+): {
   readonly title: string;
   readonly detail: string;
 } {
@@ -671,7 +788,10 @@ function errorCopy(error: ClientError): {
       };
     case "service-unavailable":
       return {
-        title: "The hosted desk is temporarily unavailable",
+        title:
+          runtime === "hosted"
+            ? "The hosted desk is temporarily unavailable"
+            : "The installed catalog is temporarily unavailable",
         detail: "The catalog remains unchanged. Try the request again shortly.",
       };
     case "invalid-input":
@@ -682,12 +802,18 @@ function errorCopy(error: ClientError): {
     case "not-configured":
       return {
         title: "No source is configured",
-        detail: "This hosted deployment has not been connected to an M3U source.",
+        detail:
+          runtime === "hosted"
+            ? "This hosted deployment has not been connected to an M3U source."
+            : "Add an M3U source in the on-device source cabinet.",
       };
     case "catalog-unavailable":
       return {
         title: "The Channel Catalog is unavailable",
-        detail: "No validated Channel snapshot is available yet. The server can be checked again safely.",
+        detail:
+          runtime === "hosted"
+            ? "No validated Channel snapshot is available yet. The server can be checked again safely."
+            : "No validated on-device Channel snapshot is available yet. The installed catalog can be checked again safely.",
       };
     case "not-found":
       return {
@@ -706,7 +832,10 @@ function errorCopy(error: ClientError): {
       };
     case "transport":
       return {
-        title: "The hosted desk did not answer",
+        title:
+          runtime === "hosted"
+            ? "The hosted desk did not answer"
+            : "The installed catalog did not answer",
         detail: error.message,
       };
     case "cancelled":

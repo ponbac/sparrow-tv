@@ -1,0 +1,33 @@
+[package]
+name = "sparrow-installed"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+default-run = "sparrow-installed"
+
+[lib]
+name = "sparrow_installed"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "=2.6.3", features = [] }
+
+[dependencies]
+chrono = "0.4"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sparrow-core = { path = "../../crates/sparrow-core" }
+sparrow-snapshot-store = { path = "../../crates/sparrow-snapshot-store" }
+sparrow-source-http = { path = "../../crates/sparrow-source-http" }
+tauri = { version = "=2.11.5", features = [] }
+thiserror = "2"
+tokio = { version = "1", features = ["sync"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "=0.22.4"
+rustls-platform-verifier = "=0.7.0"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt", "time"] }

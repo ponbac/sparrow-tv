@@ -6,6 +6,8 @@ ENV RUSTUP_TOOLCHAIN=1.98.0
 
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
+COPY app/src-tauri/Cargo.toml app/src-tauri/build.rs ./app/src-tauri/
+COPY app/src-tauri/src ./app/src-tauri/src
 RUN cargo build --release --locked -p sparrow-server --bin sparrow-server
 
 FROM oven/bun:1.4.0@sha256:18639686662e5cd8a963ffb967dd130034a2a2d076a52e65dfd4fe18f75cc038 AS app-builder
