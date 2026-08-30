@@ -1,36 +1,34 @@
-FROM lukemathwalker/cargo-chef:latest-rust-1.89.0 AS chef
-WORKDIR /app
-RUN apt update && apt install lld clang -y
+# syntax=docker/dockerfile:1.18.0@sha256:dabfc0969b935b2080555ace70ee69a5261af8a8f1b4df97b9e7fbcf6722eddf
 
-FROM chef AS planner
-COPY . .
-# Compute a lock-like file for our project
-RUN cargo chef prepare --recipe-path recipe.json
+FROM rust:1.98.0-bookworm@sha256:4e4a7e7939c17991ab35f2b8c2e67593980f771d28f6b1254b1850f860fd0c7f AS server-builder
+WORKDIR /workspace
+ENV RUSTUP_TOOLCHAIN=1.98.0
 
-FROM chef AS builder
-COPY --from=planner /app/recipe.json recipe.json
-# Build our project dependencies, not our application!
-RUN cargo chef cook --release --recipe-path recipe.json
-# Up to this point, if our dependency tree stays the same,
-# all layers should be cached.
-COPY . .
-# Build our project
-RUN cargo build --release --bin sparrow-tv
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates ./crates
+RUN cargo build --release --locked -p sparrow-server --bin sparrow-server
 
-FROM oven/bun:1.2.21 AS bun
-WORKDIR /app
-COPY /app .
+FROM oven/bun:1.4.0@sha256:18639686662e5cd8a963ffb967dd130034a2a2d076a52e65dfd4fe18f75cc038 AS app-builder
+WORKDIR /workspace/app
+
+COPY app/package.json app/bun.lockb ./
 RUN bun install --frozen-lockfile
+COPY app ./
 RUN bun run build
 
-FROM ubuntu:22.04 AS runtime
-WORKDIR /app
-RUN apt-get update -y \
-    && apt-get install -y --no-install-recommends openssl ca-certificates \
-    && apt-get autoremove -y \
-    && apt-get clean -y \
-    && rm -rf /var/lib/apt/lists/*
-# Copy necessary files from builder
-COPY --from=builder /app/target/release/sparrow-tv sparrow-tv
-COPY --from=bun /app/dist app/dist
-ENTRYPOINT ["./sparrow-tv"]
+FROM gcr.io/distroless/cc-debian13:nonroot-amd64@sha256:1d2e87077bb3b12be8622609c5975fed6a3cba63e68fed53209293be10f7022c AS runtime
+ARG VCS_REF=unknown
+
+LABEL org.opencontainers.image.source="https://github.com/ponbac/sparrow-tv" \
+      org.opencontainers.image.revision="${VCS_REF}"
+
+WORKDIR /srv/sparrow
+COPY --from=server-builder /workspace/target/release/sparrow-server /usr/local/bin/sparrow-server
+COPY --from=app-builder /workspace/app/dist ./app/dist
+
+USER 65532:65532
+# Publishing is explicit in deployment/rehearsal. Dockerfile frontend 1.18.0
+# serializes EXPOSE history with a process-local pointer, breaking byte reproduction.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=12m --retries=3 \
+  CMD ["/usr/local/bin/sparrow-server", "--healthcheck"]
+ENTRYPOINT ["/usr/local/bin/sparrow-server"]

@@ -83,7 +83,8 @@ impl ChannelCatalog {
             );
             let details = ChannelDetails::new(channel.id.clone(), channel.name, channel.group);
             let index = records.len();
-            debug_assert!(by_id.insert(channel.id, index).is_none());
+            let previous = by_id.insert(channel.id, index);
+            debug_assert!(previous.is_none());
             summaries.push(summary);
             records.push(ChannelRecord {
                 details,
@@ -107,11 +108,8 @@ impl ChannelCatalog {
                 Arc::clone(&group_name),
                 channel_count,
             ));
-            debug_assert!(
-                group_ranges
-                    .insert(group_name, group_start..group_end)
-                    .is_none()
-            );
+            let previous = group_ranges.insert(group_name, group_start..group_end);
+            debug_assert!(previous.is_none());
             group_start = group_end;
         }
 
@@ -608,7 +606,8 @@ fn build_programmes(
         while end < programmes.len() && programmes[end].channel_id() == &channel_id {
             end += 1;
         }
-        debug_assert!(ranges.insert(channel_id, start..end).is_none());
+        let previous = ranges.insert(channel_id, start..end);
+        debug_assert!(previous.is_none());
         start = end;
     }
 
