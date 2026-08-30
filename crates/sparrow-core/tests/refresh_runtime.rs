@@ -812,6 +812,14 @@ async fn resume_and_exact_deadline_trigger_refresh_and_events_resynchronize_afte
     source.push_modified(SourceKind::M3u, INITIAL_M3U);
     let core = bootstrap(&source, &snapshots, &clock, false).await;
     let mut events = core.subscribe();
+    let initial = events
+        .recv()
+        .await
+        .expect("subscription starts with a current status snapshot");
+    assert!(matches!(
+        initial,
+        CoreEvent::CatalogStatusChanged { occurred_at, .. } if occurred_at == clock.now()
+    ));
 
     source.push_modified(SourceKind::M3u, UPDATED_M3U);
     clock.set("2026-08-29T18:00:00Z");

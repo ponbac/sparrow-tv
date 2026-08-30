@@ -9,6 +9,7 @@ import type { HostedPlaybackEngine } from "../playback/mpegts-engine";
 import { PlaybackLoadBoundary } from "../playback/playback-load-boundary";
 import { SearchConsole } from "../search/search-console";
 import type {
+  CatalogGeneration,
   CatalogStatus,
   ChannelDetails,
   ChannelGroup,
@@ -21,6 +22,12 @@ import type {
   SourceState,
   SparrowClient,
 } from "../../client/contracts";
+import {
+  clientErrorFromQuery,
+  successfulQueryResult,
+} from "../../client/query-result";
+import { useCatalogSynchronization } from "../status/catalog-synchronization";
+import { SourceStatusDesk } from "../status/source-status-desk";
 
 const GROUP_PAGE_SIZE = 100;
 const CHANNEL_PAGE_SIZE = 24;
@@ -38,66 +45,99 @@ interface CatalogBrowserProps {
 /** Browses generation-bound Channel Groups and Channels through a Sparrow client. */
 export function CatalogBrowser({ client, playbackEngine }: CatalogBrowserProps) {
   const queryClient = useQueryClient();
+  const synchronization = useCatalogSynchronization(client);
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
   const [selectedChannel, setSelectedChannel] = useState<ChannelId | null>(null);
   const [playbackChannel, setPlaybackChannel] = useState<ChannelId | null>(null);
 
   const capabilitiesQuery = useQuery({
     queryKey: ["catalog", "capabilities"],
-    queryFn: ({ signal }) => client.capabilities({ signal }),
+    queryFn: ({ signal }) =>
+      successfulQueryResult(client.capabilities({ signal })),
     staleTime: Number.POSITIVE_INFINITY,
+    retry: false,
   });
-  const statusQuery = useQuery({
-    queryKey: ["catalog", "status"],
-    queryFn: ({ signal }) => client.status({ signal }),
-  });
-  const catalogGeneration =
-    statusQuery.data?.ok === true ? statusQuery.data.value.generation : null;
+  const catalogGeneration = synchronization.status?.generation ?? null;
+  const authoritativeGeneration =
+    synchronization.generationHint === undefined
+      ? catalogGeneration
+      : synchronization.generationHint;
   const groupsQuery = useInfiniteQuery({
     queryKey: ["catalog", "groups"],
     initialPageParam: FIRST_PAGE,
     queryFn: ({ pageParam, signal }) =>
-      client.listGroups({
-        limit: GROUP_PAGE_SIZE,
-        ...(pageParam === null ? {} : { cursor: pageParam }),
-        signal,
-      }),
+      successfulQueryResult(
+        client.listGroups({
+          limit: GROUP_PAGE_SIZE,
+          ...(pageParam === null ? {} : { cursor: pageParam }),
+          signal,
+        }),
+      ),
     getNextPageParam: (lastPage) =>
       lastPage.ok ? lastPage.value.next : null,
+    retry: false,
   });
   const channelsQuery = useInfiniteQuery({
     queryKey: ["catalog", "channels", activeGroup],
     initialPageParam: FIRST_PAGE,
     queryFn: ({ pageParam, signal }) =>
-      client.listChannels({
-        limit: CHANNEL_PAGE_SIZE,
-        ...(activeGroup === null ? {} : { group: activeGroup }),
-        ...(pageParam === null ? {} : { cursor: pageParam }),
-        signal,
-      }),
+      successfulQueryResult(
+        client.listChannels({
+          limit: CHANNEL_PAGE_SIZE,
+          ...(activeGroup === null ? {} : { group: activeGroup }),
+          ...(pageParam === null ? {} : { cursor: pageParam }),
+          signal,
+        }),
+      ),
     getNextPageParam: (lastPage) =>
       lastPage.ok ? lastPage.value.next : null,
+    retry: false,
   });
   const channelQuery = useQuery({
-    queryKey: ["catalog", "channel", selectedChannel, catalogGeneration],
+    queryKey: ["catalog", "channel", selectedChannel],
     queryFn:
       selectedChannel === null
         ? skipToken
-        : ({ signal }) => client.channel({ id: selectedChannel, signal }),
+        : ({ signal }) =>
+            successfulQueryResult(
+              client.channel({ id: selectedChannel, signal }),
+            ),
+    retry: false,
   });
 
   const groups = collectItems(groupsQuery.data?.pages);
   const channels = collectItems(channelsQuery.data?.pages);
-  const status = successValue(statusQuery.data);
+  const status = synchronization.status;
   const capabilities = successValue(capabilitiesQuery.data);
+  const groupGeneration = firstPageGeneration(groupsQuery.data?.pages);
+  const channelGeneration = firstPageGeneration(channelsQuery.data?.pages);
+  const loadedGeneration =
+    (channelGeneration !== authoritativeGeneration ? channelGeneration : null) ??
+    (groupGeneration !== authoritativeGeneration ? groupGeneration : null) ??
+    channelGeneration ??
+    groupGeneration;
+  const browseGenerationMismatch =
+    authoritativeGeneration !== null &&
+    ((groupGeneration !== null && groupGeneration !== authoritativeGeneration) ||
+      (channelGeneration !== null &&
+        channelGeneration !== authoritativeGeneration));
+  const selectedDetails = resultWithQueryError(
+    channelQuery.data,
+    channelQuery.error,
+  );
+  const retainedDetailError =
+    channelQuery.data?.ok === true
+      ? clientErrorFromQuery(channelQuery.error)
+      : null;
   const browseError =
-    resultError(capabilitiesQuery.data) ??
-    resultError(statusQuery.data) ??
-    firstPageError(groupsQuery.data?.pages) ??
-    firstPageError(channelsQuery.data?.pages);
+    clientErrorFromQuery(capabilitiesQuery.error) ??
+    synchronization.statusError ??
+    clientErrorFromQuery(groupsQuery.error) ??
+    clientErrorFromQuery(channelsQuery.error) ??
+    retainedDetailError;
   const initialLoading =
     (capabilitiesQuery.isPending ||
-      statusQuery.isPending ||
+      synchronization.statusPending ||
       groupsQuery.isPending ||
       channelsQuery.isPending) &&
     groups.length === 0 &&
@@ -151,12 +191,16 @@ export function CatalogBrowser({ client, playbackEngine }: CatalogBrowserProps) 
         </div>
       </header>
 
-      {status !== null && isRetainedCatalog(status) ? (
+      {status !== null &&
+      (isRetainedCatalog(status) || browseGenerationMismatch) ? (
         <aside className="retained-banner" role="status">
           <span>RECORDED SIGNAL</span>
           <p>
-            The live source is not fresh. Browsing remains locked to generation{" "}
-            {status.generation ?? "—"}.
+            {retainedCatalogCopy(
+              status,
+              loadedGeneration,
+              authoritativeGeneration,
+            )}
           </p>
         </aside>
       ) : null}
@@ -165,11 +209,20 @@ export function CatalogBrowser({ client, playbackEngine }: CatalogBrowserProps) 
         <ErrorNotice error={browseError} onRetry={retryCatalog} />
       ) : null}
 
+      <SourceStatusDesk
+        status={status}
+        refreshing={synchronization.refreshing}
+        refreshResult={synchronization.refreshResult}
+        latestEvent={synchronization.latestEvent}
+        onRefresh={synchronization.requestRefresh}
+      />
+
       <SearchConsole
         client={client}
         status={status}
+        catalogGeneration={authoritativeGeneration}
         selectedChannel={selectedChannel}
-        selectedDetails={channelQuery.data}
+        selectedDetails={selectedDetails}
         selectedLoading={channelQuery.isPending && selectedChannel !== null}
         onSelectChannel={selectChannel}
         onRetrySelectedDetails={retrySelectedDetails}
@@ -205,6 +258,7 @@ export function CatalogBrowser({ client, playbackEngine }: CatalogBrowserProps) 
           activeGroup={activeGroup}
           hasNextPage={groupsQuery.hasNextPage}
           loadingMore={groupsQuery.isFetchingNextPage}
+          replacing={groupsQuery.isRefetching || browseGenerationMismatch}
           onSelect={selectGroup}
           onLoadMore={loadMoreGroups}
         />
@@ -247,10 +301,16 @@ export function CatalogBrowser({ client, playbackEngine }: CatalogBrowserProps) 
             <button
               className="load-button"
               type="button"
-              disabled={channelsQuery.isFetchingNextPage}
+              disabled={
+                channelsQuery.isFetchingNextPage ||
+                channelsQuery.isRefetching ||
+                browseGenerationMismatch
+              }
               onClick={loadMoreChannels}
             >
-              {channelsQuery.isFetchingNextPage
+              {channelsQuery.isRefetching || browseGenerationMismatch
+                ? "Updating catalog generation…"
+                : channelsQuery.isFetchingNextPage
                 ? "Receiving next block…"
                 : "Receive next 24 channels"}
             </button>
@@ -259,7 +319,7 @@ export function CatalogBrowser({ client, playbackEngine }: CatalogBrowserProps) 
 
         <ChannelInspector
           selected={selectedChannel}
-          result={channelQuery.data}
+          result={selectedDetails}
           loading={channelQuery.isPending && selectedChannel !== null}
         />
       </main>
@@ -277,6 +337,7 @@ function GroupRail({
   activeGroup,
   hasNextPage,
   loadingMore,
+  replacing,
   onSelect,
   onLoadMore,
 }: {
@@ -284,6 +345,7 @@ function GroupRail({
   readonly activeGroup: string | null;
   readonly hasNextPage: boolean;
   readonly loadingMore: boolean;
+  readonly replacing: boolean;
   readonly onSelect: (group: string | null) => void;
   readonly onLoadMore: () => void;
 }) {
@@ -324,10 +386,10 @@ function GroupRail({
         <button
           className="rail-more"
           type="button"
-          disabled={loadingMore}
+          disabled={loadingMore || replacing}
           onClick={onLoadMore}
         >
-          {loadingMore ? "Receiving…" : "More banks +"}
+          {replacing ? "Updating…" : loadingMore ? "Receiving…" : "More banks +"}
         </button>
       ) : null}
     </nav>
@@ -508,15 +570,15 @@ function collectItems<Value>(
   return pages.flatMap((page) => (page.ok ? page.value.items : []));
 }
 
-function firstPageError<Value>(
+function firstPageGeneration<Value>(
   pages: readonly ClientResult<Page<Value>>[] | undefined,
-): ClientError | null {
+): CatalogGeneration | null {
   if (pages === undefined) {
     return null;
   }
   for (const page of pages) {
-    if (!page.ok) {
-      return page.error;
+    if (page.ok) {
+      return page.value.generation;
     }
   }
   return null;
@@ -528,10 +590,15 @@ function successValue<Value>(
   return result?.ok === true ? result.value : null;
 }
 
-function resultError<Value>(
+function resultWithQueryError<Value>(
   result: ClientResult<Value> | undefined,
-): ClientError | null {
-  return result !== undefined && !result.ok ? result.error : null;
+  queryError: unknown,
+): ClientResult<Value> | undefined {
+  if (result !== undefined) {
+    return result;
+  }
+  const error = clientErrorFromQuery(queryError);
+  return error === null ? undefined : { ok: false, error };
 }
 
 function sourceStateLabel(state: SourceState): string {
@@ -553,6 +620,21 @@ function sourceStateLabel(state: SourceState): string {
 
 function isRetainedCatalog(status: CatalogStatus): boolean {
   return status.generation !== null && status.m3u._tag !== "fresh";
+}
+
+function retainedCatalogCopy(
+  status: CatalogStatus,
+  loadedGeneration: CatalogGeneration | null,
+  authoritativeGeneration: CatalogGeneration | null,
+): string {
+  if (
+    loadedGeneration !== null &&
+    authoritativeGeneration !== null &&
+    loadedGeneration !== authoritativeGeneration
+  ) {
+    return `The latest catalog could not replace the recorded browse data. Browsing remains locked to generation ${loadedGeneration}; current source generation is ${authoritativeGeneration}.`;
+  }
+  return `The live source is not fresh. Browsing remains locked to generation ${loadedGeneration ?? status.generation ?? "—"}.`;
 }
 
 function groupHeading(group: string | null): string {

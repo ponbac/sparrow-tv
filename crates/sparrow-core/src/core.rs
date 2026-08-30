@@ -237,9 +237,18 @@ impl SparrowCore {
 
     /// Subscribes to a bounded safe event feed. Slow consumers skip old events.
     pub fn subscribe(&self) -> CoreEventStream {
+        let _publication = self
+            .runtime
+            .publication
+            .lock()
+            .expect("publication lock poisoned");
         CoreEventStream {
             receiver: self.runtime.events.subscribe(),
             runtime: Arc::downgrade(&self.runtime),
+            initial: Some(CoreEvent::CatalogStatusChanged {
+                occurred_at: self.runtime.adapters.clock().now(),
+                status: self.runtime.view.load().status.clone(),
+            }),
         }
     }
 
@@ -273,23 +282,33 @@ impl Drop for PlaybackActivityLease {
 pub struct CoreEventStream {
     receiver: broadcast::Receiver<CoreEvent>,
     runtime: Weak<CoreRuntime>,
+    initial: Option<CoreEvent>,
 }
 
 impl CoreEventStream {
     pub async fn recv(&mut self) -> Option<CoreEvent> {
+        if let Some(initial) = self.initial.take() {
+            return Some(initial);
+        }
         match self.receiver.recv().await {
             Ok(event) => Some(event),
             Err(broadcast::error::RecvError::Lagged(_)) => {
                 let runtime = self.runtime.upgrade()?;
-                let status = {
+                let (occurred_at, status) = {
                     let _publication = runtime
                         .publication
                         .lock()
                         .expect("publication lock poisoned");
                     self.receiver = runtime.events.subscribe();
-                    runtime.view.load().status.clone()
+                    (
+                        runtime.adapters.clock().now(),
+                        runtime.view.load().status.clone(),
+                    )
                 };
-                Some(CoreEvent::CatalogStatusChanged { status })
+                Some(CoreEvent::CatalogStatusChanged {
+                    occurred_at,
+                    status,
+                })
             }
             Err(broadcast::error::RecvError::Closed) => None,
         }
@@ -693,10 +712,7 @@ impl CoreRuntime {
                 let control = runtime.control(kind);
                 let mut current = control.flight.lock().expect("refresh flight poisoned");
                 if let Ok(outcome) = &result {
-                    let _ = runtime.events.send(CoreEvent::RefreshCompleted {
-                        kind,
-                        outcome: outcome.clone(),
-                    });
+                    runtime.publish_refresh_completed(&current, kind, outcome);
                 }
                 if current
                     .as_ref()
@@ -969,9 +985,16 @@ impl CoreRuntime {
             catalog,
             sources,
         }));
-        let _ = self.events.send(CoreEvent::CatalogStatusChanged { status });
+        let occurred_at = self.adapters.clock().now();
+        let _ = self.events.send(CoreEvent::CatalogStatusChanged {
+            occurred_at,
+            status,
+        });
         if content_changed && let Some(generation) = generation {
-            let _ = self.events.send(CoreEvent::CatalogPublished { generation });
+            let _ = self.events.send(CoreEvent::CatalogPublished {
+                occurred_at,
+                generation,
+            });
         }
     }
 
@@ -1044,7 +1067,10 @@ impl CoreRuntime {
             catalog: current.catalog.clone(),
             sources,
         }));
-        let _ = self.events.send(CoreEvent::CatalogStatusChanged { status });
+        let _ = self.events.send(CoreEvent::CatalogStatusChanged {
+            occurred_at: self.adapters.clock().now(),
+            status,
+        });
     }
 
     fn set_source_state(&self, kind: SourceKind, state: SourceState) {
@@ -1057,7 +1083,27 @@ impl CoreRuntime {
             catalog: current.catalog.clone(),
             sources: current.sources.clone(),
         }));
-        let _ = self.events.send(CoreEvent::CatalogStatusChanged { status });
+        let _ = self.events.send(CoreEvent::CatalogStatusChanged {
+            occurred_at: self.adapters.clock().now(),
+            status,
+        });
+    }
+
+    /// Publishes while the caller still excludes the completed source flight.
+    /// This lock also linearizes the event against subscription snapshots and
+    /// lag resynchronization.
+    fn publish_refresh_completed(
+        &self,
+        _flight: &std::sync::MutexGuard<'_, Option<Arc<RefreshFlight>>>,
+        kind: SourceKind,
+        outcome: &RefreshOutcome,
+    ) {
+        let _publication = self.publication.lock().expect("publication lock poisoned");
+        let _ = self.events.send(CoreEvent::RefreshCompleted {
+            occurred_at: self.adapters.clock().now(),
+            kind,
+            outcome: outcome.clone(),
+        });
     }
 
     fn current_validated_at(&self, kind: SourceKind) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -1834,9 +1880,28 @@ impl Drop for ValidatedCandidate<'_> {
 
 #[cfg(test)]
 mod refresh_concurrency_tests {
-    use std::sync::atomic::Ordering;
+    use std::{
+        io::BufRead,
+        sync::{Arc, Condvar, Mutex, atomic::Ordering, mpsc},
+        thread,
+        time::Duration,
+    };
 
-    use super::{FlightDecision, RefreshFlight};
+    use async_trait::async_trait;
+    use bytes::Bytes;
+    use chrono::{DateTime, Utc};
+
+    use crate::{
+        domain::{RefreshOutcome, SourceAccessFailure, SourceKind, StoreError},
+        ports::{
+            Clock, CoreAdapters, SnapshotCandidate, SnapshotStage, SnapshotStageRequest,
+            SnapshotStore, SourceAccess, SourceRequest, SourceResponse, ValidatedStage,
+        },
+    };
+
+    use super::{
+        BootstrapFailures, CoreRuntime, CoreView, FlightDecision, RefreshFlight, SparrowCore,
+    };
 
     #[test]
     fn manual_promotion_and_automatic_skip_have_one_linearized_winner() {
@@ -1863,5 +1928,179 @@ mod refresh_concurrency_tests {
         let flight = RefreshFlight::new(false);
         flight.fail_panicked();
         let _ = flight.wait().await;
+    }
+
+    #[test]
+    fn refresh_completion_excludes_subscription_snapshot_until_the_event_is_published() {
+        let clock = Arc::new(CompletionBlockingClock::at("2026-08-30T12:00:00Z"));
+        let adapters = CoreAdapters::new(
+            Arc::new(UnusedAdapter),
+            Arc::new(UnusedAdapter),
+            Arc::clone(&clock) as Arc<_>,
+        );
+        let core = SparrowCore::from_runtime(CoreRuntime::new(
+            None,
+            adapters,
+            CoreView::not_configured(),
+            BootstrapFailures::default(),
+        ));
+
+        let publishing_runtime = Arc::clone(&core.runtime);
+        let publisher = thread::spawn(move || {
+            let flight = publishing_runtime
+                .control(SourceKind::M3u)
+                .flight
+                .lock()
+                .expect("refresh flight is not poisoned");
+            publishing_runtime.publish_refresh_completed(
+                &flight,
+                SourceKind::M3u,
+                &RefreshOutcome::NotConfigured,
+            );
+        });
+        clock.wait_until_blocked();
+
+        let completion_holds_publication = core.runtime.publication.try_lock().is_err();
+        let subscribing_core = core.clone();
+        let (subscription_tx, subscription_rx) = mpsc::sync_channel(1);
+        let subscriber = thread::spawn(move || {
+            subscription_tx
+                .send(subscribing_core.subscribe())
+                .expect("test retains the subscription receiver");
+        });
+
+        clock.release();
+        publisher
+            .join()
+            .expect("completion publisher does not panic");
+        let mut events = subscription_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("subscription completes after publication");
+        subscriber.join().expect("subscriber does not panic");
+
+        assert!(
+            completion_holds_publication,
+            "completion must exclude subscribe and lag-resync snapshot synthesis"
+        );
+        assert!(matches!(
+            events.initial.take(),
+            Some(crate::domain::CoreEvent::CatalogStatusChanged { .. })
+        ));
+        assert!(matches!(
+            events.receiver.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    struct CompletionBlockingClock {
+        now: DateTime<Utc>,
+        state: Mutex<CompletionBlockingClockState>,
+        changed: Condvar,
+    }
+
+    struct CompletionBlockingClockState {
+        block_next: bool,
+        blocked: bool,
+        released: bool,
+    }
+
+    impl CompletionBlockingClock {
+        fn at(value: &str) -> Self {
+            Self {
+                now: DateTime::parse_from_rfc3339(value)
+                    .expect("fixture instant is valid")
+                    .with_timezone(&Utc),
+                state: Mutex::new(CompletionBlockingClockState {
+                    block_next: true,
+                    blocked: false,
+                    released: false,
+                }),
+                changed: Condvar::new(),
+            }
+        }
+
+        fn wait_until_blocked(&self) {
+            let state = self.state.lock().expect("test clock is not poisoned");
+            let (state, result) = self
+                .changed
+                .wait_timeout_while(state, Duration::from_secs(2), |state| !state.blocked)
+                .expect("test clock is not poisoned");
+            assert!(
+                !result.timed_out(),
+                "completion reaches the controlled clock"
+            );
+            assert!(state.blocked);
+        }
+
+        fn release(&self) {
+            let mut state = self.state.lock().expect("test clock is not poisoned");
+            state.released = true;
+            self.changed.notify_all();
+        }
+    }
+
+    #[async_trait]
+    impl Clock for CompletionBlockingClock {
+        fn now(&self) -> DateTime<Utc> {
+            let mut state = self.state.lock().expect("test clock is not poisoned");
+            if state.block_next {
+                state.block_next = false;
+                state.blocked = true;
+                self.changed.notify_all();
+                while !state.released {
+                    state = self
+                        .changed
+                        .wait(state)
+                        .expect("test clock is not poisoned");
+                }
+            }
+            self.now
+        }
+
+        async fn wait_until(&self, _deadline: DateTime<Utc>) {
+            std::future::pending().await
+        }
+    }
+
+    struct UnusedAdapter;
+
+    #[async_trait]
+    impl SourceAccess for UnusedAdapter {
+        async fn open(
+            &self,
+            _request: SourceRequest,
+        ) -> Result<SourceResponse, SourceAccessFailure> {
+            unreachable!("the event fixture never opens a Source")
+        }
+    }
+
+    #[async_trait]
+    impl SnapshotStore for UnusedAdapter {
+        fn begin_stage(&self, _request: SnapshotStageRequest) -> Result<SnapshotStage, StoreError> {
+            unreachable!("the event fixture never stages a Snapshot")
+        }
+
+        async fn append(&self, _stage: &SnapshotStage, _chunk: Bytes) -> Result<(), StoreError> {
+            unreachable!("the event fixture never writes a Snapshot")
+        }
+
+        async fn open_staged(
+            &self,
+            _stage: &SnapshotStage,
+        ) -> Result<Box<dyn BufRead + Send>, StoreError> {
+            unreachable!("the event fixture never reads a Snapshot")
+        }
+
+        async fn prepare_activation(&self, _validated: &ValidatedStage) -> Result<(), StoreError> {
+            unreachable!("the event fixture never prepares a Snapshot")
+        }
+
+        fn activate(&self, _validated: &ValidatedStage) -> Result<SnapshotCandidate, StoreError> {
+            unreachable!("the event fixture never activates a Snapshot")
+        }
+
+        fn discard(&self, _stage: SnapshotStage) -> Result<(), StoreError> {
+            unreachable!("the event fixture never discards a Snapshot")
+        }
     }
 }

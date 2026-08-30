@@ -161,7 +161,12 @@ async fn failed_guide_states_keep_channel_search_and_validated_programmes_safe()
     assert_eq!(first_status["epg"]["validatedAt"], Value::Null);
     assert_eq!(
         first_status["epg"]["failure"],
-        json!({ "_tag": "source-access" })
+        json!({
+            "_tag": "source-access",
+            "source": "epg",
+            "reason": "unavailable",
+            "retryAfterSeconds": null,
+        })
     );
     let first_search = get_json(
         &first_failure.router,
@@ -189,7 +194,12 @@ async fn failed_guide_states_keep_channel_search_and_validated_programmes_safe()
     assert!(retained_status["epg"]["validatedAt"].is_string());
     assert_eq!(
         retained_status["epg"]["failure"],
-        json!({ "_tag": "source-access" })
+        json!({
+            "_tag": "source-access",
+            "source": "epg",
+            "reason": "unavailable",
+            "retryAfterSeconds": null,
+        })
     );
 
     let channels = get_json(&retained.router, "/api/v1/channels?limit=100").await;

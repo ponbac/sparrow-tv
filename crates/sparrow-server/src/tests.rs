@@ -1,5 +1,6 @@
 mod playback;
 mod programmes;
+mod refresh;
 mod search_lanes;
 
 use std::{
@@ -28,6 +29,7 @@ use sparrow_core::{
     SourceConfigurationInput, SourceKind, SourceRequest, SourceResponse, SparrowCore, SystemClock,
 };
 use tempfile::TempDir;
+use tokio::sync::Semaphore;
 use tower::ServiceExt as _;
 
 use crate::{api::ApiError, memory_snapshot_store::MemorySnapshotStore, router};
@@ -65,6 +67,7 @@ async fn unavailable_api_work_has_a_finite_privacy_safe_error() {
 struct FixtureSource {
     state: Arc<Mutex<HashMap<SourceKind, Result<Bytes, SourceAccessFailure>>>>,
     opens: Arc<AtomicUsize>,
+    next_gate: Arc<Mutex<Option<Arc<Semaphore>>>>,
 }
 
 impl FixtureSource {
@@ -84,6 +87,7 @@ impl FixtureSource {
         Self {
             state: Arc::new(Mutex::new(state)),
             opens: Arc::new(AtomicUsize::new(0)),
+            next_gate: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -94,6 +98,7 @@ impl FixtureSource {
                 Err(SourceAccessFailure::new(SourceAccessError::Unavailable)),
             )]))),
             opens: Arc::new(AtomicUsize::new(0)),
+            next_gate: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -102,10 +107,14 @@ impl FixtureSource {
     }
 
     fn set_available(&self, m3u: &[u8]) {
+        self.set_source_available(SourceKind::M3u, m3u);
+    }
+
+    fn set_source_available(&self, kind: SourceKind, bytes: &[u8]) {
         self.state
             .lock()
             .expect("fixture source state is not poisoned")
-            .insert(SourceKind::M3u, Ok(Bytes::copy_from_slice(m3u)));
+            .insert(kind, Ok(Bytes::copy_from_slice(bytes)));
     }
 
     fn set_unavailable(&self) {
@@ -113,13 +122,26 @@ impl FixtureSource {
     }
 
     fn set_source_unavailable(&self, kind: SourceKind) {
+        self.set_source_failure(
+            kind,
+            SourceAccessFailure::new(SourceAccessError::Unavailable),
+        );
+    }
+
+    fn set_source_failure(&self, kind: SourceKind, failure: SourceAccessFailure) {
         self.state
             .lock()
             .expect("fixture source state is not poisoned")
-            .insert(
-                kind,
-                Err(SourceAccessFailure::new(SourceAccessError::Unavailable)),
-            );
+            .insert(kind, Err(failure));
+    }
+
+    fn gate_next_open(&self) -> Arc<Semaphore> {
+        let gate = Arc::new(Semaphore::new(0));
+        *self
+            .next_gate
+            .lock()
+            .expect("fixture source gate is not poisoned") = Some(Arc::clone(&gate));
+        gate
     }
 }
 
@@ -127,6 +149,17 @@ impl FixtureSource {
 impl SourceAccess for FixtureSource {
     async fn open(&self, request: SourceRequest) -> Result<SourceResponse, SourceAccessFailure> {
         self.opens.fetch_add(1, Ordering::SeqCst);
+        let gate = self
+            .next_gate
+            .lock()
+            .expect("fixture source gate is not poisoned")
+            .take();
+        if let Some(gate) = gate {
+            gate.acquire_owned()
+                .await
+                .expect("fixture source gate remains open")
+                .forget();
+        }
         let result = self
             .state
             .lock()
@@ -521,7 +554,12 @@ async fn stale_not_configured_and_unavailable_are_ordinary_client_errors() {
         assert_eq!(response.json["error"]["status"]["m3u"]["_tag"], "failed");
         assert_eq!(
             response.json["error"]["status"]["m3u"]["failure"],
-            json!({ "_tag": "source-access" })
+            json!({
+                "_tag": "source-access",
+                "source": "m3u",
+                "reason": "unavailable",
+                "retryAfterSeconds": null,
+            })
         );
     }
 }

@@ -1555,12 +1555,15 @@ impl RefreshReport {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CoreEvent {
     CatalogStatusChanged {
+        occurred_at: DateTime<Utc>,
         status: CatalogStatus,
     },
     CatalogPublished {
+        occurred_at: DateTime<Utc>,
         generation: CatalogGeneration,
     },
     RefreshCompleted {
+        occurred_at: DateTime<Utc>,
         kind: SourceKind,
         outcome: RefreshOutcome,
     },

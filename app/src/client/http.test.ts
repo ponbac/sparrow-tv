@@ -1,8 +1,13 @@
 // @vitest-environment node
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { clientSchemas } from "./contracts";
-import { createHttpSparrowClient } from "./http";
+import {
+  createHttpSparrowClient,
+  type HttpEventSource,
+} from "./http";
+
+afterEach(() => vi.restoreAllMocks());
 
 interface JsonFixture {
   readonly body: unknown;
@@ -52,6 +57,112 @@ const channelDetails = {
 };
 
 describe("hosted HTTP Sparrow client", () => {
+  it("posts an empty authenticated refresh marker and strictly parses its report", async () => {
+    const report = {
+      trigger: "manual",
+      m3u: {
+        _tag: "updated",
+        validatedAt: "2026-08-30T00:02:00Z",
+      },
+      epg: {
+        _tag: "failed",
+        failure: {
+          _tag: "invalid-epg-format",
+          source: "epg",
+          reason: "malformed-xml",
+        },
+        nextAttemptAt: "2026-08-30T00:03:00Z",
+      },
+      status: {
+        ...freshStatus,
+        generation: 8,
+        epg: {
+          _tag: "failed",
+          validatedAt: "2026-08-30T00:00:01Z",
+          failure: {
+            _tag: "invalid-epg-format",
+            source: "epg",
+            reason: "malformed-xml",
+          },
+          nextAttemptAt: "2026-08-30T00:03:00Z",
+        },
+      },
+    };
+    const http = createFakeHttp([{ body: report }]);
+    const client = createHttpSparrowClient({ fetch: http.fetch });
+
+    await expect(client.refresh()).resolves.toEqual({ ok: true, value: report });
+
+    const request = requestAt(http, 0);
+    const headers = new Headers(request.init?.headers);
+    expect(request.url).toBe("/api/v1/refresh");
+    expect(request.init?.method).toBe("POST");
+    expect(request.init?.credentials).toBe("same-origin");
+    expect(request.init?.body).toBeUndefined();
+    expect(headers.get("X-Sparrow-Request")).toBe("refresh");
+    expect(headers.has("authorization")).toBe(false);
+  });
+
+  it("accepts only closed same-origin events and releases the stream idempotently", () => {
+    const source = new FakeEventSource();
+    const endpoints: string[] = [];
+    const client = createHttpSparrowClient({
+      fetch: createFakeHttp([]).fetch,
+      eventSource: (endpoint) => {
+        endpoints.push(endpoint);
+        return source;
+      },
+    });
+    const consoleSpies = [
+      vi.spyOn(console, "log").mockImplementation(() => undefined),
+      vi.spyOn(console, "warn").mockImplementation(() => undefined),
+      vi.spyOn(console, "error").mockImplementation(() => undefined),
+    ];
+    const events: unknown[] = [];
+    const release = client.subscribe((event) => events.push(event));
+
+    source.emit("not-json provider-secret.invalid");
+    source.emit(
+      JSON.stringify({
+        _tag: "catalog-published",
+        occurredAt: "2026-08-30T00:02:00Z",
+        generation: 8,
+        rawUrl: "https://user:secret@provider.invalid/list.m3u",
+      }),
+    );
+    source.emit(
+      JSON.stringify({
+        _tag: "catalog-status-changed",
+        occurredAt: "2026-08-30T00:02:01Z",
+        status: freshStatus,
+      }),
+    );
+
+    expect(endpoints).toEqual(["/api/v1/events"]);
+    expect(events).toEqual([
+      {
+        _tag: "catalog-status-changed",
+        occurredAt: "2026-08-30T00:02:01Z",
+        status: freshStatus,
+      },
+    ]);
+    expect(JSON.stringify(events)).not.toContain("provider-secret");
+    expect(consoleSpies.every((spy) => spy.mock.calls.length === 0)).toBe(true);
+
+    release();
+    release();
+    source.emit(
+      JSON.stringify({
+        _tag: "catalog-published",
+        occurredAt: "2026-08-30T00:02:02Z",
+        generation: 8,
+      }),
+    );
+    expect(source.closeCalls).toBe(1);
+    expect(source.listenerCount).toBe(0);
+    expect(events).toHaveLength(1);
+  });
+
   it("runtime-parses every success response through the narrow client", async () => {
     const http = createFakeHttp([
       { body: capabilities },
@@ -124,7 +235,12 @@ describe("hosted HTTP Sparrow client", () => {
       {
         _tag: "failed",
         validatedAt: null,
-        failure: { _tag: "source-access" },
+        failure: {
+          _tag: "source-access",
+          source: "m3u",
+          reason: "unavailable",
+          retryAfterSeconds: null,
+        },
         nextAttemptAt: "2026-08-30T00:01:00Z",
       },
     ];
@@ -144,6 +260,174 @@ describe("hosted HTTP Sparrow client", () => {
     for (const result of results) {
       expect(result.ok).toBe(true);
     }
+  });
+
+  it("accepts the closed safe failure corpus and rejects unsafe context", () => {
+    const failures: readonly {
+      readonly source: "m3u" | "epg";
+      readonly failure: unknown;
+    }[] = [
+      {
+        source: "m3u",
+        failure: {
+          _tag: "source-access",
+          source: "m3u",
+          reason: "timed-out",
+          retryAfterSeconds: 30,
+        },
+      },
+      {
+        source: "epg",
+        failure: { _tag: "source-read", source: "epg", reason: "invalid-body" },
+      },
+      {
+        source: "m3u",
+        failure: {
+          _tag: "snapshot",
+          source: "m3u",
+          operation: "prepare-activation",
+          reason: "capacity",
+        },
+      },
+      {
+        source: "epg",
+        failure: {
+          _tag: "snapshot-recovery",
+          source: "epg",
+          reason: "checksum-mismatch",
+        },
+      },
+      {
+        source: "epg",
+        failure: {
+          _tag: "decoded-limit-exceeded",
+          source: "epg",
+          limitBytes: 1024,
+        },
+      },
+      {
+        source: "m3u",
+        failure: { _tag: "invalid-encoding", source: "m3u" },
+      },
+      {
+        source: "m3u",
+        failure: {
+          _tag: "invalid-format",
+          source: "m3u",
+          entry: 4,
+          reason: "unsupported-playback-source",
+        },
+      },
+      {
+        source: "m3u",
+        failure: { _tag: "no-playable-channels", source: "m3u" },
+      },
+      {
+        source: "epg",
+        failure: {
+          _tag: "invalid-epg-format",
+          source: "epg",
+          reason: "malformed-xml",
+        },
+      },
+      {
+        source: "epg",
+        failure: { _tag: "no-epg-channels", source: "epg" },
+      },
+    ];
+
+    for (const { source, failure } of failures) {
+      const failedState = {
+        _tag: "failed",
+        validatedAt: null,
+        failure,
+        nextAttemptAt: "2026-08-30T00:03:00Z",
+      };
+      expect(
+        clientSchemas.status.safeParse({
+          ...freshStatus,
+          ...(source === "m3u" ? { m3u: failedState } : { epg: failedState }),
+        }).success,
+      ).toBe(true);
+    }
+
+    expect(
+      clientSchemas.status.safeParse({
+        ...freshStatus,
+        m3u: {
+          _tag: "failed",
+          validatedAt: null,
+          failure: {
+            _tag: "source-access",
+            source: "m3u",
+            reason: "timed-out",
+            retryAfterSeconds: Number.MAX_SAFE_INTEGER + 1,
+            url: "https://user:secret@provider.invalid/list.m3u",
+          },
+          nextAttemptAt: "2026-08-30T00:03:00Z",
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects failures attributed to a different status, report, or event source", () => {
+    const m3uFailure = {
+      _tag: "source-access",
+      source: "m3u",
+      reason: "timed-out",
+      retryAfterSeconds: 30,
+    };
+    const epgFailure = {
+      _tag: "source-read",
+      source: "epg",
+      reason: "invalid-body",
+    };
+    const failedOutcome = (failure: unknown) => ({
+      _tag: "failed",
+      failure,
+      nextAttemptAt: "2026-08-30T00:03:00Z",
+    });
+    const failedState = (failure: unknown) => ({
+      ...failedOutcome(failure),
+      validatedAt: null,
+    });
+
+    expect(
+      clientSchemas.status.safeParse({
+        ...freshStatus,
+        m3u: failedState(epgFailure),
+      }).success,
+    ).toBe(false);
+    expect(
+      clientSchemas.status.safeParse({
+        ...freshStatus,
+        epg: failedState(m3uFailure),
+      }).success,
+    ).toBe(false);
+    expect(
+      clientSchemas.refreshReport.safeParse({
+        trigger: "manual",
+        m3u: failedOutcome(epgFailure),
+        epg: failedOutcome(m3uFailure),
+        status: freshStatus,
+      }).success,
+    ).toBe(false);
+    expect(
+      clientSchemas.sparrowEvent.safeParse({
+        _tag: "refresh-completed",
+        occurredAt: "2026-08-30T00:02:00Z",
+        source: "m3u",
+        outcome: failedOutcome(epgFailure),
+      }).success,
+    ).toBe(false);
+    expect(
+      clientSchemas.sparrowEvent.safeParse({
+        _tag: "refresh-completed",
+        occurredAt: "2026-08-30T00:02:00Z",
+        source: "epg",
+        outcome: failedOutcome(m3uFailure),
+      }).success,
+    ).toBe(false);
   });
 
   it("returns a safe transport failure for malformed success payloads", async () => {
@@ -242,6 +526,8 @@ describe("hosted HTTP Sparrow client", () => {
       { _tag: "service-unavailable" },
       { _tag: "invalid-input", field: "page-limit", reason: "out-of-range" },
       { _tag: "invalid-input", field: "route", reason: "invalid-format" },
+      { _tag: "invalid-input", field: "body", reason: "too-long" },
+      { _tag: "invalid-input", field: "header", reason: "invalid-format" },
       { _tag: "not-configured" },
       { _tag: "not-found", resource: "channel" },
       { _tag: "stale-cursor", current: 8 },
@@ -452,6 +738,34 @@ function createFakeHttp(fixtures: readonly JsonFixture[]): FakeHttp {
   };
 
   return { fetch: fetchImplementation, requests };
+}
+
+class FakeEventSource implements HttpEventSource {
+  readonly #listeners = new Set<EventListener>();
+  closeCalls = 0;
+
+  get listenerCount(): number {
+    return this.#listeners.size;
+  }
+
+  addEventListener(_type: "message", listener: EventListener): void {
+    this.#listeners.add(listener);
+  }
+
+  removeEventListener(_type: "message", listener: EventListener): void {
+    this.#listeners.delete(listener);
+  }
+
+  close(): void {
+    this.closeCalls += 1;
+  }
+
+  emit(data: string): void {
+    const event = new MessageEvent("message", { data });
+    for (const listener of this.#listeners) {
+      listener(event);
+    }
+  }
 }
 
 function requestUrl(input: RequestInfo | URL): string {

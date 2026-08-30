@@ -67,20 +67,74 @@ export interface Capabilities {
   readonly mpvFailover: false;
 }
 
-/** A minimized source failure safe to render or retain in browser state. */
-export interface SafeFailure {
-  readonly _tag:
-    | "source-access"
-    | "source-read"
-    | "snapshot"
-    | "snapshot-recovery"
-    | "decoded-limit-exceeded"
-    | "invalid-encoding"
-    | "invalid-format"
-    | "no-playable-channels"
-    | "invalid-epg-format"
-    | "no-epg-channels";
-}
+/** A minimized, closed source failure safe to render or retain in browser state. */
+export type SafeFailure =
+  | {
+      readonly _tag: "source-access";
+      readonly source: "m3u" | "epg";
+      readonly reason: "unavailable" | "rejected" | "timed-out" | "invalid-response";
+      readonly retryAfterSeconds: number | null;
+    }
+  | {
+      readonly _tag: "source-read";
+      readonly source: "m3u" | "epg";
+      readonly reason: "interrupted" | "invalid-body";
+    }
+  | {
+      readonly _tag: "snapshot";
+      readonly source: "m3u" | "epg";
+      readonly operation:
+        | "scan-candidates"
+        | "open-candidate"
+        | "adopt-candidate"
+        | "revalidate-candidate"
+        | "begin-stage"
+        | "write-stage"
+        | "read-stage"
+        | "prepare-activation"
+        | "activate"
+        | "discard";
+      readonly reason: "unavailable" | "capacity" | "corrupt";
+    }
+  | {
+      readonly _tag: "snapshot-recovery";
+      readonly source: "m3u" | "epg";
+      readonly reason:
+        | "missing-active-pointer"
+        | "corrupt-active-pointer"
+        | "missing-manifest"
+        | "corrupt-manifest"
+        | "missing-payload"
+        | "source-mismatch"
+        | "length-mismatch"
+        | "checksum-mismatch";
+    }
+  | {
+      readonly _tag: "decoded-limit-exceeded";
+      readonly source: "m3u" | "epg";
+      readonly limitBytes: number;
+    }
+  | { readonly _tag: "invalid-encoding"; readonly source: "m3u" | "epg" }
+  | {
+      readonly _tag: "invalid-format";
+      readonly source: "m3u";
+      readonly entry: number | null;
+      readonly reason:
+        | "missing-header"
+        | "malformed-metadata"
+        | "unterminated-quote"
+        | "incomplete-entry"
+        | "empty-name"
+        | "unexpected-location"
+        | "unsupported-playback-source";
+    }
+  | { readonly _tag: "no-playable-channels"; readonly source: "m3u" }
+  | {
+      readonly _tag: "invalid-epg-format";
+      readonly source: "epg";
+      readonly reason: "malformed-xml";
+    }
+  | { readonly _tag: "no-epg-channels"; readonly source: "epg" };
 
 /** The freshness and refresh lifecycle of one configured source. */
 export type SourceState =
@@ -124,6 +178,49 @@ export interface CatalogStatus {
   readonly m3u: SourceState;
   readonly epg: SourceState | null;
 }
+
+/** The safe result of refreshing one independently configured Source. */
+export type RefreshOutcome =
+  | { readonly _tag: "not-configured" }
+  | { readonly _tag: "updated"; readonly validatedAt: IsoInstant }
+  | { readonly _tag: "not-modified"; readonly validatedAt: IsoInstant }
+  | {
+      readonly _tag: "skipped";
+      readonly reason: "fresh" | "backoff";
+      readonly nextAttemptAt: IsoInstant;
+    }
+  | {
+      readonly _tag: "failed";
+      readonly failure: SafeFailure;
+      readonly nextAttemptAt: IsoInstant;
+    };
+
+/** Completion record for one coalesced hosted manual refresh. */
+export interface RefreshReport {
+  readonly trigger: "manual";
+  readonly m3u: RefreshOutcome;
+  readonly epg: RefreshOutcome | null;
+  readonly status: CatalogStatus;
+}
+
+/** A closed, browser-safe event emitted by the hosted catalog process. */
+export type SparrowEvent =
+  | {
+      readonly _tag: "catalog-status-changed";
+      readonly occurredAt: IsoInstant;
+      readonly status: CatalogStatus;
+    }
+  | {
+      readonly _tag: "catalog-published";
+      readonly occurredAt: IsoInstant;
+      readonly generation: CatalogGeneration;
+    }
+  | {
+      readonly _tag: "refresh-completed";
+      readonly occurredAt: IsoInstant;
+      readonly source: "m3u" | "epg";
+      readonly outcome: RefreshOutcome;
+    };
 
 /** A group name and the number of channels in that group. */
 export interface ChannelGroup {
@@ -247,6 +344,8 @@ export type ClientError =
       readonly field:
         | "query"
         | "route"
+        | "body"
+        | "header"
         | "m3u"
         | "epg"
         | "channel-id"
@@ -308,6 +407,12 @@ export interface SparrowClient {
   /** Reads the catalog and source lifecycle status. */
   status(options?: ClientRequestOptions): Promise<ClientResult<CatalogStatus>>;
 
+  /** Requests one coalesced manual refresh of every configured Source. */
+  refresh(options?: ClientRequestOptions): Promise<ClientResult<RefreshReport>>;
+
+  /** Subscribes to strictly parsed hosted catalog events; the returned release is idempotent. */
+  subscribe(listener: (event: SparrowEvent) => void): () => void;
+
   /** Reads a generation-bound page of channel groups. */
   listGroups(
     input: ListGroupsInput,
@@ -352,20 +457,92 @@ const capabilitiesSchema: z.ZodType<Capabilities> = z.strictObject({
   mpvFailover: z.literal(false),
 });
 
-const safeFailureSchema: z.ZodType<SafeFailure> = z.strictObject({
-  _tag: z.enum([
-    "source-access",
-    "source-read",
-    "snapshot",
-    "snapshot-recovery",
-    "decoded-limit-exceeded",
-    "invalid-encoding",
-    "invalid-format",
-    "no-playable-channels",
-    "invalid-epg-format",
-    "no-epg-channels",
-  ]),
-});
+const sourceKindSchema = z.enum(["m3u", "epg"]);
+const safeUnsignedIntegerSchema = z
+  .number()
+  .int()
+  .nonnegative()
+  .max(Number.MAX_SAFE_INTEGER);
+const safeFailureSchema: z.ZodType<SafeFailure> = z.discriminatedUnion("_tag", [
+  z.strictObject({
+    _tag: z.literal("source-access"),
+    source: sourceKindSchema,
+    reason: z.enum(["unavailable", "rejected", "timed-out", "invalid-response"]),
+    retryAfterSeconds: safeUnsignedIntegerSchema.nullable(),
+  }),
+  z.strictObject({
+    _tag: z.literal("source-read"),
+    source: sourceKindSchema,
+    reason: z.enum(["interrupted", "invalid-body"]),
+  }),
+  z.strictObject({
+    _tag: z.literal("snapshot"),
+    source: sourceKindSchema,
+    operation: z.enum([
+      "scan-candidates",
+      "open-candidate",
+      "adopt-candidate",
+      "revalidate-candidate",
+      "begin-stage",
+      "write-stage",
+      "read-stage",
+      "prepare-activation",
+      "activate",
+      "discard",
+    ]),
+    reason: z.enum(["unavailable", "capacity", "corrupt"]),
+  }),
+  z.strictObject({
+    _tag: z.literal("snapshot-recovery"),
+    source: sourceKindSchema,
+    reason: z.enum([
+      "missing-active-pointer",
+      "corrupt-active-pointer",
+      "missing-manifest",
+      "corrupt-manifest",
+      "missing-payload",
+      "source-mismatch",
+      "length-mismatch",
+      "checksum-mismatch",
+    ]),
+  }),
+  z.strictObject({
+    _tag: z.literal("decoded-limit-exceeded"),
+    source: sourceKindSchema,
+    limitBytes: safeUnsignedIntegerSchema,
+  }),
+  z.strictObject({
+    _tag: z.literal("invalid-encoding"),
+    source: sourceKindSchema,
+  }),
+  z.strictObject({
+    _tag: z.literal("invalid-format"),
+    source: z.literal("m3u"),
+    entry: safeUnsignedIntegerSchema.nullable(),
+    reason: z.enum([
+      "missing-header",
+      "malformed-metadata",
+      "unterminated-quote",
+      "incomplete-entry",
+      "empty-name",
+      "unexpected-location",
+      "unsupported-playback-source",
+    ]),
+  }),
+  z.strictObject({
+    _tag: z.literal("no-playable-channels"),
+    source: z.literal("m3u"),
+  }),
+  z.strictObject({
+    _tag: z.literal("invalid-epg-format"),
+    source: z.literal("epg"),
+    reason: z.literal("malformed-xml"),
+  }),
+  z.strictObject({
+    _tag: z.literal("no-epg-channels"),
+    source: z.literal("epg"),
+  }),
+]);
 
 const sourceStateSchema: z.ZodType<SourceState> = z.discriminatedUnion("_tag", [
   z.strictObject({
@@ -399,15 +576,105 @@ const sourceStateSchema: z.ZodType<SourceState> = z.discriminatedUnion("_tag", [
   }),
 ]);
 
+function sourceStateSchemaFor(
+  source: SafeFailure["source"],
+): z.ZodType<SourceState> {
+  return sourceStateSchema.refine(
+    (state) =>
+      (state._tag !== "failed" && state._tag !== "unavailable") ||
+      state.failure === null ||
+      state.failure.source === source,
+    {
+      message: "A source state failure must identify its containing source.",
+      path: ["failure", "source"],
+    },
+  );
+}
+
 const catalogStatusSchema: z.ZodType<CatalogStatus> = z.strictObject({
   generation: catalogGenerationSchema.nullable(),
   configuration: z.strictObject({
     configured: z.boolean(),
     epgConfigured: z.boolean(),
   }),
-  m3u: sourceStateSchema,
-  epg: sourceStateSchema.nullable(),
+  m3u: sourceStateSchemaFor("m3u"),
+  epg: sourceStateSchemaFor("epg").nullable(),
 });
+
+const refreshOutcomeSchema: z.ZodType<RefreshOutcome> = z.discriminatedUnion(
+  "_tag",
+  [
+    z.strictObject({ _tag: z.literal("not-configured") }),
+    z.strictObject({
+      _tag: z.literal("updated"),
+      validatedAt: timestampSchema,
+    }),
+    z.strictObject({
+      _tag: z.literal("not-modified"),
+      validatedAt: timestampSchema,
+    }),
+    z.strictObject({
+      _tag: z.literal("skipped"),
+      reason: z.enum(["fresh", "backoff"]),
+      nextAttemptAt: timestampSchema,
+    }),
+    z.strictObject({
+      _tag: z.literal("failed"),
+      failure: safeFailureSchema,
+      nextAttemptAt: timestampSchema,
+    }),
+  ],
+);
+
+function refreshOutcomeSchemaFor(
+  source: SafeFailure["source"],
+): z.ZodType<RefreshOutcome> {
+  return refreshOutcomeSchema.refine(
+    (outcome) =>
+      outcome._tag !== "failed" || outcome.failure.source === source,
+    {
+      message: "A refresh failure must identify its containing source.",
+      path: ["failure", "source"],
+    },
+  );
+}
+
+const refreshReportSchema: z.ZodType<RefreshReport> = z.strictObject({
+  trigger: z.literal("manual"),
+  m3u: refreshOutcomeSchemaFor("m3u"),
+  epg: refreshOutcomeSchemaFor("epg").nullable(),
+  status: catalogStatusSchema,
+});
+
+const sparrowEventSchema: z.ZodType<SparrowEvent> = z
+  .discriminatedUnion("_tag", [
+    z.strictObject({
+      _tag: z.literal("catalog-status-changed"),
+      occurredAt: timestampSchema,
+      status: catalogStatusSchema,
+    }),
+    z.strictObject({
+      _tag: z.literal("catalog-published"),
+      occurredAt: timestampSchema,
+      generation: catalogGenerationSchema,
+    }),
+    z.strictObject({
+      _tag: z.literal("refresh-completed"),
+      occurredAt: timestampSchema,
+      source: z.enum(["m3u", "epg"]),
+      outcome: refreshOutcomeSchema,
+    }),
+  ])
+  .refine(
+    (event) =>
+      event._tag !== "refresh-completed" ||
+      event.outcome._tag !== "failed" ||
+      event.outcome.failure.source === event.source,
+    {
+      message: "A refresh event failure must identify its event source.",
+      path: ["outcome", "failure", "source"],
+    },
+  );
 
 const channelGroupSchema: z.ZodType<ChannelGroup> = z.strictObject({
   name: channelGroupNameSchema,
@@ -616,6 +883,8 @@ const serverClientErrorSchema: z.ZodType<ServerClientError> = z.discriminatedUni
     field: z.enum([
       "query",
       "route",
+      "body",
+      "header",
       "m3u",
       "epg",
       "channel-id",
@@ -668,6 +937,9 @@ const clientErrorEnvelopeSchema: z.ZodType<{
 export const clientSchemas = Object.freeze({
   capabilities: capabilitiesSchema,
   status: catalogStatusSchema,
+  refreshOutcome: refreshOutcomeSchema,
+  refreshReport: refreshReportSchema,
+  sparrowEvent: sparrowEventSchema,
   groupsPage: pageSchema(channelGroupSchema),
   channelsPage: pageSchema(channelSummarySchema),
   channel: channelDetailsSchema,

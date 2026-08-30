@@ -1,5 +1,6 @@
 import { type FormEvent, useState } from "react";
 import type {
+  CatalogGeneration,
   CatalogStatus,
   ChannelDetails,
   ChannelId,
@@ -20,6 +21,7 @@ const textEncoder = new TextEncoder();
 interface SearchConsoleProps {
   readonly client: SparrowClient;
   readonly status: CatalogStatus | null;
+  readonly catalogGeneration?: CatalogGeneration | null;
   readonly selectedChannel: ChannelId | null;
   readonly selectedDetails: ClientResult<ChannelDetails> | undefined;
   readonly selectedLoading: boolean;
@@ -34,6 +36,7 @@ interface SearchConsoleProps {
 export function SearchConsole({
   client,
   status,
+  catalogGeneration,
   selectedChannel,
   selectedDetails,
   selectedLoading,
@@ -48,6 +51,8 @@ export function SearchConsole({
   const [scheduleRevision, setScheduleRevision] = useState(0);
   const [scheduleFocusRevision, setScheduleFocusRevision] = useState(0);
   const guide = guidePresentation(status);
+  const authoritativeGeneration =
+    catalogGeneration === undefined ? status?.generation ?? null : catalogGeneration;
 
   const submitSearch = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -135,7 +140,7 @@ export function SearchConsole({
             guide={guide}
             term={submittedSearch.term}
             revision={submittedSearch.revision}
-            catalogGeneration={status?.generation ?? null}
+            catalogGeneration={authoritativeGeneration}
             onRestart={restartSearch}
             onSelectChannel={selectSearchResult}
           />
@@ -150,7 +155,7 @@ export function SearchConsole({
           selectedLoading={selectedLoading}
           revision={scheduleRevision}
           focusRevision={scheduleFocusRevision}
-          catalogGeneration={status?.generation ?? null}
+          catalogGeneration={authoritativeGeneration}
           onRestart={() => setScheduleRevision((current) => current + 1)}
           onRetrySelectedDetails={onRetrySelectedDetails}
         />

@@ -29,6 +29,36 @@ describe("browser HTTP Sparrow client", () => {
     expect(result.ok).toBe(true);
     expect(requests).toEqual(["/api/v1/capabilities"]);
   });
+
+  it("opens the fixed event route with same-origin credentials", () => {
+    const constructions: {
+      readonly endpoint: string;
+      readonly options: EventSourceInit | undefined;
+    }[] = [];
+    class BrowserEventSource {
+      constructor(endpoint: string, options?: EventSourceInit) {
+        constructions.push({ endpoint, options });
+      }
+
+      addEventListener(): void {}
+      removeEventListener(): void {}
+      close(): void {}
+    }
+    Object.defineProperty(window, "EventSource", {
+      configurable: true,
+      value: BrowserEventSource,
+    });
+
+    const release = createHttpSparrowClient().subscribe(() => undefined);
+
+    expect(constructions).toEqual([
+      {
+        endpoint: "/api/v1/events",
+        options: { withCredentials: true },
+      },
+    ]);
+    release();
+  });
 });
 
 function requestUrl(input: RequestInfo | URL): string {

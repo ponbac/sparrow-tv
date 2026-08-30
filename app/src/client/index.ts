@@ -17,6 +17,8 @@ export type {
   PageCursor,
   PlaybackDescriptor,
   ProgrammeSummary,
+  RefreshOutcome,
+  RefreshReport,
   SafeFailure,
   SameOriginPlaybackEndpoint,
   ScheduleInput,
@@ -26,8 +28,11 @@ export type {
   SourceState,
   StartPlaybackInput,
   SparrowClient,
+  SparrowEvent,
 } from "./contracts";
 export {
   createHttpSparrowClient,
+  type HttpEventSource,
+  type HttpEventSourceFactory,
   type HttpSparrowClientOptions,
 } from "./http";
