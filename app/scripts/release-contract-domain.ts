@@ -1,6 +1,7 @@
 import { z } from "zod";
 
-const STABLE_SEMVER = /^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$/u;
+const STABLE_SEMVER =
+  /^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
 const ACTION_PIN = /^\s*(?:-\s*)?uses:\s+([^\s@]+)@([0-9a-f]{40})(?:\s+#.*)?$/u;
 const STRICT_GRADLE_LOCK_MODE = "lockMode.set(LockMode.STRICT)";
@@ -152,7 +153,10 @@ const appImageReleaseContractSchema = z
         z
           .object({
             cacheName: z.enum(APPIMAGE_TOOL_CACHE_NAMES),
-            url: z.string().max(2048).regex(/^https:\/\/[^\s]+$/u),
+            url: z
+              .string()
+              .max(2048)
+              .regex(/^https:\/\/[^\s]+$/u),
             sha256: z.string().regex(SHA256),
           })
           .strict(),
@@ -190,8 +194,12 @@ const candidateManifestSchema = z
     publishable: z.literal(true),
     artifacts: z
       .object({
-        appImage: z.object({ name: z.string(), sha256: z.string().regex(SHA256) }).strict(),
-        apk: z.object({ name: z.string(), sha256: z.string().regex(SHA256) }).strict(),
+        appImage: z
+          .object({ name: z.string(), sha256: z.string().regex(SHA256) })
+          .strict(),
+        apk: z
+          .object({ name: z.string(), sha256: z.string().regex(SHA256) })
+          .strict(),
       })
       .strict(),
     android: z
@@ -279,7 +287,9 @@ export function parseAppImageReleaseContract(
     APPIMAGE_TOOL_CACHE_NAMES.some((name) => !cacheNames.has(name)) ||
     urls.size !== parsed.data.tools.length
   ) {
-    return reject("the AppImage release contract must pin the exact helper cache entries");
+    return reject(
+      "the AppImage release contract must pin the exact helper cache entries",
+    );
   }
   return accept(parsed.data);
 }
@@ -314,31 +324,43 @@ export function verifyAppImageBundleIcon(
   const width = view.getUint32(16);
   const height = view.getUint32(20);
   if (width !== icon.width || height !== icon.height || width !== height) {
-    return reject("the pinned AppImage bundle icon is not the required square size");
+    return reject(
+      "the pinned AppImage bundle icon is not the required square size",
+    );
   }
   if (digest !== icon.sha256) {
-    return reject("the AppImage bundle icon bytes do not match the repository pin");
+    return reject(
+      "the AppImage bundle icon bytes do not match the repository pin",
+    );
   }
   return accept(true);
 }
 
 /** Parses stable SemVer and derives filenames and Android's deterministic code. */
-export function parseProductVersion(input: unknown): ParseResult<ProductVersion> {
+export function parseProductVersion(
+  input: unknown,
+): ParseResult<ProductVersion> {
   if (typeof input !== "string") {
     return reject("the product version must be a stable SemVer string");
   }
   const match = STABLE_SEMVER.exec(input);
   if (match === null) {
-    return reject("the product version must be MAJOR.MINOR.PATCH with components below 1000");
+    return reject(
+      "the product version must be MAJOR.MINOR.PATCH with components below 1000",
+    );
   }
   const major = Number(match[1]);
   const minor = Number(match[2]);
   const patch = Number(match[3]);
   if (![major, minor, patch].every(Number.isSafeInteger)) {
-    return reject("the product version components are outside the supported range");
+    return reject(
+      "the product version components are outside the supported range",
+    );
   }
   if (major === 0 && minor === 0 && patch === 0) {
-    return reject("the product version must produce a positive Android version code");
+    return reject(
+      "the product version must produce a positive Android version code",
+    );
   }
   return accept({
     text: input,
@@ -375,7 +397,9 @@ export function verifyReleasePreflight(
     if (masterCommit.value !== commit.value) {
       return reject("the rehearsal is not on the current origin/master commit");
     }
-    return accept(projectPreflight("rehearsal", false, product.value, commit.value));
+    return accept(
+      projectPreflight("rehearsal", false, product.value, commit.value),
+    );
   }
 
   if (input.refName !== product.value.tag) {
@@ -392,7 +416,9 @@ export function verifyReleasePreflight(
     if (!rawTag.startsWith("v")) continue;
     const prior = parseProductVersion(rawTag.slice(1));
     if (prior.ok && compareVersions(product.value, prior.value) <= 0) {
-      return reject("the release version is not newer than every prior stable tag");
+      return reject(
+        "the release version is not newer than every prior stable tag",
+      );
     }
   }
   return accept(projectPreflight("tag", true, product.value, commit.value));
@@ -436,7 +462,10 @@ export function parseApkBadging(
   const minSdk = quotedScalar(minSdkLine);
   const targetSdk = quotedScalar(targetSdkLine);
   const versionCode = Number(versionCodeText);
-  const abis = Array.from(nativeCodeLine.matchAll(/'([^']+)'/gu), (match) => match[1]);
+  const abis = Array.from(
+    nativeCodeLine.matchAll(/'([^']+)'/gu),
+    (match) => match[1],
+  );
   const sortedAbis = [...abis].sort();
   const expectedAbis = [...ANDROID_ABIS].sort();
   if (
@@ -449,7 +478,9 @@ export function parseApkBadging(
     !sortedAbis.every((abi, index) => abi === expectedAbis[index]) ||
     /application-debuggable/iu.test(output)
   ) {
-    return reject("the APK package identity does not match the release contract");
+    return reject(
+      "the APK package identity does not match the release contract",
+    );
   }
   return accept({
     applicationId: ANDROID_APPLICATION_ID,
@@ -463,7 +494,9 @@ export function parseApkBadging(
 }
 
 /** Parses `apksigner --print-certs` without retaining certificate subject data. */
-export function parseApkSignerCertificate(output: unknown): ParseResult<string> {
+export function parseApkSignerCertificate(
+  output: unknown,
+): ParseResult<string> {
   if (typeof output !== "string" || output.length > 1024 * 1024) {
     return reject("apksigner returned invalid certificate metadata");
   }
@@ -478,7 +511,9 @@ export function parseApkSignerCertificate(output: unknown): ParseResult<string> 
 }
 
 /** Formats the only accepted release checksum manifest, in deterministic order. */
-export function formatChecksums(digests: CandidateDigests): ParseResult<string> {
+export function formatChecksums(
+  digests: CandidateDigests,
+): ParseResult<string> {
   const appImageDigest = parseSha256(digests.appImage.sha256);
   const apkDigest = parseSha256(digests.apk.sha256);
   if (!appImageDigest.ok || !apkDigest.ok) {
@@ -525,13 +560,17 @@ export function parseChecksums(
 }
 
 /** Requires every external action reference in workflow YAML to be a full commit SHA. */
-export function verifyActionPins(workflows: Readonly<Record<string, string>>): ParseResult<true> {
+export function verifyActionPins(
+  workflows: Readonly<Record<string, string>>,
+): ParseResult<true> {
   for (const [name, contents] of Object.entries(workflows)) {
     for (const line of contents.split(/\r?\n/u)) {
       if (!/^\s*(?:-\s*)?uses:/u.test(line)) continue;
       const match = ACTION_PIN.exec(line);
       if (match === null || match[1]?.startsWith("./")) {
-        return reject(`${name} contains an action that is not pinned to a full commit SHA`);
+        return reject(
+          `${name} contains an action that is not pinned to a full commit SHA`,
+        );
       }
     }
   }
@@ -539,31 +578,47 @@ export function verifyActionPins(workflows: Readonly<Record<string, string>>): P
 }
 
 /** Requires workflow preflight values to cross into shell only through environment variables. */
-export function verifyReleaseWorkflowPreflightBoundary(input: unknown): ParseResult<true> {
-  if (typeof input !== "string" || input.length === 0 || input.length > 1024 * 1024) {
+export function verifyReleaseWorkflowPreflightBoundary(
+  input: unknown,
+): ParseResult<true> {
+  if (
+    typeof input !== "string" ||
+    input.length === 0 ||
+    input.length > 1024 * 1024
+  ) {
     return reject("the release workflow is invalid");
   }
   if (/\bjust\s+release-preflight\b/u.test(input)) {
-    return reject("the release workflow must not pass preflight values through Just interpolation");
+    return reject(
+      "the release workflow must not pass preflight values through Just interpolation",
+    );
   }
 
   let runIndent: number | undefined;
   for (const line of input.split(/\r?\n/u)) {
     const indentation = /^ */u.exec(line)?.[0].length ?? 0;
     const trimmed = line.trim();
-    if (runIndent !== undefined && trimmed.length > 0 && indentation <= runIndent) {
+    if (
+      runIndent !== undefined &&
+      trimmed.length > 0 &&
+      indentation <= runIndent
+    ) {
       runIndent = undefined;
     }
     const run = /^( *)run:\s*(.*)$/u.exec(line);
     if (run !== null) {
       runIndent = run[1].length;
       if (/\$\{\{\s*inputs(?:\.|\[)/u.test(run[2])) {
-        return reject("workflow inputs must enter preflight through the environment");
+        return reject(
+          "workflow inputs must enter preflight through the environment",
+        );
       }
       continue;
     }
     if (runIndent !== undefined && /\$\{\{\s*inputs(?:\.|\[)/u.test(line)) {
-      return reject("workflow inputs must enter preflight through the environment");
+      return reject(
+        "workflow inputs must enter preflight through the environment",
+      );
     }
   }
   return accept(true);
@@ -571,17 +626,25 @@ export function verifyReleaseWorkflowPreflightBoundary(input: unknown): ParseRes
 
 /** Requires every recipe to have fixed shell source and receive values outside Just templating. */
 export function verifyJustBoundaryRecipes(input: unknown): ParseResult<true> {
-  if (typeof input !== "string" || input.length === 0 || input.length > 1024 * 1024) {
+  if (
+    typeof input !== "string" ||
+    input.length === 0 ||
+    input.length > 1024 * 1024
+  ) {
     return reject("the Just recipe file is invalid");
   }
   if (input.includes("{{")) {
-    return reject("the Just recipe file interpolates a value into generated shell source");
+    return reject(
+      "the Just recipe file interpolates a value into generated shell source",
+    );
   }
   for (const line of input.split(/\r?\n/u)) {
     if (/^\s/u.test(line) || /^(?:set|alias|export)\b/u.test(line)) continue;
     const recipe = /^@?([A-Za-z_][A-Za-z0-9_-]*)([^:]*):/u.exec(line);
     if (recipe !== null && (recipe[2] ?? "").trim().length > 0) {
-      return reject(`${recipe[1] ?? "recipe"} must receive values through environment variables`);
+      return reject(
+        `${recipe[1] ?? "recipe"} must receive values through environment variables`,
+      );
     }
   }
   return accept(true);
@@ -593,16 +656,24 @@ export function verifyGradleDependencyLocking(
 ): ParseResult<true> {
   const scripts = [input.androidRootBuild, input.appBuild, input.buildSrcBuild];
   if (
-    scripts.some((script) => typeof script !== "string" || script.length > 1024 * 1024)
+    scripts.some(
+      (script) => typeof script !== "string" || script.length > 1024 * 1024,
+    )
   ) {
     return reject("the Gradle dependency-locking build scripts are invalid");
   }
-  const [androidRootBuild, appBuild, buildSrcBuild] = scripts as [string, string, string];
+  const [androidRootBuild, appBuild, buildSrcBuild] = scripts as [
+    string,
+    string,
+    string,
+  ];
   if (
     occurrences(androidRootBuild, STRICT_GRADLE_LOCK_MODE) !== 2 ||
     occurrences(appBuild, STRICT_GRADLE_LOCK_MODE) !== 1 ||
     occurrences(buildSrcBuild, STRICT_GRADLE_LOCK_MODE) !== 1 ||
-    !androidRootBuild.includes("resolutionStrategy.activateDependencyLocking()") ||
+    !androidRootBuild.includes(
+      "resolutionStrategy.activateDependencyLocking()",
+    ) ||
     !appBuild.includes("resolutionStrategy.activateDependencyLocking()") ||
     !buildSrcBuild.includes("resolutionStrategy.activateDependencyLocking()") ||
     scripts.some(
@@ -611,7 +682,9 @@ export function verifyGradleDependencyLocking(
         (script as string).includes("ignoredDependencies"),
     )
   ) {
-    return reject("Gradle dependency locking is not strict and explicitly scoped");
+    return reject(
+      "Gradle dependency locking is not strict and explicitly scoped",
+    );
   }
 
   const expectedLocks: ReadonlyArray<readonly [unknown, readonly string[]]> = [
@@ -626,7 +699,9 @@ export function verifyGradleDependencyLocking(
       parsed.value.size !== expectedClasspaths.length ||
       expectedClasspaths.some((classpath) => !parsed.value.has(classpath))
     ) {
-      return reject("a Gradle dependency lock does not cover the exact build classpaths");
+      return reject(
+        "a Gradle dependency lock does not cover the exact build classpaths",
+      );
     }
   }
   return accept(true);
@@ -652,7 +727,9 @@ export function verifyRemoteReleaseRefs(
   for (const line of lines) {
     const match = /^([0-9a-f]{40})\t(.+)$/u.exec(line);
     if (match === null || references.has(match[2])) {
-      return reject("git returned invalid or duplicate remote release references");
+      return reject(
+        "git returned invalid or duplicate remote release references",
+      );
     }
     references.set(match[2], match[1]);
   }
@@ -667,8 +744,14 @@ export function verifyRemoteReleaseRefs(
   const master = references.get("refs/heads/master");
   const tag = references.get(`refs/tags/${expectedTag}`);
   const peeledTag = references.get(`refs/tags/${expectedTag}^{}`);
-  if (master !== expectedCommit || tag === undefined || (peeledTag ?? tag) !== expectedCommit) {
-    return reject("the remote release tag or master moved after candidate verification");
+  if (
+    master !== expectedCommit ||
+    tag === undefined ||
+    (peeledTag ?? tag) !== expectedCommit
+  ) {
+    return reject(
+      "the remote release tag or master moved after candidate verification",
+    );
   }
   return accept(true);
 }
@@ -681,7 +764,8 @@ export function verifyEnvironmentProtection(
   repositoryOwner: string,
 ): ParseResult<true> {
   if (
-    (expectedEnvironment !== "release-signing" && expectedEnvironment !== "release-publish") ||
+    (expectedEnvironment !== "release-signing" &&
+      expectedEnvironment !== "release-publish") ||
     !/^[A-Za-z0-9_.-]+$/u.test(repositoryOwner)
   ) {
     return reject("the release environment name is invalid");
@@ -691,17 +775,26 @@ export function verifyEnvironmentProtection(
     return reject("the GitHub release environment response is invalid");
   }
   const reviewerRules = environment.data.protection_rules.filter(
-    (rule) => z.object({ type: z.literal("required_reviewers") }).passthrough().safeParse(rule).success,
+    (rule) =>
+      z
+        .object({ type: z.literal("required_reviewers") })
+        .passthrough()
+        .safeParse(rule).success,
   );
   if (reviewerRules.length !== 1) {
-    return reject("the GitHub release environment must have one required-reviewer rule");
+    return reject(
+      "the GitHub release environment must have one required-reviewer rule",
+    );
   }
   const reviewerRule = requiredReviewersRuleSchema.safeParse(reviewerRules[0]);
   if (
     !reviewerRule.success ||
-    reviewerRule.data.reviewers[0].reviewer.login.toLowerCase() !== repositoryOwner.toLowerCase()
+    reviewerRule.data.reviewers[0].reviewer.login.toLowerCase() !==
+      repositoryOwner.toLowerCase()
   ) {
-    return reject("the GitHub release environment reviewer must be the repository owner");
+    return reject(
+      "the GitHub release environment reviewer must be the repository owner",
+    );
   }
 
   const policies = deploymentBranchPoliciesSchema.safeParse(policyInput);
@@ -711,9 +804,10 @@ export function verifyEnvironmentProtection(
   ) {
     return reject("the GitHub deployment branch policy response is invalid");
   }
-  const expectedPolicies = expectedEnvironment === "release-signing"
-    ? ["branch:master", "tag:v*"]
-    : ["tag:v*"];
+  const expectedPolicies =
+    expectedEnvironment === "release-signing"
+      ? ["branch:master", "tag:v*"]
+      : ["tag:v*"];
   const actualPolicies = policies.data.branch_policies
     .map((policy) => `${policy.type}:${policy.name}`)
     .sort();
@@ -721,7 +815,9 @@ export function verifyEnvironmentProtection(
     actualPolicies.length !== expectedPolicies.length ||
     actualPolicies.some((policy, index) => policy !== expectedPolicies[index])
   ) {
-    return reject("the GitHub release environment has unexpected deployment policies");
+    return reject(
+      "the GitHub release environment has unexpected deployment policies",
+    );
   }
   return accept(true);
 }
@@ -746,14 +842,34 @@ export function parseCandidateManifest(
     manifest.android.versionName !== expectedVersion.text ||
     manifest.android.versionCode !== expectedVersion.androidVersionCode
   ) {
-    return reject("the candidate manifest does not match the release invocation");
+    return reject(
+      "the candidate manifest does not match the release invocation",
+    );
   }
   return accept(manifest);
 }
 
+/** Formats GitHub's supported workflow-run artifact collection endpoint. */
+export function formatWorkflowRunArtifactsEndpoint(
+  repository: string,
+  workflowRunId: string,
+): ParseResult<string> {
+  if (
+    !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository) ||
+    !/^[1-9][0-9]*$/u.test(workflowRunId) ||
+    !Number.isSafeInteger(Number(workflowRunId))
+  ) {
+    return reject("the workflow-run artifact endpoint identity is invalid");
+  }
+  return accept(
+    `repos/${repository}/actions/runs/${workflowRunId}/artifacts?per_page=100`,
+  );
+}
+
 /** Renders the exact-byte manual gates shown alongside the waiting environment job. */
 export function formatAcceptanceManifest(manifest: CandidateManifest): string {
-  return `# Sparrow ${manifest.version} candidate acceptance\n\n` +
+  return (
+    `# Sparrow ${manifest.version} candidate acceptance\n\n` +
     `Tag: \`${manifest.tag}\`  \nCommit: \`${manifest.commit}\`  \n` +
     `Workflow run: \`${manifest.workflowRunId}\` (attempt ${manifest.workflowRunAttempt})\n\n` +
     `- AppImage: \`${manifest.artifacts.appImage.name}\` — \`${manifest.artifacts.appImage.sha256}\`\n` +
@@ -763,6 +879,10 @@ export function formatAcceptanceManifest(manifest: CandidateManifest): string {
     `Android certificate SHA-256: \`${manifest.android.certificateSha256}\`  \n` +
     `Universal APK ABIs: \`${manifest.android.abis.join("`, `")}\`\n\n` +
     `Approval is valid only for these hashes and this workflow attempt. A rerun requires new acceptance.\n\n` +
+    `Do not edit this candidate bundle or this file. From the tagged checkout, set ` +
+    `\`RELEASE_CANDIDATE\` and \`RELEASE_ACCEPTANCE_OUTPUT\`, then run ` +
+    `\`just release-acceptance-prepare\` to create separate ` +
+    `private, attempt-bound evidence forms.\n\n` +
     `## Target Arch / Wayland\n\n` +
     `- [ ] Restore the downloaded AppImage executable bit without changing its bytes\n` +
     `- [ ] Startup, version, catalog, primary A/V, Channel and Audio Track changes\n` +
@@ -772,7 +892,14 @@ export function formatAcceptanceManifest(manifest: CandidateManifest): string {
     `- [ ] Signature/package values above match the installed universal APK\n` +
     `- [ ] Clean install or upgrade, startup/catalog, primary A/V and Audio Track behavior\n` +
     `- [ ] Rotation, background/foreground, manual lock, wake lock and resource release\n\n` +
-    `Approve the protected \`release-publish\` job only after every box passes.\n`;
+    `## Android key continuity\n\n` +
+    `- [ ] The physical Realme accepted the older signed APK followed by this APK as an in-place update\n` +
+    `- [ ] Application ID, signing certificate, UID, first-install identity, and retained app state match\n\n` +
+    `Seal the completed evidence with \`just release-acceptance-seal\`. A blank or ordinary UI ` +
+    `approval is rejected. Submit only the generated receipt to the protected ` +
+    `\`release-publish\` environment with ` +
+    `\`just release-acceptance-approve\`; it authorizes this attempt and candidate artifact only.\n`
+  );
 }
 
 function projectPreflight(
@@ -828,7 +955,9 @@ function parseSha256(input: unknown): ParseResult<string> {
 }
 
 function safeArtifactName(name: string, suffix: string): boolean {
-  return /^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/u.test(name) && name.endsWith(suffix);
+  return (
+    /^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/u.test(name) && name.endsWith(suffix)
+  );
 }
 
 function listGradleClasspaths(
@@ -837,13 +966,21 @@ function listGradleClasspaths(
 ): readonly string[] {
   return flavors.flatMap((flavor) =>
     buildTypes.flatMap((buildType) =>
-      ["Compile", "Runtime"].map((usage) => `${flavor}${buildType}${usage}Classpath`),
+      ["Compile", "Runtime"].map(
+        (usage) => `${flavor}${buildType}${usage}Classpath`,
+      ),
     ),
   );
 }
 
-function parseGradleLockClasspaths(input: unknown): ParseResult<ReadonlySet<string>> {
-  if (typeof input !== "string" || input.length === 0 || input.length > 4 * 1024 * 1024) {
+function parseGradleLockClasspaths(
+  input: unknown,
+): ParseResult<ReadonlySet<string>> {
+  if (
+    typeof input !== "string" ||
+    input.length === 0 ||
+    input.length > 4 * 1024 * 1024
+  ) {
     return reject("a required Gradle dependency lock is invalid");
   }
   const classpaths = new Set<string>();
@@ -851,19 +988,24 @@ function parseGradleLockClasspaths(input: unknown): ParseResult<ReadonlySet<stri
   for (const line of input.split(/\r?\n/u)) {
     if (line.length === 0 || line.startsWith("#")) continue;
     const separator = line.lastIndexOf("=");
-    if (separator <= 0) return reject("a required Gradle dependency lock is malformed");
+    if (separator <= 0)
+      return reject("a required Gradle dependency lock is malformed");
     const dependency = line.slice(0, separator);
     const lockedClasspaths = line.slice(separator + 1);
     if (dependency === "empty") {
       if (lockedClasspaths.length > 0) {
-        return reject("a required Gradle dependency lock has malformed empty state");
+        return reject(
+          "a required Gradle dependency lock has malformed empty state",
+        );
       }
       continue;
     }
     dependencyCount += 1;
     for (const classpath of lockedClasspaths.split(",")) {
       if (!/^[A-Za-z0-9_.-]+$/u.test(classpath)) {
-        return reject("a required Gradle dependency lock has an invalid classpath");
+        return reject(
+          "a required Gradle dependency lock has an invalid classpath",
+        );
       }
       classpaths.add(classpath);
     }

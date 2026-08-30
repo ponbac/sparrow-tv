@@ -62,6 +62,18 @@ release-verify-android-toolchain:
 release-verify-candidate:
     cd app && bun run release:contract verify-candidate --version "${RELEASE_VERSION:?RELEASE_VERSION is required}" --directory "${RELEASE_DIRECTORY:?RELEASE_DIRECTORY is required}" --repository "${RELEASE_REPOSITORY:?RELEASE_REPOSITORY is required}" --tag "${RELEASE_TAG:?RELEASE_TAG is required}" --commit "${RELEASE_COMMIT:?RELEASE_COMMIT is required}" --run-id "${RELEASE_RUN_ID:?RELEASE_RUN_ID is required}" --run-attempt "${RELEASE_RUN_ATTEMPT:?RELEASE_RUN_ATTEMPT is required}"
 
+release-acceptance-prepare:
+    cd app && bun run release:acceptance prepare --candidate "${RELEASE_CANDIDATE:?RELEASE_CANDIDATE is required}" --output "${RELEASE_ACCEPTANCE_OUTPUT:?RELEASE_ACCEPTANCE_OUTPUT is required}"
+
+release-acceptance-prove-continuity:
+    cd app && bun run release:acceptance prove-continuity --candidate "${RELEASE_CANDIDATE:?RELEASE_CANDIDATE is required}" --previous-apk "${RELEASE_PREVIOUS_APK:?RELEASE_PREVIOUS_APK is required}" --previous-version "${RELEASE_PREVIOUS_VERSION:?RELEASE_PREVIOUS_VERSION is required}" --serial "${RELEASE_DEVICE_SERIAL:?RELEASE_DEVICE_SERIAL is required}" --output "${RELEASE_ACCEPTANCE_OUTPUT:?RELEASE_ACCEPTANCE_OUTPUT is required}"
+
+release-acceptance-seal:
+    cd app && bun run release:acceptance seal --candidate "${RELEASE_CANDIDATE:?RELEASE_CANDIDATE is required}" --evidence "${RELEASE_ACCEPTANCE_EVIDENCE:?RELEASE_ACCEPTANCE_EVIDENCE is required}" --artifact-id "${RELEASE_ARTIFACT_ID:?RELEASE_ARTIFACT_ID is required}" --artifact-digest "${RELEASE_ARTIFACT_DIGEST:?RELEASE_ARTIFACT_DIGEST is required}" --output "${RELEASE_ACCEPTANCE_OUTPUT:?RELEASE_ACCEPTANCE_OUTPUT is required}"
+
+release-acceptance-approve:
+    cd app && bun run release:acceptance approve --candidate "${RELEASE_CANDIDATE:?RELEASE_CANDIDATE is required}" --evidence "${RELEASE_ACCEPTANCE_EVIDENCE:?RELEASE_ACCEPTANCE_EVIDENCE is required}" --sealed "${RELEASE_ACCEPTANCE_SEALED:?RELEASE_ACCEPTANCE_SEALED is required}"
+
 container-repro:
     bash scripts/verify-container-reproducibility.sh "${CONTAINER_REVISION:?CONTAINER_REVISION is required}" "${CONTAINER_OUTPUT:?CONTAINER_OUTPUT is required}"
 

@@ -4,6 +4,7 @@ playlist.m3u
 playlist_full.m3u
 /examples
 /release-candidates
+/release-acceptance
 /app/src-tauri/gen/android/keystore.properties
 /app/src-tauri/gen/android/**/*.jks
 /app/src-tauri/gen/android/**/*.keystore

@@ -20,12 +20,23 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { downloadPinnedAppImageTool } from "./appimage-tool-download.ts";
 import {
+  readReleaseRegularFile,
+  snapshotReleaseFiles,
+  ReleaseFilesystemFailure,
+  type ReleaseDirectorySnapshot,
+} from "./release-filesystem.ts";
+import {
+  projectAcceptanceCandidate,
+  verifyAcceptanceApprovalHistory,
+} from "./release-acceptance-domain.ts";
+import {
   ANDROID_ABIS,
   ANDROID_APPLICATION_ID,
   ANDROID_MIN_SDK,
   ANDROID_TARGET_SDK,
   formatAcceptanceManifest,
   formatChecksums,
+  formatWorkflowRunArtifactsEndpoint,
   parseApkBadging,
   parseApkSignerCertificate,
   parseAppImageReleaseContract,
@@ -45,8 +56,14 @@ import {
   type ProductVersion,
 } from "./release-contract-domain.ts";
 
-const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const IDENTITY_PATH = join(REPOSITORY_ROOT, "release/android-signing-identity.json");
+const REPOSITORY_ROOT = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../..",
+);
+const IDENTITY_PATH = join(
+  REPOSITORY_ROOT,
+  "release/android-signing-identity.json",
+);
 const APPIMAGE_RELEASE_PATH = join(REPOSITORY_ROOT, "release/appimage.json");
 const TOOLCHAIN_PATH = join(REPOSITORY_ROOT, "release/toolchain.json");
 const COMMAND_OUTPUT_LIMIT = 4 * 1024 * 1024;
@@ -54,10 +71,14 @@ const APPIMAGE_TOOL_SIZE_LIMIT = 64 * 1024 * 1024;
 const APPIMAGE_TOOL_DOWNLOAD_TIMEOUT_MS = 60_000;
 const APPIMAGE_SMOKE_MS = 8_000;
 const LINUX_EXECUTABLE_NAME = "sparrow-installed";
+const SHA256 = /^[0-9a-f]{64}$/u;
 
 const packageSchema = z.object({ version: z.string() }).passthrough();
 const identitySchema = z
-  .object({ schemaVersion: z.literal(1), certificateSha256: z.string().nullable() })
+  .object({
+    schemaVersion: z.literal(1),
+    certificateSha256: z.string().nullable(),
+  })
   .strict();
 const toolchainSchema = z
   .object({
@@ -81,6 +102,32 @@ const toolchainSchema = z
       .strict(),
   })
   .strict();
+const candidateArtifactResponseSchema = z
+  .object({
+    artifacts: z.array(
+      z
+        .object({
+          id: z.number().int().positive(),
+          name: z.string(),
+          expired: z.boolean(),
+          digest: z.string().nullable(),
+          workflow_run: z
+            .object({ id: z.number().int().positive(), head_sha: z.string() })
+            .strip(),
+        })
+        .strip(),
+    ),
+  })
+  .strip();
+const workflowRunResponseSchema = z
+  .object({
+    id: z.number().int().positive(),
+    run_attempt: z.number().int().positive(),
+    head_sha: z.string(),
+    event: z.string(),
+    status: z.string(),
+  })
+  .strip();
 
 interface CliArguments {
   readonly command: string;
@@ -169,7 +216,10 @@ async function preflight(values: ReadonlyMap<string, string>): Promise<void> {
             commit,
             masterCommit: required(values, "--master-commit"),
           })
-        : { ok: false as const, reason: "the release mode must be tag or rehearsal" };
+        : {
+            ok: false as const,
+            reason: "the release mode must be tag or rehearsal",
+          };
   if (!result.ok) throw new ContractFailure(result.reason);
   await writeJson(output, result.value);
   await appendGithubOutput(values, {
@@ -198,14 +248,17 @@ async function staticCheck(): Promise<void> {
     throw new ContractFailure("both repository workflows must be present");
   }
   const preflightBoundary = verifyReleaseWorkflowPreflightBoundary(release);
-  if (!preflightBoundary.ok) throw new ContractFailure(preflightBoundary.reason);
+  if (!preflightBoundary.ok)
+    throw new ContractFailure(preflightBoundary.reason);
   if (
     /pull_request_target:/u.test(ci) ||
     /\$\{\{\s*secrets(?:\.|\[)/u.test(ci) ||
     /^\s*environment:/mu.test(ci) ||
     /:\s*write\s*$/mu.test(ci)
   ) {
-    throw new ContractFailure("ordinary CI must be unprivileged and secret-free");
+    throw new ContractFailure(
+      "ordinary CI must be unprivileged and secret-free",
+    );
   }
   const justfile = await readFile(join(REPOSITORY_ROOT, "justfile"), "utf8");
   const justBoundary = verifyJustBoundaryRecipes(justfile);
@@ -214,7 +267,9 @@ async function staticCheck(): Promise<void> {
     !release.includes(`existing_release_tags="$(git tag --list 'v*')"`) ||
     !release.includes("bun run release:contract preflight")
   ) {
-    throw new ContractFailure("release preflight does not receive the fetched stable tags");
+    throw new ContractFailure(
+      "release preflight does not receive the fetched stable tags",
+    );
   }
   const releaseInterface = `${release}\n${justfile}`;
   const requiredReleaseFragments = [
@@ -230,23 +285,81 @@ async function staticCheck(): Promise<void> {
     "release-verify-candidate",
     "verify-attestations",
     "--run-attempt",
+    "--artifact-id",
+    "--artifact-digest",
+    "release-acceptance-seal",
+    "release-acceptance-approve",
+    "artifact-digest: ${{ steps.upload.outputs.artifact-digest }}",
+    '--artifact-id "${{ needs.candidate.outputs.artifact-id }}"',
+    '--artifact-digest "${{ needs.candidate.outputs.artifact-digest }}"',
   ];
-  if (requiredReleaseFragments.some((fragment) => !releaseInterface.includes(fragment))) {
-    throw new ContractFailure("the release workflow is missing a required trust boundary");
+  if (
+    requiredReleaseFragments.some(
+      (fragment) => !releaseInterface.includes(fragment),
+    )
+  ) {
+    throw new ContractFailure(
+      "the release workflow is missing a required trust boundary",
+    );
   }
   if (/--aab|updater/iu.test(releaseInterface)) {
-    throw new ContractFailure("the release workflow must not produce AAB or updater artifacts");
+    throw new ContractFailure(
+      "the release workflow must not produce AAB or updater artifacts",
+    );
   }
   const publishMarker = "\n  publish:";
   const publishOffset = release.indexOf(publishMarker);
   const publishSection = publishOffset < 0 ? "" : release.slice(publishOffset);
   if (
     publishSection.length === 0 ||
-    /\b(?:just\s+build-|tauri(?:\s+android)?\s+build)\b/u.test(publishSection) ||
+    /\b(?:just\s+build-|tauri(?:\s+android)?\s+build)\b/u.test(
+      publishSection,
+    ) ||
     (release.match(/^\s*contents:\s*write\s*$/gmu) ?? []).length !== 1 ||
     !/^\s*contents:\s*write\s*$/mu.test(publishSection)
   ) {
-    throw new ContractFailure("publication must be the only write-capable job and must not rebuild");
+    throw new ContractFailure(
+      "publication must be the only write-capable job and must not rebuild",
+    );
+  }
+  const releaseContractSource = await readFile(
+    fileURLToPath(import.meta.url),
+    "utf8",
+  );
+  const releaseAcceptanceSource = await readFile(
+    join(REPOSITORY_ROOT, "app/scripts/release-acceptance.ts"),
+    "utf8",
+  );
+  const unsupportedAttemptPathSegment = ["/attempts", "/"].join("");
+  if (
+    `${releaseContractSource}\n${releaseAcceptanceSource}`.includes(
+      unsupportedAttemptPathSegment,
+    )
+  ) {
+    throw new ContractFailure(
+      "release artifact lookup uses an unsupported attempt-scoped route",
+    );
+  }
+  const publishFunctionOffset = releaseContractSource.indexOf(
+    "async function publish(",
+  );
+  const approvalOffset = releaseContractSource.indexOf(
+    "await verifyPublicationApproval(",
+    publishFunctionOffset,
+  );
+  const releaseCreationOffset = releaseContractSource.indexOf(
+    '"publish immutable GitHub Release"',
+    approvalOffset,
+  );
+  if (
+    publishFunctionOffset < 0 ||
+    approvalOffset < publishFunctionOffset ||
+    releaseCreationOffset < approvalOffset ||
+    !releaseContractSource.includes("/approvals`")
+  ) {
+    throw new ContractFailure(
+      "publication is not fail-closed on authenticated acceptance",
+    );
   }
 
   for (const lockPath of [
@@ -257,12 +370,19 @@ async function staticCheck(): Promise<void> {
     "app/src-tauri/gen/android/app/gradle.lockfile",
     "app/src-tauri/gen/android/buildSrc/gradle.lockfile",
   ]) {
-    const lock = await stat(join(REPOSITORY_ROOT, lockPath)).catch(() => undefined);
+    const lock = await stat(join(REPOSITORY_ROOT, lockPath)).catch(
+      () => undefined,
+    );
     if (lock === undefined || !lock.isFile() || lock.size === 0) {
-      throw new ContractFailure("a required repository dependency lock is missing");
+      throw new ContractFailure(
+        "a required repository dependency lock is missing",
+      );
     }
   }
-  const rustToolchain = await readFile(join(REPOSITORY_ROOT, "rust-toolchain.toml"), "utf8");
+  const rustToolchain = await readFile(
+    join(REPOSITORY_ROOT, "rust-toolchain.toml"),
+    "utf8",
+  );
   const requiredRustFragments = [
     'channel = "1.98.0"',
     '"aarch64-linux-android"',
@@ -270,7 +390,9 @@ async function staticCheck(): Promise<void> {
     '"i686-linux-android"',
     '"x86_64-linux-android"',
   ];
-  if (requiredRustFragments.some((fragment) => !rustToolchain.includes(fragment))) {
+  if (
+    requiredRustFragments.some((fragment) => !rustToolchain.includes(fragment))
+  ) {
     throw new ContractFailure("the Rust release toolchain is not fully pinned");
   }
 
@@ -281,22 +403,34 @@ async function staticCheck(): Promise<void> {
         .object({
           active: z.literal(true),
           icon: z.unknown(),
-          linux: z.object({ appimage: z.object({ bundleMediaFramework: z.literal(true) }) }),
+          linux: z.object({
+            appimage: z.object({ bundleMediaFramework: z.literal(true) }),
+          }),
         })
         .passthrough(),
     })
     .passthrough()
-    .safeParse(await readJson(join(REPOSITORY_ROOT, "app/src-tauri/tauri.conf.json")));
+    .safeParse(
+      await readJson(join(REPOSITORY_ROOT, "app/src-tauri/tauri.conf.json")),
+    );
   if (!tauriConfig.success) {
-    throw new ContractFailure("Tauri packaging is not bound to the product version and media contract");
+    throw new ContractFailure(
+      "Tauri packaging is not bound to the product version and media contract",
+    );
   }
   const appImageRelease = await readAppImageReleaseContract();
-  const iconPath = join(REPOSITORY_ROOT, "app/src-tauri", appImageRelease.icon.path);
+  const iconPath = join(
+    REPOSITORY_ROOT,
+    "app/src-tauri",
+    appImageRelease.icon.path,
+  );
   const iconFile = await lstat(iconPath).catch(() => undefined);
-  const iconBytes = iconFile?.isFile() === true
-    ? await readFile(iconPath).catch(() => undefined)
-    : undefined;
-  const iconDigest = iconBytes === undefined ? undefined : await sha256(iconPath);
+  const iconBytes =
+    iconFile?.isFile() === true
+      ? await readFile(iconPath).catch(() => undefined)
+      : undefined;
+  const iconDigest =
+    iconBytes === undefined ? undefined : await sha256(iconPath);
   const icon = verifyAppImageBundleIcon(
     tauriConfig.data.bundle.icon,
     appImageRelease.icon,
@@ -304,13 +438,25 @@ async function staticCheck(): Promise<void> {
     iconDigest,
   );
   if (!icon.ok) throw new ContractFailure(icon.reason);
-  const prepareOffset = justfile.indexOf("bun run release:contract prepare-appimage-tools");
-  const bundleOffset = justfile.indexOf("bun run tauri build --bundles appimage");
+  const prepareOffset = justfile.indexOf(
+    "bun run release:contract prepare-appimage-tools",
+  );
+  const bundleOffset = justfile.indexOf(
+    "bun run tauri build --bundles appimage",
+  );
   if (prepareOffset < 0 || bundleOffset < 0 || prepareOffset > bundleOffset) {
-    throw new ContractFailure("the AppImage helper cache is not verified before Tauri bundling");
+    throw new ContractFailure(
+      "the AppImage helper cache is not verified before Tauri bundling",
+    );
   }
-  if (!release.includes("XDG_CACHE_HOME: ${{ runner.temp }}/sparrow-appimage-cache")) {
-    throw new ContractFailure("the release AppImage helper cache is not job-private");
+  if (
+    !release.includes(
+      "XDG_CACHE_HOME: ${{ runner.temp }}/sparrow-appimage-cache",
+    )
+  ) {
+    throw new ContractFailure(
+      "the release AppImage helper cache is not job-private",
+    );
   }
   parseToolchain(await readJson(TOOLCHAIN_PATH));
   identitySchema.parse(await readJson(IDENTITY_PATH));
@@ -327,8 +473,14 @@ async function staticCheck(): Promise<void> {
     "gradle.startParameter.taskNames",
     "requestedTask.substringAfterLast(':')",
   ];
-  if (requiredAndroidFragments.some((fragment) => !androidBuild.includes(fragment))) {
-    throw new ContractFailure("the Android build does not match release/toolchain.json");
+  if (
+    requiredAndroidFragments.some(
+      (fragment) => !androidBuild.includes(fragment),
+    )
+  ) {
+    throw new ContractFailure(
+      "the Android build does not match release/toolchain.json",
+    );
   }
   const gradleLocking = verifyGradleDependencyLocking({
     androidRootBuild: await readFile(
@@ -337,11 +489,17 @@ async function staticCheck(): Promise<void> {
     ),
     appBuild: androidBuild,
     buildSrcBuild: await readFile(
-      join(REPOSITORY_ROOT, "app/src-tauri/gen/android/buildSrc/build.gradle.kts"),
+      join(
+        REPOSITORY_ROOT,
+        "app/src-tauri/gen/android/buildSrc/build.gradle.kts",
+      ),
       "utf8",
     ),
     androidBuildscriptLock: await readFile(
-      join(REPOSITORY_ROOT, "app/src-tauri/gen/android/buildscript-gradle.lockfile"),
+      join(
+        REPOSITORY_ROOT,
+        "app/src-tauri/gen/android/buildscript-gradle.lockfile",
+      ),
       "utf8",
     ),
     appLock: await readFile(
@@ -349,13 +507,19 @@ async function staticCheck(): Promise<void> {
       "utf8",
     ),
     buildSrcLock: await readFile(
-      join(REPOSITORY_ROOT, "app/src-tauri/gen/android/buildSrc/gradle.lockfile"),
+      join(
+        REPOSITORY_ROOT,
+        "app/src-tauri/gen/android/buildSrc/gradle.lockfile",
+      ),
       "utf8",
     ),
   });
   if (!gradleLocking.ok) throw new ContractFailure(gradleLocking.reason);
   const wrapper = await readFile(
-    join(REPOSITORY_ROOT, "app/src-tauri/gen/android/gradle/wrapper/gradle-wrapper.properties"),
+    join(
+      REPOSITORY_ROOT,
+      "app/src-tauri/gen/android/gradle/wrapper/gradle-wrapper.properties",
+    ),
     "utf8",
   );
   if (
@@ -364,7 +528,9 @@ async function staticCheck(): Promise<void> {
       "distributionSha256Sum=bd71102213493060956ec229d946beee57158dbd89d0e62b91bca0fa2c5f3531",
     )
   ) {
-    throw new ContractFailure("the Gradle wrapper distribution is not checksum-pinned");
+    throw new ContractFailure(
+      "the Gradle wrapper distribution is not checksum-pinned",
+    );
   }
   const product = parseProductVersion(await readPackageVersion());
   if (!product.ok) throw new ContractFailure(product.reason);
@@ -389,14 +555,18 @@ async function prepareAppImageTool(
     throw new ContractFailure("the AppImage helper cache cannot be inspected");
   });
   if (existing !== undefined && !existing.isFile()) {
-    throw new ContractFailure("an AppImage helper cache entry is not a regular file");
+    throw new ContractFailure(
+      "an AppImage helper cache entry is not a regular file",
+    );
   }
   if (existing !== undefined && (await sha256(destination)) === tool.sha256) {
     await chmod(destination, 0o770);
     return;
   }
 
-  const temporaryDirectory = await mkdtemp(join(cacheDirectory, ".sparrow-appimage-tool-"));
+  const temporaryDirectory = await mkdtemp(
+    join(cacheDirectory, ".sparrow-appimage-tool-"),
+  );
   const temporary = join(temporaryDirectory, tool.cacheName);
   try {
     const download = await downloadPinnedAppImageTool({
@@ -409,9 +579,13 @@ async function prepareAppImageTool(
     if (!download.ok) {
       switch (download.reason) {
         case "download-failed":
-          throw new ContractFailure("a pinned AppImage helper could not be downloaded");
+          throw new ContractFailure(
+            "a pinned AppImage helper could not be downloaded",
+          );
         case "invalid-size":
-          throw new ContractFailure("a pinned AppImage helper has an invalid size");
+          throw new ContractFailure(
+            "a pinned AppImage helper has an invalid size",
+          );
         case "digest-mismatch":
           throw new ContractFailure(
             "a downloaded AppImage helper does not match its SHA-256 pin",
@@ -419,12 +593,16 @@ async function prepareAppImageTool(
       }
     }
     if ((await sha256(temporary)) !== tool.sha256) {
-      throw new ContractFailure("an AppImage helper changed while being written to disk");
+      throw new ContractFailure(
+        "an AppImage helper changed while being written to disk",
+      );
     }
     await chmod(temporary, 0o770);
     await rename(temporary, destination);
     if ((await sha256(destination)) !== tool.sha256) {
-      throw new ContractFailure("an AppImage helper changed while populating the cache");
+      throw new ContractFailure(
+        "an AppImage helper changed while populating the cache",
+      );
     }
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
@@ -433,18 +611,23 @@ async function prepareAppImageTool(
 
 function appImageToolCacheDirectory(): string {
   const configured = process.env.XDG_CACHE_HOME;
-  const cacheRoot = configured === undefined || configured.length === 0
-    ? join(homedir(), ".cache")
-    : configured;
+  const cacheRoot =
+    configured === undefined || configured.length === 0
+      ? join(homedir(), ".cache")
+      : configured;
   if (!isAbsolute(cacheRoot)) {
-    throw new ContractFailure("XDG_CACHE_HOME must be absolute for AppImage packaging");
+    throw new ContractFailure(
+      "XDG_CACHE_HOME must be absolute for AppImage packaging",
+    );
   }
   return join(cacheRoot, "tauri");
 }
 
 function verifyProtectedEnvironment(values: ReadonlyMap<string, string>): void {
   const repository = parseRepository(required(values, "--repository"));
-  const environment = parseReleaseEnvironment(required(values, "--environment"));
+  const environment = parseReleaseEnvironment(
+    required(values, "--environment"),
+  );
   const environmentResponse = run(
     "gh",
     [
@@ -482,7 +665,9 @@ function verifyProtectedEnvironment(values: ReadonlyMap<string, string>): void {
   if (!protection.ok) throw new ContractFailure(protection.reason);
 }
 
-async function stageCandidate(values: ReadonlyMap<string, string>): Promise<void> {
+async function stageCandidate(
+  values: ReadonlyMap<string, string>,
+): Promise<void> {
   const kind = required(values, "--kind");
   if (kind !== "appimage" && kind !== "apk") {
     throw new ContractFailure("candidate kind must be appimage or apk");
@@ -492,41 +677,81 @@ async function stageCandidate(values: ReadonlyMap<string, string>): Promise<void
   const output = resolve(required(values, "--output"));
   const files = await walkFiles(input);
   if (files.some((path) => path.endsWith(".aab"))) {
-    throw new ContractFailure("AAB output is forbidden by the release contract");
+    throw new ContractFailure(
+      "AAB output is forbidden by the release contract",
+    );
   }
   const matches = files.filter((path) =>
     kind === "appimage" ? path.endsWith(".AppImage") : path.endsWith(".apk"),
   );
   if (matches.length !== 1) {
-    throw new ContractFailure(`the ${kind} build must produce exactly one candidate`);
+    throw new ContractFailure(
+      `the ${kind} build must produce exactly one candidate`,
+    );
   }
   const source = matches[0];
-  if (source === undefined) throw new ContractFailure("candidate output disappeared");
+  if (source === undefined)
+    throw new ContractFailure("candidate output disappeared");
   const sourceName = basename(source).toLowerCase();
   if (kind === "appimage" && !sourceName.includes(version.text.toLowerCase())) {
-    throw new ContractFailure("the build output filename does not contain the product version");
+    throw new ContractFailure(
+      "the build output filename does not contain the product version",
+    );
   }
-  if (kind === "apk" && (!sourceName.includes("universal") || !sourceName.includes("release"))) {
-    throw new ContractFailure("the Android build output is not a universal release APK");
+  if (
+    kind === "apk" &&
+    (!sourceName.includes("universal") || !sourceName.includes("release"))
+  ) {
+    throw new ContractFailure(
+      "the Android build output is not a universal release APK",
+    );
   }
   if (kind === "apk" && sourceName.includes("unsigned")) {
     throw new ContractFailure("the Android release APK is unsigned");
   }
   await mkdir(output, { recursive: true });
-  const destination = join(output, kind === "appimage" ? version.appImageName : version.apkName);
+  const destination = join(
+    output,
+    kind === "appimage" ? version.appImageName : version.apkName,
+  );
   await copyFile(source, destination);
   if (kind === "appimage") await chmod(destination, 0o755);
   const digest = await sha256(destination);
-  await writeFile(`${destination}.sha256`, `${digest}  ${basename(destination)}\n`, "utf8");
+  await writeFile(
+    `${destination}.sha256`,
+    `${digest}  ${basename(destination)}\n`,
+    "utf8",
+  );
 }
 
-async function verifyAppImage(values: ReadonlyMap<string, string>): Promise<void> {
+async function verifyAppImage(
+  values: ReadonlyMap<string, string>,
+): Promise<void> {
   const version = parseVersion(required(values, "--version"));
   const artifact = resolve(required(values, "--artifact"));
   if (basename(artifact) !== version.appImageName) {
-    throw new ContractFailure("the AppImage filename does not match the product version");
+    throw new ContractFailure(
+      "the AppImage filename does not match the product version",
+    );
   }
-  const file = run("file", ["--brief", artifact], "inspect AppImage architecture");
+  const snapshot = await snapshotReleaseFiles(
+    dirname(artifact),
+    [basename(artifact), `${basename(artifact)}.sha256`],
+    { exact: false },
+  );
+  try {
+    await verifyAppImageFile(join(snapshot.boundDirectory, basename(artifact)));
+  } finally {
+    await snapshot.close();
+  }
+}
+
+async function verifyAppImageFile(artifact: string): Promise<void> {
+  const file = run(
+    "file",
+    ["--brief", artifact],
+    "inspect AppImage architecture",
+  );
   if (!/ELF 64-bit LSB.*x86-64/iu.test(file.stdout)) {
     throw new ContractFailure("the AppImage is not an x86_64 ELF executable");
   }
@@ -539,31 +764,45 @@ async function verifyAppImage(values: ReadonlyMap<string, string>): Promise<void
       timeout: 60_000,
     });
     const root = join(extraction, "squashfs-root");
-    const desktopFiles = (await walkFiles(root)).filter((path) => path.endsWith(".desktop"));
+    const desktopFiles = (await walkFiles(root)).filter((path) =>
+      path.endsWith(".desktop"),
+    );
     if (desktopFiles.length !== 1) {
-      throw new ContractFailure("the AppImage must contain exactly one desktop entry");
+      throw new ContractFailure(
+        "the AppImage must contain exactly one desktop entry",
+      );
     }
     const desktop = await readFile(desktopFiles[0] ?? "", "utf8");
     if (
       !/^Name=Sparrow$/mu.test(desktop) ||
-      !new RegExp(`^Exec=${LINUX_EXECUTABLE_NAME}(?:\\s.*)?$`, "mu").test(desktop)
+      !new RegExp(`^Exec=${LINUX_EXECUTABLE_NAME}(?:\\s.*)?$`, "mu").test(
+        desktop,
+      )
     ) {
-      throw new ContractFailure("the AppImage desktop identity does not match Sparrow");
+      throw new ContractFailure(
+        "the AppImage desktop identity does not match Sparrow",
+      );
     }
     const appRun = await stat(join(root, "AppRun"));
     if (!appRun.isFile() || (appRun.mode & 0o111) === 0) {
-      throw new ContractFailure("the AppImage has no executable AppRun entrypoint");
+      throw new ContractFailure(
+        "the AppImage has no executable AppRun entrypoint",
+      );
     }
   } finally {
     await rm(extraction, { recursive: true, force: true });
   }
 }
 
-async function smokeAppImage(values: ReadonlyMap<string, string>): Promise<void> {
+async function smokeAppImage(
+  values: ReadonlyMap<string, string>,
+): Promise<void> {
   const version = parseVersion(required(values, "--version"));
   const artifact = resolve(required(values, "--artifact"));
   if (basename(artifact) !== version.appImageName) {
-    throw new ContractFailure("the AppImage filename does not match the product version");
+    throw new ContractFailure(
+      "the AppImage filename does not match the product version",
+    );
   }
   await chmod(artifact, 0o755);
   const privateRoot = await mkdtemp(join(tmpdir(), "sparrow-appimage-smoke-"));
@@ -581,12 +820,15 @@ async function smokeAppImage(values: ReadonlyMap<string, string>): Promise<void>
   try {
     await waitForLaunchWindow(child, APPIMAGE_SMOKE_MS);
     if (child.exitCode !== null || child.signalCode !== null) {
-      throw new ContractFailure("the AppImage exited during the bounded launch smoke check");
+      throw new ContractFailure(
+        "the AppImage exited during the bounded launch smoke check",
+      );
     }
   } finally {
     child.kill("SIGTERM");
     await waitForExitWindow(child, 2_000);
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    if (child.exitCode === null && child.signalCode === null)
+      child.kill("SIGKILL");
     await rm(privateRoot, { recursive: true, force: true });
   }
 }
@@ -595,23 +837,59 @@ async function verifyApk(values: ReadonlyMap<string, string>): Promise<void> {
   const version = parseVersion(required(values, "--version"));
   const artifact = resolve(required(values, "--artifact"));
   if (basename(artifact) !== version.apkName) {
-    throw new ContractFailure("the APK filename does not match the product version");
+    throw new ContractFailure(
+      "the APK filename does not match the product version",
+    );
   }
+  const snapshot = await snapshotReleaseFiles(
+    dirname(artifact),
+    [basename(artifact), `${basename(artifact)}.sha256`],
+    { exact: false },
+  );
+  try {
+    await verifyApkFile(
+      join(snapshot.boundDirectory, basename(artifact)),
+      version,
+    );
+  } finally {
+    await snapshot.close();
+  }
+}
+
+async function verifyApkFile(
+  artifact: string,
+  version: ProductVersion,
+): Promise<void> {
   await verifySidecar(artifact);
   const digest = await readSigningDigest();
   const tools = await androidTools();
-  const badging = run(tools.aapt2, ["dump", "badging", artifact], "inspect APK package");
+  const badging = run(
+    tools.aapt2,
+    ["dump", "badging", artifact],
+    "inspect APK package",
+  );
   const identity = parseApkBadging(badging.stdout, version);
   if (!identity.ok) throw new ContractFailure(identity.reason);
   const signature = run(
     tools.apksigner,
-    ["verify", "--verbose", "--print-certs", "--min-sdk-version", "24", artifact],
+    [
+      "verify",
+      "--verbose",
+      "--print-certs",
+      "--min-sdk-version",
+      "24",
+      artifact,
+    ],
     "verify APK signature",
   );
-  const certificate = parseApkSignerCertificate(`${signature.stdout}\n${signature.stderr}`);
+  const certificate = parseApkSignerCertificate(
+    `${signature.stdout}\n${signature.stderr}`,
+  );
   if (!certificate.ok) throw new ContractFailure(certificate.reason);
   if (certificate.value !== digest) {
-    throw new ContractFailure("the APK signing certificate does not match the recorded identity");
+    throw new ContractFailure(
+      "the APK signing certificate does not match the recorded identity",
+    );
   }
 }
 
@@ -620,7 +898,10 @@ async function verifyAndroidToolchain(): Promise<void> {
   const androidHome = androidHomePath();
   const packageFiles = [
     [
-      join(androidHome, `cmdline-tools/${config.android.commandLineTools}/package.xml`),
+      join(
+        androidHome,
+        `cmdline-tools/${config.android.commandLineTools}/package.xml`,
+      ),
       `cmdline-tools;${config.android.commandLineTools}`,
       config.android.commandLineTools,
     ],
@@ -646,19 +927,25 @@ async function verifyAndroidToolchain(): Promise<void> {
       !contents.includes(`localPackage path="${packageId}"`) ||
       parseAndroidRevision(contents) !== normalizeAndroidRevision(revision)
     ) {
-      throw new ContractFailure("the installed Android SDK does not match release/toolchain.json");
+      throw new ContractFailure(
+        "the installed Android SDK does not match release/toolchain.json",
+      );
     }
   }
 }
 
-async function assembleCandidate(values: ReadonlyMap<string, string>): Promise<void> {
+async function assembleCandidate(
+  values: ReadonlyMap<string, string>,
+): Promise<void> {
   const version = parseVersion(required(values, "--version"));
   const directory = resolve(required(values, "--directory"));
   const commit = parseCommit(required(values, "--commit"));
   const tag = parseReleaseTag(required(values, "--tag"), version);
   const repository = parseRepository(required(values, "--repository"));
   const workflowRunId = parseWorkflowRunId(required(values, "--run-id"));
-  const workflowRunAttempt = parseWorkflowRunAttempt(required(values, "--run-attempt"));
+  const workflowRunAttempt = parseWorkflowRunAttempt(
+    required(values, "--run-attempt"),
+  );
   const certificateSha256 = await readSigningDigest();
   const appImage = join(directory, version.appImageName);
   const apk = join(directory, version.apkName);
@@ -701,16 +988,35 @@ async function assembleCandidate(values: ReadonlyMap<string, string>): Promise<v
   );
 }
 
-async function verifyCandidate(values: ReadonlyMap<string, string>): Promise<void> {
+async function verifyCandidate(
+  values: ReadonlyMap<string, string>,
+): Promise<void> {
   const version = parseVersion(required(values, "--version"));
-  const directory = resolve(required(values, "--directory"));
+  const requestedDirectory = resolve(required(values, "--directory"));
   const repository = parseRepository(required(values, "--repository"));
   const tag = parseReleaseTag(required(values, "--tag"), version);
   const commit = parseCommit(required(values, "--commit"));
   const workflowRunId = parseWorkflowRunId(required(values, "--run-id"));
-  const workflowRunAttempt = parseWorkflowRunAttempt(required(values, "--run-attempt"));
-  const names = (await readdir(directory)).sort();
-  const expected = [
+  const workflowRunAttempt = parseWorkflowRunAttempt(
+    required(values, "--run-attempt"),
+  );
+  const snapshot = await snapshotCandidate(requestedDirectory, version);
+  try {
+    await verifyCandidateDirectory(snapshot.boundDirectory, {
+      version,
+      repository,
+      tag,
+      commit,
+      workflowRunId,
+      workflowRunAttempt,
+    });
+  } finally {
+    await snapshot.close();
+  }
+}
+
+function candidateEntryNames(version: ProductVersion): readonly string[] {
+  return [
     "CANDIDATE-ACCEPTANCE.md",
     "SHA256SUMS",
     "candidate-manifest.json",
@@ -718,15 +1024,47 @@ async function verifyCandidate(values: ReadonlyMap<string, string>): Promise<voi
     `${version.appImageName}.sha256`,
     version.apkName,
     `${version.apkName}.sha256`,
-  ].sort();
-  if (names.length !== expected.length || !names.every((name, index) => name === expected[index])) {
-    throw new ContractFailure("the candidate bundle has unexpected or missing files");
-  }
+  ];
+}
+
+function snapshotCandidate(
+  directory: string,
+  version: ProductVersion,
+): Promise<ReleaseDirectorySnapshot> {
+  return snapshotReleaseFiles(directory, candidateEntryNames(version), {
+    exact: true,
+  });
+}
+
+async function verifyCandidateDirectory(
+  directory: string,
+  expected: {
+    readonly version: ProductVersion;
+    readonly repository: string;
+    readonly tag: string;
+    readonly commit: string;
+    readonly workflowRunId: string;
+    readonly workflowRunAttempt: number;
+  },
+): Promise<void> {
+  const {
+    version,
+    repository,
+    tag,
+    commit,
+    workflowRunId,
+    workflowRunAttempt,
+  } = expected;
   const appImage = join(directory, version.appImageName);
   const apk = join(directory, version.apkName);
   await verifySidecar(appImage);
   await verifySidecar(apk);
-  const checksums = parseChecksums(await readFile(join(directory, "SHA256SUMS"), "utf8"), version);
+  const checksums = parseChecksums(
+    (await readReleaseRegularFile(join(directory, "SHA256SUMS"))).toString(
+      "utf8",
+    ),
+    version,
+  );
   if (!checksums.ok) throw new ContractFailure(checksums.reason);
   if (
     checksums.value.appImage.sha256 !== (await sha256(appImage)) ||
@@ -735,7 +1073,11 @@ async function verifyCandidate(values: ReadonlyMap<string, string>): Promise<voi
     throw new ContractFailure("candidate bytes do not match SHA256SUMS");
   }
   const manifest = parseCandidateManifest(
-    await readJson(join(directory, "candidate-manifest.json")),
+    parseJsonText(
+      (
+        await readReleaseRegularFile(join(directory, "candidate-manifest.json"))
+      ).toString("utf8"),
+    ),
     version,
     tag,
     commit,
@@ -746,124 +1088,300 @@ async function verifyCandidate(values: ReadonlyMap<string, string>): Promise<voi
     manifest.value.workflowRunId !== workflowRunId ||
     manifest.value.workflowRunAttempt !== workflowRunAttempt
   ) {
-    throw new ContractFailure("the candidate manifest does not match the release invocation");
+    throw new ContractFailure(
+      "the candidate manifest does not match the release invocation",
+    );
   }
   if (
-    manifest.value.artifacts.appImage.sha256 !== checksums.value.appImage.sha256 ||
+    manifest.value.artifacts.appImage.sha256 !==
+      checksums.value.appImage.sha256 ||
     manifest.value.artifacts.apk.sha256 !== checksums.value.apk.sha256
   ) {
     throw new ContractFailure("the candidate manifest and SHA256SUMS disagree");
   }
-  if (manifest.value.android.certificateSha256 !== (await readSigningDigest())) {
-    throw new ContractFailure("the candidate manifest has the wrong Android signing identity");
+  if (
+    manifest.value.android.certificateSha256 !== (await readSigningDigest())
+  ) {
+    throw new ContractFailure(
+      "the candidate manifest has the wrong Android signing identity",
+    );
   }
-  const acceptance = await readFile(join(directory, "CANDIDATE-ACCEPTANCE.md"), "utf8");
+  const acceptance = (
+    await readReleaseRegularFile(join(directory, "CANDIDATE-ACCEPTANCE.md"))
+  ).toString("utf8");
   if (acceptance !== formatAcceptanceManifest(manifest.value)) {
-    throw new ContractFailure("the candidate acceptance instructions do not match the manifest");
+    throw new ContractFailure(
+      "the candidate acceptance instructions do not match the manifest",
+    );
   }
 }
 
-async function verifyAttestations(values: ReadonlyMap<string, string>): Promise<void> {
+async function verifyAttestations(
+  values: ReadonlyMap<string, string>,
+): Promise<void> {
   const version = parseVersion(required(values, "--version"));
-  const directory = resolve(required(values, "--directory"));
+  const requestedDirectory = resolve(required(values, "--directory"));
   const repository = parseRepository(required(values, "--repository"));
   const commit = parseCommit(required(values, "--commit"));
   const tag = parseReleaseTag(required(values, "--tag"), version);
-  for (const name of [version.appImageName, version.apkName]) {
-    run(
-      "gh",
-      [
-        "attestation",
-        "verify",
-        join(directory, name),
-        "--repo",
-        repository,
-        "--signer-workflow",
-        `${repository}/.github/workflows/release.yml`,
-        "--signer-digest",
-        commit,
-        "--source-digest",
-        commit,
-        "--source-ref",
-        `refs/tags/${tag}`,
-        "--deny-self-hosted-runners",
-      ],
-      "verify candidate provenance",
-    );
+  const snapshot = await snapshotReleaseFiles(
+    requestedDirectory,
+    [version.appImageName, version.apkName],
+    { exact: false },
+  );
+  try {
+    for (const name of [version.appImageName, version.apkName]) {
+      run(
+        "gh",
+        [
+          "attestation",
+          "verify",
+          join(snapshot.boundDirectory, name),
+          "--repo",
+          repository,
+          "--signer-workflow",
+          `${repository}/.github/workflows/release.yml`,
+          "--signer-digest",
+          commit,
+          "--source-digest",
+          commit,
+          "--source-ref",
+          `refs/tags/${tag}`,
+          "--deny-self-hosted-runners",
+        ],
+        "verify candidate provenance",
+      );
+    }
+  } finally {
+    await snapshot.close();
   }
 }
 
 async function publish(values: ReadonlyMap<string, string>): Promise<void> {
   const version = parseVersion(required(values, "--version"));
-  const directory = resolve(required(values, "--directory"));
+  const requestedDirectory = resolve(required(values, "--directory"));
   const repository = parseRepository(required(values, "--repository"));
   const tag = parseReleaseTag(required(values, "--tag"), version);
   const commit = parseCommit(required(values, "--commit"));
   const workflowRunId = parseWorkflowRunId(required(values, "--run-id"));
-  const workflowRunAttempt = parseWorkflowRunAttempt(required(values, "--run-attempt"));
-  await verifyCandidate(
-    new Map([
-      ["--version", version.text],
-      ["--directory", directory],
-      ["--repository", repository],
-      ["--tag", tag],
-      ["--commit", commit],
-      ["--run-id", workflowRunId],
-      ["--run-attempt", String(workflowRunAttempt)],
-    ]),
+  const workflowRunAttempt = parseWorkflowRunAttempt(
+    required(values, "--run-attempt"),
   );
-  const remoteReferences = run(
-    "git",
-    [
-      "ls-remote",
-      "--exit-code",
-      "origin",
-      "refs/heads/master",
-      `refs/tags/${tag}`,
-      `refs/tags/${tag}^{}`,
-    ],
-    "verify immutable remote release references",
-    { cwd: REPOSITORY_ROOT },
+  const artifactId = parseWorkflowRunId(required(values, "--artifact-id"));
+  const artifactSha256 = parseArtifactDigest(
+    required(values, "--artifact-digest"),
   );
-  const remoteProof = verifyRemoteReleaseRefs(remoteReferences.stdout, tag, commit);
-  if (!remoteProof.ok) throw new ContractFailure(remoteProof.reason);
-  const existing = spawnSync("gh", ["release", "view", tag, "--repo", repository], {
-    encoding: "utf8",
-    maxBuffer: COMMAND_OUTPUT_LIMIT,
-  });
-  if (existing.status === 0) {
-    throw new ContractFailure("a GitHub Release already exists for this immutable tag");
+  const snapshot = await snapshotCandidate(requestedDirectory, version);
+  try {
+    const directory = snapshot.boundDirectory;
+    await verifyCandidateDirectory(directory, {
+      version,
+      repository,
+      tag,
+      commit,
+      workflowRunId,
+      workflowRunAttempt,
+    });
+    await verifyPublicationApproval({
+      directory,
+      repository,
+      version,
+      tag,
+      commit,
+      workflowRunId,
+      workflowRunAttempt,
+      artifactId,
+      artifactSha256,
+    });
+    const remoteReferences = run(
+      "git",
+      [
+        "ls-remote",
+        "--exit-code",
+        "origin",
+        "refs/heads/master",
+        `refs/tags/${tag}`,
+        `refs/tags/${tag}^{}`,
+      ],
+      "verify immutable remote release references",
+      { cwd: REPOSITORY_ROOT },
+    );
+    const remoteProof = verifyRemoteReleaseRefs(
+      remoteReferences.stdout,
+      tag,
+      commit,
+    );
+    if (!remoteProof.ok) throw new ContractFailure(remoteProof.reason);
+    const existing = spawnSync(
+      "gh",
+      ["release", "view", tag, "--repo", repository],
+      {
+        encoding: "utf8",
+        maxBuffer: COMMAND_OUTPUT_LIMIT,
+      },
+    );
+    if (existing.status === 0) {
+      throw new ContractFailure(
+        "a GitHub Release already exists for this immutable tag",
+      );
+    }
+    run(
+      "gh",
+      [
+        "release",
+        "create",
+        tag,
+        join(directory, version.appImageName),
+        join(directory, version.apkName),
+        join(directory, "SHA256SUMS"),
+        "--repo",
+        repository,
+        "--verify-tag",
+        "--title",
+        `Sparrow ${version.text}`,
+        "--generate-notes",
+        "--fail-on-no-commits",
+      ],
+      "publish immutable GitHub Release",
+    );
+  } finally {
+    await snapshot.close();
   }
-  run(
+}
+
+async function verifyPublicationApproval(input: {
+  readonly directory: string;
+  readonly repository: string;
+  readonly version: ProductVersion;
+  readonly tag: string;
+  readonly commit: string;
+  readonly workflowRunId: string;
+  readonly workflowRunAttempt: number;
+  readonly artifactId: string;
+  readonly artifactSha256: string;
+}): Promise<void> {
+  const runResponse = run(
     "gh",
     [
-      "release",
-      "create",
-      tag,
-      join(directory, version.appImageName),
-      join(directory, version.apkName),
-      join(directory, "SHA256SUMS"),
-      "--repo",
-      repository,
-      "--verify-tag",
-      "--title",
-      `Sparrow ${version.text}`,
-      "--generate-notes",
-      "--fail-on-no-commits",
+      "api",
+      "--method",
+      "GET",
+      "--header",
+      "Accept: application/vnd.github+json",
+      "--header",
+      "X-GitHub-Api-Version: 2026-03-10",
+      `repos/${input.repository}/actions/runs/${input.workflowRunId}`,
     ],
-    "publish immutable GitHub Release",
+    "read current release workflow run",
   );
+  const currentRun = workflowRunResponseSchema.safeParse(
+    parseJsonText(runResponse.stdout),
+  );
+  if (
+    !currentRun.success ||
+    String(currentRun.data.id) !== input.workflowRunId ||
+    currentRun.data.run_attempt !== input.workflowRunAttempt ||
+    currentRun.data.head_sha !== input.commit ||
+    currentRun.data.event !== "push" ||
+    currentRun.data.status === "completed"
+  ) {
+    throw new ContractFailure(
+      "publication is not running in the accepted workflow attempt",
+    );
+  }
+  const artifactEndpoint = formatWorkflowRunArtifactsEndpoint(
+    input.repository,
+    input.workflowRunId,
+  );
+  if (!artifactEndpoint.ok) throw new ContractFailure(artifactEndpoint.reason);
+  const artifactResponse = run(
+    "gh",
+    [
+      "api",
+      "--method",
+      "GET",
+      "--header",
+      "Accept: application/vnd.github+json",
+      "--header",
+      "X-GitHub-Api-Version: 2026-03-10",
+      artifactEndpoint.value,
+    ],
+    "read exact release candidate artifact",
+  );
+  const artifacts = candidateArtifactResponseSchema.safeParse(
+    parseJsonText(artifactResponse.stdout),
+  );
+  if (!artifacts.success)
+    throw new ContractFailure(
+      "GitHub returned invalid candidate artifact data",
+    );
+  const expectedName = `release-candidate-${input.workflowRunId}-${input.workflowRunAttempt}`;
+  const matchingArtifacts = artifacts.data.artifacts.filter(
+    (artifact) =>
+      String(artifact.id) === input.artifactId &&
+      artifact.name === expectedName &&
+      !artifact.expired &&
+      parseOptionalArtifactDigest(artifact.digest) === input.artifactSha256 &&
+      String(artifact.workflow_run.id) === input.workflowRunId &&
+      artifact.workflow_run.head_sha === input.commit,
+  );
+  if (matchingArtifacts.length !== 1) {
+    throw new ContractFailure(
+      "the approved candidate artifact identity is invalid",
+    );
+  }
+
+  const manifestPath = join(input.directory, "candidate-manifest.json");
+  const manifest = parseCandidateManifest(
+    await readJson(manifestPath),
+    input.version,
+    input.tag,
+    input.commit,
+  );
+  if (!manifest.ok) throw new ContractFailure(manifest.reason);
+  const reviewHistory = run(
+    "gh",
+    [
+      "api",
+      "--method",
+      "GET",
+      "--header",
+      "Accept: application/vnd.github+json",
+      "--header",
+      "X-GitHub-Api-Version: 2026-03-10",
+      `repos/${input.repository}/actions/runs/${input.workflowRunId}/approvals`,
+    ],
+    "read release publication approval",
+  );
+  const approval = verifyAcceptanceApprovalHistory(
+    parseJsonText(reviewHistory.stdout),
+    {
+      candidate: projectAcceptanceCandidate(manifest.value),
+      artifactId: input.artifactId,
+      artifactSha256: input.artifactSha256,
+      manifestSha256: await sha256(manifestPath),
+    },
+  );
+  if (!approval.ok) throw new ContractFailure(approval.reason);
 }
 
 function parseArguments(argv: readonly string[]): CliArguments {
   const command = argv[0];
-  if (command === undefined) throw new ContractFailure("a release-contract command is required");
+  if (command === undefined)
+    throw new ContractFailure("a release-contract command is required");
   const values = new Map<string, string>();
   for (let index = 1; index < argv.length; index += 2) {
     const flag = argv[index];
     const value = argv[index + 1];
-    if (flag === undefined || value === undefined || !flag.startsWith("--") || values.has(flag)) {
-      throw new ContractFailure("release-contract arguments must be unique flag/value pairs");
+    if (
+      flag === undefined ||
+      value === undefined ||
+      !flag.startsWith("--") ||
+      values.has(flag)
+    ) {
+      throw new ContractFailure(
+        "release-contract arguments must be unique flag/value pairs",
+      );
     }
     values.set(flag, value);
   }
@@ -872,11 +1390,15 @@ function parseArguments(argv: readonly string[]): CliArguments {
 
 function required(values: ReadonlyMap<string, string>, name: string): string {
   const value = values.get(name);
-  if (value === undefined || value.length === 0) throw new ContractFailure(`${name} is required`);
+  if (value === undefined || value.length === 0)
+    throw new ContractFailure(`${name} is required`);
   return value;
 }
 
-function optional(values: ReadonlyMap<string, string>, name: string): string | undefined {
+function optional(
+  values: ReadonlyMap<string, string>,
+  name: string,
+): string | undefined {
   return values.get(name);
 }
 
@@ -888,14 +1410,18 @@ function parseVersion(input: string): ProductVersion {
 
 function parseReleaseTag(input: string, version: ProductVersion): string {
   if (input !== version.tag) {
-    throw new ContractFailure("the release tag does not match the product version");
+    throw new ContractFailure(
+      "the release tag does not match the product version",
+    );
   }
   return input;
 }
 
 function parseCommit(input: string): string {
   if (!/^[0-9a-f]{40}$/u.test(input)) {
-    throw new ContractFailure("the release commit must be a full lowercase Git SHA");
+    throw new ContractFailure(
+      "the release commit must be a full lowercase Git SHA",
+    );
   }
   return input;
 }
@@ -907,7 +1433,9 @@ function parseRepository(input: string): string {
   return input;
 }
 
-function parseReleaseEnvironment(input: string): "release-signing" | "release-publish" {
+function parseReleaseEnvironment(
+  input: string,
+): "release-signing" | "release-publish" {
   if (input !== "release-signing" && input !== "release-publish") {
     throw new ContractFailure("the release environment name is invalid");
   }
@@ -932,6 +1460,21 @@ function parseWorkflowRunAttempt(input: string): number {
   return attempt;
 }
 
+function parseArtifactDigest(input: string): string {
+  const parsed = parseOptionalArtifactDigest(input);
+  if (parsed === undefined)
+    throw new ContractFailure("the candidate artifact digest is invalid");
+  return parsed;
+}
+
+function parseOptionalArtifactDigest(input: string | null): string | undefined {
+  if (input === null) return undefined;
+  const normalized = input.startsWith("sha256:")
+    ? input.slice("sha256:".length)
+    : input;
+  return SHA256.test(normalized) ? normalized : undefined;
+}
+
 function parseAndroidRevision(input: string): string | undefined {
   const revision = /<revision>([\s\S]*?)<\/revision>/u.exec(input)?.[1];
   if (revision === undefined) return undefined;
@@ -948,43 +1491,63 @@ function normalizeAndroidRevision(input: string): string | undefined {
 }
 
 async function readPackageVersion(): Promise<string> {
-  const parsed = packageSchema.safeParse(await readJson(join(REPOSITORY_ROOT, "app/package.json")));
-  if (!parsed.success) throw new ContractFailure("app/package.json has no product version");
+  const parsed = packageSchema.safeParse(
+    await readJson(join(REPOSITORY_ROOT, "app/package.json")),
+  );
+  if (!parsed.success)
+    throw new ContractFailure("app/package.json has no product version");
   return parsed.data.version;
 }
 
 function parseToolchain(input: unknown): z.infer<typeof toolchainSchema> {
   const parsed = toolchainSchema.safeParse(input);
-  if (!parsed.success || parsed.data.android.abis.join(",") !== ANDROID_ABIS.join(",")) {
+  if (
+    !parsed.success ||
+    parsed.data.android.abis.join(",") !== ANDROID_ABIS.join(",")
+  ) {
     throw new ContractFailure("release/toolchain.json is invalid");
   }
   return parsed.data;
 }
 
 async function readAppImageReleaseContract(): Promise<AppImageReleaseContract> {
-  const parsed = parseAppImageReleaseContract(await readJson(APPIMAGE_RELEASE_PATH));
+  const parsed = parseAppImageReleaseContract(
+    await readJson(APPIMAGE_RELEASE_PATH),
+  );
   if (!parsed.ok) throw new ContractFailure(parsed.reason);
   return parsed.value;
 }
 
 async function readSigningDigest(): Promise<string> {
   const identity = identitySchema.safeParse(await readJson(IDENTITY_PATH));
-  if (!identity.success) throw new ContractFailure("the Android signing identity file is invalid");
+  if (!identity.success)
+    throw new ContractFailure("the Android signing identity file is invalid");
   const digest = parseCertificateSha256(identity.data.certificateSha256);
   if (!digest.ok) throw new ContractFailure(digest.reason);
   return digest.value;
 }
 
-async function androidTools(): Promise<{ readonly aapt2: string; readonly apksigner: string }> {
+async function androidTools(): Promise<{
+  readonly aapt2: string;
+  readonly apksigner: string;
+}> {
   const config = parseToolchain(await readJson(TOOLCHAIN_PATH));
-  const directory = join(androidHomePath(), `build-tools/${config.android.buildTools}`);
-  return { aapt2: join(directory, "aapt2"), apksigner: join(directory, "apksigner") };
+  const directory = join(
+    androidHomePath(),
+    `build-tools/${config.android.buildTools}`,
+  );
+  return {
+    aapt2: join(directory, "aapt2"),
+    apksigner: join(directory, "apksigner"),
+  };
 }
 
 function androidHomePath(): string {
   const value = process.env.ANDROID_HOME ?? process.env.ANDROID_SDK_ROOT;
   if (value === undefined || value.length === 0) {
-    throw new ContractFailure("ANDROID_HOME is required for release verification");
+    throw new ContractFailure(
+      "ANDROID_HOME is required for release verification",
+    );
   }
   return resolve(value);
 }
@@ -996,7 +1559,8 @@ function errorHasCode(error: unknown, code: string): boolean {
 async function verifySidecar(artifact: string): Promise<void> {
   const expected = `${await sha256(artifact)}  ${basename(artifact)}\n`;
   const actual = await readFile(`${artifact}.sha256`, "utf8").catch(() => "");
-  if (actual !== expected) throw new ContractFailure("the candidate checksum sidecar is invalid");
+  if (actual !== expected)
+    throw new ContractFailure("the candidate checksum sidecar is invalid");
 }
 
 async function sha256(path: string): Promise<string> {
@@ -1038,7 +1602,10 @@ function run(
   return { stdout: result.stdout, stderr: result.stderr };
 }
 
-function waitForLaunchWindow(child: ChildProcess, durationMs: number): Promise<void> {
+function waitForLaunchWindow(
+  child: ChildProcess,
+  durationMs: number,
+): Promise<void> {
   return new Promise((resolveDelay, reject) => {
     const onError = (): void => {
       clearTimeout(timer);
@@ -1052,8 +1619,12 @@ function waitForLaunchWindow(child: ChildProcess, durationMs: number): Promise<v
   });
 }
 
-function waitForExitWindow(child: ChildProcess, durationMs: number): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+function waitForExitWindow(
+  child: ChildProcess,
+  durationMs: number,
+): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null)
+    return Promise.resolve();
   return new Promise((resolveExit) => {
     const onExit = (): void => {
       clearTimeout(timer);
@@ -1079,7 +1650,7 @@ function parseJsonText(input: string): unknown {
   try {
     return JSON.parse(input) as unknown;
   } catch {
-    throw new ContractFailure("the GitHub release environment response is invalid JSON");
+    throw new ContractFailure("GitHub returned invalid release metadata JSON");
   }
 }
 
@@ -1094,12 +1665,18 @@ async function appendGithubOutput(
 ): Promise<void> {
   const path = optional(values, "--github-output");
   if (path === undefined || path.length === 0) return;
-  const lines = Object.entries(output).map(([name, value]) => `${name}=${value}\n`).join("");
+  const lines = Object.entries(output)
+    .map(([name, value]) => `${name}=${value}\n`)
+    .join("");
   await writeFile(path, lines, { encoding: "utf8", flag: "a" });
 }
 
 void main().catch((error: unknown) => {
-  const message = error instanceof ContractFailure ? error.message : "unexpected release contract failure";
+  const message =
+    error instanceof ContractFailure ||
+    error instanceof ReleaseFilesystemFailure
+      ? error.message
+      : "unexpected release contract failure";
   process.stderr.write(`release contract rejected: ${message}\n`);
   process.exitCode = 1;
 });
