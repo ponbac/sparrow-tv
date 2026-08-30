@@ -67,20 +67,19 @@ const DESCRIPTOR = clientSchemas.nativePlaybackDescriptor.parse({
 });
 
 describe("native mpegts.js loader", () => {
-  it("pulls bounded chunks sequentially, preserves offsets, and releases at EOF", async () => {
+  it("pulls bounded chunks sequentially and preserves offsets through EOF", async () => {
     const chunks = [bytes(1, 2), bytes(3, 4, 5), new ArrayBuffer(0)];
     let activeReads = 0;
     let maximumReads = 0;
-    const readPlayback = vi.fn(async () => {
+    const read = vi.fn(async () => {
       activeReads += 1;
       maximumReads = Math.max(maximumReads, activeReads);
       await Promise.resolve();
       activeReads -= 1;
       return success(chunks.shift() ?? new ArrayBuffer(0));
     });
-    const stopPlayback = vi.fn(async () => success(undefined));
     const Loader = createNativeMpegtsLoader(
-      { readPlayback, stopPlayback },
+      { read },
       DESCRIPTOR,
       RUNTIME,
     );
@@ -95,9 +94,8 @@ describe("native mpegts.js loader", () => {
     await until(() => vi.mocked(loader.onComplete).mock.calls.length === 1);
 
     expect(maximumReads).toBe(1);
-    expect(readPlayback).toHaveBeenCalledTimes(3);
-    expect(readPlayback).toHaveBeenNthCalledWith(1, {
-      sessionId: DESCRIPTOR.sessionId,
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(read).toHaveBeenNthCalledWith(1, {
       streamHandle: DESCRIPTOR.streamHandle,
       signal: expect.any(AbortSignal),
     });
@@ -106,19 +104,15 @@ describe("native mpegts.js loader", () => {
       [bytes(3, 4, 5), 2, 5],
     ]);
     expect(loader.onComplete).toHaveBeenCalledWith(0, 4);
-    expect(stopPlayback).toHaveBeenCalledTimes(1);
-
     loader.abort();
     loader.destroy();
-    expect(stopPlayback).toHaveBeenCalledTimes(1);
   });
 
-  it("aborts an in-flight native read and stops its exact session once", async () => {
+  it("aborts only its in-flight native read and leaves session cleanup to the runner", async () => {
     const read = deferred<ClientResult<ArrayBuffer>>();
-    const readPlayback = vi.fn(() => read.promise);
-    const stopPlayback = vi.fn(async () => success(undefined));
+    const readChunk = vi.fn(() => read.promise);
     const Loader = createNativeMpegtsLoader(
-      { readPlayback, stopPlayback },
+      { read: readChunk },
       DESCRIPTOR,
       RUNTIME,
     );
@@ -130,15 +124,11 @@ describe("native mpegts.js loader", () => {
       { url: NATIVE_PLAYBACK_SENTINEL, duration: 0 },
       { from: 0, to: -1 },
     );
-    const signal = requireSignal(readPlayback);
+    const signal = requireSignal(readChunk);
 
     loader.abort();
     loader.abort();
     expect(signal.aborted).toBe(true);
-    expect(stopPlayback).toHaveBeenCalledTimes(1);
-    expect(stopPlayback).toHaveBeenCalledWith({
-      sessionId: DESCRIPTOR.sessionId,
-    });
 
     read.resolve({ ok: false, error: { _tag: "cancelled" } });
     await read.promise;
@@ -150,7 +140,7 @@ describe("native mpegts.js loader", () => {
 
   it("maps transport failures to one fixed safe loader error", async () => {
     const privateMessage = "https://user:secret@provider.invalid/live";
-    const readPlayback = vi.fn(async () => ({
+    const read = vi.fn(async () => ({
       ok: false as const,
       error: {
         _tag: "transport" as const,
@@ -158,9 +148,8 @@ describe("native mpegts.js loader", () => {
         message: privateMessage,
       },
     }));
-    const stopPlayback = vi.fn(async () => success(undefined));
     const Loader = createNativeMpegtsLoader(
-      { readPlayback, stopPlayback },
+      { read },
       DESCRIPTOR,
       RUNTIME,
     );
@@ -180,7 +169,6 @@ describe("native mpegts.js loader", () => {
       mpegts.LoaderErrors.EXCEPTION,
       { code: 0, msg: "The native stream was interrupted." },
     );
-    expect(stopPlayback).toHaveBeenCalledTimes(1);
   });
 
   it("fails closed without reading for a forged URL or nonzero range", async () => {
@@ -194,19 +182,16 @@ describe("native mpegts.js loader", () => {
       loader.onError = vi.fn();
       loader.open({ url, duration: 0 }, { from, to: -1 });
       await until(() => vi.mocked(loader.onError).mock.calls.length === 1);
-      expect(client.readPlayback).not.toHaveBeenCalled();
-      expect(client.stopPlayback).toHaveBeenCalledTimes(1);
+      expect(client.read).not.toHaveBeenCalled();
     }
   });
 });
 
 function fixtureClient(): NativePlaybackClient & {
-  readonly readPlayback: ReturnType<typeof vi.fn>;
-  readonly stopPlayback: ReturnType<typeof vi.fn>;
+  readonly read: ReturnType<typeof vi.fn>;
 } {
   return {
-    readPlayback: vi.fn(async () => success(new ArrayBuffer(0))),
-    stopPlayback: vi.fn(async () => success(undefined)),
+    read: vi.fn(async () => success(new ArrayBuffer(0))),
   };
 }
 
@@ -218,8 +203,8 @@ function success<Value>(value: Value): { readonly ok: true; readonly value: Valu
   return { ok: true, value };
 }
 
-function requireSignal(readPlayback: ReturnType<typeof vi.fn>): AbortSignal {
-  const first = readPlayback.mock.calls[0]?.[0];
+function requireSignal(read: ReturnType<typeof vi.fn>): AbortSignal {
+  const first = read.mock.calls[0]?.[0];
   if (typeof first !== "object" || first === null || !("signal" in first)) {
     throw new Error("expected a native read signal");
   }

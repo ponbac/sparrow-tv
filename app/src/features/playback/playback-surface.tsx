@@ -1,9 +1,8 @@
 import { Maximize2, RotateCcw, Square, Volume2, VolumeX } from "lucide-react";
-import { useState, type RefObject } from "react";
+import type { ReactNode, RefObject } from "react";
 import type { ChannelId } from "../../client/contracts";
 import {
   playerPresentation,
-  retryLabel,
   type PlayerState,
 } from "./playback-presentation";
 import "./hosted-player.css";
@@ -11,12 +10,22 @@ import "./hosted-player.css";
 export interface PlaybackSurfaceProps {
   readonly channel: { readonly id: ChannelId; readonly name: string };
   readonly state: PlayerState;
-  readonly attempt: number;
+  readonly videoKey: string;
   readonly videoRef: RefObject<HTMLVideoElement>;
   readonly transportLabel: string;
   readonly privacyCopy: string;
   readonly onPlaying: () => void;
-  readonly onRetry: () => void;
+  readonly overlayAction?: {
+    readonly label: string;
+    readonly onAction: () => void;
+  };
+  readonly additionalControls?: ReactNode;
+  readonly volume: number;
+  readonly muted: boolean;
+  readonly fullscreen: boolean;
+  readonly onVolumeChange: (volume: number) => void;
+  readonly onToggleMuted: () => void;
+  readonly onRequestFullscreen: () => void;
   readonly onStop: () => void;
   readonly onAutoplayFailure: () => void;
 }
@@ -25,29 +34,28 @@ export interface PlaybackSurfaceProps {
 export function PlaybackSurface({
   channel,
   state,
-  attempt,
+  videoKey,
   videoRef,
   transportLabel,
   privacyCopy,
   onPlaying,
-  onRetry,
+  overlayAction,
+  additionalControls,
+  volume,
+  muted,
+  fullscreen,
+  onVolumeChange,
+  onToggleMuted,
+  onRequestFullscreen,
   onStop,
   onAutoplayFailure,
 }: PlaybackSurfaceProps) {
-  const [muted, setMuted] = useState(false);
   const beginBlockedPlayback = () => {
     const video = videoRef.current;
     if (video !== null) {
       void video.play().catch(onAutoplayFailure);
     }
   };
-  const enterFullscreen = () => {
-    const video = videoRef.current;
-    if (video !== null && video.requestFullscreen !== undefined) {
-      void video.requestFullscreen().catch(() => undefined);
-    }
-  };
-
   const presentation = playerPresentation(state);
   return (
     <section className="hosted-player" aria-labelledby="playback-player-heading">
@@ -69,7 +77,7 @@ export function PlaybackSurface({
 
       <div className="hosted-player__screen" data-state={state._tag}>
         <video
-          key={`${channel.id}:${attempt}`}
+          key={videoKey}
           ref={videoRef}
           aria-label={`${channel.name} live video`}
           autoPlay
@@ -85,10 +93,10 @@ export function PlaybackSurface({
               <button type="button" onClick={beginBlockedPlayback}>
                 Start audio &amp; video
               </button>
-            ) : state._tag === "failed" && state.retryable ? (
-              <button type="button" onClick={onRetry}>
+            ) : overlayAction !== undefined ? (
+              <button type="button" onClick={overlayAction.onAction}>
                 <RotateCcw aria-hidden="true" />
-                {retryLabel(state.failure)}
+                {overlayAction.label}
               </button>
             ) : null}
           </div>
@@ -100,10 +108,11 @@ export function PlaybackSurface({
         role="group"
         aria-label="Playback controls"
       >
+        {additionalControls}
         <button
           type="button"
           aria-pressed={muted}
-          onClick={() => setMuted((current) => !current)}
+          onClick={onToggleMuted}
         >
           {muted ? (
             <VolumeX aria-hidden="true" />
@@ -112,7 +121,25 @@ export function PlaybackSurface({
           )}
           {muted ? "Unmute" : "Mute"}
         </button>
-        <button type="button" onClick={enterFullscreen}>
+        <label className="hosted-player__volume">
+          <span>Volume</span>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            step="1"
+            value={Math.round(volume * 100)}
+            aria-label="Volume"
+            onChange={(event) =>
+              onVolumeChange(Number(event.currentTarget.value) / 100)
+            }
+          />
+        </label>
+        <button
+          type="button"
+          aria-pressed={fullscreen}
+          onClick={onRequestFullscreen}
+        >
           <Maximize2 aria-hidden="true" />
           Full screen
         </button>

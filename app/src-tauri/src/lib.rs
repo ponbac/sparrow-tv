@@ -50,6 +50,8 @@ pub fn run() {
             ipc::catalog_unsubscribe,
             ipc::playback_start,
             ipc::playback_read,
+            ipc::playback_suspend,
+            ipc::playback_reopen,
             ipc::playback_stop,
         ])
         .build(tauri::generate_context!())

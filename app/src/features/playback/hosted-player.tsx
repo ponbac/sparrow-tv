@@ -8,6 +8,7 @@ import {
 } from "./mpegts-engine";
 import {
   isRetryable,
+  retryLabel,
   type PlayerState,
 } from "./playback-presentation";
 import { PlaybackSurface } from "./playback-surface";
@@ -29,6 +30,9 @@ export function HostedPlayer({
   const videoRef = useRef<HTMLVideoElement>(null);
   const [attempt, setAttempt] = useState(0);
   const [state, setState] = useState<PlayerState>({ _tag: "starting" });
+  const [muted, setMuted] = useState(false);
+  const [volume, setVolume] = useState(1);
+  const [fullscreen, setFullscreen] = useState(false);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -99,16 +103,55 @@ export function HostedPlayer({
     };
   }, [attempt, channel.id, client, engine]);
 
+  useEffect(() => {
+    const video = videoRef.current;
+    if (video !== null) {
+      video.volume = volume;
+      video.muted = muted;
+    }
+  }, [attempt, muted, volume]);
+
+  useEffect(() => {
+    const updateFullscreen = () => {
+      setFullscreen(document.fullscreenElement === videoRef.current);
+    };
+    document.addEventListener("fullscreenchange", updateFullscreen);
+    return () => document.removeEventListener("fullscreenchange", updateFullscreen);
+  }, []);
+
+  const requestFullscreen = () => {
+    const video = videoRef.current;
+    if (video !== null && video.requestFullscreen !== undefined) {
+      void video.requestFullscreen().then(
+        () => setFullscreen(true),
+        () => undefined,
+      );
+    }
+  };
+  const overlayAction =
+    state._tag === "failed" && state.retryable
+      ? {
+          label: retryLabel(state.failure),
+          onAction: () => setAttempt((current) => current + 1),
+        }
+      : undefined;
+
   return (
     <PlaybackSurface
       channel={channel}
       state={state}
-      attempt={attempt}
+      videoKey={`${channel.id}:${attempt}`}
       videoRef={videoRef}
       transportLabel="same-origin relay"
       privacyCopy="Provider details remain behind the Sparrow relay."
       onPlaying={() => setState({ _tag: "playing" })}
-      onRetry={() => setAttempt((current) => current + 1)}
+      {...(overlayAction === undefined ? {} : { overlayAction })}
+      volume={volume}
+      muted={muted}
+      fullscreen={fullscreen}
+      onVolumeChange={setVolume}
+      onToggleMuted={() => setMuted((current) => !current)}
+      onRequestFullscreen={requestFullscreen}
       onStop={onStop}
       onAutoplayFailure={() =>
         setState({

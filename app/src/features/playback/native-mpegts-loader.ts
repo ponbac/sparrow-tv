@@ -1,7 +1,7 @@
 import mpegts from "mpegts.js";
 import type {
-  InstalledSparrowClient,
-  NativePlaybackDescriptor,
+  InstalledPlaybackSession,
+  InstalledPlaybackTransport,
 } from "../../client/contracts";
 
 /** Private sentinel consumed only by mpegts.js; it carries no provider data. */
@@ -32,8 +32,8 @@ export interface NativeLoaderConstructor {
 
 /** The exact client surface owned by one native loader. */
 export type NativePlaybackClient = Pick<
-  InstalledSparrowClient,
-  "readPlayback" | "stopPlayback"
+  InstalledPlaybackSession,
+  "read"
 >;
 
 /**
@@ -42,20 +42,14 @@ export type NativePlaybackClient = Pick<
  */
 export function createNativeMpegtsLoader(
   client: NativePlaybackClient,
-  descriptor: NativePlaybackDescriptor,
+  descriptor: InstalledPlaybackTransport,
   runtime: NativeLoaderRuntime = mpegts,
-  releaseSession: () => Promise<void> = () =>
-    client
-      .stopPlayback({ sessionId: descriptor.sessionId })
-      .then(() => undefined)
-      .catch(() => undefined),
 ): NativeLoaderConstructor {
   return class NativeMpegtsLoader extends runtime.BaseLoader {
     #active = false;
     #opened = false;
     #offset = 0;
     #readController: AbortController | null = null;
-    #release: Promise<void> | null = null;
 
     constructor(seekHandler: unknown, config: unknown) {
       super("sparrow-native-stream");
@@ -80,14 +74,13 @@ export function createNativeMpegtsLoader(
     }
 
     abort(): void {
-      if (!this.#active && this.#release !== null) {
+      if (!this.#active) {
         return;
       }
       this.#active = false;
       this._status = runtime.LoaderStatus.kIdle;
       this.#readController?.abort();
       this.#readController = null;
-      void this.#releaseSession();
     }
 
     destroy(): void {
@@ -99,8 +92,7 @@ export function createNativeMpegtsLoader(
       while (this.#active) {
         const controller = new AbortController();
         this.#readController = controller;
-        const result = await client.readPlayback({
-          sessionId: descriptor.sessionId,
+        const result = await client.read({
           streamHandle: descriptor.streamHandle,
           signal: controller.signal,
         });
@@ -119,7 +111,6 @@ export function createNativeMpegtsLoader(
         if (chunk.byteLength === 0) {
           this.#active = false;
           this._status = runtime.LoaderStatus.kComplete;
-          void this.#releaseSession();
           invokeIfFunction(this.onComplete, 0, Math.max(0, this.#offset - 1));
           return;
         }
@@ -139,7 +130,6 @@ export function createNativeMpegtsLoader(
       this._status = runtime.LoaderStatus.kError;
       this.#readController?.abort();
       this.#readController = null;
-      void this.#releaseSession();
       invokeIfFunction(
         this.onError,
         // mpegts.js declares callback values as the constants object itself.
@@ -153,13 +143,6 @@ export function createNativeMpegtsLoader(
       );
     }
 
-    #releaseSession(): Promise<void> {
-      if (this.#release !== null) {
-        return this.#release;
-      }
-      this.#release = releaseSession().catch(() => undefined);
-      return this.#release;
-    }
   };
 }
 

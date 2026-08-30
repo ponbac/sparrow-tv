@@ -13,11 +13,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+use async_trait::async_trait;
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use futures_util::Stream;
 use sparrow_core::{
-    ChannelId, ChannelQuery, CoreAdapters, PageLimit, PageRequest, RefreshTrigger,
-    ResolvedPlaybackSource, SourceConfigurationInput, SparrowCore, SystemClock,
+    ChannelId, ChannelQuery, Clock, CoreAdapters, PageLimit, PageRequest, ResolvedPlaybackSource,
+    SourceConfigurationInput, SourceState, SparrowCore, SystemClock,
 };
 use sparrow_snapshot_store::AtomicFileSnapshotStore;
 use sparrow_source_http::{
@@ -56,15 +58,15 @@ async fn pulls_are_bounded_lossless_and_distinguish_empty_chunks_from_eof() {
         .await
         .expect("empty provider chunk is skipped");
     let eof = read(&manager, &started).await.expect("EOF is projected");
-    let repeated_eof = read(&manager, &started)
-        .await
-        .expect("EOF remains idempotent");
 
     assert_eq!(first, large[..MAX_NATIVE_PULL_BYTES]);
     assert_eq!(second, large[MAX_NATIVE_PULL_BYTES..]);
     assert_eq!(third, b"tail");
     assert!(eof.is_empty());
-    assert!(repeated_eof.is_empty());
+    assert!(matches!(
+        read(&manager, &started).await,
+        Err(PlaybackManagerError::Cancelled)
+    ));
     assert_eq!(access.tracker.active(), 0, "EOF releases the body");
 }
 
@@ -99,8 +101,97 @@ async fn header_and_body_failures_are_typed_and_release_provider_resources() {
     assert_eq!(body_access.tracker.active(), 0);
     assert!(matches!(
         read(&body_manager, &started).await,
+        Err(PlaybackManagerError::Cancelled)
+    ));
+}
+
+#[tokio::test]
+async fn initial_access_failure_retains_the_pinned_session_for_reopen() {
+    let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
+    let access = FakeAccess::new([
+        OpenPlan::Error(PlaybackAccessError::TimedOut),
+        OpenPlan::Stream(vec![StreamStep::Chunk(Bytes::from_static(b"recovered"))]),
+    ]);
+    let manager = PlaybackManager::with_access(Arc::clone(&fixture.core), access.clone());
+    let session_id = session(30);
+
+    assert!(matches!(
+        manager
+            .start(session_id.clone(), fixture.channel.clone())
+            .await,
+        Err(PlaybackManagerError::Access(PlaybackAccessError::TimedOut))
+    ));
+    let pinned = access.source(0);
+    assert!(pinned.upgrade().is_some());
+    assert_eq!(access.tracker.active(), 0, "failed open releases its lease");
+
+    let reopened = manager
+        .reopen(session_id)
+        .await
+        .expect("the dormant session reopens");
+    assert!(Weak::ptr_eq(&pinned, &access.source(1)));
+    assert_eq!(access.opened_location(0), access.opened_location(1));
+    assert_eq!(
+        read(&manager, &reopened)
+            .await
+            .expect("reopened body reads"),
+        b"recovered"
+    );
+    manager
+        .stop(reopened.session_id().clone())
+        .await
+        .expect("recovered session stops");
+    assert!(pinned.upgrade().is_none());
+}
+
+#[tokio::test]
+async fn eof_and_read_failure_become_dormant_and_reopen_with_fresh_handles() {
+    let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
+    let access = FakeAccess::new([
+        OpenPlan::Stream(vec![]),
+        OpenPlan::Stream(vec![StreamStep::Error(PlaybackReadError::Interrupted)]),
+        OpenPlan::Stream(vec![StreamStep::Chunk(Bytes::from_static(b"live-edge"))]),
+    ]);
+    let manager = PlaybackManager::with_access(Arc::clone(&fixture.core), access.clone());
+    let first = manager
+        .start(session(31), fixture.channel.clone())
+        .await
+        .expect("first transport opens");
+    assert!(
+        read(&manager, &first)
+            .await
+            .expect("EOF is returned")
+            .is_empty()
+    );
+    assert_eq!(access.tracker.active(), 0);
+
+    let second = manager
+        .reopen(first.session_id().clone())
+        .await
+        .expect("EOF session reopens");
+    assert_ne!(first.stream_handle(), second.stream_handle());
+    assert!(matches!(
+        read(&manager, &first).await,
+        Err(PlaybackManagerError::Cancelled)
+    ));
+    assert!(matches!(
+        read(&manager, &second).await,
         Err(PlaybackManagerError::Read(PlaybackReadError::Interrupted))
     ));
+    assert_eq!(access.tracker.active(), 0);
+
+    let third = manager
+        .reopen(second.session_id().clone())
+        .await
+        .expect("failed session reopens");
+    assert_ne!(second.stream_handle(), third.stream_handle());
+    assert_eq!(
+        read(&manager, &third)
+            .await
+            .expect("latest transport reads"),
+        b"live-edge"
+    );
+    assert_eq!(access.tracker.max_active(), 1);
 }
 
 #[tokio::test]
@@ -126,6 +217,90 @@ async fn matching_stop_cancels_pending_headers_before_acknowledging() {
         0,
         "stop waits until the pending request is dropped"
     );
+}
+
+#[tokio::test]
+async fn suspend_cancels_pending_headers_before_ack_and_retains_the_session() {
+    let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
+    let access = FakeAccess::new([
+        OpenPlan::PendingHeaders,
+        OpenPlan::Stream(vec![StreamStep::Chunk(Bytes::from_static(b"resumed"))]),
+    ]);
+    let manager = PlaybackManager::with_access(Arc::clone(&fixture.core), access.clone());
+    let session_id = session(40);
+    let mut start = Box::pin(manager.start(session_id.clone(), fixture.channel.clone()));
+
+    tokio::select! {
+        result = &mut start => panic!("pending headers completed unexpectedly: {result:?}"),
+        () = wait_until(|| access.tracker.active() == 1) => {}
+    }
+    manager
+        .suspend(session_id.clone())
+        .await
+        .expect("suspend is acknowledged after cancellation");
+    assert_eq!(access.tracker.active(), 0);
+    assert!(matches!(start.await, Err(PlaybackManagerError::Cancelled)));
+    assert!(access.source(0).upgrade().is_some());
+
+    let reopened = manager
+        .reopen(session_id)
+        .await
+        .expect("suspended headers reopen");
+    assert_eq!(
+        read(&manager, &reopened).await.expect("resumed body reads"),
+        b"resumed"
+    );
+    assert_eq!(access.tracker.max_active(), 1);
+}
+
+#[tokio::test]
+async fn suspend_cancels_pending_read_before_ack_and_resumes_at_a_fresh_transport() {
+    let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
+    let access = FakeAccess::new([
+        OpenPlan::Stream(vec![StreamStep::Pending]),
+        OpenPlan::Stream(vec![StreamStep::Chunk(Bytes::from_static(b"live-edge"))]),
+    ]);
+    let manager = PlaybackManager::with_access(Arc::clone(&fixture.core), access.clone());
+    let first = manager
+        .start(session(41), fixture.channel.clone())
+        .await
+        .expect("transport opens");
+    let mut pending_read = Box::pin(read(&manager, &first));
+    tokio::select! {
+        result = &mut pending_read => panic!("pending read completed unexpectedly: {result:?}"),
+        () = wait_until(|| access.tracker.read_polls() > 0) => {}
+    }
+
+    manager
+        .suspend(first.session_id().clone())
+        .await
+        .expect("suspend drops the body before acknowledgement");
+    assert_eq!(access.tracker.active(), 0);
+    assert!(matches!(
+        pending_read.await,
+        Err(PlaybackManagerError::Cancelled)
+    ));
+    manager
+        .suspend(first.session_id().clone())
+        .await
+        .expect("dormant suspend is idempotent");
+
+    let resumed = manager
+        .reopen(first.session_id().clone())
+        .await
+        .expect("resume opens at the live edge");
+    assert_ne!(first.stream_handle(), resumed.stream_handle());
+    assert!(matches!(
+        read(&manager, &first).await,
+        Err(PlaybackManagerError::Cancelled)
+    ));
+    assert_eq!(
+        read(&manager, &resumed)
+            .await
+            .expect("fresh transport reads"),
+        b"live-edge"
+    );
+    assert_eq!(access.tracker.max_active(), 1);
 }
 
 #[tokio::test]
@@ -159,6 +334,57 @@ async fn stop_before_start_is_bounded_and_does_not_poison_later_sessions() {
 }
 
 #[tokio::test]
+async fn suspend_before_start_is_bounded_and_late_start_pins_without_opening() {
+    let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
+    let access = FakeAccess::new([
+        OpenPlan::Stream(vec![StreamStep::Pending]),
+        OpenPlan::Stream(vec![StreamStep::Chunk(Bytes::from_static(b"resumed"))]),
+    ]);
+    let manager = PlaybackManager::with_access(Arc::clone(&fixture.core), access.clone());
+
+    for sequence in 0..=MAX_SUSPEND_INTENTS {
+        manager
+            .suspend(session(sequence))
+            .await
+            .expect("unknown suspend remains idempotent");
+    }
+
+    let oldest = manager
+        .start(session(0), fixture.channel.clone())
+        .await
+        .expect("the bounded registry evicts its oldest intent");
+    assert_eq!(access.open_count(), 1);
+    let late_id = session(MAX_SUSPEND_INTENTS);
+    assert!(matches!(
+        manager
+            .start(late_id.clone(), fixture.channel.clone())
+            .await,
+        Err(PlaybackManagerError::Cancelled)
+    ));
+    assert_eq!(
+        access.open_count(),
+        1,
+        "late suspended start resolves but never opens"
+    );
+    assert_eq!(access.tracker.active(), 0, "replacement drops prior stream");
+    assert!(matches!(
+        read(&manager, &oldest).await,
+        Err(PlaybackManagerError::Cancelled)
+    ));
+
+    let reopened = manager
+        .reopen(late_id)
+        .await
+        .expect("the pinned late session can resume");
+    assert_eq!(
+        read(&manager, &reopened)
+            .await
+            .expect("resumed session reads"),
+        b"resumed"
+    );
+}
+
+#[tokio::test]
 async fn matching_stop_cancels_a_pending_read_and_releases_the_body() {
     let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
     let access = FakeAccess::new([OpenPlan::Stream(vec![StreamStep::Pending])]);
@@ -183,6 +409,98 @@ async fn matching_stop_cancels_a_pending_read_and_releases_the_body() {
         Err(PlaybackManagerError::Cancelled)
     ));
     assert_eq!(access.tracker.active(), 0);
+}
+
+#[tokio::test]
+async fn reopen_replaces_pending_headers_only_after_dropping_the_old_request() {
+    let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
+    let access = FakeAccess::new([
+        OpenPlan::PendingHeaders,
+        OpenPlan::Stream(vec![StreamStep::Chunk(Bytes::from_static(b"fresh"))]),
+    ]);
+    let manager = PlaybackManager::with_access(Arc::clone(&fixture.core), access.clone());
+    let session_id = session(71);
+    let mut start = Box::pin(manager.start(session_id.clone(), fixture.channel.clone()));
+    tokio::select! {
+        result = &mut start => panic!("pending headers completed unexpectedly: {result:?}"),
+        () = wait_until(|| access.tracker.active() == 1) => {}
+    }
+
+    let reopened = manager
+        .reopen(session_id)
+        .await
+        .expect("reopen replaces pending headers");
+    assert!(matches!(start.await, Err(PlaybackManagerError::Cancelled)));
+    assert_eq!(access.tracker.max_active(), 1);
+    assert_eq!(
+        read(&manager, &reopened).await.expect("replacement reads"),
+        b"fresh"
+    );
+}
+
+#[tokio::test]
+async fn reopen_replaces_streaming_and_reading_transports_without_overlap() {
+    let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
+    let streaming_access = FakeAccess::new([
+        OpenPlan::Stream(vec![StreamStep::Pending]),
+        OpenPlan::Stream(vec![StreamStep::Chunk(Bytes::from_static(
+            b"stream-reopen",
+        ))]),
+    ]);
+    let streaming_manager =
+        PlaybackManager::with_access(Arc::clone(&fixture.core), streaming_access.clone());
+    let first = streaming_manager
+        .start(session(72), fixture.channel.clone())
+        .await
+        .expect("first stream opens");
+    let second = streaming_manager
+        .reopen(first.session_id().clone())
+        .await
+        .expect("streaming transport reopens");
+    assert_ne!(first.stream_handle(), second.stream_handle());
+    assert_eq!(streaming_access.tracker.max_active(), 1);
+    assert!(matches!(
+        read(&streaming_manager, &first).await,
+        Err(PlaybackManagerError::Cancelled)
+    ));
+    assert_eq!(
+        read(&streaming_manager, &second)
+            .await
+            .expect("replacement reads"),
+        b"stream-reopen"
+    );
+
+    let reading_access = FakeAccess::new([
+        OpenPlan::Stream(vec![StreamStep::Pending]),
+        OpenPlan::Stream(vec![StreamStep::Chunk(Bytes::from_static(b"read-reopen"))]),
+    ]);
+    let reading_manager =
+        PlaybackManager::with_access(Arc::clone(&fixture.core), reading_access.clone());
+    let before_read = reading_manager
+        .start(session(73), fixture.channel.clone())
+        .await
+        .expect("read stream opens");
+    let mut pending_read = Box::pin(read(&reading_manager, &before_read));
+    tokio::select! {
+        result = &mut pending_read => panic!("pending read completed unexpectedly: {result:?}"),
+        () = wait_until(|| reading_access.tracker.read_polls() > 0) => {}
+    }
+    let after_read = reading_manager
+        .reopen(before_read.session_id().clone())
+        .await
+        .expect("reopen cancels the pending read");
+    assert!(matches!(
+        pending_read.await,
+        Err(PlaybackManagerError::Cancelled)
+    ));
+    assert_ne!(before_read.stream_handle(), after_read.stream_handle());
+    assert_eq!(reading_access.tracker.max_active(), 1);
+    assert_eq!(
+        read(&reading_manager, &after_read)
+            .await
+            .expect("reading replacement reads"),
+        b"read-reopen"
+    );
 }
 
 #[tokio::test]
@@ -222,6 +540,14 @@ async fn replacement_and_stale_commands_never_overlap_or_retarget_streams() {
         .stop(first.session_id().clone())
         .await
         .expect("stale stop is harmless");
+    manager
+        .suspend(first.session_id().clone())
+        .await
+        .expect("stale suspend is harmless");
+    assert!(matches!(
+        manager.reopen(first.session_id().clone()).await,
+        Err(PlaybackManagerError::Cancelled)
+    ));
     assert!(matches!(
         manager
             .start(first.session_id().clone(), fixture.channel.clone())
@@ -229,6 +555,10 @@ async fn replacement_and_stale_commands_never_overlap_or_retarget_streams() {
         Err(PlaybackManagerError::Cancelled)
     ));
     assert_eq!(access.tracker.active(), 1);
+    assert!(
+        !access.prior_source_alive_on_open(1),
+        "replacement drops the old pinned source before opening the new source"
+    );
     assert_eq!(
         read(&manager, &second).await.expect("current handle reads"),
         b"new"
@@ -284,6 +614,99 @@ async fn dropped_start_callers_cannot_leave_pending_or_queued_opens() {
 }
 
 #[tokio::test]
+async fn dropped_reopen_callers_retire_dormant_sessions_and_pending_opens() {
+    let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
+    let access = FakeAccess::new([OpenPlan::Stream(vec![]), OpenPlan::PendingHeaders]);
+    let manager = PlaybackManager::with_access(Arc::clone(&fixture.core), access.clone());
+    let started = manager
+        .start(session(87), fixture.channel.clone())
+        .await
+        .expect("stream opens");
+    assert!(
+        read(&manager, &started)
+            .await
+            .expect("stream ends")
+            .is_empty()
+    );
+    let pinned = access.source(0);
+
+    let mut abandoned = Box::pin(manager.reopen(started.session_id().clone()));
+    tokio::select! {
+        result = &mut abandoned => panic!("pending reopen completed unexpectedly: {result:?}"),
+        () = wait_until(|| access.open_count() == 2) => {}
+    }
+    drop(abandoned);
+    wait_until(|| access.tracker.active() == 0).await;
+    assert!(pinned.upgrade().is_none());
+    assert!(matches!(
+        manager.reopen(started.session_id().clone()).await,
+        Err(PlaybackManagerError::Cancelled)
+    ));
+}
+
+#[tokio::test]
+async fn stop_releases_dormant_sources_after_each_recoverable_failure() {
+    let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
+
+    let access_failure = FakeAccess::new([OpenPlan::Error(PlaybackAccessError::Unavailable)]);
+    let access_manager =
+        PlaybackManager::with_access(Arc::clone(&fixture.core), access_failure.clone());
+    let access_id = session(91);
+    assert!(matches!(
+        access_manager
+            .start(access_id.clone(), fixture.channel.clone())
+            .await,
+        Err(PlaybackManagerError::Access(
+            PlaybackAccessError::Unavailable
+        ))
+    ));
+    let access_source = access_failure.source(0);
+    access_manager
+        .stop(access_id)
+        .await
+        .expect("access-failed session stops");
+    assert!(access_source.upgrade().is_none());
+
+    let eof_access = FakeAccess::new([OpenPlan::Stream(vec![])]);
+    let eof_manager = PlaybackManager::with_access(Arc::clone(&fixture.core), eof_access.clone());
+    let eof = eof_manager
+        .start(session(92), fixture.channel.clone())
+        .await
+        .expect("EOF stream opens");
+    assert!(
+        read(&eof_manager, &eof)
+            .await
+            .expect("EOF arrives")
+            .is_empty()
+    );
+    let eof_source = eof_access.source(0);
+    eof_manager
+        .stop(eof.session_id().clone())
+        .await
+        .expect("EOF session stops");
+    assert!(eof_source.upgrade().is_none());
+
+    let read_access = FakeAccess::new([OpenPlan::Stream(vec![StreamStep::Error(
+        PlaybackReadError::Interrupted,
+    )])]);
+    let read_manager = PlaybackManager::with_access(Arc::clone(&fixture.core), read_access.clone());
+    let failed = read_manager
+        .start(session(93), fixture.channel.clone())
+        .await
+        .expect("read-failure stream opens");
+    assert!(matches!(
+        read(&read_manager, &failed).await,
+        Err(PlaybackManagerError::Read(PlaybackReadError::Interrupted))
+    ));
+    let read_source = read_access.source(0);
+    read_manager
+        .stop(failed.session_id().clone())
+        .await
+        .expect("read-failed session stops");
+    assert!(read_source.upgrade().is_none());
+}
+
+#[tokio::test]
 async fn dropping_a_pending_read_cancels_the_body_without_shifting_bytes() {
     let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
     let access = FakeAccess::new([OpenPlan::Stream(vec![StreamStep::Pending])]);
@@ -329,14 +752,16 @@ async fn dropping_the_manager_tears_down_the_actor_and_provider_body() {
 }
 
 #[tokio::test]
-async fn ended_session_keeps_its_pinned_source_across_catalog_refresh() {
+async fn active_transport_defers_background_refresh_then_dormant_reopen_uses_pinned_source() {
     let (source_location, source_server) = m3u_server([
         PRIVATE_PLAYBACK_CANARY,
         "http://replacement.invalid/new.ts?token=rotated",
     ]);
-    let fixture = CoreFixture::from_source(&source_location).await;
+    let clock = Arc::new(ControlledClock::at("2026-08-29T00:00:00Z"));
+    let fixture = CoreFixture::from_source_with_clock(&source_location, clock.clone()).await;
     let access = FakeAccess::new([
-        OpenPlan::Stream(vec![]),
+        OpenPlan::Stream(vec![StreamStep::Pending]),
+        OpenPlan::Stream(vec![StreamStep::Pending]),
         OpenPlan::Stream(vec![StreamStep::Chunk(Bytes::from_static(b"replacement"))]),
     ]);
     let manager = PlaybackManager::with_access(Arc::clone(&fixture.core), access.clone());
@@ -344,47 +769,58 @@ async fn ended_session_keeps_its_pinned_source_across_catalog_refresh() {
         .start(session(100), fixture.channel.clone())
         .await
         .expect("first playback starts");
-    assert!(
-        read(&manager, &first)
-            .await
-            .expect("first stream reaches EOF")
-            .is_empty()
-    );
     let pinned_source = access.source(0);
+    let initial_generation = fixture.core.status().generation();
+    clock.set("2026-08-29T07:00:00Z");
+    wait_until(|| matches!(fixture.core.status().m3u(), SourceState::Deferred { .. })).await;
+    assert_eq!(
+        access.tracker.active(),
+        1,
+        "the active transport keeps its playback lease"
+    );
+
+    manager
+        .suspend(first.session_id().clone())
+        .await
+        .expect("suspend releases automatic refresh admission");
+    assert_eq!(access.tracker.active(), 0);
+    wait_until(|| {
+        fixture.core.status().generation() != initial_generation
+            && matches!(fixture.core.status().m3u(), SourceState::Fresh { .. })
+    })
+    .await;
     assert_eq!(
         pinned_source
             .upgrade()
-            .expect("the ended session retains its source")
+            .expect("the dormant session retains its source")
             .location_for_adapter()
             .as_str(),
         PRIVATE_PLAYBACK_CANARY
-    );
-
-    let report = fixture.core.refresh(RefreshTrigger::Manual).await;
-    assert!(
-        report.status().generation().is_some(),
-        "catalog refresh publishes"
     );
     let current_channel = only_channel(&fixture.core);
     assert_eq!(current_channel, fixture.channel);
-    assert_eq!(
-        pinned_source
-            .upgrade()
-            .expect("refresh cannot retarget the pinned Session source")
-            .location_for_adapter()
-            .as_str(),
-        PRIVATE_PLAYBACK_CANARY
-    );
+
+    let reopened = manager
+        .reopen(first.session_id().clone())
+        .await
+        .expect("dormant session reopens its pinned source");
+    assert_eq!(access.opened_location(1), PRIVATE_PLAYBACK_CANARY);
+    assert!(Weak::ptr_eq(&pinned_source, &access.source(1)));
 
     let second = manager
         .start(session(101), current_channel)
         .await
         .expect("a new session resolves the refreshed catalog");
     assert_eq!(
-        access.opened_location(1),
+        access.opened_location(2),
         "http://replacement.invalid/new.ts?token=rotated"
     );
+    assert!(matches!(
+        read(&manager, &reopened).await,
+        Err(PlaybackManagerError::Cancelled)
+    ));
     assert!(pinned_source.upgrade().is_none());
+    assert_eq!(access.tracker.max_active(), 1);
     manager
         .stop(second.session_id().clone())
         .await
@@ -399,16 +835,20 @@ async fn diagnostics_never_expose_provider_or_opaque_identifier_values() {
     let manager = PlaybackManager::with_access(Arc::clone(&fixture.core), access);
     let private_session = session(0xfeed);
     let session_value = private_session.as_str().to_owned();
+    let private_handle = NativeStreamHandle::parse("stream1_feedfacefeedface".to_owned())
+        .expect("fixture handle parses");
+    let handle_value = private_handle.as_str().to_owned();
     let error = manager
         .start(private_session.clone(), fixture.channel.clone())
         .await
         .expect_err("provider rejects playback");
-    let diagnostics = format!("{error:?} {error} {private_session:?}");
+    let diagnostics = format!("{error:?} {error} {private_session:?} {private_handle:?}");
 
     assert!(!diagnostics.contains(PRIVATE_PLAYBACK_CANARY));
     assert!(!diagnostics.contains("subscriber"));
     assert!(!diagnostics.contains("secret"));
     assert!(!diagnostics.contains(&session_value));
+    assert!(!diagnostics.contains(&handle_value));
 }
 
 async fn read(
@@ -455,6 +895,10 @@ impl CoreFixture {
     }
 
     async fn from_source(source_location: &str) -> Self {
+        Self::from_source_with_clock(source_location, Arc::new(SystemClock)).await
+    }
+
+    async fn from_source_with_clock(source_location: &str, clock: Arc<dyn Clock>) -> Self {
         let directory = TempDir::new().expect("temporary snapshot directory");
         let configuration = SparrowCore::parse_source_configuration(SourceConfigurationInput::new(
             source_location,
@@ -468,7 +912,7 @@ impl CoreFixture {
         let core = Arc::new(
             SparrowCore::bootstrap(
                 Some(configuration),
-                CoreAdapters::new(source, snapshots, Arc::new(SystemClock)),
+                CoreAdapters::new(source, snapshots, clock),
             )
             .await
             .expect("configured core bootstraps"),
@@ -480,6 +924,51 @@ impl CoreFixture {
             _directory: directory,
         }
     }
+}
+
+struct ControlledClock {
+    current: Mutex<DateTime<Utc>>,
+    changed: tokio::sync::watch::Sender<DateTime<Utc>>,
+}
+
+impl ControlledClock {
+    fn at(value: &str) -> Self {
+        let current = parse_instant(value);
+        let (changed, _) = tokio::sync::watch::channel(current);
+        Self {
+            current: Mutex::new(current),
+            changed,
+        }
+    }
+
+    fn set(&self, value: &str) {
+        let current = parse_instant(value);
+        *self.current.lock().expect("clock lock") = current;
+        self.changed.send_replace(current);
+    }
+}
+
+#[async_trait]
+impl Clock for ControlledClock {
+    fn now(&self) -> DateTime<Utc> {
+        *self.current.lock().expect("clock lock")
+    }
+
+    async fn wait_until(&self, deadline: DateTime<Utc>) {
+        let mut changed = self.changed.subscribe();
+        loop {
+            if *changed.borrow_and_update() >= deadline {
+                return;
+            }
+            changed.changed().await.expect("test clock remains open");
+        }
+    }
+}
+
+fn parse_instant(value: &str) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(value)
+        .expect("valid fixture time")
+        .with_timezone(&Utc)
 }
 
 fn only_channel(core: &SparrowCore) -> ChannelId {
@@ -546,6 +1035,7 @@ struct FakeAccess {
     plans: Arc<Mutex<VecDeque<OpenPlan>>>,
     locations: Arc<Mutex<Vec<String>>>,
     sources: Arc<Mutex<Vec<Weak<ResolvedPlaybackSource>>>>,
+    prior_source_alive: Arc<Mutex<Vec<bool>>>,
     tracker: Arc<ConnectionTracker>,
 }
 
@@ -555,6 +1045,7 @@ impl FakeAccess {
             plans: Arc::new(Mutex::new(plans.into_iter().collect())),
             locations: Arc::new(Mutex::new(Vec::new())),
             sources: Arc::new(Mutex::new(Vec::new())),
+            prior_source_alive: Arc::new(Mutex::new(Vec::new())),
             tracker: Arc::new(ConnectionTracker::default()),
         })
     }
@@ -570,10 +1061,26 @@ impl FakeAccess {
     fn source(&self, index: usize) -> Weak<ResolvedPlaybackSource> {
         self.sources.lock().expect("sources lock")[index].clone()
     }
+
+    fn prior_source_alive_on_open(&self, index: usize) -> bool {
+        self.prior_source_alive
+            .lock()
+            .expect("source liveness lock")[index]
+    }
 }
 
 impl NativePlaybackAccess for FakeAccess {
     fn open(&self, source: Arc<ResolvedPlaybackSource>) -> AccessOpenFuture {
+        let prior_source_alive = self
+            .sources
+            .lock()
+            .expect("sources lock")
+            .iter()
+            .any(|candidate| candidate.upgrade().is_some());
+        self.prior_source_alive
+            .lock()
+            .expect("source liveness lock")
+            .push(prior_source_alive);
         self.locations
             .lock()
             .expect("locations lock")

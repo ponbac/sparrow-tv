@@ -21,6 +21,8 @@ import {
   type ClientError,
   type ClientRequestOptions,
   type ClientResult,
+  type CreatePlaybackSessionInput,
+  type InstalledPlaybackSession,
   type InstalledSparrowClient,
   type ListChannelsInput,
   type ListGroupsInput,
@@ -458,6 +460,26 @@ class FakeSparrowClient implements InstalledSparrowClient {
             }),
       ),
     );
+  }
+
+  createPlaybackSession(
+    input: CreatePlaybackSessionInput,
+  ): InstalledPlaybackSession {
+    const descriptor = clientSchemas.nativePlaybackDescriptor.parse({
+      _tag: "tauri-native-stream",
+      sessionId: `play1_${"a".repeat(32)}_1`,
+      streamHandle: `stream1_${"b".repeat(16)}`,
+    });
+    return {
+      start: async (options) => {
+        this.playbackInputs.push({ id: input.id, ...options });
+        return success(descriptor);
+      },
+      reopen: async () => success(descriptor),
+      read: async () => success(new ArrayBuffer(0)),
+      suspend: async () => success(undefined),
+      stop: async () => success(undefined),
+    };
   }
 
   readPlayback(
@@ -1365,8 +1387,8 @@ const TEST_PLAYBACK_ENGINE: HostedPlaybackEngine = {
 };
 
 const TEST_NATIVE_PLAYBACK_ENGINE: NativePlaybackEngine = {
-  start: ({ video }) => {
-    video.dispatchEvent(new Event("playing"));
+  start: ({ onPlaying }) => {
+    onPlaying();
     return { stop: () => undefined };
   },
 };

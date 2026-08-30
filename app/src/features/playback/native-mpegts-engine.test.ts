@@ -14,18 +14,18 @@ const DESCRIPTOR = clientSchemas.nativePlaybackDescriptor.parse({
 });
 
 describe("installed mpegts.js adapter", () => {
-  it("binds an opaque stream to a main-thread custom loader and releases once", async () => {
+  it("binds an opaque stream to a main-thread loader without final-stopping its session", async () => {
     const fixture = runtimeFixture();
-    const stopPlayback = vi.fn(async () => success(undefined));
+    const read = vi.fn(async () => success(new ArrayBuffer(0)));
+    const playing = vi.fn();
+    const video = document.createElement("video");
     const started = createNativeMpegtsPlaybackEngine(fixture.runtime).start({
-      client: {
-        readPlayback: vi.fn(async () => success(new ArrayBuffer(0))),
-        stopPlayback,
-      },
+      session: { read },
       descriptor: DESCRIPTOR,
-      video: document.createElement("video"),
+      video,
       onFailure: vi.fn(),
       onAutoplayBlocked: vi.fn(),
+      onPlaying: playing,
     });
 
     if (typeof started === "string") {
@@ -50,13 +50,15 @@ describe("installed mpegts.js adapter", () => {
     expect(JSON.stringify(fixture.source)).not.toContain(DESCRIPTOR.sessionId);
     expect(JSON.stringify(fixture.source)).not.toContain(DESCRIPTOR.streamHandle);
 
+    video.dispatchEvent(new Event("playing"));
+    expect(playing).toHaveBeenCalledTimes(1);
+
     started.stop();
     started.stop();
     await Promise.resolve();
-    expect(stopPlayback).toHaveBeenCalledTimes(1);
-    expect(stopPlayback).toHaveBeenCalledWith({
-      sessionId: DESCRIPTOR.sessionId,
-    });
+    video.dispatchEvent(new Event("playing"));
+    expect(playing).toHaveBeenCalledTimes(1);
+    expect(read).not.toHaveBeenCalled();
     expect(fixture.calls).toEqual([
       "on:error",
       "on:loading-complete",
@@ -72,24 +74,22 @@ describe("installed mpegts.js adapter", () => {
     ]);
   });
 
-  it("releases a session before returning an unsupported-player failure", async () => {
+  it("returns an unsupported-player failure without taking session ownership", async () => {
     const fixture = runtimeFixture(false);
-    const stopPlayback = vi.fn(async () => success(undefined));
 
     expect(
       createNativeMpegtsPlaybackEngine(fixture.runtime).start({
-        client: {
-          readPlayback: vi.fn(async () => success(new ArrayBuffer(0))),
-          stopPlayback,
+        session: {
+          read: vi.fn(async () => success(new ArrayBuffer(0))),
         },
         descriptor: DESCRIPTOR,
         video: document.createElement("video"),
         onFailure: vi.fn(),
         onAutoplayBlocked: vi.fn(),
+        onPlaying: vi.fn(),
       }),
     ).toBe("browser-unsupported");
     await Promise.resolve();
-    expect(stopPlayback).toHaveBeenCalledTimes(1);
     expect(fixture.calls).toEqual([]);
   });
 
@@ -100,16 +100,15 @@ describe("installed mpegts.js adapter", () => {
     ] as const) {
       const fixture = runtimeFixture();
       const failure = vi.fn();
-      const stopPlayback = vi.fn(async () => success(undefined));
       const started = createNativeMpegtsPlaybackEngine(fixture.runtime).start({
-        client: {
-          readPlayback: vi.fn(async () => success(new ArrayBuffer(0))),
-          stopPlayback,
+        session: {
+          read: vi.fn(async () => success(new ArrayBuffer(0))),
         },
         descriptor: DESCRIPTOR,
         video: document.createElement("video"),
         onFailure: failure,
         onAutoplayBlocked: vi.fn(),
+        onPlaying: vi.fn(),
       });
       if (typeof started === "string" || fixture.errorListener === undefined) {
         throw new Error("expected an active fixture player");
@@ -120,10 +119,54 @@ describe("installed mpegts.js adapter", () => {
       });
       await Promise.resolve();
 
-      expect(failure).toHaveBeenCalledWith(expected);
+      expect(failure).toHaveBeenCalledWith(
+        expected,
+        type === "network",
+      );
       expect(JSON.stringify(failure.mock.calls)).not.toContain("provider.invalid");
-      expect(stopPlayback).toHaveBeenCalledTimes(1);
     }
+  });
+
+  it("preserves a non-retryable safe read classification through the loader seam", async () => {
+    const fixture = runtimeFixture();
+    const failure = vi.fn();
+    const started = createNativeMpegtsPlaybackEngine(fixture.runtime).start({
+      session: {
+        read: vi.fn(async () => ({
+          ok: false as const,
+          error: {
+            _tag: "transport" as const,
+            retryable: false,
+            message: "https://user:secret@provider.invalid/live",
+          },
+        })),
+      },
+      descriptor: DESCRIPTOR,
+      video: document.createElement("video"),
+      onFailure: failure,
+      onAutoplayBlocked: vi.fn(),
+      onPlaying: vi.fn(),
+    });
+    const Loader = fixture.config?.customLoader;
+    if (
+      typeof started === "string" ||
+      Loader === undefined ||
+      fixture.errorListener === undefined
+    ) {
+      throw new Error("expected an active custom-loader fixture");
+    }
+    const loader = new Loader({}, {});
+    loader.onError = vi.fn();
+    loader.open(
+      { url: NATIVE_PLAYBACK_SENTINEL, duration: 0 },
+      { from: 0, to: -1 },
+    );
+    await until(() => vi.mocked(loader.onError).mock.calls.length === 1);
+
+    fixture.errorListener("network", "private-detail");
+
+    expect(failure).toHaveBeenCalledWith("source-unavailable", false);
+    expect(JSON.stringify(failure.mock.calls)).not.toContain("provider.invalid");
   });
 });
 
@@ -193,4 +236,14 @@ function runtimeFixture(mseLivePlayback = true): {
 
 function success<Value>(value: Value): { readonly ok: true; readonly value: Value } {
   return { ok: true, value };
+}
+
+async function until(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (predicate()) {
+      return;
+    }
+    await Promise.resolve();
+  }
+  throw new Error("asynchronous fixture did not settle");
 }

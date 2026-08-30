@@ -11,6 +11,9 @@ import {
   type ClientError,
   type ClientRequestOptions,
   type ClientResult,
+  type CreatePlaybackSessionInput,
+  type InstalledPlaybackSession,
+  type InstalledPlaybackTransport,
   type InstalledSparrowClient,
   type ListChannelsInput,
   type ListGroupsInput,
@@ -20,6 +23,7 @@ import {
   type PlaybackSessionId,
   type ProgrammeSummary,
   type ReadPlaybackInput,
+  type ReadInstalledPlaybackInput,
   type RefreshReport,
   type ScheduleInput,
   type SearchInput,
@@ -49,6 +53,8 @@ export const NATIVE_COMMANDS = Object.freeze({
   unsubscribe: "catalog_unsubscribe",
   startPlayback: "playback_start",
   readPlayback: "playback_read",
+  reopenPlayback: "playback_reopen",
+  suspendPlayback: "playback_suspend",
   stopPlayback: "playback_stop",
 } as const);
 
@@ -324,6 +330,16 @@ class TauriSparrowClient implements InstalledSparrowClient {
     );
   }
 
+  createPlaybackSession(
+    input: CreatePlaybackSessionInput,
+  ): InstalledPlaybackSession {
+    return new TauriPlaybackSession(
+      this.#ipc,
+      input.id,
+      this.#nextPlaybackSessionId(),
+    );
+  }
+
   async readPlayback(
     input: ReadPlaybackInput,
   ): Promise<ClientResult<ArrayBuffer>> {
@@ -453,10 +469,230 @@ class TauriSparrowClient implements InstalledSparrowClient {
   }
 }
 
+/**
+ * Owns one client-created native session identifier across transport reopenings.
+ * The identifier never crosses this resource's interface.
+ */
+class TauriPlaybackSession implements InstalledPlaybackSession {
+  readonly #ipc: NativeIpc;
+  readonly #channelId: CreatePlaybackSessionInput["id"];
+  readonly #sessionId: PlaybackSessionId;
+  #started = false;
+  #stopped = false;
+  #openSettlement: Promise<void> = Promise.resolve();
+  #lateCleanup: Promise<ClientResult<void>> | null = null;
+  #suspendFlight: Promise<ClientResult<void>> | null = null;
+  #stopFlight: Promise<ClientResult<void>> | null = null;
+
+  constructor(
+    ipc: NativeIpc,
+    channelId: CreatePlaybackSessionInput["id"],
+    sessionId: PlaybackSessionId,
+  ) {
+    this.#ipc = ipc;
+    this.#channelId = channelId;
+    this.#sessionId = sessionId;
+  }
+
+  start(
+    options: ClientRequestOptions = {},
+  ): Promise<ClientResult<InstalledPlaybackTransport>> {
+    if (this.#started || this.#stopped) {
+      return Promise.resolve(invalidNativeResponse());
+    }
+    this.#started = true;
+    return this.#open(NATIVE_COMMANDS.startPlayback, {
+      id: this.#channelId,
+      sessionId: this.#sessionId,
+    }, options.signal);
+  }
+
+  async reopen(
+    options: ClientRequestOptions = {},
+  ): Promise<ClientResult<InstalledPlaybackTransport>> {
+    if (!this.#started || this.#stopped) {
+      return invalidNativeResponse();
+    }
+    await this.#openSettlement;
+    await Promise.resolve();
+    if (this.#lateCleanup !== null) {
+      await this.#lateCleanup;
+    }
+    if (this.#suspendFlight !== null) {
+      await this.#suspendFlight;
+    }
+    if (this.#stopped) {
+      return { ok: false, error: { _tag: "cancelled" } };
+    }
+    return this.#open(
+      NATIVE_COMMANDS.reopenPlayback,
+      { sessionId: this.#sessionId },
+      options.signal,
+    );
+  }
+
+  async read(
+    input: ReadInstalledPlaybackInput,
+  ): Promise<ClientResult<ArrayBuffer>> {
+    if (this.#stopped) {
+      return { ok: false, error: { _tag: "cancelled" } };
+    }
+    const outcome = await invokeWithCancellation(
+      () =>
+        this.#ipc.invoke(NATIVE_COMMANDS.readPlayback, {
+          input: {
+            sessionId: this.#sessionId,
+            streamHandle: input.streamHandle,
+          },
+        }),
+      input.signal,
+    );
+    return parseNativeChunk(outcome);
+  }
+
+  suspend(
+    options: ClientRequestOptions = {},
+  ): Promise<ClientResult<void>> {
+    if (this.#stopped) {
+      return Promise.resolve({ ok: true, value: undefined });
+    }
+    if (this.#suspendFlight !== null) {
+      return this.#suspendFlight;
+    }
+    const flight = requestNative(
+      this.#ipc,
+      NATIVE_COMMANDS.suspendPlayback,
+      { input: { sessionId: this.#sessionId } },
+      voidResponseSchema,
+      options.signal,
+    );
+    this.#suspendFlight = flight;
+    void flight.finally(() => {
+      if (this.#suspendFlight === flight) {
+        this.#suspendFlight = null;
+      }
+    });
+    return flight;
+  }
+
+  stop(
+    options: ClientRequestOptions = {},
+  ): Promise<ClientResult<void>> {
+    if (this.#stopFlight !== null) {
+      return this.#stopFlight;
+    }
+    this.#stopped = true;
+    this.#stopFlight = requestNative(
+      this.#ipc,
+      NATIVE_COMMANDS.stopPlayback,
+      { input: { sessionId: this.#sessionId } },
+      voidResponseSchema,
+      options.signal,
+    );
+    return this.#stopFlight;
+  }
+
+  async #open(
+    command: typeof NATIVE_COMMANDS.startPlayback | typeof NATIVE_COMMANDS.reopenPlayback,
+    input: Readonly<Record<string, unknown>>,
+    signal: AbortSignal | undefined,
+  ): Promise<ClientResult<InstalledPlaybackTransport>> {
+    if (this.#stopped) {
+      return { ok: false, error: { _tag: "cancelled" } };
+    }
+    const parser = clientSchemas.nativePlaybackDescriptor.refine(
+      (descriptor) => descriptor.sessionId === this.#sessionId,
+    );
+    let rawFlight: Promise<unknown> | null = null;
+    const outcome = await invokeWithCancellation(
+      () => {
+        rawFlight = this.#ipc.invoke(command, { input });
+        this.#openSettlement = rawFlight.then(
+          () => undefined,
+          () => undefined,
+        );
+        return rawFlight;
+      },
+      signal,
+      undefined,
+      () => {
+        this.#lateCleanup = this.#stopped ? this.stop() : this.suspend();
+      },
+    );
+    void rawFlight;
+    const result = parseNativeOutcome(outcome, parser);
+    if (!result.ok && result.error._tag === "transport" && !result.error.retryable) {
+      await this.stop();
+    }
+    return result.ok
+      ? {
+          ok: true,
+          value: {
+            _tag: "tauri-native-stream",
+            streamHandle: result.value.streamHandle,
+          },
+        }
+      : result;
+  }
+}
+
 type InvokeOutcome =
   | { readonly _tag: "resolved"; readonly value: unknown }
   | { readonly _tag: "rejected"; readonly error: unknown }
   | { readonly _tag: "cancelled" };
+
+function requestNative<Value>(
+  ipc: NativeIpc,
+  command: string,
+  args: Readonly<Record<string, unknown>> | undefined,
+  parser: RuntimeParser<Value>,
+  signal: AbortSignal | undefined,
+): Promise<ClientResult<Value>> {
+  return invokeWithCancellation(
+    () => ipc.invoke(command, args),
+    signal,
+  ).then((outcome) => parseNativeOutcome(outcome, parser));
+}
+
+function parseNativeOutcome<Value>(
+  outcome: InvokeOutcome,
+  parser: RuntimeParser<Value>,
+): ClientResult<Value> {
+  switch (outcome._tag) {
+    case "cancelled":
+      return { ok: false, error: { _tag: "cancelled" } };
+    case "rejected": {
+      const parsedError = clientSchemas.serverError.safeParse(outcome.error);
+      return parsedError.success
+        ? { ok: false, error: parsedError.data }
+        : invalidNativeResponse();
+    }
+    case "resolved": {
+      const parsed = parser.safeParse(outcome.value);
+      return parsed.success
+        ? { ok: true, value: parsed.data }
+        : invalidNativeResponse();
+    }
+  }
+}
+
+function parseNativeChunk(outcome: InvokeOutcome): ClientResult<ArrayBuffer> {
+  switch (outcome._tag) {
+    case "cancelled":
+      return { ok: false, error: { _tag: "cancelled" } };
+    case "rejected": {
+      const parsedError = clientSchemas.serverError.safeParse(outcome.error);
+      return parsedError.success
+        ? { ok: false, error: parsedError.data }
+        : invalidNativeResponse();
+    }
+    case "resolved":
+      return outcome.value instanceof ArrayBuffer &&
+        outcome.value.byteLength <= MAX_NATIVE_CHUNK_BYTES
+        ? { ok: true, value: outcome.value }
+        : invalidNativeResponse();
+  }
+}
 
 function invokeWithCancellation(
   start: () => Promise<unknown>,

@@ -1,10 +1,17 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   clientSchemas,
-  type ClientResult,
-  type PlaybackDescriptor,
+  type InstalledPlaybackSession,
 } from "../../client/contracts";
 import {
   InstalledPlayer,
@@ -12,7 +19,10 @@ import {
 } from "./installed-player";
 import type { NativePlaybackEngine } from "./native-mpegts-engine";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 const CHANNEL = clientSchemas.channel.parse({
   id: "installed-news",
@@ -24,143 +34,193 @@ const DESCRIPTOR = clientSchemas.nativePlaybackDescriptor.parse({
   sessionId: `play1_${"f".repeat(32)}_1`,
   streamHandle: `stream1_${"a".repeat(16)}`,
 });
+const REOPENED_DESCRIPTOR = clientSchemas.nativePlaybackDescriptor.parse({
+  _tag: "tauri-native-stream",
+  sessionId: DESCRIPTOR.sessionId,
+  streamHandle: `stream1_${"b".repeat(16)}`,
+});
 
 describe("InstalledPlayer", () => {
-  it("moves from starting to playing through one opaque native session", async () => {
-    const client = playbackClient(async () => success(DESCRIPTOR));
-    const engineStop = vi.fn();
-    const engineStart = vi.fn<NativePlaybackEngine["start"]>((request) => {
-      request.video.dispatchEvent(new Event("playing"));
-      return { stop: engineStop };
-    });
+  it("owns pause, live-edge resume, controls, diagnostics, and confirmed stop", async () => {
+    const session = fixtureSession();
+    const client = fixtureClient(() => session.value);
+    const engine = playingEngine();
     const onStop = vi.fn();
-    const view = render(
-      <InstalledPlayer
-        channel={CHANNEL}
-        client={client}
-        engine={{ start: engineStart }}
-        onStop={onStop}
-      />,
-    );
-
-    expect(screen.getByText("Opening the live signal")).toBeVisible();
-    expect(await screen.findByText("ON AIR")).toBeVisible();
-    expect(client.startPlayback).toHaveBeenCalledTimes(1);
-    expect(client.startPlayback).toHaveBeenCalledWith({
-      id: CHANNEL.id,
-      signal: expect.any(AbortSignal),
+    const user = userEvent.setup();
+    const clipboard = vi.fn<(text: string) => Promise<void>>(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: clipboard },
     });
-    expect(engineStart).toHaveBeenCalledTimes(1);
-    expect(engineStart.mock.calls[0]?.[0].descriptor).toEqual(DESCRIPTOR);
-    expect(document.body.innerHTML).not.toContain(DESCRIPTOR.sessionId);
-    expect(document.body.innerHTML).not.toContain(DESCRIPTOR.streamHandle);
-
-    await userEvent.setup().click(
-      screen.getByRole("button", { name: "Stop stream" }),
-    );
-    expect(onStop).toHaveBeenCalledTimes(1);
-    view.unmount();
-    expect(engineStop).toHaveBeenCalledTimes(1);
-  });
-
-  it("aborts an opening session when its player is removed", async () => {
-    const start = deferred<ClientResult<PlaybackDescriptor>>();
-    const client = playbackClient(() => start.promise);
-    const engineStart = vi.fn<NativePlaybackEngine["start"]>(() => ({
-      stop: vi.fn(),
-    }));
-    const view = render(
-      <InstalledPlayer
-        channel={CHANNEL}
-        client={client}
-        engine={{ start: engineStart }}
-        onStop={vi.fn()}
-      />,
-    );
-    const signal = requireStartSignal(client.startPlayback);
-
-    view.unmount();
-    expect(signal.aborted).toBe(true);
-    start.resolve({ ok: false, error: { _tag: "cancelled" } });
-    await start.promise;
-    await Promise.resolve();
-    expect(engineStart).not.toHaveBeenCalled();
-  });
-
-  it("renders only safe typed start failures and never starts the engine", async () => {
-    const privateMessage = "https://user:secret@provider.invalid/live";
-    const client = playbackClient(async () => ({
-      ok: false,
-      error: {
-        _tag: "transport",
-        retryable: true,
-        message: privateMessage,
-      },
-    }));
-    const engineStart = vi.fn<NativePlaybackEngine["start"]>(() => ({
-      stop: vi.fn(),
-    }));
-
     render(
       <InstalledPlayer
         channel={CHANNEL}
         client={client}
-        engine={{ start: engineStart }}
-        onStop={vi.fn()}
+        engine={engine.value}
+        onStop={onStop}
       />,
     );
 
-    expect(await screen.findByText("SOURCE OFFLINE")).toBeVisible();
-    expect(document.body.textContent).not.toContain("provider.invalid");
-    expect(engineStart).not.toHaveBeenCalled();
+    expect(await screen.findByText("ON AIR")).toBeVisible();
+    expect(client.createPlaybackSession).toHaveBeenCalledWith({ id: CHANNEL.id });
+    expect(session.start).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: "Pause" }));
+    expect(await screen.findByText("PAUSED")).toBeVisible();
+    expect(engine.stops).toBe(1);
+    expect(session.suspend).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: "Resume" }));
+    expect(await screen.findByText("ON AIR")).toBeVisible();
+    expect(session.reopen).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: "Mute" }));
+    expect(screen.getByRole("button", { name: "Unmute" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    fireEvent.change(screen.getByRole("slider", { name: "Volume" }), {
+      target: { value: "35" },
+    });
+
+    await user.click(screen.getByRole("button", { name: "Copy diagnostics" }));
+    await waitFor(() => expect(clipboard).toHaveBeenCalledTimes(1));
+    const copied = String(clipboard.mock.calls[0]?.[0]);
+    expect(copied).toContain('"engine":"mpegts-native"');
+    expect(copied).not.toContain(CHANNEL.id);
+    expect(copied).not.toContain(CHANNEL.name);
+    expect(copied).not.toContain(DESCRIPTOR.sessionId);
+    expect(copied).not.toContain(DESCRIPTOR.streamHandle);
+
+    await user.click(screen.getByRole("button", { name: "Stop stream" }));
+    await waitFor(() => expect(onStop).toHaveBeenCalledTimes(1));
+    expect(session.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces unconfirmed cleanup and refuses to dismiss the player", async () => {
+    const session = fixtureSession();
+    session.stop.mockResolvedValue({
+      ok: false,
+      error: {
+        _tag: "transport",
+        retryable: false,
+        message: "safe cleanup failure",
+      },
+    });
+    const onStop = vi.fn();
+    render(
+      <InstalledPlayer
+        channel={CHANNEL}
+        client={fixtureClient(() => session.value)}
+        engine={playingEngine().value}
+        onStop={onStop}
+      />,
+    );
+    expect(await screen.findByText("ON AIR")).toBeVisible();
+
+    await userEvent.setup().click(
+      screen.getByRole("button", { name: "Stop stream" }),
+    );
+
+    expect(await screen.findByText("CLEANUP NEEDED")).toBeVisible();
+    expect(onStop).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Restart" })).not.toBeInTheDocument();
+  });
+
+  it("does not leak resources across React StrictMode setup replay", async () => {
+    const resources: ReturnType<typeof fixtureSession>[] = [];
+    const client = fixtureClient(() => {
+      const session = fixtureSession();
+      resources.push(session);
+      return session.value;
+    });
+    const view = render(
+      <StrictMode>
+        <InstalledPlayer
+          channel={CHANNEL}
+          client={client}
+          engine={playingEngine().value}
+          onStop={vi.fn()}
+        />
+      </StrictMode>,
+    );
+    expect(await screen.findByText("ON AIR")).toBeVisible();
+
+    view.unmount();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(resources.length).toBeGreaterThanOrEqual(1);
+    expect(resources.every((resource) => resource.stop.mock.calls.length === 1)).toBe(
+      true,
+    );
   });
 });
 
-function playbackClient(
-  startPlayback: InstalledPlayerProps["client"]["startPlayback"],
+function fixtureClient(
+  create: () => InstalledPlaybackSession,
 ): InstalledPlayerProps["client"] & {
-  readonly startPlayback: ReturnType<typeof vi.fn>;
+  readonly createPlaybackSession: ReturnType<typeof vi.fn>;
 } {
+  return { createPlaybackSession: vi.fn(create) };
+}
+
+function fixtureSession(): {
+  readonly value: InstalledPlaybackSession;
+  readonly start: ReturnType<typeof vi.fn>;
+  readonly reopen: ReturnType<typeof vi.fn>;
+  readonly suspend: ReturnType<typeof vi.fn>;
+  readonly stop: ReturnType<typeof vi.fn>;
+} {
+  const start = vi.fn(async () => success(DESCRIPTOR));
+  const reopen = vi.fn(async () => success(REOPENED_DESCRIPTOR));
+  const suspend = vi.fn(async () => success(undefined));
+  const stop = vi.fn(async () => success(undefined));
   return {
-    startPlayback: vi.fn(startPlayback),
-    readPlayback: vi.fn(async () => success(new ArrayBuffer(0))),
-    stopPlayback: vi.fn(async () => success(undefined)),
+    value: {
+      start,
+      reopen,
+      read: vi.fn(async () => success(new ArrayBuffer(0))),
+      suspend,
+      stop,
+    },
+    start,
+    reopen,
+    suspend,
+    stop,
   };
 }
 
-function requireStartSignal(
-  startPlayback: ReturnType<typeof vi.fn>,
-): AbortSignal {
-  const input = startPlayback.mock.calls[0]?.[0];
-  if (typeof input !== "object" || input === null || !("signal" in input)) {
-    throw new Error("expected a start signal");
-  }
-  const signal = input.signal;
-  if (!(signal instanceof AbortSignal)) {
-    throw new Error("expected an AbortSignal");
-  }
-  return signal;
-}
-
-function success<Value>(value: Value): { readonly ok: true; readonly value: Value } {
-  return { ok: true, value };
-}
-
-function deferred<Value>(): {
-  readonly promise: Promise<Value>;
-  readonly resolve: (value: Value) => void;
+function playingEngine(): {
+  readonly value: NativePlaybackEngine;
+  readonly stops: number;
 } {
-  let resolve: ((value: Value) => void) | undefined;
-  const promise = new Promise<Value>((next) => {
-    resolve = next;
-  });
+  let stops = 0;
   return {
-    promise,
-    resolve: (value) => {
-      if (resolve === undefined) {
-        throw new Error("deferred fixture was not initialized");
-      }
-      resolve(value);
+    value: {
+      start: ({ onPlaying }) => {
+        onPlaying();
+        let active = true;
+        return {
+          stop: () => {
+            if (active) {
+              active = false;
+              stops += 1;
+            }
+          },
+        };
+      },
+    },
+    get stops() {
+      return stops;
     },
   };
+}
+
+function success<Value>(
+  value: Value,
+): { readonly ok: true; readonly value: Value } {
+  return { ok: true, value };
 }
