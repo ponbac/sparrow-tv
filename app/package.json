@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
+    "accept:android:catalog": "bun scripts/android-catalog-acceptance.ts",
     "tauri": "tauri",
     "tauri:android:init": "tauri android init --ci",
     "tauri:android:build": "tauri android build --apk --debug --ci",

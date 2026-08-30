@@ -19,3 +19,6 @@ container-repro revision output:
 
 container-rehearse image revision manifest environment_file=".env.local":
     bash scripts/rehearse-hosted-container.sh "{{image}}" "{{revision}}" "{{manifest}}" "{{environment_file}}"
+
+android-catalog-accept apk serial output:
+    cd app && bun run accept:android:catalog -- --apk "{{apk}}" --serial "{{serial}}" --output "{{output}}"
