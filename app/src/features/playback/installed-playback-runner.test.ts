@@ -260,6 +260,7 @@ describe("InstalledPlaybackRunner", () => {
       failure: "stream-interrupted",
       attemptsUsed: 3,
       canRestart: true,
+      canFailover: true,
     });
     expect(time.scheduledDelays).toEqual([1_000, 5_000, 15_000]);
     expect(session.reopen).toHaveBeenCalledTimes(3);
@@ -300,11 +301,141 @@ describe("InstalledPlaybackRunner", () => {
         failure,
         attemptsUsed: 0,
         canRestart: true,
+        canFailover: true,
       });
       expect(time.scheduledDelays).toEqual([]);
       expect(session.stop).toHaveBeenCalledTimes(1);
     },
   );
+
+  it("launches mpv only after an explicit action and confirmed terminal primary stop", async () => {
+    const order: string[] = [];
+    const session = sessionFixture(21, {
+      stop: vi.fn(async () => {
+        order.push("primary-stop");
+        return success(undefined);
+      }),
+      startMpvFallback: vi.fn<InstalledPlaybackSession["startMpvFallback"]>(async () => {
+        order.push("mpv-start");
+        return success({
+          _tag: "fallback-playing" as const,
+          sessionId: descriptor(21, 1).sessionId,
+        });
+      }),
+      stopMpvFallback: vi.fn<InstalledPlaybackSession["stopMpvFallback"]>(async () => {
+        order.push("mpv-stop");
+        return success({
+          _tag: "fallback-stopped" as const,
+          sessionId: descriptor(21, 1).sessionId,
+        });
+      }),
+    });
+    const runner = createInstalledPlaybackRunner({
+      client: clientFixture(() => session.value),
+      engine: recordingEngine(order, () => "stream-interrupted" as const).value,
+      recoveryDelaysMs: [0, 0, 0],
+    });
+
+    await runner.select(CHANNEL_A, document.createElement("video"));
+    await runner.whenIdle();
+
+    expect(runner.getSnapshot().phase).toMatchObject({
+      _tag: "recovering",
+    });
+    expect(session.startMpvFallback).not.toHaveBeenCalled();
+
+    await runner.stopPrimary();
+    expect(runner.getSnapshot().phase).toEqual({
+      _tag: "primary-stopped",
+      fallbackFailure: null,
+      canFailover: true,
+    });
+    expect(session.startMpvFallback).not.toHaveBeenCalled();
+
+    await runner.startMpvFallback();
+    expect(runner.getSnapshot().phase).toEqual({ _tag: "fallback-playing" });
+    expect(order.indexOf("primary-stop")).toBeLessThan(order.indexOf("mpv-start"));
+
+    await runner.stop();
+    expect(order.indexOf("mpv-start")).toBeLessThan(order.indexOf("mpv-stop"));
+    expect(runner.getSnapshot().phase._tag).toBe("idle");
+  });
+
+  it("keeps a typed launch failure safe and disables a non-retryable failover", async () => {
+    const session = sessionFixture(22, {
+      startMpvFallback: vi.fn<InstalledPlaybackSession["startMpvFallback"]>(async () => ({
+        ok: false,
+        error: {
+          _tag: "fallback-failed" as const,
+          reason: "not-installed" as const,
+          retryable: false,
+        },
+      })),
+    });
+    const runner = createInstalledPlaybackRunner({
+      client: clientFixture(() => session.value),
+      engine: recordingEngine().value,
+    });
+
+    await runner.select(CHANNEL_A, document.createElement("video"));
+    await runner.stopPrimary();
+    await runner.startMpvFallback();
+
+    expect(runner.getSnapshot().phase).toEqual({
+      _tag: "primary-stopped",
+      fallbackFailure: {
+        _tag: "fallback-failed",
+        reason: "not-installed",
+        retryable: false,
+      },
+      canFailover: false,
+    });
+    expect(session.stopMpvFallback).not.toHaveBeenCalled();
+    await runner.startMpvFallback();
+    expect(session.startMpvFallback).toHaveBeenCalledTimes(1);
+    await expect(runner.stop()).resolves.toBe(true);
+    expect(session.stopMpvFallback).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps fallback ownership until explicit stop is confirmed", async () => {
+    const session = sessionFixture(23);
+    session.stopMpvFallback
+      .mockResolvedValueOnce({
+        ok: false,
+        error: {
+          _tag: "fallback-failed",
+          reason: "control-unavailable",
+          retryable: true,
+        },
+      })
+      .mockResolvedValue(
+        success({
+          _tag: "fallback-stopped",
+          sessionId: descriptor(23, 1).sessionId,
+        }),
+      );
+    const runner = createInstalledPlaybackRunner({
+      client: clientFixture(() => session.value),
+      engine: recordingEngine().value,
+    });
+
+    await runner.select(CHANNEL_A, document.createElement("video"));
+    await runner.stopPrimary();
+    await runner.startMpvFallback();
+
+    await expect(runner.stop()).resolves.toBe(false);
+    expect(runner.getSnapshot().phase).toEqual({
+      _tag: "fallback-stop-failed",
+      failure: {
+        _tag: "fallback-failed",
+        reason: "control-unavailable",
+        retryable: true,
+      },
+    });
+    await expect(runner.stop()).resolves.toBe(true);
+    expect(session.stopMpvFallback).toHaveBeenCalledTimes(2);
+    expect(runner.getSnapshot().phase._tag).toBe("idle");
+  });
 
   it("resets recovery only after 60 seconds of continuous playing", async () => {
     const time = new ControlledTime();
@@ -481,6 +612,7 @@ describe("InstalledPlaybackRunner", () => {
       failure: "cleanup-unconfirmed",
       attemptsUsed: 0,
       canRestart: false,
+      canFailover: false,
     });
     expect(runner.diagnostics()).not.toContain("private-error-canary");
   });
@@ -683,6 +815,7 @@ describe("InstalledPlaybackRunner", () => {
       failure: "cleanup-unconfirmed",
       attemptsUsed: 0,
       canRestart: false,
+      canFailover: false,
     });
     expect(runner.diagnostics()).not.toContain("wake-private-canary");
   });
@@ -800,6 +933,8 @@ interface SessionOverrides {
   readonly suspend?: InstalledPlaybackSession["suspend"];
   readonly setActivity?: InstalledPlaybackSession["setActivity"];
   readonly stop?: InstalledPlaybackSession["stop"];
+  readonly startMpvFallback?: InstalledPlaybackSession["startMpvFallback"];
+  readonly stopMpvFallback?: InstalledPlaybackSession["stopMpvFallback"];
 }
 
 function sessionFixture(
@@ -819,6 +954,12 @@ function sessionFixture(
     typeof vi.fn<InstalledPlaybackSession["setActivity"]>
   >;
   readonly stop: ReturnType<typeof vi.fn<InstalledPlaybackSession["stop"]>>;
+  readonly startMpvFallback: ReturnType<
+    typeof vi.fn<InstalledPlaybackSession["startMpvFallback"]>
+  >;
+  readonly stopMpvFallback: ReturnType<
+    typeof vi.fn<InstalledPlaybackSession["stopMpvFallback"]>
+  >;
 } {
   const start = vi.fn<InstalledPlaybackSession["start"]>(
     overrides.start ?? (async () => success(descriptor(sessionNumber, 1))),
@@ -838,6 +979,15 @@ function sessionFixture(
   const setActivity = vi.fn<InstalledPlaybackSession["setActivity"]>(
     overrides.setActivity ?? (async () => success(undefined)),
   );
+  const sessionId = descriptor(sessionNumber, 1).sessionId;
+  const startMpvFallback = vi.fn<InstalledPlaybackSession["startMpvFallback"]>(
+    overrides.startMpvFallback ??
+      (async () => success({ _tag: "fallback-playing", sessionId })),
+  );
+  const stopMpvFallback = vi.fn<InstalledPlaybackSession["stopMpvFallback"]>(
+    overrides.stopMpvFallback ??
+      (async () => success({ _tag: "fallback-stopped", sessionId })),
+  );
   return {
     value: {
       start,
@@ -847,6 +997,8 @@ function sessionFixture(
       suspend,
       setActivity,
       stop,
+      startMpvFallback,
+      stopMpvFallback,
     },
     start,
     reopen,
@@ -854,6 +1006,8 @@ function sessionFixture(
     suspend,
     setActivity,
     stop,
+    startMpvFallback,
+    stopMpvFallback,
   };
 }
 

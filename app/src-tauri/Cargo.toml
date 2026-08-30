@@ -25,7 +25,7 @@ sparrow-snapshot-store = { path = "../../crates/sparrow-snapshot-store" }
 sparrow-source-http = { path = "../../crates/sparrow-source-http" }
 tauri = { version = "=2.11.5", features = [] }
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "=0.22.4"

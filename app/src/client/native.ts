@@ -17,6 +17,8 @@ import {
   type InstalledSparrowClient,
   type ListChannelsInput,
   type ListGroupsInput,
+  type MpvFallbackPlaying,
+  type MpvFallbackStopped,
   type Page,
   type PageCursor,
   type PlaybackDescriptor,
@@ -60,6 +62,8 @@ export const NATIVE_COMMANDS = Object.freeze({
   suspendPlayback: "playback_suspend",
   setPlaybackActivity: "playback_activity",
   stopPlayback: "playback_stop",
+  startMpvFallback: "playback_mpv_start",
+  stopMpvFallback: "playback_mpv_stop",
 } as const);
 
 /** Channel surface required by the ordered Tauri subscription adapter. */
@@ -507,6 +511,11 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
   #lateCleanup: Promise<ClientResult<void>> | null = null;
   #suspendFlight: Promise<ClientResult<void>> | null = null;
   #stopFlight: Promise<ClientResult<void>> | null = null;
+  #mpvStartFlight: Promise<ClientResult<MpvFallbackPlaying>> | null = null;
+  #mpvStopFlight: Promise<ClientResult<MpvFallbackStopped>> | null = null;
+  #mpvPlaying: MpvFallbackPlaying | null = null;
+  #mpvStopped: MpvFallbackStopped | null = null;
+  #mpvGeneration = 0;
 
   constructor(
     ipc: NativeIpc,
@@ -682,6 +691,95 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
     return this.#stopFlight;
   }
 
+  startMpvFallback(
+    options: ClientRequestOptions = {},
+  ): Promise<ClientResult<MpvFallbackPlaying>> {
+    if (!this.#started || !this.#stopped) {
+      return Promise.resolve({
+        ok: false,
+        error: {
+          _tag: "fallback-failed",
+          reason: "primary-active",
+          retryable: true,
+        },
+      });
+    }
+    if (this.#mpvPlaying !== null) {
+      return Promise.resolve({ ok: true, value: this.#mpvPlaying });
+    }
+    if (this.#mpvStartFlight !== null) {
+      return this.#mpvStartFlight;
+    }
+    const parser = clientSchemas.mpvFallbackPlaying.refine(
+      (result) => result.sessionId === this.#sessionId,
+    );
+    const generation = ++this.#mpvGeneration;
+    this.#mpvStopped = null;
+    const releaseLateStart = createNativeMpvStop(this.#ipc, this.#sessionId);
+    const flight = requestNative(
+      this.#ipc,
+      NATIVE_COMMANDS.startMpvFallback,
+      { input: { sessionId: this.#sessionId } },
+      parser,
+      options.signal,
+      releaseLateStart,
+      releaseLateStart,
+    );
+    this.#mpvStartFlight = flight;
+    void flight.then((result) => {
+      if (this.#mpvStartFlight === flight) {
+        this.#mpvStartFlight = null;
+      }
+      if (result.ok && generation === this.#mpvGeneration) {
+        this.#mpvPlaying = result.value;
+      }
+    });
+    return flight;
+  }
+
+  stopMpvFallback(
+    options: ClientRequestOptions = {},
+  ): Promise<ClientResult<MpvFallbackStopped>> {
+    if (!this.#started) {
+      return Promise.resolve({
+        ok: false,
+        error: {
+          _tag: "fallback-failed",
+          reason: "stale-session",
+          retryable: false,
+        },
+      });
+    }
+    if (this.#mpvStopFlight !== null) {
+      return this.#mpvStopFlight;
+    }
+    if (this.#mpvStopped !== null && this.#mpvStartFlight === null) {
+      return Promise.resolve({ ok: true, value: this.#mpvStopped });
+    }
+    this.#mpvGeneration += 1;
+    const parser = clientSchemas.mpvFallbackStopped.refine(
+      (result) => result.sessionId === this.#sessionId,
+    );
+    const flight = requestNative(
+      this.#ipc,
+      NATIVE_COMMANDS.stopMpvFallback,
+      { input: { sessionId: this.#sessionId } },
+      parser,
+      options.signal,
+    );
+    this.#mpvStopFlight = flight;
+    void flight.then((result) => {
+      if (this.#mpvStopFlight === flight) {
+        this.#mpvStopFlight = null;
+      }
+      if (result.ok) {
+        this.#mpvPlaying = null;
+        this.#mpvStopped = result.value;
+      }
+    });
+    return flight;
+  }
+
   async #open(
     command:
       | typeof NATIVE_COMMANDS.startPlayback
@@ -770,10 +868,15 @@ function requestNative<Value>(
   args: Readonly<Record<string, unknown>> | undefined,
   parser: RuntimeParser<Value>,
   signal: AbortSignal | undefined,
+  cancelActive?: () => void,
+  onLateResolved?: (value: unknown) => void,
 ): Promise<ClientResult<Value>> {
-  return invokeWithCancellation(() => ipc.invoke(command, args), signal).then(
-    (outcome) => parseNativeOutcome(outcome, parser),
-  );
+  return invokeWithCancellation(
+    () => ipc.invoke(command, args),
+    signal,
+    cancelActive,
+    onLateResolved,
+  ).then((outcome) => parseNativeOutcome(outcome, parser));
 }
 
 function parseNativeOutcome<Value>(
@@ -933,6 +1036,26 @@ function createNativePlaybackStop(
     }
     requested = true;
     stopNativePlayback(ipc, sessionId);
+  };
+}
+
+function createNativeMpvStop(
+  ipc: NativeIpc,
+  sessionId: PlaybackSessionId,
+): () => void {
+  let requested = false;
+  return () => {
+    if (requested) {
+      return;
+    }
+    requested = true;
+    try {
+      ipc
+        .invoke(NATIVE_COMMANDS.stopMpvFallback, { input: { sessionId } })
+        .catch(() => undefined);
+    } catch {
+      // Cancellation already returned; native cleanup remains best effort.
+    }
   };
 }
 

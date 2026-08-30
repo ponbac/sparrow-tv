@@ -26,6 +26,8 @@ export interface PlaybackSurfaceProps {
   readonly onVolumeChange: (volume: number) => void;
   readonly onToggleMuted: () => void;
   readonly onRequestFullscreen: () => void;
+  readonly showMediaControls?: boolean;
+  readonly stopLabel?: string;
   readonly onStop: () => void;
   readonly onAutoplayFailure: () => void;
 }
@@ -47,6 +49,8 @@ export function PlaybackSurface({
   onVolumeChange,
   onToggleMuted,
   onRequestFullscreen,
+  showMediaControls = true,
+  stopLabel = "Stop stream",
   onStop,
   onAutoplayFailure,
 }: PlaybackSurfaceProps) {
@@ -109,43 +113,47 @@ export function PlaybackSurface({
         aria-label="Playback controls"
       >
         {additionalControls}
-        <button
-          type="button"
-          aria-pressed={muted}
-          onClick={onToggleMuted}
-        >
-          {muted ? (
-            <VolumeX aria-hidden="true" />
-          ) : (
-            <Volume2 aria-hidden="true" />
-          )}
-          {muted ? "Unmute" : "Mute"}
-        </button>
-        <label className="hosted-player__volume">
-          <span>Volume</span>
-          <input
-            type="range"
-            min="0"
-            max="100"
-            step="1"
-            value={Math.round(volume * 100)}
-            aria-label="Volume"
-            onChange={(event) =>
-              onVolumeChange(Number(event.currentTarget.value) / 100)
-            }
-          />
-        </label>
-        <button
-          type="button"
-          aria-pressed={fullscreen}
-          onClick={onRequestFullscreen}
-        >
-          <Maximize2 aria-hidden="true" />
-          Full screen
-        </button>
+        {showMediaControls ? (
+          <>
+            <button
+              type="button"
+              aria-pressed={muted}
+              onClick={onToggleMuted}
+            >
+              {muted ? (
+                <VolumeX aria-hidden="true" />
+              ) : (
+                <Volume2 aria-hidden="true" />
+              )}
+              {muted ? "Unmute" : "Mute"}
+            </button>
+            <label className="hosted-player__volume">
+              <span>Volume</span>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                value={Math.round(volume * 100)}
+                aria-label="Volume"
+                onChange={(event) =>
+                  onVolumeChange(Number(event.currentTarget.value) / 100)
+                }
+              />
+            </label>
+            <button
+              type="button"
+              aria-pressed={fullscreen}
+              onClick={onRequestFullscreen}
+            >
+              <Maximize2 aria-hidden="true" />
+              Full screen
+            </button>
+          </>
+        ) : null}
         <button type="button" onClick={onStop}>
           <Square aria-hidden="true" />
-          Stop stream
+          {stopLabel}
         </button>
         <p>{privacyCopy}</p>
       </div>

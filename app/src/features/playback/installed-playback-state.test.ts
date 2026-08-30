@@ -74,6 +74,22 @@ describe("installed Playback Session state", () => {
         failure: "source-invalid",
         attemptsUsed: 0,
         canRestart: true,
+        canFailover: true,
+      },
+      { _tag: "fallback-starting" },
+      { _tag: "fallback-playing" },
+      {
+        _tag: "fallback-stop-failed",
+        failure: {
+          _tag: "fallback-failed",
+          reason: "control-unavailable",
+          retryable: true,
+        },
+      },
+      {
+        _tag: "primary-stopped",
+        fallbackFailure: null,
+        canFailover: true,
       },
       {
         _tag: "stopping",
@@ -106,6 +122,10 @@ describe("installed Playback Session state", () => {
       "playing",
       "playing",
       "failed",
+      "fallback-starting",
+      "fallback-playing",
+      "fallback-stop-failed",
+      "primary-stopped",
       "stopping",
       "idle",
     ]);
@@ -150,6 +170,7 @@ describe("installed Playback Session state", () => {
       failure: "source-unavailable",
       attemptsUsed: 3,
       canRestart: true,
+      canFailover: true,
     });
 
     const diagnostics = installedPlaybackDiagnostics(

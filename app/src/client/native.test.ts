@@ -15,7 +15,7 @@ const INSTALLED_CAPABILITIES = {
   sourceConfiguration: "device-writable",
   playbackTransport: "tauri-native-stream",
   audioTrackSelection: true,
-  mpvFailover: false,
+  mpvFailover: true,
 } as const;
 
 const EMPTY_AUDIO = {
@@ -1002,6 +1002,161 @@ describe("installed Tauri Sparrow client", () => {
         providerLocation: "private-canary",
       }).success,
     ).toBe(false);
+  });
+
+  it("starts and stops one correlated mpv fallback only after primary stop", async () => {
+    const ipc = new FakeNativeIpc((command, args) => {
+      const sessionId = requirePlaybackSessionId(args);
+      switch (command) {
+        case NATIVE_COMMANDS.startPlayback:
+          return Promise.resolve({
+            _tag: "tauri-native-stream",
+            sessionId,
+            streamHandle: `stream1_${"7".repeat(16)}`,
+            ...EMPTY_AUDIO,
+          });
+        case NATIVE_COMMANDS.stopPlayback:
+          return Promise.resolve(null);
+        case NATIVE_COMMANDS.startMpvFallback:
+          return Promise.resolve({ _tag: "fallback-playing", sessionId });
+        case NATIVE_COMMANDS.stopMpvFallback:
+          return Promise.resolve({ _tag: "fallback-stopped", sessionId });
+        default:
+          return Promise.reject(new Error("unexpected fixture command"));
+      }
+    });
+    const session = createNativeSparrowClient({ ipc }).createPlaybackSession({
+      id: CHANNEL.id,
+    });
+
+    await session.start();
+    await expect(session.startMpvFallback()).resolves.toEqual({
+      ok: false,
+      error: {
+        _tag: "fallback-failed",
+        reason: "primary-active",
+        retryable: true,
+      },
+    });
+    await session.stop();
+    const firstStart = session.startMpvFallback();
+    const secondStart = session.startMpvFallback();
+    const started = await firstStart;
+    await expect(secondStart).resolves.toBe(started);
+    expect(started).toMatchObject({
+      ok: true,
+      value: { _tag: "fallback-playing" },
+    });
+    const firstStop = session.stopMpvFallback();
+    const secondStop = session.stopMpvFallback();
+    const stopped = await firstStop;
+    await expect(secondStop).resolves.toBe(stopped);
+    expect(stopped).toMatchObject({
+      ok: true,
+      value: { _tag: "fallback-stopped" },
+    });
+
+    const sessionId = requirePlaybackSessionId(requireFirst(ipc.invokes).args);
+    expect(ipc.invokes.map(({ command }) => command)).toEqual([
+      NATIVE_COMMANDS.startPlayback,
+      NATIVE_COMMANDS.stopPlayback,
+      NATIVE_COMMANDS.startMpvFallback,
+      NATIVE_COMMANDS.stopMpvFallback,
+    ]);
+    expect(ipc.invokes.slice(1).every(({ args }) =>
+      requirePlaybackSessionId(args) === sessionId,
+    )).toBe(true);
+  });
+
+  it("parses typed mpv failures and rejects uncorrelated fallback responses", async () => {
+    let response: "failure" | "uncorrelated" = "failure";
+    const ipc = new FakeNativeIpc((command, args) => {
+      const sessionId = requirePlaybackSessionId(args);
+      switch (command) {
+        case NATIVE_COMMANDS.startPlayback:
+          return Promise.resolve({
+            _tag: "tauri-native-stream",
+            sessionId,
+            streamHandle: `stream1_${"8".repeat(16)}`,
+            ...EMPTY_AUDIO,
+          });
+        case NATIVE_COMMANDS.stopPlayback:
+          return Promise.resolve(null);
+        case NATIVE_COMMANDS.startMpvFallback:
+          return response === "failure"
+            ? Promise.reject({
+                _tag: "fallback-failed",
+                reason: "not-installed",
+                retryable: false,
+              })
+            : Promise.resolve({
+                _tag: "fallback-playing",
+                sessionId: `play1_${"0".repeat(32)}_9`,
+              });
+        default:
+          return Promise.reject(new Error("unexpected fixture command"));
+      }
+    });
+    const session = createNativeSparrowClient({ ipc }).createPlaybackSession({
+      id: CHANNEL.id,
+    });
+    await session.start();
+    await session.stop();
+
+    await expect(session.startMpvFallback()).resolves.toEqual({
+      ok: false,
+      error: {
+        _tag: "fallback-failed",
+        reason: "not-installed",
+        retryable: false,
+      },
+    });
+    response = "uncorrelated";
+    await expect(session.startMpvFallback()).resolves.toEqual(invalidResponse());
+  });
+
+  it("requests mpv cleanup when a launch is cancelled or resolves late", async () => {
+    const launch = deferred<unknown>();
+    const ipc = new FakeNativeIpc((command, args) => {
+      const sessionId = requirePlaybackSessionId(args);
+      switch (command) {
+        case NATIVE_COMMANDS.startPlayback:
+          return Promise.resolve({
+            _tag: "tauri-native-stream",
+            sessionId,
+            streamHandle: `stream1_${"9".repeat(16)}`,
+            ...EMPTY_AUDIO,
+          });
+        case NATIVE_COMMANDS.stopPlayback:
+          return Promise.resolve(null);
+        case NATIVE_COMMANDS.startMpvFallback:
+          return launch.promise;
+        case NATIVE_COMMANDS.stopMpvFallback:
+          return Promise.resolve({ _tag: "fallback-stopped", sessionId });
+        default:
+          return Promise.reject(new Error("unexpected fixture command"));
+      }
+    });
+    const session = createNativeSparrowClient({ ipc }).createPlaybackSession({
+      id: CHANNEL.id,
+    });
+    await session.start();
+    await session.stop();
+    const controller = new AbortController();
+    const result = session.startMpvFallback({ signal: controller.signal });
+    controller.abort();
+
+    await expect(result).resolves.toEqual({
+      ok: false,
+      error: { _tag: "cancelled" },
+    });
+    const sessionId = requirePlaybackSessionId(requireFirst(ipc.invokes).args);
+    launch.resolve({ _tag: "fallback-playing", sessionId });
+    await launch.promise;
+    await Promise.resolve();
+    expect(
+      ipc.invokes.filter(({ command }) => command === NATIVE_COMMANDS.stopMpvFallback),
+    ).toHaveLength(1);
   });
 
   it("reopens the same pinned session after the initial open returns a safe failure", async () => {

@@ -485,6 +485,16 @@ class FakeSparrowClient implements InstalledSparrowClient {
       suspend: async () => success(undefined),
       setActivity: async () => success(undefined),
       stop: async () => success(undefined),
+      startMpvFallback: async () =>
+        success({
+          _tag: "fallback-playing",
+          sessionId: descriptor.sessionId,
+        }),
+      stopMpvFallback: async () =>
+        success({
+          _tag: "fallback-stopped",
+          sessionId: descriptor.sessionId,
+        }),
     };
   }
 

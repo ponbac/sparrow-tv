@@ -32,8 +32,8 @@ use crate::{
         subscriptions::SubscriptionRegistry,
     },
     playback::{
-        NativeStreamHandle, PlaybackManager, PlaybackManagerError, PlaybackRestartIntent,
-        PlaybackSessionId, StartedPlayback,
+        MpvFallbackSession, NativeStreamHandle, PlaybackManager, PlaybackManagerError,
+        PlaybackRestartIntent, PlaybackSessionId, StartedPlayback,
     },
     screen_wake::ScreenWake,
 };
@@ -160,6 +160,7 @@ impl InstalledRuntime {
             Arc::clone(&core),
             playback_access,
             audio_preferences,
+            private_root.clone(),
             screen_wake,
         );
 
@@ -387,6 +388,24 @@ impl InstalledRuntime {
             .map_err(|_| PlaybackManagerError::Unavailable)?
             + 1;
         Ok(InstalledLifecycleEvent { revision, state })
+    }
+
+    pub(crate) async fn start_mpv(
+        &self,
+        session_id: PlaybackSessionId,
+    ) -> Result<MpvFallbackSession, PlaybackManagerError> {
+        self.playback.start_mpv(session_id).await
+    }
+
+    pub(crate) async fn stop_mpv(
+        &self,
+        session_id: PlaybackSessionId,
+    ) -> Result<MpvFallbackSession, PlaybackManagerError> {
+        self.playback.stop_mpv(session_id).await
+    }
+
+    pub(crate) async fn shutdown_playback(&self) -> Result<(), PlaybackManagerError> {
+        self.playback.shutdown().await
     }
 }
 

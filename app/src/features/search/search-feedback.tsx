@@ -103,6 +103,11 @@ function searchErrorCopy(
         title: "The live signal is unavailable",
         detail: "Catalog search is still available. Choose another Channel or retry playback.",
       };
+    case "fallback-failed":
+      return {
+        title: "The fallback player did not answer",
+        detail: "Catalog search is unchanged. Close the player and try again.",
+      };
     case "transport":
       return {
         title:

@@ -852,6 +852,11 @@ function errorCopy(
         title: "The live signal is unavailable",
         detail: "Browsing remains available. Choose another Channel or retry playback.",
       };
+    case "fallback-failed":
+      return {
+        title: "The fallback player did not answer",
+        detail: "No private playback detail was retained. Close the player and try again.",
+      };
     case "transport":
       return {
         title:

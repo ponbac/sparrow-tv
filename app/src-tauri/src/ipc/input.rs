@@ -145,6 +145,18 @@ impl PlaybackStopInput {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PlaybackMpvInput {
+    session_id: String,
+}
+
+impl PlaybackMpvInput {
+    pub(crate) fn into_session_id(self) -> Result<PlaybackSessionId, ClientErrorDto> {
+        PlaybackSessionId::parse(self.session_id).map_err(|_| ClientErrorDto::service_unavailable())
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PlaybackSuspendInput {
     session_id: String,
 }
@@ -534,6 +546,12 @@ mod tests {
         .expect("handle-safe stop shape parses");
         assert!(matches!(stop_with_handle.into_playback(), Ok((_, Some(_)))));
 
+        let mpv: PlaybackMpvInput = serde_json::from_value(json!({
+            "sessionId": "play1_0123456789abcdef0123456789abcdef_a"
+        }))
+        .expect("mpv shape parses");
+        assert!(mpv.into_session_id().is_ok());
+
         let restart: PlaybackRestartInput = serde_json::from_value(json!({
             "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
             "expectedStreamHandle": "stream1_0123456789abcdef",
@@ -591,6 +609,13 @@ mod tests {
             .is_err()
         );
         assert!(
+            serde_json::from_value::<PlaybackMpvInput>(json!({
+                "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
+                "streamHandle": "stream1_0123456789abcdef"
+            }))
+            .is_err()
+        );
+        assert!(
             serde_json::from_value::<PlaybackSuspendInput>(json!({
                 "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
                 "streamHandle": "stream1_0123456789abcdef"
@@ -624,6 +649,12 @@ mod tests {
                 serde_json::from_value(json!({ "sessionId": invalid })).expect("stop shape parses");
             assert!(matches!(
                 input.into_playback(),
+                Err(ClientErrorDto::ServiceUnavailable)
+            ));
+            let mpv: PlaybackMpvInput =
+                serde_json::from_value(json!({ "sessionId": invalid })).expect("mpv shape parses");
+            assert!(matches!(
+                mpv.into_session_id(),
                 Err(ClientErrorDto::ServiceUnavailable)
             ));
             let suspend: PlaybackSuspendInput =

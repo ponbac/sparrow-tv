@@ -2,6 +2,7 @@ import type {
   InstalledPlaybackFailure,
   InstalledPlaybackPhase,
   InstalledPlaybackState,
+  MpvFallbackFailure,
 } from "./installed-playback-state";
 
 const MAX_TRANSITIONS = 20;
@@ -29,7 +30,7 @@ export function installedPlaybackDiagnostics(
 ): string {
   return JSON.stringify({
     version: 1,
-    engine: "mpegts-native",
+    engine: playbackEngine(state.phase),
     phase: state.phase._tag,
     intent: safeIntent(state.phase),
     transport: "tauri-native-stream",
@@ -76,6 +77,14 @@ function safeIntent(phase: InstalledPlaybackPhase): string {
     case "failed":
     case "stopping":
       return phase._tag;
+    case "primary-stopped":
+      return "manual-failover-ready";
+    case "fallback-starting":
+      return "manual-failover-start";
+    case "fallback-playing":
+      return "manual-failover-playing";
+    case "fallback-stop-failed":
+      return "manual-failover-stop";
     case "starting":
       return phase.reason;
     case "replacing-audio":
@@ -89,11 +98,17 @@ function safeIntent(phase: InstalledPlaybackPhase): string {
   }
 }
 
-function safeFailure(phase: InstalledPlaybackPhase): InstalledPlaybackFailure | null {
+function safeFailure(
+  phase: InstalledPlaybackPhase,
+): InstalledPlaybackFailure | MpvFallbackFailure["reason"] | null {
   switch (phase._tag) {
     case "recovering":
     case "failed":
       return phase.failure;
+    case "primary-stopped":
+      return phase.fallbackFailure?.reason ?? null;
+    case "fallback-stop-failed":
+      return phase.failure.reason;
     case "idle":
     case "starting":
     case "playing":
@@ -102,6 +117,8 @@ function safeFailure(phase: InstalledPlaybackPhase): InstalledPlaybackFailure | 
     case "suspending":
     case "paused":
     case "stopping":
+    case "fallback-starting":
+    case "fallback-playing":
       return null;
   }
 }
@@ -113,10 +130,30 @@ function safeAudioSelection(state: InstalledPlaybackState): string {
     case "selected":
       return state.audio.selection.reason;
     case "fallback":
-      return `${state.audio.selection.missing}-fallback`;
+      return state.audio.selection.missing + "-fallback";
   }
 }
 
+function playbackEngine(phase: InstalledPlaybackPhase): string {
+  switch (phase._tag) {
+    case "fallback-starting":
+    case "fallback-playing":
+    case "fallback-stop-failed":
+      return "mpv-system";
+    case "idle":
+    case "starting":
+    case "playing":
+    case "autoplay-blocked":
+    case "replacing-audio":
+    case "suspending":
+    case "paused":
+    case "recovering":
+    case "failed":
+    case "primary-stopped":
+    case "stopping":
+      return "mpegts-native";
+  }
+}
 function boundedInteger(value: number, maximum: number): number {
   if (!Number.isFinite(value)) {
     return 0;

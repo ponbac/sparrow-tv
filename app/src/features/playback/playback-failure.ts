@@ -16,6 +16,8 @@ export function clientPlaybackFailure(error: ClientError): {
         failure: serverPlaybackFailure(error.reason),
         retryable: error.retryable,
       };
+    case "fallback-failed":
+      return { failure: "source-unavailable", retryable: error.retryable };
     case "transport":
       return { failure: "source-unavailable", retryable: error.retryable };
     case "service-unavailable":

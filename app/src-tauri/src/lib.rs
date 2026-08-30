@@ -59,6 +59,8 @@ pub fn run() {
             ipc::playback_reopen,
             ipc::playback_restart,
             ipc::playback_stop,
+            ipc::playback_mpv_start,
+            ipc::playback_mpv_stop,
         ])
         .build(tauri::generate_context!())
     {
@@ -121,6 +123,16 @@ fn initialize_android_certificate_verifier() -> Result<(), ()> {
 fn report_lifecycle(app: &tauri::AppHandle, event: tauri::RunEvent) {
     use sparrow_core::LifecycleSignal;
     use tauri::{Emitter as _, Manager as _};
+
+    if matches!(&event, tauri::RunEvent::Exit) {
+        if let Some(runtime) = app
+            .try_state::<runtime::InstalledRuntimeSlot>()
+            .and_then(|slot| slot.ready())
+        {
+            let _ = tauri::async_runtime::block_on(runtime.shutdown_playback());
+        }
+        return;
+    }
 
     let signal = match event {
         tauri::RunEvent::Ready => Some(LifecycleSignal::Started),

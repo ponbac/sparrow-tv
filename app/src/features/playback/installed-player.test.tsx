@@ -90,6 +90,16 @@ const SPANISH_AUDIO_DESCRIPTOR = clientSchemas.nativePlaybackDescriptor.parse({
   },
   preferenceStatus: "saved",
 });
+const INSTALLED_CAPABILITIES = clientSchemas.installedCapabilities.parse({
+  sourceConfiguration: "device-writable",
+  playbackTransport: "tauri-native-stream",
+  audioTrackSelection: true,
+  mpvFailover: false,
+});
+const LINUX_CAPABILITIES = clientSchemas.installedCapabilities.parse({
+  ...INSTALLED_CAPABILITIES,
+  mpvFailover: true,
+});
 
 describe("InstalledPlayer", () => {
   it("owns pause, live-edge resume, controls, diagnostics, and confirmed stop", async () => {
@@ -321,6 +331,109 @@ describe("InstalledPlayer", () => {
     view.unmount();
     expect(lifecycle.release).toHaveBeenCalledTimes(1);
   });
+
+  it("offers manual mpv failover only after the Linux primary is stopped", async () => {
+    const session = fixtureSession();
+    const client = fixtureClient(() => session.value, true);
+    const onStop = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <InstalledPlayer
+        channel={CHANNEL}
+        client={client}
+        engine={playingEngine().value}
+        onStop={onStop}
+      />,
+    );
+
+    expect(await screen.findByText("ON AIR")).toBeVisible();
+    await waitFor(() => expect(client.capabilities).toHaveBeenCalledTimes(1));
+    expect(
+      screen.queryByRole("button", { name: "Open in mpv" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Stop primary" }));
+    expect(await screen.findByText("PRIMARY STOPPED")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Open in mpv" })).toBeVisible();
+    expect(session.stop).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: "Open in mpv" }));
+    expect(await screen.findByText("MPV ON AIR")).toBeVisible();
+    expect(session.startMpvFallback).toHaveBeenCalledTimes(1);
+    expect(session.stop.mock.invocationCallOrder[0]).toBeLessThan(
+      session.startMpvFallback.mock.invocationCallOrder[0] ?? 0,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Open in mpv" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Mute" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Stop mpv" }));
+    await waitFor(() => expect(onStop).toHaveBeenCalledTimes(1));
+    expect(session.stopMpvFallback).toHaveBeenCalledTimes(1);
+  });
+
+  it("never launches mpv automatically and renders a typed launch failure", async () => {
+    const session = fixtureSession();
+    session.startMpvFallback.mockResolvedValue({
+      ok: false,
+      error: {
+        _tag: "fallback-failed",
+        reason: "not-installed",
+        retryable: false,
+      },
+    });
+    const engine: NativePlaybackEngine = {
+      start: ({ onFailure }) => {
+        onFailure("media-unsupported", false);
+        return { stop: () => undefined };
+      },
+    };
+    render(
+      <InstalledPlayer
+        channel={CHANNEL}
+        client={fixtureClient(() => session.value, true)}
+        engine={engine}
+        onStop={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("FORMAT MISSED")).toBeVisible();
+    const action = await screen.findByRole("button", { name: "Open in mpv" });
+    expect(session.startMpvFallback).not.toHaveBeenCalled();
+
+    await userEvent.setup().click(action);
+    expect(await screen.findByText("MPV MISSING")).toBeVisible();
+    expect(session.startMpvFallback).toHaveBeenCalledTimes(1);
+    expect(session.stopMpvFallback).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("button", { name: "Open in mpv" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the mpv action absent when the installed capability is disabled", async () => {
+    const session = fixtureSession();
+    const engine: NativePlaybackEngine = {
+      start: ({ onFailure }) => {
+        onFailure("media-unsupported", false);
+        return { stop: () => undefined };
+      },
+    };
+    render(
+      <InstalledPlayer
+        channel={CHANNEL}
+        client={fixtureClient(() => session.value)}
+        engine={engine}
+        onStop={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("FORMAT MISSED")).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Open in mpv" }),
+    ).not.toBeInTheDocument();
+    expect(session.startMpvFallback).not.toHaveBeenCalled();
+  });
 });
 
 function lifecycleFixture(): {
@@ -349,10 +462,17 @@ function lifecycleFixture(): {
 
 function fixtureClient(
   create: () => InstalledPlaybackSession,
+  mpvFailover = false,
 ): InstalledPlayerProps["client"] & {
   readonly createPlaybackSession: ReturnType<typeof vi.fn>;
+  readonly capabilities: ReturnType<typeof vi.fn>;
 } {
-  return { createPlaybackSession: vi.fn(create) };
+  return {
+    capabilities: vi.fn(async () =>
+      success(mpvFailover ? LINUX_CAPABILITIES : INSTALLED_CAPABILITIES),
+    ),
+    createPlaybackSession: vi.fn(create),
+  };
 }
 
 function fixtureSession(
@@ -369,6 +489,8 @@ function fixtureSession(
   readonly suspend: ReturnType<typeof vi.fn>;
   readonly setActivity: ReturnType<typeof vi.fn>;
   readonly stop: ReturnType<typeof vi.fn>;
+  readonly startMpvFallback: ReturnType<typeof vi.fn>;
+  readonly stopMpvFallback: ReturnType<typeof vi.fn>;
 } {
   const start = vi.fn(async () => success(descriptors.start ?? DESCRIPTOR));
   const reopen = vi.fn(async () =>
@@ -380,6 +502,12 @@ function fixtureSession(
   const suspend = vi.fn(async () => success(undefined));
   const setActivity = vi.fn(async () => success(undefined));
   const stop = vi.fn(async () => success(undefined));
+  const startMpvFallback = vi.fn(async () =>
+    success({ _tag: "fallback-playing" as const, sessionId: DESCRIPTOR.sessionId }),
+  );
+  const stopMpvFallback = vi.fn(async () =>
+    success({ _tag: "fallback-stopped" as const, sessionId: DESCRIPTOR.sessionId }),
+  );
   return {
     value: {
       start,
@@ -389,6 +517,8 @@ function fixtureSession(
       suspend,
       setActivity,
       stop,
+      startMpvFallback,
+      stopMpvFallback,
     },
     start,
     reopen,
@@ -396,6 +526,8 @@ function fixtureSession(
     suspend,
     setActivity,
     stop,
+    startMpvFallback,
+    stopMpvFallback,
   };
 }
 

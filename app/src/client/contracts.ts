@@ -94,7 +94,7 @@ export interface InstalledCapabilities {
   readonly sourceConfiguration: "device-writable";
   readonly playbackTransport: "tauri-native-stream";
   readonly audioTrackSelection: true;
-  readonly mpvFailover: false;
+  readonly mpvFailover: boolean;
 }
 
 /** Audio codecs that the native MPEG-TS selector can safely forward. */
@@ -455,6 +455,18 @@ export interface InstalledPlaybackTransport {
   readonly preferenceStatus?: AudioPreferenceStatus;
 }
 
+/** Correlated confirmation that system mpv owns the stopped installed session. */
+export interface MpvFallbackPlaying {
+  readonly _tag: "fallback-playing";
+  readonly sessionId: PlaybackSessionId;
+}
+
+/** Correlated confirmation that the system mpv child has been stopped and reaped. */
+export interface MpvFallbackStopped {
+  readonly _tag: "fallback-stopped";
+  readonly sessionId: PlaybackSessionId;
+}
+
 /** A capability-selected playback transport that never contains a provider URL. */
 export type PlaybackDescriptor =
   | HostedPlaybackDescriptor
@@ -517,6 +529,19 @@ export type ClientError =
   | {
       readonly _tag: "playback-failed";
       readonly reason: "rejected" | "timed-out" | "unavailable" | "invalid-response";
+      readonly retryable: boolean;
+    }
+  | {
+      readonly _tag: "fallback-failed";
+      readonly reason:
+        | "unsupported"
+        | "primary-active"
+        | "stale-session"
+        | "not-installed"
+        | "incompatible"
+        | "launch-failed"
+        | "control-unavailable"
+        | "terminated";
       readonly retryable: boolean;
     }
   | {
@@ -620,6 +645,16 @@ export interface InstalledPlaybackSession {
 
   /** Idempotently releases the transport and final session ownership. */
   stop(options?: ClientRequestOptions): Promise<ClientResult<void>>;
+
+  /** Explicitly launches system mpv only after this session's primary transport stopped. */
+  startMpvFallback(
+    options?: ClientRequestOptions,
+  ): Promise<ClientResult<MpvFallbackPlaying>>;
+
+  /** Explicitly stops and reaps the system mpv process owned by this session. */
+  stopMpvFallback(
+    options?: ClientRequestOptions,
+  ): Promise<ClientResult<MpvFallbackStopped>>;
 }
 
 /** Installed client extension for atomically replacing on-device source configuration. */
@@ -655,7 +690,7 @@ const installedCapabilitiesSchema: z.ZodType<InstalledCapabilities> =
     sourceConfiguration: z.literal("device-writable"),
     playbackTransport: z.literal("tauri-native-stream"),
     audioTrackSelection: z.literal(true),
-    mpvFailover: z.literal(false),
+    mpvFailover: z.boolean(),
   });
 const capabilitiesSchema: z.ZodType<Capabilities> = z.union([
   hostedCapabilitiesSchema,
@@ -1018,6 +1053,14 @@ const nativePlaybackDescriptorSchema: z.ZodType<NativePlaybackDescriptor> = z
       });
     }
   });
+const mpvFallbackPlayingSchema: z.ZodType<MpvFallbackPlaying> = z.strictObject({
+  _tag: z.literal("fallback-playing"),
+  sessionId: playbackSessionIdSchema,
+});
+const mpvFallbackStoppedSchema: z.ZodType<MpvFallbackStopped> = z.strictObject({
+  _tag: z.literal("fallback-stopped"),
+  sessionId: playbackSessionIdSchema,
+});
 const playbackDescriptorSchema: z.ZodType<PlaybackDescriptor> = z.union([
   hostedPlaybackDescriptorSchema,
   nativePlaybackDescriptorSchema,
@@ -1235,6 +1278,20 @@ const serverClientErrorSchema: z.ZodType<ServerClientError> = z.discriminatedUni
     reason: z.enum(["rejected", "timed-out", "unavailable", "invalid-response"]),
     retryable: z.boolean(),
   }),
+  z.strictObject({
+    _tag: z.literal("fallback-failed"),
+    reason: z.enum([
+      "unsupported",
+      "primary-active",
+      "stale-session",
+      "not-installed",
+      "incompatible",
+      "launch-failed",
+      "control-unavailable",
+      "terminated",
+    ]),
+    retryable: z.boolean(),
+  }),
 ]);
 
 const clientErrorEnvelopeSchema: z.ZodType<{
@@ -1270,7 +1327,8 @@ export const clientSchemas = Object.freeze({
   audioPreferenceStatus: audioPreferenceStatusSchema,
   hostedPlaybackDescriptor: hostedPlaybackDescriptorSchema,
   nativePlaybackDescriptor: nativePlaybackDescriptorSchema,
+  mpvFallbackPlaying: mpvFallbackPlayingSchema,
+  mpvFallbackStopped: mpvFallbackStoppedSchema,
   serverError: serverClientErrorSchema,
   errorEnvelope: clientErrorEnvelopeSchema,
 });
-
