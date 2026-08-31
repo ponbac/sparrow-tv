@@ -885,9 +885,9 @@ export function formatAcceptanceManifest(manifest: CandidateManifest): string {
     `private, attempt-bound evidence forms.\n\n` +
     `## Target Arch / Wayland\n\n` +
     `- [ ] Restore the downloaded AppImage executable bit without changing its bytes\n` +
-    `- [ ] Startup, version, catalog, primary A/V, Channel and Audio Track changes\n` +
+    `- [ ] Startup, version, and catalog behavior\n` +
     `- [ ] Pause/resume, stop/restart, fullscreen, volume/mute, recovery and resource release\n` +
-    `- [ ] Explicit mpv fallback after primary release\n\n` +
+    `- [ ] Primary Linux mpv A/V, controls/fullscreen, Channel switching, any applicable direct mpv Audio Track choice (not Sparrow-persisted), one provider connection, and process/socket cleanup\n\n` +
     `## Physical Android\n\n` +
     `- [ ] Signature/package values above match the installed universal APK\n` +
     `- [ ] Clean install or upgrade, startup/catalog, primary A/V and Audio Track behavior\n` +

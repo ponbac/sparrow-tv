@@ -58,7 +58,7 @@ async fn valid_m3u_is_activated_and_published_as_a_queryable_catalog() {
         .expect("catalog remains available");
     assert_eq!(details.name(), "Culture One");
     assert_eq!(details.group(), "Culture");
-    assert_eq!(page.items().as_ptr(), repeated_page.items().as_ptr());
+    assert_eq!(page.items(), repeated_page.items());
     assert_eq!(source.open_count(), 1);
     assert_eq!(snapshots.activation_count(), 1);
     assert_eq!(snapshots.discard_count(), 0);

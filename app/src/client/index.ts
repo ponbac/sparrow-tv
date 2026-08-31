@@ -24,8 +24,6 @@ export type {
   InstalledPlaybackTransport,
   InstalledSparrowClient,
   IsoInstant,
-  MpvFallbackPlaying,
-  MpvFallbackStopped,
   NativePlaybackDescriptor,
   NativeStreamHandle,
   Page,

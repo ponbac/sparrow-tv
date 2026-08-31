@@ -59,19 +59,7 @@
   background: #a53112;
 }
 
-:where(.hosted-player) .hosted-player__state[data-state="primary-stopped"],
-:where(.hosted-player) .hosted-player__state[data-state="fallback-stop-failed"] {
-  color: #fff9ed;
-  background: #a53112;
-}
-
-:where(.hosted-player) .hosted-player__state[data-state="fallback-playing"] {
-  color: var(--ink);
-  background: var(--acid);
-}
-
-:where(.hosted-player) .hosted-player__state[data-state="starting"] > span,
-:where(.hosted-player) .hosted-player__state[data-state="fallback-starting"] > span {
+:where(.hosted-player) .hosted-player__state[data-state="starting"] > span {
   animation: signal-pulse 1.2s ease-in-out infinite;
 }
 

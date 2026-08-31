@@ -50,9 +50,15 @@ button:focus-visible {
   min-height: 100vh;
   overflow: hidden;
   background:
+    repeating-linear-gradient(
+      0deg,
+      transparent 0,
+      transparent 4px,
+      rgba(23, 25, 20, 0.016) 5px
+    ),
     linear-gradient(90deg, transparent 49.85%, rgba(23, 25, 20, 0.035) 50%, transparent 50.15%),
     var(--paper);
-  background-size: 44px 100%;
+  background-size: auto, 44px 100%, auto;
 }
 
 .native-standby {
@@ -106,21 +112,6 @@ button:focus-visible {
   }
 }
 
-.scanlines {
-  position: fixed;
-  z-index: 10;
-  inset: 0;
-  pointer-events: none;
-  opacity: 0.2;
-  background: repeating-linear-gradient(
-    0deg,
-    transparent 0,
-    transparent 4px,
-    rgba(23, 25, 20, 0.08) 5px
-  );
-  mix-blend-mode: multiply;
-}
-
 .masthead {
   position: relative;
   z-index: 1;
@@ -162,7 +153,6 @@ button:focus-visible {
   border-radius: 50%;
   background: var(--signal);
   box-shadow: 0 0 0 7px rgba(255, 90, 31, 0.14), 0 0 28px rgba(255, 90, 31, 0.8);
-  animation: signal-pulse 2.4s ease-in-out infinite;
 }
 
 .eyebrow {

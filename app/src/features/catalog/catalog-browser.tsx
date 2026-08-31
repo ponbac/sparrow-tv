@@ -6,7 +6,7 @@ import {
 } from "@tanstack/react-query";
 import { lazy, Suspense, useState } from "react";
 import type { HostedPlaybackEngine } from "../playback/mpegts-engine";
-import type { NativePlaybackEngine } from "../playback/native-mpegts-engine";
+import type { InstalledPlaybackEngine } from "../playback/installed-playback-engine";
 import { PlaybackLoadBoundary } from "../playback/playback-load-boundary";
 import { SearchConsole } from "../search/search-console";
 import type {
@@ -58,7 +58,7 @@ type CatalogBrowserProps =
         InstalledSparrowClient,
         "replaceSourceConfiguration"
       >;
-      readonly playbackEngine?: NativePlaybackEngine;
+      readonly playbackEngine?: InstalledPlaybackEngine;
     };
 
 /** Browses generation-bound Channel Groups and Channels through a Sparrow client. */
@@ -215,7 +215,6 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
 
   return (
     <div className="catalog-shell">
-      <div className="scanlines" aria-hidden="true" />
       <header className="masthead">
         <div className="wordmark-lockup">
           <span className="signal-lamp" aria-hidden="true" />
@@ -852,9 +851,9 @@ function errorCopy(
         title: "The live signal is unavailable",
         detail: "Browsing remains available. Choose another Channel or retry playback.",
       };
-    case "fallback-failed":
+    case "mpv-failed":
       return {
-        title: "The fallback player did not answer",
+        title: "The system player did not answer",
         detail: "No private playback detail was retained. Close the player and try again.",
       };
     case "transport":

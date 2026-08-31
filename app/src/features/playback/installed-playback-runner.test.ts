@@ -13,9 +13,9 @@ import {
   type InstalledPlaybackScheduler,
 } from "./installed-playback-runner";
 import type {
-  NativePlaybackEngine,
-  NativePlaybackRequest,
-} from "./native-mpegts-engine";
+  InstalledPlaybackEngine,
+  InstalledPlaybackRequest,
+} from "./installed-playback-engine";
 
 const CHANNEL_A = channel("channel-a", "Channel A");
 const CHANNEL_B = channel("channel-b", "Channel B");
@@ -71,6 +71,131 @@ describe("InstalledPlaybackRunner", () => {
     await restarting;
     expect(session.reopen).toHaveBeenCalledTimes(2);
     expect(engine.maximumActive).toBe(1);
+  });
+
+  it("releases Android Media3 only after session suspension settles", async () => {
+    const order: string[] = [];
+    const suspension = deferred<ClientResult<void>>();
+    const session = sessionFixture(41, {
+      start: async () => success(androidDescriptor(41, 1)),
+      suspend: () => {
+        order.push("suspend");
+        return suspension.promise;
+      },
+    });
+    const runner = createInstalledPlaybackRunner({
+      client: clientFixture(() => session.value),
+      engine: recordingEngine(order).value,
+    });
+
+    await runner.select(CHANNEL_A, document.createElement("video"));
+    const pausing = runner.pause();
+    await until(() => session.suspend.mock.calls.length === 1);
+
+    expect(order).toEqual(["engine-start:1", "suspend"]);
+    suspension.resolve(success(undefined));
+    await pausing;
+    expect(order.slice(-2)).toEqual(["suspend", "engine-stop:1"]);
+  });
+
+  it("suspends Android transport before releasing Media3 during restart", async () => {
+    const order: string[] = [];
+    const session = sessionFixture(42, {
+      start: async () => success(androidDescriptor(42, 1)),
+      suspend: async () => {
+        order.push("suspend");
+        return success(undefined);
+      },
+      reopen: async () => {
+        order.push("reopen");
+        return success(androidDescriptor(42, 2));
+      },
+    });
+    const runner = createInstalledPlaybackRunner({
+      client: clientFixture(() => session.value),
+      engine: recordingEngine(order).value,
+    });
+
+    await runner.select(CHANNEL_A, document.createElement("video"));
+    await runner.restart();
+
+    expect(order).toEqual([
+      "engine-start:1",
+      "suspend",
+      "engine-stop:1",
+      "reopen",
+      "engine-start:2",
+    ]);
+  });
+
+  it("restarts Android transport before releasing Media3 for Audio Track replacement", async () => {
+    const order: string[] = [];
+    const replacement = deferred<ClientResult<NativePlaybackDescriptor>>();
+    const session = sessionFixture(43, {
+      start: async () =>
+        success(
+          androidAudioDescriptor(43, 1, ENGLISH_AUDIO_ID, {
+            _tag: "selected",
+            trackId: ENGLISH_AUDIO_ID,
+            reason: "first-available",
+          }),
+        ),
+      restart: () => {
+        order.push("restart");
+        return replacement.promise;
+      },
+    });
+    const runner = createInstalledPlaybackRunner({
+      client: clientFixture(() => session.value),
+      engine: recordingEngine(order).value,
+    });
+
+    await runner.select(CHANNEL_A, document.createElement("video"));
+    const selecting = runner.selectAudio(SPANISH_AUDIO_ID);
+    await until(() => session.restart.mock.calls.length === 1);
+    expect(order).toEqual(["engine-start:1", "restart"]);
+
+    replacement.resolve(
+      success(
+        androidAudioDescriptor(43, 2, SPANISH_AUDIO_ID, {
+          _tag: "selected",
+          trackId: SPANISH_AUDIO_ID,
+          reason: "requested",
+        }),
+      ),
+    );
+    await selecting;
+    expect(order).toEqual([
+      "engine-start:1",
+      "restart",
+      "engine-stop:1",
+      "engine-start:2",
+    ]);
+  });
+
+  it("final-stops Android transport before releasing Media3", async () => {
+    const order: string[] = [];
+    const stopped = deferred<ClientResult<void>>();
+    const session = sessionFixture(44, {
+      start: async () => success(androidDescriptor(44, 1)),
+      stop: () => {
+        order.push("stop");
+        return stopped.promise;
+      },
+    });
+    const runner = createInstalledPlaybackRunner({
+      client: clientFixture(() => session.value),
+      engine: recordingEngine(order).value,
+    });
+
+    await runner.select(CHANNEL_A, document.createElement("video"));
+    const stopping = runner.stop();
+    await until(() => session.stop.mock.calls.length === 1);
+    expect(order).toEqual(["engine-start:1", "stop"]);
+
+    stopped.resolve(success(undefined));
+    await stopping;
+    expect(order.slice(-2)).toEqual(["stop", "engine-stop:1"]);
   });
 
   it("replaces Audio Tracks through the exact active handle without overlapping engines", async () => {
@@ -260,7 +385,6 @@ describe("InstalledPlaybackRunner", () => {
       failure: "stream-interrupted",
       attemptsUsed: 3,
       canRestart: true,
-      canFailover: true,
     });
     expect(time.scheduledDelays).toEqual([1_000, 5_000, 15_000]);
     expect(session.reopen).toHaveBeenCalledTimes(3);
@@ -281,7 +405,7 @@ describe("InstalledPlaybackRunner", () => {
     async (failure) => {
       const time = new ControlledTime();
       const session = sessionFixture(20);
-      const engine: NativePlaybackEngine = {
+      const engine: InstalledPlaybackEngine = {
         start: (request) => {
           request.onFailure(failure, true);
           return { stop: () => undefined };
@@ -301,141 +425,11 @@ describe("InstalledPlaybackRunner", () => {
         failure,
         attemptsUsed: 0,
         canRestart: true,
-        canFailover: true,
       });
       expect(time.scheduledDelays).toEqual([]);
       expect(session.stop).toHaveBeenCalledTimes(1);
     },
   );
-
-  it("launches mpv only after an explicit action and confirmed terminal primary stop", async () => {
-    const order: string[] = [];
-    const session = sessionFixture(21, {
-      stop: vi.fn(async () => {
-        order.push("primary-stop");
-        return success(undefined);
-      }),
-      startMpvFallback: vi.fn<InstalledPlaybackSession["startMpvFallback"]>(async () => {
-        order.push("mpv-start");
-        return success({
-          _tag: "fallback-playing" as const,
-          sessionId: descriptor(21, 1).sessionId,
-        });
-      }),
-      stopMpvFallback: vi.fn<InstalledPlaybackSession["stopMpvFallback"]>(async () => {
-        order.push("mpv-stop");
-        return success({
-          _tag: "fallback-stopped" as const,
-          sessionId: descriptor(21, 1).sessionId,
-        });
-      }),
-    });
-    const runner = createInstalledPlaybackRunner({
-      client: clientFixture(() => session.value),
-      engine: recordingEngine(order, () => "stream-interrupted" as const).value,
-      recoveryDelaysMs: [0, 0, 0],
-    });
-
-    await runner.select(CHANNEL_A, document.createElement("video"));
-    await runner.whenIdle();
-
-    expect(runner.getSnapshot().phase).toMatchObject({
-      _tag: "recovering",
-    });
-    expect(session.startMpvFallback).not.toHaveBeenCalled();
-
-    await runner.stopPrimary();
-    expect(runner.getSnapshot().phase).toEqual({
-      _tag: "primary-stopped",
-      fallbackFailure: null,
-      canFailover: true,
-    });
-    expect(session.startMpvFallback).not.toHaveBeenCalled();
-
-    await runner.startMpvFallback();
-    expect(runner.getSnapshot().phase).toEqual({ _tag: "fallback-playing" });
-    expect(order.indexOf("primary-stop")).toBeLessThan(order.indexOf("mpv-start"));
-
-    await runner.stop();
-    expect(order.indexOf("mpv-start")).toBeLessThan(order.indexOf("mpv-stop"));
-    expect(runner.getSnapshot().phase._tag).toBe("idle");
-  });
-
-  it("keeps a typed launch failure safe and disables a non-retryable failover", async () => {
-    const session = sessionFixture(22, {
-      startMpvFallback: vi.fn<InstalledPlaybackSession["startMpvFallback"]>(async () => ({
-        ok: false,
-        error: {
-          _tag: "fallback-failed" as const,
-          reason: "not-installed" as const,
-          retryable: false,
-        },
-      })),
-    });
-    const runner = createInstalledPlaybackRunner({
-      client: clientFixture(() => session.value),
-      engine: recordingEngine().value,
-    });
-
-    await runner.select(CHANNEL_A, document.createElement("video"));
-    await runner.stopPrimary();
-    await runner.startMpvFallback();
-
-    expect(runner.getSnapshot().phase).toEqual({
-      _tag: "primary-stopped",
-      fallbackFailure: {
-        _tag: "fallback-failed",
-        reason: "not-installed",
-        retryable: false,
-      },
-      canFailover: false,
-    });
-    expect(session.stopMpvFallback).not.toHaveBeenCalled();
-    await runner.startMpvFallback();
-    expect(session.startMpvFallback).toHaveBeenCalledTimes(1);
-    await expect(runner.stop()).resolves.toBe(true);
-    expect(session.stopMpvFallback).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps fallback ownership until explicit stop is confirmed", async () => {
-    const session = sessionFixture(23);
-    session.stopMpvFallback
-      .mockResolvedValueOnce({
-        ok: false,
-        error: {
-          _tag: "fallback-failed",
-          reason: "control-unavailable",
-          retryable: true,
-        },
-      })
-      .mockResolvedValue(
-        success({
-          _tag: "fallback-stopped",
-          sessionId: descriptor(23, 1).sessionId,
-        }),
-      );
-    const runner = createInstalledPlaybackRunner({
-      client: clientFixture(() => session.value),
-      engine: recordingEngine().value,
-    });
-
-    await runner.select(CHANNEL_A, document.createElement("video"));
-    await runner.stopPrimary();
-    await runner.startMpvFallback();
-
-    await expect(runner.stop()).resolves.toBe(false);
-    expect(runner.getSnapshot().phase).toEqual({
-      _tag: "fallback-stop-failed",
-      failure: {
-        _tag: "fallback-failed",
-        reason: "control-unavailable",
-        retryable: true,
-      },
-    });
-    await expect(runner.stop()).resolves.toBe(true);
-    expect(session.stopMpvFallback).toHaveBeenCalledTimes(2);
-    expect(runner.getSnapshot().phase._tag).toBe("idle");
-  });
 
   it("resets recovery only after 60 seconds of continuous playing", async () => {
     const time = new ControlledTime();
@@ -510,6 +504,33 @@ describe("InstalledPlaybackRunner", () => {
     await time.advanceBy(5_000, runner);
     expect(client.createPlaybackSession).toHaveBeenCalledTimes(1);
     expect(session.reopen).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a missing system mpv distinct from provider availability", async () => {
+    const session = sessionFixture(40, {
+      start: async () => ({
+        ok: false,
+        error: {
+          _tag: "mpv-failed",
+          reason: "not-installed",
+          retryable: false,
+        },
+      }),
+    });
+    const runner = createInstalledPlaybackRunner({
+      client: clientFixture(() => session.value),
+      engine: recordingEngine().value,
+    });
+
+    await runner.select(CHANNEL_A, document.createElement("video"));
+
+    expect(runner.getSnapshot().phase).toEqual({
+      _tag: "failed",
+      failure: "system-player-missing",
+      attemptsUsed: 0,
+      canRestart: true,
+    });
+    expect(session.stop).toHaveBeenCalledTimes(1);
   });
 
   it("coalesces A to B to C and waits for A cleanup before C starts", async () => {
@@ -612,7 +633,6 @@ describe("InstalledPlaybackRunner", () => {
       failure: "cleanup-unconfirmed",
       attemptsUsed: 0,
       canRestart: false,
-      canFailover: false,
     });
     expect(runner.diagnostics()).not.toContain("private-error-canary");
   });
@@ -815,7 +835,6 @@ describe("InstalledPlaybackRunner", () => {
       failure: "cleanup-unconfirmed",
       attemptsUsed: 0,
       canRestart: false,
-      canFailover: false,
     });
     expect(runner.diagnostics()).not.toContain("wake-private-canary");
   });
@@ -930,11 +949,11 @@ interface SessionOverrides {
   readonly start?: InstalledPlaybackSession["start"];
   readonly reopen?: InstalledPlaybackSession["reopen"];
   readonly restart?: InstalledPlaybackSession["restart"];
+  readonly startAndroidPresentation?: InstalledPlaybackSession["startAndroidPresentation"];
+  readonly controlMpv?: InstalledPlaybackSession["controlMpv"];
   readonly suspend?: InstalledPlaybackSession["suspend"];
   readonly setActivity?: InstalledPlaybackSession["setActivity"];
   readonly stop?: InstalledPlaybackSession["stop"];
-  readonly startMpvFallback?: InstalledPlaybackSession["startMpvFallback"];
-  readonly stopMpvFallback?: InstalledPlaybackSession["stopMpvFallback"];
 }
 
 function sessionFixture(
@@ -947,6 +966,12 @@ function sessionFixture(
   readonly restart: ReturnType<
     typeof vi.fn<InstalledPlaybackSession["restart"]>
   >;
+  readonly startAndroidPresentation: ReturnType<
+    typeof vi.fn<InstalledPlaybackSession["startAndroidPresentation"]>
+  >;
+  readonly controlMpv: ReturnType<
+    typeof vi.fn<InstalledPlaybackSession["controlMpv"]>
+  >;
   readonly suspend: ReturnType<
     typeof vi.fn<InstalledPlaybackSession["suspend"]>
   >;
@@ -954,12 +979,6 @@ function sessionFixture(
     typeof vi.fn<InstalledPlaybackSession["setActivity"]>
   >;
   readonly stop: ReturnType<typeof vi.fn<InstalledPlaybackSession["stop"]>>;
-  readonly startMpvFallback: ReturnType<
-    typeof vi.fn<InstalledPlaybackSession["startMpvFallback"]>
-  >;
-  readonly stopMpvFallback: ReturnType<
-    typeof vi.fn<InstalledPlaybackSession["stopMpvFallback"]>
-  >;
 } {
   const start = vi.fn<InstalledPlaybackSession["start"]>(
     overrides.start ?? (async () => success(descriptor(sessionNumber, 1))),
@@ -970,6 +989,15 @@ function sessionFixture(
   const restart = vi.fn<InstalledPlaybackSession["restart"]>(
     overrides.restart ?? (async () => success(descriptor(sessionNumber, 3))),
   );
+  const startAndroidPresentation = vi.fn<
+    InstalledPlaybackSession["startAndroidPresentation"]
+  >(
+    overrides.startAndroidPresentation ??
+      (async () => success(androidPresentationFixture())),
+  );
+  const controlMpv = vi.fn<InstalledPlaybackSession["controlMpv"]>(
+    overrides.controlMpv ?? (async () => success(undefined)),
+  );
   const suspend = vi.fn<InstalledPlaybackSession["suspend"]>(
     overrides.suspend ?? (async () => success(undefined)),
   );
@@ -979,35 +1007,26 @@ function sessionFixture(
   const setActivity = vi.fn<InstalledPlaybackSession["setActivity"]>(
     overrides.setActivity ?? (async () => success(undefined)),
   );
-  const sessionId = descriptor(sessionNumber, 1).sessionId;
-  const startMpvFallback = vi.fn<InstalledPlaybackSession["startMpvFallback"]>(
-    overrides.startMpvFallback ??
-      (async () => success({ _tag: "fallback-playing", sessionId })),
-  );
-  const stopMpvFallback = vi.fn<InstalledPlaybackSession["stopMpvFallback"]>(
-    overrides.stopMpvFallback ??
-      (async () => success({ _tag: "fallback-stopped", sessionId })),
-  );
   return {
     value: {
       start,
       reopen,
       restart,
       read: vi.fn(async () => success(new ArrayBuffer(0))),
+      startAndroidPresentation,
+      controlMpv,
       suspend,
       setActivity,
       stop,
-      startMpvFallback,
-      stopMpvFallback,
     },
     start,
     reopen,
     restart,
+    startAndroidPresentation,
+    controlMpv,
     suspend,
     setActivity,
     stop,
-    startMpvFallback,
-    stopMpvFallback,
   };
 }
 
@@ -1022,17 +1041,17 @@ function clientFixture(
 function recordingEngine(
   order: string[] = [],
   behavior:
-    | ((request: NativePlaybackRequest) => "stream-interrupted" | null)
+    | ((request: InstalledPlaybackRequest) => "stream-interrupted" | null)
     | (() => "stream-interrupted") = () => null,
 ): {
-  readonly value: NativePlaybackEngine;
+  readonly value: InstalledPlaybackEngine;
   readonly maximumActive: number;
   readonly playing: () => void;
 } {
   let active = 0;
   let maximumActive = 0;
   let sequence = 0;
-  let currentRequest: NativePlaybackRequest | null = null;
+  let currentRequest: InstalledPlaybackRequest | null = null;
   return {
     value: {
       start: (request) => {
@@ -1133,9 +1152,20 @@ function descriptor(
     _tag: "tauri-native-stream",
     sessionId: `play1_${sessionHex}_1`,
     streamHandle: `stream1_${streamHex}`,
+    presentation: "webview-mse",
     tracks: [],
     selection: { _tag: "none" },
   });
+}
+
+function androidDescriptor(
+  sessionNumber: number,
+  streamNumber: number,
+): NativePlaybackDescriptor {
+  return {
+    ...descriptor(sessionNumber, streamNumber),
+    presentation: "android-media3",
+  };
 }
 
 function audioTracks(selected: typeof ENGLISH_AUDIO_ID) {
@@ -1168,6 +1198,18 @@ function audioDescriptor(
     tracks: audioTracks(selected),
     selection,
     ...(preferenceStatus === undefined ? {} : { preferenceStatus }),
+  };
+}
+
+function androidAudioDescriptor(
+  sessionNumber: number,
+  streamNumber: number,
+  selected: typeof ENGLISH_AUDIO_ID,
+  selection: NativePlaybackDescriptor["selection"],
+): NativePlaybackDescriptor {
+  return {
+    ...audioDescriptor(sessionNumber, streamNumber, selected, selection),
+    presentation: "android-media3",
   };
 }
 
@@ -1213,6 +1255,25 @@ function expectRecovery(
 ): void {
   expect(phase._tag).toBe("recovering");
   expect(phase.attempt).toBe(attempt);
+}
+
+function androidPresentationFixture() {
+  return {
+    status: async () =>
+      success({
+        state: "stopped" as const,
+        decodedFrames: 0,
+        droppedFrames: 0,
+        bufferedDurationMs: 0,
+        silent: true,
+      }),
+    pause: async () => success(undefined),
+    resume: async () => success(undefined),
+    setVolume: async () => success(undefined),
+    setMuted: async () => success(undefined),
+    setViewport: async () => success(undefined),
+    stop: async () => success(undefined),
+  };
 }
 
 function success<Value>(value: Value): {

@@ -18,6 +18,7 @@ import {
   evaluateAcceptanceGates,
   isUsableCatalog,
   parseApkIdentity,
+  parseAdbSerial,
   parseCliArguments,
   parseInstalledPackageIdentity,
   parseProcessMemory,
@@ -288,9 +289,10 @@ class CdpSession {
 
 async function main(): Promise<void> {
   const parsedArguments = parseCliArguments(process.argv.slice(2));
-  if (!parsedArguments.ok) {
+  const parsedSerial = parseAdbSerial(process.env.ANDROID_SERIAL);
+  if (!parsedArguments.ok || !parsedSerial.ok) {
     console.error(
-      "usage: bun scripts/android-catalog-acceptance.ts --serial <adb-serial> --apk <arm64-apk> --output <new-json-file>",
+      "usage: ANDROID_SERIAL=<private-adb-serial> bun scripts/android-catalog-acceptance.ts --apk <arm64-apk> --output <new-json-file>",
     );
     process.exitCode = 2;
     return;
@@ -300,7 +302,7 @@ async function main(): Promise<void> {
     if (resolve(args.apk) === resolve(args.output)) {
       throw new HarnessFailure("unsafe-output", "the evidence output cannot replace the APK");
     }
-    const evidence = await runAcceptance(args);
+    const evidence = await runAcceptance(parsedSerial.value, args.apk);
     await writeNewEvidence(args.output, evidence);
     console.log(`verdict=${evidence.verdict}`);
     console.log("evidence=written");
@@ -328,16 +330,12 @@ async function main(): Promise<void> {
   }
 }
 
-async function runAcceptance(args: {
-  readonly serial: string;
-  readonly apk: string;
-  readonly output: string;
-}) {
+async function runAcceptance(serial: string, apk: string) {
   await requireTool("adb", ["version"]);
   await findExecutable("apkanalyzer");
-  const staged = await stageApk(args.apk);
+  const staged = await stageApk(apk);
   try {
-    return await runStagedAcceptance(args.serial, staged);
+    return await runStagedAcceptance(serial, staged);
   } finally {
     await rm(staged.root, { recursive: true, force: false });
   }
@@ -541,11 +539,11 @@ class Adb {
   }
 
   run(args: readonly string[], label: string, timeoutMs = 30_000): Promise<CommandResult> {
-    return requireCommand("adb", ["-s", this.serial, ...args], label, timeoutMs);
+    return requireCommand("adb", args, label, timeoutMs);
   }
 
   execute(args: readonly string[], label: string, timeoutMs = 30_000): Promise<CommandResult> {
-    return executeCommand("adb", ["-s", this.serial, ...args], label, timeoutMs);
+    return executeCommand("adb", args, label, timeoutMs);
   }
 
   runAs(args: readonly string[], label: string): Promise<CommandResult> {

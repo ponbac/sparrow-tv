@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+mod android_playback;
 mod audio_preferences;
 mod bounded_blocking;
 mod config_store;
@@ -22,8 +23,6 @@ pub fn run() {
             #[cfg(target_os = "android")]
             initialize_android_certificate_verifier()
                 .map_err(|_| runtime::InstalledStartupError::SourceAdapter)?;
-            #[cfg(target_os = "linux")]
-            enable_linux_media_source(app)?;
             let app_data = app
                 .path()
                 .app_data_dir()
@@ -32,6 +31,9 @@ pub fn run() {
             let runtime = Arc::new(tauri::async_runtime::block_on(
                 runtime::InstalledRuntime::open_with_screen_wake(app_data, screen_wake),
             )?);
+            #[cfg(target_os = "android")]
+            android_playback::bind_runtime(Arc::downgrade(&runtime))
+                .map_err(|_| runtime::InstalledStartupError::PlaybackAdapter)?;
             app.state::<runtime::InstalledRuntimeSlot>()
                 .fill(runtime)
                 .map_err(|_| runtime::InstalledStartupError::Core)?;
@@ -59,8 +61,12 @@ pub fn run() {
             ipc::playback_reopen,
             ipc::playback_restart,
             ipc::playback_stop,
-            ipc::playback_mpv_start,
-            ipc::playback_mpv_stop,
+            ipc::playback_android_start,
+            ipc::playback_android_status,
+            ipc::playback_android_controls,
+            ipc::playback_android_viewport,
+            ipc::playback_android_stop,
+            ipc::playback_mpv_control,
         ])
         .build(tauri::generate_context!())
     {
@@ -77,24 +83,6 @@ fn configure_platform_before_webview() {
     unsafe {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
-}
-
-#[cfg(target_os = "linux")]
-fn enable_linux_media_source(app: &tauri::App) -> Result<(), runtime::InstalledStartupError> {
-    use tauri::Manager as _;
-
-    let webview = app
-        .get_webview_window("main")
-        .ok_or(runtime::InstalledStartupError::PlaybackAdapter)?;
-    webview
-        .with_webview(|platform_webview| {
-            use webkit2gtk::{SettingsExt as _, WebViewExt as _};
-
-            if let Some(settings) = platform_webview.inner().settings() {
-                settings.set_enable_mediasource(true);
-            }
-        })
-        .map_err(|_| runtime::InstalledStartupError::PlaybackAdapter)
 }
 
 #[cfg(target_os = "android")]
@@ -155,10 +143,11 @@ fn report_lifecycle(app: &tauri::AppHandle, event: tauri::RunEvent) {
             .and_then(|slot| slot.ready()),
     ) {
         let app = app.clone();
+        let dispatch = runtime.dispatch_lifecycle(signal, move |event| {
+            let _ = app.emit("sparrow://playback-lifecycle", event);
+        });
         tauri::async_runtime::spawn(async move {
-            if let Ok(Some(event)) = runtime.report_lifecycle(signal).await {
-                let _ = app.emit("sparrow://playback-lifecycle", event);
-            }
+            let _ = dispatch.await;
         });
     }
 }

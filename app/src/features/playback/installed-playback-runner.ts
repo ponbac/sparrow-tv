@@ -1,19 +1,15 @@
 import type {
   AudioTrackId,
-  ClientError,
   InstalledPlaybackSession,
   InstalledPlaybackTransport,
   InstalledSparrowClient,
 } from "../../client/contracts";
-import { clientPlaybackFailure } from "./playback-failure";
-import type {
-  HostedPlaybackFailure,
-  HostedPlaybackHandle,
-} from "./mpegts-engine";
+import { installedClientPlaybackFailure } from "./playback-failure";
 import {
-  nativeMpegtsPlaybackEngine,
-  type NativePlaybackEngine,
-} from "./native-mpegts-engine";
+  installedPlaybackEngine,
+  type InstalledPlaybackEngine,
+  type InstalledPlaybackHandle,
+} from "./installed-playback-engine";
 import {
   copyInstalledPlaybackDiagnostics,
   installedPlaybackDiagnostics,
@@ -29,7 +25,6 @@ import {
   type InstalledPlaybackPauseCause,
   type InstalledPlaybackStartReason,
   type InstalledPlaybackState,
-  type MpvFallbackFailure,
 } from "./installed-playback-state";
 
 const DEFAULT_RECOVERY_DELAYS_MS = [1_000, 5_000, 15_000] as const;
@@ -55,7 +50,7 @@ export interface InstalledPlaybackScheduler {
 /** Construction options for the session-owning installed playback runner. */
 export interface InstalledPlaybackRunnerOptions {
   readonly client: InstalledPlaybackSessionClient;
-  readonly engine?: NativePlaybackEngine;
+  readonly engine?: InstalledPlaybackEngine;
   readonly clock?: InstalledPlaybackClock;
   readonly scheduler?: InstalledPlaybackScheduler;
   readonly recoveryDelaysMs?: readonly [number, number, number];
@@ -71,20 +66,23 @@ export interface InstalledPlaybackRunnerOptions {
  */
 export class InstalledPlaybackRunner {
   readonly #client: InstalledPlaybackSessionClient;
-  readonly #engine: NativePlaybackEngine;
+  readonly #engine: InstalledPlaybackEngine;
   readonly #clock: InstalledPlaybackClock;
   readonly #scheduler: InstalledPlaybackScheduler;
   readonly #recoveryDelaysMs: readonly [number, number, number];
   readonly #stableResetMs: number;
   readonly #listeners = new Set<() => void>();
   readonly #transitions: InstalledPlaybackTransition[] = [];
+  readonly #deferredAndroidHandles = new Map<
+    InstalledPlaybackSession,
+    Set<InstalledPlaybackHandle>
+  >();
   #state: InstalledPlaybackState;
   #session: InstalledPlaybackSession | null = null;
   #video: HTMLVideoElement | null = null;
-  #handle: HostedPlaybackHandle | null = null;
+  #handle: InstalledPlaybackHandle | null = null;
   #transport: InstalledPlaybackTransport | null = null;
   #openController: AbortController | null = null;
-  #fallbackController: AbortController | null = null;
   #cancelRetry: (() => void) | null = null;
   #cancelStableReset: (() => void) | null = null;
   #queue: Promise<void> = Promise.resolve();
@@ -94,12 +92,10 @@ export class InstalledPlaybackRunner {
   #cleanupBlocked = false;
   #documentVisible: boolean;
   #foreground: boolean;
-  #primaryReleased = false;
-  #fallbackOwned = false;
 
   constructor(options: InstalledPlaybackRunnerOptions) {
     this.#client = options.client;
-    this.#engine = options.engine ?? nativeMpegtsPlaybackEngine;
+    this.#engine = options.engine ?? installedPlaybackEngine;
     this.#clock = options.clock ?? { now: () => Date.now() };
     this.#scheduler = options.scheduler ?? browserScheduler();
     this.#recoveryDelaysMs = normalizeRecoveryDelays(
@@ -138,8 +134,6 @@ export class InstalledPlaybackRunner {
     const hadSession = this.#session !== null;
     this.#video = video;
     this.#cancelLocalTransport();
-    this.#fallbackController?.abort();
-    this.#fallbackController = null;
     this.#dispatch(
       hadSession
         ? {
@@ -184,7 +178,6 @@ export class InstalledPlaybackRunner {
           failure: "source-unavailable",
           attemptsUsed: 0,
           canRestart: true,
-          canFailover: false,
         });
         return;
       }
@@ -193,8 +186,6 @@ export class InstalledPlaybackRunner {
         return;
       }
       this.#session = session;
-      this.#primaryReleased = false;
-      this.#fallbackOwned = false;
       this.#dispatch({
         _tag: "select",
         channel,
@@ -239,16 +230,6 @@ export class InstalledPlaybackRunner {
     if (phase._tag === "failed") {
       return phase.canRestart ? this.select(channel, video) : Promise.resolve();
     }
-    if (phase._tag === "primary-stopped") {
-      return this.select(channel, video);
-    }
-    if (
-      phase._tag === "fallback-starting" ||
-      phase._tag === "fallback-playing" ||
-      phase._tag === "fallback-stop-failed"
-    ) {
-      return Promise.resolve();
-    }
     const session = this.#session;
     if (session === null) {
       return this.select(channel, video);
@@ -266,7 +247,7 @@ export class InstalledPlaybackRunner {
       if (!this.#matchesSession(sessionEpoch, session)) {
         return;
       }
-      const suspended = await safeSuspend(session);
+      const suspended = await this.#suspendSessionTransport(session);
       if (!this.#matchesSession(sessionEpoch, session)) {
         return;
       }
@@ -298,6 +279,7 @@ export class InstalledPlaybackRunner {
     if (
       session === null ||
       transport === null ||
+      transport._tag !== "tauri-native-stream" ||
       this.#cleanupBlocked ||
       !this.#state.visible ||
       !transport.tracks.some((track) => track.id === trackId) ||
@@ -354,7 +336,7 @@ export class InstalledPlaybackRunner {
         return;
       }
       if (!this.#state.visible) {
-        const suspended = await safeSuspend(session);
+        const suspended = await this.#suspendSessionTransport(session);
         if (!this.#matchesTransport(sessionEpoch, transportEpoch, session)) {
           return;
         }
@@ -378,7 +360,7 @@ export class InstalledPlaybackRunner {
           );
           return;
         }
-        const mapped = clientPlaybackFailure(result.error);
+        const mapped = installedClientPlaybackFailure(result.error);
         await this.#afterFailure(
           sessionEpoch,
           transportEpoch,
@@ -388,6 +370,7 @@ export class InstalledPlaybackRunner {
         return;
       }
 
+      this.#releaseDeferredAndroidHandles(session);
       await this.#startTransport(
         sessionEpoch,
         transportEpoch,
@@ -395,119 +378,6 @@ export class InstalledPlaybackRunner {
         this.#video,
         result.value,
       );
-    });
-  }
-
-  /** Stops the primary engine while retaining the pinned intent for manual failover. */
-  stopPrimary(): Promise<boolean> {
-    const session = this.#session;
-    const phase = this.#state.phase;
-    if (
-      session === null ||
-      this.#state.channel === null ||
-      phase._tag === "idle" ||
-      phase._tag === "failed" ||
-      phase._tag === "primary-stopped" ||
-      phase._tag === "fallback-starting" ||
-      phase._tag === "fallback-playing" ||
-      phase._tag === "fallback-stop-failed" ||
-      phase._tag === "stopping"
-    ) {
-      return Promise.resolve(false);
-    }
-    const sessionEpoch = this.#sessionEpoch;
-    const transportEpoch = ++this.#transportEpoch;
-    this.#cancelLocalTransport();
-    this.#dispatch({
-      _tag: "suspending",
-      next: { _tag: "primary-stopped" },
-      transportEpoch,
-    });
-    return this.#enqueue(async () => {
-      if (!this.#matchesTransport(sessionEpoch, transportEpoch, session)) {
-        return false;
-      }
-      const stopped = await safeStop(session);
-      if (!this.#matchesTransport(sessionEpoch, transportEpoch, session)) {
-        return false;
-      }
-      if (!stopped) {
-        this.#failCleanup();
-        return false;
-      }
-      this.#primaryReleased = true;
-      this.#dispatch({
-        _tag: "primary-stopped",
-        fallbackFailure: null,
-        canFailover: true,
-      });
-      return true;
-    });
-  }
-
-  /** Launches system mpv only from a confirmed stopped/failed primary state. */
-  startMpvFallback(): Promise<boolean> {
-    const session = this.#session;
-    const phase = this.#state.phase;
-    const allowed =
-      (phase._tag === "failed" && phase.canFailover) ||
-      (phase._tag === "primary-stopped" && phase.canFailover);
-    if (session === null || !allowed || this.#cleanupBlocked) {
-      return Promise.resolve(false);
-    }
-    const sessionEpoch = this.#sessionEpoch;
-    const controller = new AbortController();
-    this.#fallbackController = controller;
-    this.#dispatch({ _tag: "fallback-starting" });
-    return this.#enqueue(async () => {
-      if (!this.#matchesSession(sessionEpoch, session)) {
-        return false;
-      }
-      let result: Awaited<ReturnType<InstalledPlaybackSession["startMpvFallback"]>>;
-      try {
-        result = await session.startMpvFallback({ signal: controller.signal });
-      } catch {
-        if (this.#fallbackController === controller) {
-          this.#fallbackController = null;
-        }
-        const fallbackStopped = await safeStopMpvFallback(session);
-        this.#fallbackOwned = !fallbackStopped.ok;
-        if (this.#matchesSession(sessionEpoch, session)) {
-          this.#dispatch(
-            fallbackStopped.ok
-              ? {
-                  _tag: "primary-stopped",
-                  fallbackFailure: fallbackFailure("launch", null),
-                  canFailover: false,
-                }
-              : {
-                  _tag: "fallback-stop-failed",
-                  failure: fallbackStopped.failure,
-                },
-          );
-        }
-        return false;
-      }
-      if (this.#fallbackController === controller) {
-        this.#fallbackController = null;
-      }
-      if (!this.#matchesSession(sessionEpoch, session)) {
-        return false;
-      }
-      if (!result.ok) {
-        const failure = fallbackFailure("launch", result.error);
-        this.#fallbackOwned = false;
-        this.#dispatch({
-          _tag: "primary-stopped",
-          fallbackFailure: failure,
-          canFailover:
-            result.error._tag === "fallback-failed" && failure.retryable,
-        });
-        return false;
-      }
-      this.#fallbackOwned = true;
-      this.#dispatch({ _tag: "fallback-playing" });
-      return true;
     });
   }
 
@@ -519,8 +389,6 @@ export class InstalledPlaybackRunner {
     const sessionEpoch = ++this.#sessionEpoch;
     const transportEpoch = ++this.#transportEpoch;
     this.#cancelLocalTransport();
-    this.#fallbackController?.abort();
-    this.#fallbackController = null;
     if (this.#state.channel !== null) {
       this.#dispatch({
         _tag: "stopping",
@@ -537,10 +405,7 @@ export class InstalledPlaybackRunner {
       if (cleaned) {
         this.#cleanupBlocked = false;
         this.#dispatch({ _tag: "stopped" });
-      } else if (
-        this.#state.channel !== null &&
-        this.#state.phase._tag !== "fallback-stop-failed"
-      ) {
+      } else if (this.#state.channel !== null) {
         this.#failCleanup();
       }
       return cleaned;
@@ -585,10 +450,6 @@ export class InstalledPlaybackRunner {
         case "suspending":
         case "paused":
         case "failed":
-        case "primary-stopped":
-        case "fallback-starting":
-        case "fallback-playing":
-        case "fallback-stop-failed":
         case "stopping":
           return Promise.resolve();
       }
@@ -619,16 +480,53 @@ export class InstalledPlaybackRunner {
   /** Requests fullscreen through the runner and records only the safe result. */
   async requestFullscreen(): Promise<boolean> {
     const video = this.#video;
-    if (video === null || video.requestFullscreen === undefined) {
+    if (video === null) {
       return false;
     }
     const sessionEpoch = this.#sessionEpoch;
+    const requestedFullscreen = !this.#state.controls.fullscreen;
+    const engineFullscreen = this.#handle?.requestFullscreen;
+    if (engineFullscreen !== undefined) {
+      try {
+        const applied = await engineFullscreen(requestedFullscreen);
+        if (
+          !applied ||
+          sessionEpoch !== this.#sessionEpoch ||
+          video !== this.#video
+        ) {
+          return false;
+        }
+        this.#dispatch({
+          _tag: "fullscreen",
+          fullscreen: requestedFullscreen,
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    }
     try {
-      await video.requestFullscreen();
+      if (requestedFullscreen) {
+        if (video.requestFullscreen === undefined) {
+          return false;
+        }
+        await video.requestFullscreen();
+      } else {
+        if (
+          document.fullscreenElement !== video ||
+          document.exitFullscreen === undefined
+        ) {
+          return false;
+        }
+        await document.exitFullscreen();
+      }
       if (sessionEpoch !== this.#sessionEpoch || video !== this.#video) {
         return false;
       }
-      this.#dispatch({ _tag: "fullscreen", fullscreen: true });
+      this.#dispatch({
+        _tag: "fullscreen",
+        fullscreen: requestedFullscreen,
+      });
       return true;
     } catch {
       return false;
@@ -721,10 +619,6 @@ export class InstalledPlaybackRunner {
       session === null ||
       phase._tag === "idle" ||
       phase._tag === "failed" ||
-      phase._tag === "primary-stopped" ||
-      phase._tag === "fallback-starting" ||
-      phase._tag === "fallback-playing" ||
-      phase._tag === "fallback-stop-failed" ||
       phase._tag === "stopping" ||
       (phase._tag === "paused" && phase.cause === "user")
     ) {
@@ -742,7 +636,7 @@ export class InstalledPlaybackRunner {
       if (!this.#matchesSession(sessionEpoch, session)) {
         return;
       }
-      const suspended = await safeSuspend(session);
+      const suspended = await this.#suspendSessionTransport(session);
       if (!this.#matchesSession(sessionEpoch, session)) {
         return;
       }
@@ -810,7 +704,7 @@ export class InstalledPlaybackRunner {
       return;
     }
     if (!this.#state.visible) {
-      const suspended = await safeSuspend(session);
+      const suspended = await this.#suspendSessionTransport(session);
       if (!this.#matchesTransport(sessionEpoch, transportEpoch, session)) {
         return;
       }
@@ -834,7 +728,7 @@ export class InstalledPlaybackRunner {
         );
         return;
       }
-      const mapped = clientPlaybackFailure(result.error);
+      const mapped = installedClientPlaybackFailure(result.error);
       await this.#afterFailure(
         sessionEpoch,
         transportEpoch,
@@ -858,7 +752,7 @@ export class InstalledPlaybackRunner {
     transportEpoch: number,
     session: InstalledPlaybackSession,
   ): Promise<void> {
-    const suspended = await safeSuspend(session);
+    const suspended = await this.#suspendSessionTransport(session);
     if (!this.#matchesTransport(sessionEpoch, transportEpoch, session)) {
       return;
     }
@@ -888,19 +782,25 @@ export class InstalledPlaybackRunner {
       return;
     }
     this.#transport = transport;
+    const nativeTransport =
+      transport._tag === "tauri-native-stream" ? transport : null;
     this.#dispatch({
       _tag: "transport-opened",
-      tracks: transport.tracks,
-      selection: transport.selection,
-      ...(transport.preferenceStatus === undefined
+      presentation:
+        nativeTransport === null
+          ? "linux-mpv"
+          : nativeTransport.presentation,
+      tracks: nativeTransport?.tracks ?? [],
+      selection: nativeTransport?.selection ?? { _tag: "none" },
+      ...(nativeTransport?.preferenceStatus === undefined
         ? {}
-        : { preferenceStatus: transport.preferenceStatus }),
+        : { preferenceStatus: nativeTransport.preferenceStatus }),
     });
     this.#applyControls();
     let registered = false;
     const synchronousOutcome: {
       failure?: {
-        readonly failure: HostedPlaybackFailure;
+        readonly failure: InstalledPlaybackFailure;
         readonly retryable: boolean;
       };
       autoplayBlocked: boolean;
@@ -941,6 +841,7 @@ export class InstalledPlaybackRunner {
       return;
     }
     this.#handle = started;
+    this.#applyControls();
     const synchronousFailure = synchronousOutcome.failure;
     if (synchronousFailure !== undefined) {
       await this.#afterFailure(
@@ -957,7 +858,7 @@ export class InstalledPlaybackRunner {
   async #afterFailure(
     sessionEpoch: number,
     failedTransportEpoch: number,
-    failure: HostedPlaybackFailure,
+    failure: InstalledPlaybackFailure,
     adapterRetryable: boolean,
   ): Promise<void> {
     const session = this.#session;
@@ -974,7 +875,7 @@ export class InstalledPlaybackRunner {
       next: { _tag: "recovering" },
       transportEpoch,
     });
-    const suspended = await safeSuspend(session);
+    const suspended = await this.#suspendSessionTransport(session);
     if (!this.#matchesTransport(sessionEpoch, transportEpoch, session)) {
       return;
     }
@@ -1045,7 +946,7 @@ export class InstalledPlaybackRunner {
     attemptsUsed: number,
   ): Promise<void> {
     this.#cancelLocalTransport();
-    const stopped = await safeStop(session);
+    const stopped = await this.#stopSessionTransport(session);
     if (this.#session === session && !stopped) {
       this.#cleanupBlocked = true;
     }
@@ -1056,13 +957,11 @@ export class InstalledPlaybackRunner {
       this.#failCleanup();
       return;
     }
-    this.#primaryReleased = true;
     this.#dispatch({
       _tag: "failed",
       failure,
       attemptsUsed,
       canRestart: true,
-      canFailover: true,
     });
   }
 
@@ -1071,34 +970,16 @@ export class InstalledPlaybackRunner {
     if (session === null) {
       return !this.#cleanupBlocked;
     }
-    if (!this.#primaryReleased) {
-      const stopped = await safeStop(session);
-      if (!stopped) {
-        this.#cleanupBlocked = true;
-        return false;
-      }
-      this.#primaryReleased = true;
+    const stopped = await this.#stopSessionTransport(session);
+    if (!stopped) {
+      this.#cleanupBlocked = true;
+      return false;
     }
-    if (this.#fallbackOwned || this.#primaryReleased) {
-      const fallbackStopped = await safeStopMpvFallback(session);
-      if (!fallbackStopped.ok) {
-        if (this.#session === session && this.#state.channel !== null) {
-          this.#dispatch({
-            _tag: "fallback-stop-failed",
-            failure: fallbackStopped.failure,
-          });
-        }
-        return false;
-      }
-      this.#fallbackOwned = false;
-      this.#primaryReleased = false;
-      if (this.#session === session) {
-        this.#session = null;
-        this.#cleanupBlocked = false;
-      }
-      return true;
+    if (this.#session === session) {
+      this.#session = null;
+      this.#cleanupBlocked = false;
     }
-    return false;
+    return true;
   }
 
   #failCleanup(): void {
@@ -1109,7 +990,6 @@ export class InstalledPlaybackRunner {
         failure: "cleanup-unconfirmed",
         attemptsUsed: this.#state.recoveryCount,
         canRestart: false,
-        canFailover: false,
       });
     }
   }
@@ -1117,14 +997,56 @@ export class InstalledPlaybackRunner {
   #cancelLocalTransport(): void {
     this.#openController?.abort();
     this.#openController = null;
+    const transport = this.#transport;
     this.#transport = null;
     const handle = this.#handle;
     this.#handle = null;
     if (handle !== null) {
-      safelyStopHandle(handle);
+      const session = this.#session;
+      if (
+        session !== null &&
+        transport?._tag === "tauri-native-stream" &&
+        transport.presentation === "android-media3"
+      ) {
+        const handles = this.#deferredAndroidHandles.get(session);
+        if (handles === undefined) {
+          this.#deferredAndroidHandles.set(session, new Set([handle]));
+        } else {
+          handles.add(handle);
+        }
+      } else {
+        safelyStopHandle(handle);
+      }
     }
     this.#clearRetry();
     this.#clearStableReset();
+  }
+
+  async #suspendSessionTransport(
+    session: InstalledPlaybackSession,
+  ): Promise<boolean> {
+    const suspended = await safeSuspend(session);
+    this.#releaseDeferredAndroidHandles(session);
+    return suspended;
+  }
+
+  async #stopSessionTransport(
+    session: InstalledPlaybackSession,
+  ): Promise<boolean> {
+    const stopped = await safeStop(session);
+    this.#releaseDeferredAndroidHandles(session);
+    return stopped;
+  }
+
+  #releaseDeferredAndroidHandles(session: InstalledPlaybackSession): void {
+    const handles = this.#deferredAndroidHandles.get(session);
+    if (handles === undefined) {
+      return;
+    }
+    this.#deferredAndroidHandles.delete(session);
+    for (const handle of handles) {
+      safelyStopHandle(handle);
+    }
   }
 
   #clearRetry(): void {
@@ -1144,6 +1066,10 @@ export class InstalledPlaybackRunner {
     }
     video.volume = this.#state.controls.volume;
     video.muted = this.#state.controls.muted;
+    this.#handle?.setControls?.({
+      volume: this.#state.controls.volume,
+      muted: this.#state.controls.muted,
+    });
   }
 
   #inactivityCause(): Extract<
@@ -1198,7 +1124,7 @@ export class InstalledPlaybackRunner {
             ownsScreenWake(this.#state.phase)
           ) {
             this.#cancelLocalTransport();
-            const stopped = await safeStop(session);
+            const stopped = await this.#stopSessionTransport(session);
             if (this.#session === session && stopped) {
               this.#session = null;
             }
@@ -1212,7 +1138,6 @@ export class InstalledPlaybackRunner {
                 failure: "cleanup-unconfirmed",
                 attemptsUsed: this.#state.recoveryCount,
                 canRestart: false,
-                canFailover: false,
               });
             }
           }
@@ -1257,11 +1182,12 @@ export function createInstalledPlaybackRunner(
   return new InstalledPlaybackRunner(options);
 }
 
-function isRecoverableFailure(failure: HostedPlaybackFailure): boolean {
+function isRecoverableFailure(failure: InstalledPlaybackFailure): boolean {
   switch (failure) {
     case "source-timeout":
     case "source-unavailable":
     case "stream-interrupted":
+    case "system-player-unavailable":
       return true;
     case "authentication-required":
     case "channel-not-found":
@@ -1269,6 +1195,9 @@ function isRecoverableFailure(failure: HostedPlaybackFailure): boolean {
     case "source-invalid":
     case "media-unsupported":
     case "browser-unsupported":
+    case "system-player-missing":
+    case "system-player-incompatible":
+    case "cleanup-unconfirmed":
       return false;
   }
 }
@@ -1286,10 +1215,6 @@ function ownsScreenWake(phase: InstalledPlaybackState["phase"]): boolean {
     case "suspending":
     case "paused":
     case "failed":
-    case "primary-stopped":
-    case "fallback-starting":
-    case "fallback-playing":
-    case "fallback-stop-failed":
     case "stopping":
       return false;
   }
@@ -1327,71 +1252,7 @@ async function safeStop(session: InstalledPlaybackSession): Promise<boolean> {
   }
 }
 
-type MpvFallbackStopOutcome =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly failure: MpvFallbackFailure };
-
-async function safeStopMpvFallback(
-  session: InstalledPlaybackSession,
-): Promise<MpvFallbackStopOutcome> {
-  try {
-    const result = await session.stopMpvFallback();
-    return result.ok
-      ? { ok: true }
-      : { ok: false, failure: fallbackFailure("control", result.error) };
-  } catch {
-    return {
-      ok: false,
-      failure: fallbackFailure("control", null),
-    };
-  }
-}
-
-function fallbackFailure(
-  operation: "launch" | "control",
-  error: ClientError | null,
-): MpvFallbackFailure {
-  if (error === null) {
-    return {
-      _tag: "fallback-failed",
-      reason: operation === "launch" ? "launch-failed" : "control-unavailable",
-      retryable: true,
-    };
-  }
-  switch (error._tag) {
-    case "fallback-failed":
-      return error;
-    case "transport":
-      return {
-        _tag: "fallback-failed",
-        reason:
-          operation === "launch" ? "launch-failed" : "control-unavailable",
-        retryable: error.retryable,
-      };
-    case "cancelled":
-      return {
-        _tag: "fallback-failed",
-        reason: "terminated",
-        retryable: true,
-      };
-    case "authentication-required":
-    case "service-unavailable":
-    case "invalid-input":
-    case "not-configured":
-    case "catalog-unavailable":
-    case "not-found":
-    case "stale-cursor":
-    case "playback-failed":
-      return {
-        _tag: "fallback-failed",
-        reason:
-          operation === "launch" ? "launch-failed" : "control-unavailable",
-        retryable: false,
-      };
-  }
-}
-
-function safelyStopHandle(handle: HostedPlaybackHandle): void {
+function safelyStopHandle(handle: InstalledPlaybackHandle): void {
   try {
     handle.stop();
   } catch {

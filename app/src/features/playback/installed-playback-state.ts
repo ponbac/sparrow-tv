@@ -4,9 +4,9 @@ import type {
   AudioTrack,
   AudioTrackId,
   ChannelId,
-  ClientError,
 } from "../../client/contracts";
 import type { HostedPlaybackFailure } from "./mpegts-engine";
+import type { SystemPlayerFailure } from "./playback-failure";
 import type { PlayerState } from "./playback-presentation";
 
 /** Minimal Channel intent retained by the installed Playback Session state. */
@@ -30,16 +30,17 @@ export interface InstalledPlaybackAudio {
   readonly preferenceStatus: AudioPreferenceStatus | null;
 }
 
+/** Safe installed presentation identity, never a provider or native handle. */
+export type InstalledPlaybackPresentation =
+  | "webview-mse"
+  | "android-media3"
+  | "linux-mpv";
+
 /** Safe terminal failure unique to installed resource ownership. */
 export type InstalledPlaybackFailure =
   | HostedPlaybackFailure
+  | SystemPlayerFailure
   | "cleanup-unconfirmed";
-
-/** Safe typed mpv failure retained without native process or source details. */
-export type MpvFallbackFailure = Extract<
-  ClientError,
-  { readonly _tag: "fallback-failed" }
->;
 
 /** Why a fresh native transport is being opened inside the current intent. */
 export type InstalledPlaybackStartReason =
@@ -69,8 +70,7 @@ export type InstalledPlaybackPhase =
       readonly next:
         | { readonly _tag: "paused"; readonly cause: InstalledPlaybackPauseCause }
         | { readonly _tag: "recovering" }
-        | { readonly _tag: "restart" }
-        | { readonly _tag: "primary-stopped" };
+        | { readonly _tag: "restart" };
     }
   | {
       readonly _tag: "paused";
@@ -81,25 +81,13 @@ export type InstalledPlaybackPhase =
       readonly _tag: "recovering";
       readonly attempt: number;
       readonly retryAt: number;
-      readonly failure: HostedPlaybackFailure;
+      readonly failure: InstalledPlaybackFailure;
     }
   | {
       readonly _tag: "failed";
       readonly failure: InstalledPlaybackFailure;
       readonly attemptsUsed: number;
       readonly canRestart: boolean;
-      readonly canFailover: boolean;
-    }
-  | {
-      readonly _tag: "primary-stopped";
-      readonly fallbackFailure: MpvFallbackFailure | null;
-      readonly canFailover: boolean;
-    }
-  | { readonly _tag: "fallback-starting" }
-  | { readonly _tag: "fallback-playing" }
-  | {
-      readonly _tag: "fallback-stop-failed";
-      readonly failure: MpvFallbackFailure;
     }
   | {
       readonly _tag: "stopping";
@@ -114,6 +102,7 @@ export interface InstalledPlaybackState {
   readonly transportEpoch: number;
   readonly recoveryCount: number;
   readonly visible: boolean;
+  readonly presentation: InstalledPlaybackPresentation | null;
   readonly controls: InstalledPlaybackControls;
   readonly audio: InstalledPlaybackAudio;
 }
@@ -144,6 +133,7 @@ export type InstalledPlaybackEvent =
     }
   | {
       readonly _tag: "transport-opened";
+      readonly presentation: InstalledPlaybackPresentation;
       readonly tracks: readonly AudioTrack[];
       readonly selection: AudioSelection;
       readonly preferenceStatus?: AudioPreferenceStatus;
@@ -164,25 +154,13 @@ export type InstalledPlaybackEvent =
       readonly _tag: "recovering";
       readonly attempt: number;
       readonly retryAt: number;
-      readonly failure: HostedPlaybackFailure;
+      readonly failure: InstalledPlaybackFailure;
     }
   | {
       readonly _tag: "failed";
       readonly failure: InstalledPlaybackFailure;
       readonly attemptsUsed: number;
       readonly canRestart: boolean;
-      readonly canFailover: boolean;
-    }
-  | {
-      readonly _tag: "primary-stopped";
-      readonly fallbackFailure: MpvFallbackFailure | null;
-      readonly canFailover: boolean;
-    }
-  | { readonly _tag: "fallback-starting" }
-  | { readonly _tag: "fallback-playing" }
-  | {
-      readonly _tag: "fallback-stop-failed";
-      readonly failure: MpvFallbackFailure;
     }
   | { readonly _tag: "stopped" }
   | { readonly _tag: "stable" }
@@ -191,7 +169,7 @@ export type InstalledPlaybackEvent =
   | { readonly _tag: "muted"; readonly muted: boolean }
   | { readonly _tag: "fullscreen"; readonly fullscreen: boolean };
 
-/** Default audible browser controls for a newly-created player runner. */
+/** Normal product controls; acceptance injects silence at the native process seam. */
 export const INITIAL_INSTALLED_PLAYBACK_CONTROLS: InstalledPlaybackControls =
   Object.freeze({ volume: 1, muted: false, fullscreen: false });
 
@@ -215,6 +193,7 @@ export function createInstalledPlaybackState(
     transportEpoch: 0,
     recoveryCount: 0,
     visible,
+    presentation: null,
     controls: INITIAL_INSTALLED_PLAYBACK_CONTROLS,
     audio: INITIAL_INSTALLED_PLAYBACK_AUDIO,
   };
@@ -234,6 +213,7 @@ export function reduceInstalledPlaybackState(
         sessionEpoch: event.sessionEpoch,
         transportEpoch: event.transportEpoch,
         recoveryCount: 0,
+        presentation: null,
         audio: INITIAL_INSTALLED_PLAYBACK_AUDIO,
       };
     case "stopping":
@@ -264,6 +244,7 @@ export function reduceInstalledPlaybackState(
       requireSelectedChannel(state);
       return {
         ...state,
+        presentation: event.presentation,
         audio: {
           discovered: true,
           tracks: event.tracks,
@@ -316,31 +297,7 @@ export function reduceInstalledPlaybackState(
           failure: event.failure,
           attemptsUsed: event.attemptsUsed,
           canRestart: event.canRestart,
-          canFailover: event.canFailover,
         },
-      };
-    case "primary-stopped":
-      requireSelectedChannel(state);
-      return {
-        ...state,
-        phase: {
-          _tag: "primary-stopped",
-          fallbackFailure: event.fallbackFailure,
-          canFailover: event.canFailover,
-        },
-        controls: { ...state.controls, fullscreen: false },
-      };
-    case "fallback-starting":
-      requireSelectedChannel(state);
-      return { ...state, phase: { _tag: "fallback-starting" } };
-    case "fallback-playing":
-      requireSelectedChannel(state);
-      return { ...state, phase: { _tag: "fallback-playing" } };
-    case "fallback-stop-failed":
-      requireSelectedChannel(state);
-      return {
-        ...state,
-        phase: { _tag: "fallback-stop-failed", failure: event.failure },
       };
     case "stopped":
       return {
@@ -348,6 +305,7 @@ export function reduceInstalledPlaybackState(
         phase: { _tag: "idle" },
         channel: null,
         recoveryCount: 0,
+        presentation: null,
         controls: { ...state.controls, fullscreen: false },
         audio: INITIAL_INSTALLED_PLAYBACK_AUDIO,
       };
@@ -403,20 +361,6 @@ export function installedPlayerState(
         _tag: "failed",
         failure: state.phase.failure,
         retryable: state.phase.canRestart,
-      };
-    case "primary-stopped":
-      return {
-        _tag: "primary-stopped",
-        failure: state.phase.fallbackFailure,
-      };
-    case "fallback-starting":
-      return { _tag: "fallback-starting" };
-    case "fallback-playing":
-      return { _tag: "fallback-playing" };
-    case "fallback-stop-failed":
-      return {
-        _tag: "fallback-stop-failed",
-        failure: state.phase.failure,
       };
     case "stopping":
       return { _tag: "stopping" };

@@ -1,4 +1,4 @@
-import { MonitorPlay, Pause, Play, RotateCcw, ScrollText } from "lucide-react";
+import { Pause, Play, RotateCcw, ScrollText } from "lucide-react";
 import {
   useEffect,
   useMemo,
@@ -22,19 +22,16 @@ import {
 import { createInstalledPlaybackRunner } from "./installed-playback-runner";
 import { installedPlayerState } from "./installed-playback-state";
 import {
-  nativeMpegtsPlaybackEngine,
-  type NativePlaybackEngine,
-} from "./native-mpegts-engine";
+  installedPlaybackEngine,
+  type InstalledPlaybackEngine,
+} from "./installed-playback-engine";
 import { PlaybackSurface } from "./playback-surface";
 
 export interface InstalledPlayerProps {
   readonly channel: { readonly id: ChannelId; readonly name: string };
-  readonly client: Pick<
-    InstalledSparrowClient,
-    "capabilities" | "createPlaybackSession"
-  >;
+  readonly client: Pick<InstalledSparrowClient, "createPlaybackSession">;
   readonly onStop: () => void;
-  readonly engine?: NativePlaybackEngine;
+  readonly engine?: InstalledPlaybackEngine;
   readonly lifecycleEvents?: InstalledLifecycleEvents;
 }
 
@@ -43,12 +40,11 @@ export function InstalledPlayer({
   channel,
   client,
   onStop,
-  engine = nativeMpegtsPlaybackEngine,
+  engine = installedPlaybackEngine,
   lifecycleEvents = tauriInstalledLifecycleEvents,
 }: InstalledPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
-  const [mpvFailoverAvailable, setMpvFailoverAvailable] = useState(false);
   const runner = useMemo(
     () =>
       createInstalledPlaybackRunner({
@@ -65,31 +61,11 @@ export function InstalledPlayer({
   );
 
   useEffect(() => {
-    const controller = new AbortController();
-    void client.capabilities({ signal: controller.signal }).then(
-      (result) => {
-        if (!controller.signal.aborted) {
-          setMpvFailoverAvailable(
-            result.ok &&
-              result.value.playbackTransport === "tauri-native-stream" &&
-              result.value.mpvFailover,
-          );
-        }
-      },
-      () => {
-        if (!controller.signal.aborted) {
-          setMpvFailoverAvailable(false);
-        }
-      },
-    );
-    return () => controller.abort();
-  }, [client]);
-
-  useEffect(() => {
     const video = videoRef.current;
     if (video === null) {
       return;
     }
+    revealPlayerOnMobile(video);
     void runner.select({ id: channel.id, name: channel.name }, video);
     return () => {
       void runner.stop();
@@ -141,15 +117,8 @@ export function InstalledPlayer({
   }, [runner]);
 
   const phase = state.phase;
-  const canOfferMpv =
-    mpvFailoverAvailable &&
-    ((phase._tag === "failed" && phase.canFailover) ||
-      (phase._tag === "primary-stopped" && phase.canFailover));
-  const fallbackPhase =
-    phase._tag === "fallback-starting" ||
-    phase._tag === "fallback-playing" ||
-    phase._tag === "fallback-stop-failed";
-  const primaryReleased = phase._tag === "failed" || phase._tag === "primary-stopped";
+  const transportReleased = phase._tag === "failed";
+  const usesMpv = state.presentation === "linux-mpv";
   const overlayAction =
     phase._tag === "paused"
       ? { label: "Resume live signal", onAction: () => void runner.resume() }
@@ -165,7 +134,6 @@ export function InstalledPlayer({
     phase._tag !== "idle" &&
     phase._tag !== "stopping" &&
     phase._tag !== "replacing-audio" &&
-    !fallbackPhase &&
     !(phase._tag === "failed" && !phase.canRestart);
   const selectedAudioTrack = state.audio.tracks.find((track) => track.selected);
   const canSelectAudio =
@@ -194,10 +162,6 @@ export function InstalledPlayer({
       );
   };
   const stop = () => {
-    if (mpvFailoverAvailable && !primaryReleased && !fallbackPhase) {
-      void runner.stopPrimary();
-      return;
-    }
     void runner
       .stop()
       .then((confirmed) => {
@@ -214,10 +178,16 @@ export function InstalledPlayer({
       state={installedPlayerState(state)}
       videoKey={channel.id}
       videoRef={videoRef}
-      transportLabel={fallbackPhase ? "system mpv" : "native receiver"}
+      transportLabel={
+        usesMpv
+          ? "system mpv"
+          : state.presentation === "android-media3"
+            ? "Android Media3"
+            : "native receiver"
+      }
       privacyCopy={
-        fallbackPhase
-          ? "Provider details pass directly from the installed receiver to mpv."
+        usesMpv
+          ? "Provider details pass privately from the installed receiver to mpv over local IPC."
           : "Provider details remain inside the installed receiver."
       }
       onPlaying={() => undefined}
@@ -274,12 +244,6 @@ export function InstalledPlayer({
               Restart
             </button>
           ) : null}
-          {canOfferMpv ? (
-            <button type="button" onClick={() => void runner.startMpvFallback()}>
-              <MonitorPlay aria-hidden="true" />
-              Open in mpv
-            </button>
-          ) : null}
           <button type="button" onClick={copyDiagnostics}>
             <ScrollText aria-hidden="true" />
             Copy diagnostics
@@ -297,15 +261,9 @@ export function InstalledPlayer({
       onVolumeChange={(volume) => runner.setVolume(volume)}
       onToggleMuted={() => runner.toggleMuted()}
       onRequestFullscreen={() => void runner.requestFullscreen()}
-      showMediaControls={!primaryReleased && !fallbackPhase}
+      showMediaControls={!transportReleased}
       stopLabel={
-        fallbackPhase
-          ? "Stop mpv"
-          : primaryReleased
-            ? "Close player"
-            : mpvFailoverAvailable
-              ? "Stop primary"
-              : "Stop stream"
+        transportReleased ? "Close player" : usesMpv ? "Stop mpv" : "Stop stream"
       }
       onStop={stop}
       onAutoplayFailure={() => void runner.reportAutoplayFailure()}
@@ -337,6 +295,20 @@ function audioCodecLabel(codec: AudioCodec): string {
     case "ac-3":
       return "AC-3";
   }
+}
+
+function revealPlayerOnMobile(video: HTMLVideoElement): void {
+  if (
+    typeof window.matchMedia !== "function" ||
+    !window.matchMedia("(max-width: 760px)").matches
+  ) {
+    return;
+  }
+  video.scrollIntoView?.({
+    behavior: "auto",
+    block: "center",
+    inline: "nearest",
+  });
 }
 
 function installedAudioStatus(

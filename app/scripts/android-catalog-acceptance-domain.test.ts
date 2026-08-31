@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   evaluateAcceptanceGates,
   isUsableCatalog,
+  parseAdbSerial,
   parseApkIdentity,
   parseCliArguments,
   parseInstalledPackageIdentity,
@@ -17,11 +18,9 @@ const DIGEST_A = "a".repeat(64);
 const DIGEST_B = "b".repeat(64);
 
 describe("Android catalog acceptance boundaries", () => {
-  it("requires one explicit adb serial, APK, and evidence output", () => {
+  it("keeps the private adb selector out of command-line arguments", () => {
     expect(
       parseCliArguments([
-        "--serial",
-        "physical-serial",
         "--apk",
         "candidate.apk",
         "--output",
@@ -30,25 +29,30 @@ describe("Android catalog acceptance boundaries", () => {
     ).toEqual({
       ok: true,
       value: {
-        serial: "physical-serial",
         apk: "candidate.apk",
         output: "evidence.json",
       },
     });
+    expect(parseCliArguments(["--apk", "candidate.apk"])).toEqual({
+      ok: false,
+      reason: "--apk and --output are required",
+    });
     expect(parseCliArguments(["--serial", "physical-serial"])).toEqual({
       ok: false,
-      reason: "--serial, --apk, and --output are required",
+      reason: "expected one value for each required flag",
     });
-    expect(
-      parseCliArguments([
-        "--serial",
-        "emulator 5554",
-        "--apk",
-        "candidate.apk",
-        "--output",
-        "evidence.json",
-      ]),
-    ).toEqual({ ok: false, reason: "the adb serial has an unsafe shape" });
+    expect(parseAdbSerial("physical-serial")).toEqual({
+      ok: true,
+      value: "physical-serial",
+    });
+    expect(parseAdbSerial("emulator 5554")).toEqual({
+      ok: false,
+      reason: "ANDROID_SERIAL is missing or has an unsafe shape",
+    });
+    expect(parseAdbSerial(undefined)).toEqual({
+      ok: false,
+      reason: "ANDROID_SERIAL is missing or has an unsafe shape",
+    });
   });
 
   it("hard-rejects emulators before accepting the exact physical target", () => {

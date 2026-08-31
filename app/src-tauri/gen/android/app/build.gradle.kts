@@ -137,9 +137,13 @@ rust {
 }
 
 dependencies {
+    val media3Version = "1.11.0"
+
     implementation(
         "rustls:rustls-platform-verifier:${rustlsPlatformVerifierProject.version}@aar"
     )
+    implementation("androidx.media3:media3-exoplayer:$media3Version")
+    implementation("androidx.media3:media3-ui:$media3Version")
     implementation("androidx.webkit:webkit:1.14.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.activity:activity-ktx:1.10.1")

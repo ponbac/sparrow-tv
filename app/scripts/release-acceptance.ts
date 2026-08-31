@@ -181,7 +181,6 @@ async function proveContinuity(
     "--candidate",
     "--previous-apk",
     "--previous-version",
-    "--serial",
     "--output",
   ]);
   const candidate = await loadVerifiedCandidate(
@@ -218,7 +217,7 @@ async function proveContinuity(
         candidate,
       );
       try {
-        const serial = parseAdbSerial(required(values, "--serial"));
+        parseAdbSerial(process.env.ANDROID_SERIAL);
         const previousContractApk = join(
           previousSnapshot.directory,
           previousVersion.apkName,
@@ -247,20 +246,17 @@ async function proveContinuity(
           throw new AcceptanceFailure("the continuity APK bytes are invalid");
         }
 
-        const device = await readTargetDevice(serial);
+        const device = await readTargetDevice();
         installReleaseApk(
-          serial,
           previousApk,
           "install continuity predecessor",
         );
-        const previous = readInstalledPackage(serial, previousVersion);
+        const previous = readInstalledPackage(previousVersion);
         installReleaseApk(
-          serial,
           acceptedApk,
           "install accepted candidate as an update",
         );
         const accepted = readInstalledPackage(
-          serial,
           parseVersion(candidate.manifest.version),
         );
         if (
@@ -745,12 +741,12 @@ async function verifyRemoteCandidateArtifact(
   }
 }
 
-async function readTargetDevice(serial: string) {
-  run("adb", ["-s", serial, "get-state"], "read connected Android device");
+async function readTargetDevice() {
+  run("adb", ["get-state"], "read connected Android device");
   const property = (name: string): string =>
     run(
       "adb",
-      ["-s", serial, "shell", "getprop", name],
+      ["shell", "getprop", name],
       "read Android device identity",
     ).stdout.trim();
   const device = verifyDeviceIdentity({
@@ -767,10 +763,10 @@ async function readTargetDevice(serial: string) {
   return device.value;
 }
 
-function installReleaseApk(serial: string, apk: string, label: string): void {
+function installReleaseApk(apk: string, label: string): void {
   const result = run(
     "adb",
-    ["-s", serial, "install", "-r", "--no-streaming", apk],
+    ["install", "-r", "--no-streaming", apk],
     label,
     180_000,
   );
@@ -779,11 +775,11 @@ function installReleaseApk(serial: string, apk: string, label: string): void {
   }
 }
 
-function readInstalledPackage(serial: string, version: ProductVersion) {
+function readInstalledPackage(version: ProductVersion) {
   const parsed = parseInstalledReleasePackage(
     run(
       "adb",
-      ["-s", serial, "shell", "dumpsys", "package", PACKAGE_NAME],
+      ["shell", "dumpsys", "package", PACKAGE_NAME],
       "read installed Sparrow identity",
     ).stdout,
     { versionName: version.text, versionCode: version.androidVersionCode },
@@ -835,15 +831,16 @@ function parseVersion(input: string): ProductVersion {
   return parsed.value;
 }
 
-function parseAdbSerial(input: string): string {
+function parseAdbSerial(input: unknown): string {
   if (
+    typeof input !== "string" ||
     input.length === 0 ||
     input.length > 128 ||
     Array.from(input).some(
       (character) => /\s/u.test(character) || character.charCodeAt(0) <= 31,
     )
   ) {
-    throw new AcceptanceFailure("the adb serial has an unsafe shape");
+    throw new AcceptanceFailure("ANDROID_SERIAL is missing or has an unsafe shape");
   }
   return input;
 }

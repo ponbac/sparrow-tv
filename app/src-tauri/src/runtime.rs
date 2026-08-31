@@ -16,9 +16,10 @@ use sparrow_core::{
 use sparrow_snapshot_store::AtomicFileSnapshotStore;
 use sparrow_source_http::HttpPlaybackAccess;
 use sparrow_source_http::HttpSourceAccess;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, Notify, watch};
 
 use crate::{
+    android_playback,
     audio_preferences::AudioPreferenceStore,
     bounded_blocking::{BlockingTaskCancellation, BoundedBlocking},
     config_store::{
@@ -32,8 +33,8 @@ use crate::{
         subscriptions::SubscriptionRegistry,
     },
     playback::{
-        MpvFallbackSession, NativeStreamHandle, PlaybackManager, PlaybackManagerError,
-        PlaybackRestartIntent, PlaybackSessionId, StartedPlayback,
+        InstalledPlaybackStart, NativeStreamHandle, PlaybackManager, PlaybackManagerError,
+        PlaybackRestartIntent, PlaybackSessionId,
     },
     screen_wake::ScreenWake,
 };
@@ -102,13 +103,15 @@ impl InstalledRuntimeSlot {
 
 /// The complete on-device catalog composition managed by Tauri.
 pub(crate) struct InstalledRuntime {
-    playback: PlaybackManager,
+    playback: Arc<PlaybackManager>,
     core: Arc<SparrowCore>,
     configuration_store: SourceConfigurationStore,
     configuration_mutation: Mutex<()>,
     searches: BoundedBlocking,
     search_cancellations: SearchCancellationRegistry,
     subscriptions: SubscriptionRegistry,
+    android_presentation: AndroidPresentationGate,
+    lifecycle_order: LifecycleOrder,
     lifecycle_revision: AtomicU64,
     _instance_lock: InstanceLock,
 }
@@ -156,13 +159,13 @@ impl InstalledRuntime {
         let playback_access =
             HttpPlaybackAccess::new().map_err(|_| InstalledStartupError::PlaybackAdapter)?;
         let audio_preferences = AudioPreferenceStore::open(&private_root);
-        let playback = PlaybackManager::new_with_screen_wake(
+        let playback = Arc::new(PlaybackManager::new_with_screen_wake(
             Arc::clone(&core),
             playback_access,
             audio_preferences,
             private_root.clone(),
             screen_wake,
-        );
+        ));
 
         Ok(Self {
             playback,
@@ -172,6 +175,8 @@ impl InstalledRuntime {
             searches: BoundedBlocking::serial(),
             search_cancellations: SearchCancellationRegistry::default(),
             subscriptions: SubscriptionRegistry::default(),
+            android_presentation: AndroidPresentationGate::default(),
+            lifecycle_order: LifecycleOrder::default(),
             lifecycle_revision: AtomicU64::new(0),
             _instance_lock: instance_lock,
         })
@@ -301,8 +306,21 @@ impl InstalledRuntime {
         &self,
         session_id: PlaybackSessionId,
         channel_id: sparrow_core::ChannelId,
-    ) -> Result<StartedPlayback, PlaybackManagerError> {
-        self.playback.start(session_id, channel_id).await
+    ) -> Result<InstalledPlaybackStart, PlaybackManagerError> {
+        #[cfg(target_os = "linux")]
+        {
+            self.playback
+                .start_mpv_primary(session_id, channel_id)
+                .await
+                .map(InstalledPlaybackStart::LinuxMpv)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.playback
+                .start(session_id, channel_id)
+                .await
+                .map(InstalledPlaybackStart::NativeStream)
+        }
     }
 
     pub(crate) async fn read_playback(
@@ -317,14 +335,34 @@ impl InstalledRuntime {
         &self,
         session_id: PlaybackSessionId,
     ) -> Result<(), PlaybackManagerError> {
-        self.playback.suspend(session_id).await
+        let stop_id = session_id.clone();
+        let playback = Arc::clone(&self.playback);
+        self.android_presentation
+            .stop_after_transport(
+                async move { playback.suspend(session_id).await },
+                move || android_playback::suspend_session(&stop_id),
+            )
+            .await
     }
 
     pub(crate) async fn reopen_playback(
         &self,
         session_id: PlaybackSessionId,
-    ) -> Result<StartedPlayback, PlaybackManagerError> {
-        self.playback.reopen(session_id).await
+    ) -> Result<InstalledPlaybackStart, PlaybackManagerError> {
+        #[cfg(target_os = "linux")]
+        {
+            self.playback
+                .reopen_mpv(session_id)
+                .await
+                .map(InstalledPlaybackStart::LinuxMpv)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.android_presentation
+                .transport_transition(self.playback.reopen(session_id))
+                .await
+                .map(InstalledPlaybackStart::NativeStream)
+        }
     }
 
     pub(crate) async fn restart_playback(
@@ -332,10 +370,27 @@ impl InstalledRuntime {
         session_id: PlaybackSessionId,
         expected_stream_handle: NativeStreamHandle,
         intent: PlaybackRestartIntent,
-    ) -> Result<StartedPlayback, PlaybackManagerError> {
-        self.playback
-            .restart(session_id, expected_stream_handle, intent)
+    ) -> Result<InstalledPlaybackStart, PlaybackManagerError> {
+        let presentation_identity = android_playback::AndroidPlaybackIdentity::new(
+            session_id.clone(),
+            expected_stream_handle.clone(),
+        );
+        let playback = Arc::clone(&self.playback);
+        let stop_session_id = session_id.clone();
+        let stop_stream_handle = expected_stream_handle.clone();
+        self.android_presentation
+            .stop_before_transport_replace(
+                async move {
+                    playback
+                        .suspend_generation(stop_session_id, stop_stream_handle)
+                        .await
+                },
+                move || android_playback::stop(&presentation_identity),
+                self.playback
+                    .restart(session_id, expected_stream_handle, intent),
+            )
             .await
+            .map(InstalledPlaybackStart::NativeStream)
     }
 
     pub(crate) async fn stop_playback(
@@ -343,7 +398,69 @@ impl InstalledRuntime {
         session_id: PlaybackSessionId,
         stream_handle: Option<NativeStreamHandle>,
     ) -> Result<(), PlaybackManagerError> {
-        self.playback.stop(session_id, stream_handle).await
+        let stop_id = session_id.clone();
+        let playback = Arc::clone(&self.playback);
+        self.android_presentation
+            .stop_after_transport(
+                async move { playback.stop(session_id, stream_handle).await },
+                move || android_playback::stop_session(&stop_id),
+            )
+            .await
+    }
+
+    pub(crate) async fn start_android_playback(
+        &self,
+        identity: android_playback::AndroidPlaybackIdentity,
+        viewport: android_playback::AndroidPlaybackViewport,
+        controls: android_playback::AndroidPlaybackControls,
+    ) -> Result<(), PlaybackManagerError> {
+        let session_id = identity.session_id().clone();
+        let stream_handle = identity.stream_handle().clone();
+        self.android_presentation
+            .start_if_active(
+                self.playback
+                    .validate_active_generation(session_id, stream_handle),
+                move || android_playback::start(&identity, viewport, controls),
+            )
+            .await
+    }
+
+    pub(crate) async fn android_playback_status(
+        &self,
+        identity: android_playback::AndroidPlaybackIdentity,
+    ) -> Result<android_playback::AndroidPlaybackStatus, PlaybackManagerError> {
+        self.android_presentation
+            .presentation_call(move || android_playback::status(&identity))
+            .await
+    }
+
+    pub(crate) async fn set_android_playback_controls(
+        &self,
+        identity: android_playback::AndroidPlaybackIdentity,
+        controls: android_playback::AndroidPlaybackControls,
+    ) -> Result<(), PlaybackManagerError> {
+        self.android_presentation
+            .presentation_call(move || android_playback::set_controls(&identity, controls))
+            .await
+    }
+
+    pub(crate) async fn set_android_playback_viewport(
+        &self,
+        identity: android_playback::AndroidPlaybackIdentity,
+        viewport: android_playback::AndroidPlaybackViewport,
+    ) -> Result<(), PlaybackManagerError> {
+        self.android_presentation
+            .presentation_call(move || android_playback::set_viewport(&identity, viewport))
+            .await
+    }
+
+    pub(crate) async fn stop_android_playback(
+        &self,
+        identity: android_playback::AndroidPlaybackIdentity,
+    ) -> Result<(), PlaybackManagerError> {
+        self.android_presentation
+            .presentation_call(move || android_playback::stop(&identity))
+            .await
     }
 
     pub(crate) async fn set_playback_activity(
@@ -354,7 +471,26 @@ impl InstalledRuntime {
         self.playback.set_activity(session_id, active).await
     }
 
-    pub(crate) async fn report_lifecycle(
+    pub(crate) fn dispatch_lifecycle<Publish>(
+        self: Arc<Self>,
+        signal: sparrow_core::LifecycleSignal,
+        publish: Publish,
+    ) -> impl std::future::Future<Output = Result<(), PlaybackManagerError>> + Send + 'static
+    where
+        Publish: FnOnce(InstalledLifecycleEvent) + Send + 'static,
+    {
+        let sequence = self.lifecycle_order.reserve();
+        async move {
+            let sequence = sequence?;
+            let _turn = self.lifecycle_order.wait(sequence).await?;
+            if let Some(event) = self.apply_lifecycle(signal).await? {
+                publish(event);
+            }
+            Ok(())
+        }
+    }
+
+    async fn apply_lifecycle(
         &self,
         signal: sparrow_core::LifecycleSignal,
     ) -> Result<Option<InstalledLifecycleEvent>, PlaybackManagerError> {
@@ -364,12 +500,22 @@ impl InstalledRuntime {
                 Ok(None)
             }
             sparrow_core::LifecycleSignal::Suspended => {
-                self.playback.suspend_for_lifecycle().await?;
+                let playback = Arc::clone(&self.playback);
+                let cleanup = self
+                    .android_presentation
+                    .stop_after_transport(
+                        async move { playback.suspend_for_lifecycle().await },
+                        android_playback::suspend_all,
+                    )
+                    .await;
                 self.core.report_lifecycle(signal);
+                cleanup?;
                 self.lifecycle_event("suspended").map(Some)
             }
             sparrow_core::LifecycleSignal::Resumed => {
-                self.playback.resume_for_lifecycle().await?;
+                self.android_presentation
+                    .transport_transition(self.playback.resume_for_lifecycle())
+                    .await?;
                 self.core.report_lifecycle(signal);
                 self.lifecycle_event("resumed").map(Some)
             }
@@ -390,23 +536,187 @@ impl InstalledRuntime {
         Ok(InstalledLifecycleEvent { revision, state })
     }
 
-    pub(crate) async fn start_mpv(
+    pub(crate) async fn control_mpv(
         &self,
         session_id: PlaybackSessionId,
-    ) -> Result<MpvFallbackSession, PlaybackManagerError> {
-        self.playback.start_mpv(session_id).await
-    }
-
-    pub(crate) async fn stop_mpv(
-        &self,
-        session_id: PlaybackSessionId,
-    ) -> Result<MpvFallbackSession, PlaybackManagerError> {
-        self.playback.stop_mpv(session_id).await
+        control: crate::playback::MpvPlaybackControl,
+    ) -> Result<(), PlaybackManagerError> {
+        self.playback.control_mpv(session_id, control).await
     }
 
     pub(crate) async fn shutdown_playback(&self) -> Result<(), PlaybackManagerError> {
-        self.playback.shutdown().await
+        let playback = Arc::clone(&self.playback);
+        self.android_presentation
+            .stop_after_transport(
+                async move { playback.shutdown().await },
+                android_playback::stop_all,
+            )
+            .await
     }
+}
+
+#[derive(Default)]
+struct LifecycleOrder {
+    submitted: AtomicU64,
+    turn: Mutex<u64>,
+    changed: Notify,
+}
+
+impl LifecycleOrder {
+    fn reserve(&self) -> Result<u64, PlaybackManagerError> {
+        self.submitted
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |sequence| {
+                sequence.checked_add(1)
+            })
+            .map_err(|_| PlaybackManagerError::Unavailable)
+    }
+
+    async fn wait(&self, sequence: u64) -> Result<LifecycleTurn<'_>, PlaybackManagerError> {
+        loop {
+            let changed = self.changed.notified();
+            let turn = self.turn.lock().await;
+            if *turn == sequence {
+                return Ok(LifecycleTurn {
+                    turn,
+                    changed: &self.changed,
+                });
+            }
+            if *turn > sequence {
+                return Err(PlaybackManagerError::Unavailable);
+            }
+            drop(turn);
+            changed.await;
+        }
+    }
+}
+
+struct LifecycleTurn<'a> {
+    turn: tokio::sync::MutexGuard<'a, u64>,
+    changed: &'a Notify,
+}
+
+impl Drop for LifecycleTurn<'_> {
+    fn drop(&mut self) {
+        *self.turn = self.turn.saturating_add(1);
+        self.changed.notify_waiters();
+    }
+}
+
+/// Serializes the Rust transport and Android presentation boundary.
+///
+/// The permit spans both sides of each transition. A delayed JNI start must
+/// therefore either publish first and be followed by cleanup, or observe the
+/// transport cleanup through `validate_active_generation` and fail closed.
+#[derive(Default)]
+struct AndroidPresentationGate {
+    operation: Arc<Mutex<()>>,
+}
+
+impl AndroidPresentationGate {
+    async fn start_if_active(
+        &self,
+        validate_transport: impl std::future::Future<Output = Result<(), PlaybackManagerError>>,
+        start_presentation: impl FnOnce() -> Result<(), android_playback::AndroidPlaybackError>
+        + Send
+        + 'static,
+    ) -> Result<(), PlaybackManagerError> {
+        let permit = Arc::clone(&self.operation).lock_owned().await;
+        validate_transport.await?;
+        run_android_presentation(permit, start_presentation)
+            .await
+            .map(|_| ())
+    }
+
+    async fn presentation_call<Output: Send + 'static>(
+        &self,
+        operation: impl FnOnce() -> Result<Output, android_playback::AndroidPlaybackError>
+        + Send
+        + 'static,
+    ) -> Result<Output, PlaybackManagerError> {
+        let permit = Arc::clone(&self.operation).lock_owned().await;
+        run_android_presentation(permit, operation)
+            .await
+            .map(|(_, output)| output)
+    }
+
+    async fn transport_transition<Output>(
+        &self,
+        transition: impl std::future::Future<Output = Result<Output, PlaybackManagerError>>,
+    ) -> Result<Output, PlaybackManagerError> {
+        let _permit = Arc::clone(&self.operation).lock_owned().await;
+        transition.await
+    }
+
+    async fn stop_after_transport(
+        &self,
+        stop_transport: impl std::future::Future<Output = Result<(), PlaybackManagerError>>
+        + Send
+        + 'static,
+        stop_presentation: impl FnOnce() -> Result<(), android_playback::AndroidPlaybackError>
+        + Send
+        + 'static,
+    ) -> Result<(), PlaybackManagerError> {
+        let permit = Arc::clone(&self.operation).lock_owned().await;
+        run_android_cleanup(permit, stop_transport, stop_presentation)
+            .await
+            .map(drop)
+    }
+
+    async fn stop_before_transport_replace<Output>(
+        &self,
+        stop_transport: impl std::future::Future<Output = Result<(), PlaybackManagerError>>
+        + Send
+        + 'static,
+        stop_presentation: impl FnOnce() -> Result<(), android_playback::AndroidPlaybackError>
+        + Send
+        + 'static,
+        replace_transport: impl std::future::Future<Output = Result<Output, PlaybackManagerError>>,
+    ) -> Result<Output, PlaybackManagerError> {
+        let permit = Arc::clone(&self.operation).lock_owned().await;
+        let permit = run_android_cleanup(permit, stop_transport, stop_presentation).await?;
+        let _permit = permit;
+        replace_transport.await
+    }
+}
+
+/// Owns the complete bounded cleanup phase independently of its requesting task.
+///
+/// Dropping the returned join handle detaches this task, so an aborted invoke
+/// cannot release the gate after stopping transport but before stopping the
+/// Android presentation. The permit is returned only when both cleanup steps
+/// succeed; restart callers then retain it while polling the replacement. The
+/// caller acquires the permit before spawning, which bounds independent cleanup
+/// work to one task; cancelled gate waiters never create another task.
+async fn run_android_cleanup(
+    permit: tokio::sync::OwnedMutexGuard<()>,
+    stop_transport: impl std::future::Future<Output = Result<(), PlaybackManagerError>> + Send + 'static,
+    stop_presentation: impl FnOnce() -> Result<(), android_playback::AndroidPlaybackError>
+    + Send
+    + 'static,
+) -> Result<tokio::sync::OwnedMutexGuard<()>, PlaybackManagerError> {
+    tokio::spawn(async move {
+        let transport_result = stop_transport.await;
+        let presentation_result = run_android_presentation(permit, stop_presentation).await;
+
+        // Presentation cleanup is always attempted, while the transport error
+        // remains the primary failure when both sides fail.
+        transport_result?;
+        presentation_result.map(|(permit, ())| permit)
+    })
+    .await
+    .map_err(|_| PlaybackManagerError::Unavailable)?
+}
+
+async fn run_android_presentation<Output: Send + 'static>(
+    permit: tokio::sync::OwnedMutexGuard<()>,
+    operation: impl FnOnce() -> Result<Output, android_playback::AndroidPlaybackError> + Send + 'static,
+) -> Result<(tokio::sync::OwnedMutexGuard<()>, Output), PlaybackManagerError> {
+    let (permit, result) = tokio::task::spawn_blocking(move || (permit, operation()))
+        .await
+        .map_err(|_| PlaybackManagerError::Unavailable)?;
+    result
+        .map(|output| (permit, output))
+        .map_err(|_| PlaybackManagerError::Unavailable)
 }
 
 #[derive(Default)]
@@ -606,6 +916,7 @@ mod tests {
         sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
+            mpsc as std_mpsc,
         },
         thread,
     };
@@ -614,6 +925,533 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[tokio::test]
+    async fn android_transport_and_presentation_stop_before_a_generation_is_replaced() {
+        let gate = AndroidPresentationGate::default();
+        let order = Arc::new(StdMutex::new(Vec::new()));
+        let transport_stop_order = Arc::clone(&order);
+        let stop_order = Arc::clone(&order);
+        let replace_order = Arc::clone(&order);
+        let replaced = gate
+            .stop_before_transport_replace(
+                async move {
+                    transport_stop_order
+                        .lock()
+                        .expect("ordering fixture is readable")
+                        .push("transport-stop");
+                    Ok(())
+                },
+                move || {
+                    stop_order
+                        .lock()
+                        .expect("ordering fixture is readable")
+                        .push("presentation-stop");
+                    Ok(())
+                },
+                async move {
+                    replace_order
+                        .lock()
+                        .expect("ordering fixture is readable")
+                        .push("transport-replace");
+                    Ok::<_, PlaybackManagerError>(7)
+                },
+            )
+            .await
+            .expect("replacement follows presentation stop");
+
+        assert_eq!(replaced, 7);
+        assert_eq!(
+            *order.lock().expect("ordering fixture is readable"),
+            ["transport-stop", "presentation-stop", "transport-replace"]
+        );
+
+        let presentation_called = Arc::new(AtomicBool::new(false));
+        let presentation_flag = Arc::clone(&presentation_called);
+        let replacement_polled = Arc::new(AtomicBool::new(false));
+        let replacement_flag = Arc::clone(&replacement_polled);
+        let transport_failed = gate
+            .stop_before_transport_replace(
+                async { Err(PlaybackManagerError::Cancelled) },
+                move || {
+                    presentation_flag.store(true, Ordering::SeqCst);
+                    Ok(())
+                },
+                async move {
+                    replacement_flag.store(true, Ordering::SeqCst);
+                    Ok::<_, PlaybackManagerError>(())
+                },
+            )
+            .await;
+        assert!(matches!(
+            transport_failed,
+            Err(PlaybackManagerError::Cancelled)
+        ));
+        assert!(presentation_called.load(Ordering::SeqCst));
+        assert!(!replacement_polled.load(Ordering::SeqCst));
+
+        let presentation_called = Arc::new(AtomicBool::new(false));
+        let presentation_flag = Arc::clone(&presentation_called);
+        let replacement_polled = Arc::new(AtomicBool::new(false));
+        let replacement_flag = Arc::clone(&replacement_polled);
+        let both_failed = gate
+            .stop_before_transport_replace(
+                async { Err(PlaybackManagerError::Cancelled) },
+                move || {
+                    presentation_flag.store(true, Ordering::SeqCst);
+                    Err(android_playback::AndroidPlaybackError)
+                },
+                async move {
+                    replacement_flag.store(true, Ordering::SeqCst);
+                    Ok::<_, PlaybackManagerError>(())
+                },
+            )
+            .await;
+        assert!(matches!(both_failed, Err(PlaybackManagerError::Cancelled)));
+        assert!(presentation_called.load(Ordering::SeqCst));
+        assert!(!replacement_polled.load(Ordering::SeqCst));
+
+        let replacement_polled = Arc::new(AtomicBool::new(false));
+        let replacement_flag = Arc::clone(&replacement_polled);
+        let failed = gate
+            .stop_before_transport_replace(
+                async { Ok(()) },
+                || Err(android_playback::AndroidPlaybackError),
+                async move {
+                    replacement_flag.store(true, Ordering::SeqCst);
+                    Ok::<_, PlaybackManagerError>(())
+                },
+            )
+            .await;
+        assert!(matches!(failed, Err(PlaybackManagerError::Unavailable)));
+        assert!(!replacement_polled.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn cleanup_attempts_android_release_after_transport_failure() {
+        let gate = AndroidPresentationGate::default();
+        let order = Arc::new(StdMutex::new(Vec::new()));
+        let transport_order = Arc::clone(&order);
+        let presentation_order = Arc::clone(&order);
+        let result = gate
+            .stop_after_transport(
+                async move {
+                    transport_order
+                        .lock()
+                        .expect("cleanup order is readable")
+                        .push("transport");
+                    Err(PlaybackManagerError::Cancelled)
+                },
+                move || {
+                    presentation_order
+                        .lock()
+                        .expect("cleanup order is readable")
+                        .push("presentation");
+                    Ok(())
+                },
+            )
+            .await;
+
+        assert!(matches!(result, Err(PlaybackManagerError::Cancelled)));
+        assert_eq!(
+            *order.lock().expect("cleanup order is readable"),
+            ["transport", "presentation"]
+        );
+        assert!(matches!(
+            gate.stop_after_transport(async { Ok(()) }, || {
+                Err(android_playback::AndroidPlaybackError)
+            })
+            .await,
+            Err(PlaybackManagerError::Unavailable)
+        ));
+    }
+
+    #[tokio::test]
+    async fn aborted_stop_still_finishes_presentation_cleanup_before_the_gate_reopens() {
+        let gate = Arc::new(AndroidPresentationGate::default());
+        let presentation_stopped = Arc::new(AtomicBool::new(false));
+        let following_call_started = Arc::new(AtomicBool::new(false));
+        let (transport_entered, transport_entered_rx) = tokio::sync::oneshot::channel();
+        let (release_transport, release_transport_rx) = tokio::sync::oneshot::channel();
+        let (presentation_done, presentation_done_rx) = tokio::sync::oneshot::channel();
+        let (following_requested, following_requested_rx) = tokio::sync::oneshot::channel();
+
+        let cleanup_gate = Arc::clone(&gate);
+        let presentation_flag = Arc::clone(&presentation_stopped);
+        let cleanup = tokio::spawn(async move {
+            cleanup_gate
+                .stop_after_transport(
+                    async move {
+                        let _ = transport_entered.send(());
+                        let _ = release_transport_rx.await;
+                        Ok(())
+                    },
+                    move || {
+                        presentation_flag.store(true, Ordering::SeqCst);
+                        let _ = presentation_done.send(());
+                        Ok(())
+                    },
+                )
+                .await
+        });
+        transport_entered_rx
+            .await
+            .expect("detached cleanup begins transport stop");
+        cleanup.abort();
+        assert!(
+            cleanup
+                .await
+                .expect_err("requesting task is aborted")
+                .is_cancelled()
+        );
+
+        let following_gate = Arc::clone(&gate);
+        let following_flag = Arc::clone(&following_call_started);
+        let following = tokio::spawn(async move {
+            let _ = following_requested.send(());
+            following_gate
+                .presentation_call(move || {
+                    following_flag.store(true, Ordering::SeqCst);
+                    Ok(())
+                })
+                .await
+        });
+        following_requested_rx
+            .await
+            .expect("following call reaches the held gate");
+        tokio::task::yield_now().await;
+        assert!(!following_call_started.load(Ordering::SeqCst));
+
+        let _ = release_transport.send(());
+        presentation_done_rx
+            .await
+            .expect("presentation cleanup survives requester cancellation");
+        following
+            .await
+            .expect("following task joins")
+            .expect("gate reopens after detached cleanup");
+        assert!(presentation_stopped.load(Ordering::SeqCst));
+        assert!(following_call_started.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn aborted_restart_finishes_cleanup_without_polling_the_replacement() {
+        let gate = Arc::new(AndroidPresentationGate::default());
+        let presentation_stopped = Arc::new(AtomicBool::new(false));
+        let replacement_polled = Arc::new(AtomicBool::new(false));
+        let (transport_entered, transport_entered_rx) = tokio::sync::oneshot::channel();
+        let (release_transport, release_transport_rx) = tokio::sync::oneshot::channel();
+        let (presentation_done, presentation_done_rx) = tokio::sync::oneshot::channel();
+
+        let restart_gate = Arc::clone(&gate);
+        let presentation_flag = Arc::clone(&presentation_stopped);
+        let replacement_flag = Arc::clone(&replacement_polled);
+        let restart = tokio::spawn(async move {
+            restart_gate
+                .stop_before_transport_replace(
+                    async move {
+                        let _ = transport_entered.send(());
+                        let _ = release_transport_rx.await;
+                        Ok(())
+                    },
+                    move || {
+                        presentation_flag.store(true, Ordering::SeqCst);
+                        let _ = presentation_done.send(());
+                        Ok(())
+                    },
+                    async move {
+                        replacement_flag.store(true, Ordering::SeqCst);
+                        Ok::<_, PlaybackManagerError>(())
+                    },
+                )
+                .await
+        });
+        transport_entered_rx
+            .await
+            .expect("restart begins transport stop");
+        restart.abort();
+        assert!(
+            restart
+                .await
+                .expect_err("requesting restart task is aborted")
+                .is_cancelled()
+        );
+
+        let _ = release_transport.send(());
+        presentation_done_rx
+            .await
+            .expect("restart presentation cleanup survives cancellation");
+        gate.presentation_call(|| Ok(()))
+            .await
+            .expect("gate reopens after restart cleanup");
+        assert!(presentation_stopped.load(Ordering::SeqCst));
+        assert!(!replacement_polled.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn cleanup_first_makes_a_delayed_android_start_fail_before_presentation() {
+        let gate = Arc::new(AndroidPresentationGate::default());
+        let transport_active = Arc::new(AtomicBool::new(true));
+        let presentation_started = Arc::new(AtomicBool::new(false));
+        let (cleanup_entered, cleanup_entered_rx) = tokio::sync::oneshot::channel();
+        let (release_cleanup, release_cleanup_rx) = tokio::sync::oneshot::channel();
+
+        let cleanup_gate = Arc::clone(&gate);
+        let cleanup_active = Arc::clone(&transport_active);
+        let cleanup = tokio::spawn(async move {
+            cleanup_gate
+                .stop_after_transport(
+                    async move {
+                        cleanup_active.store(false, Ordering::SeqCst);
+                        let _ = cleanup_entered.send(());
+                        let _ = release_cleanup_rx.await;
+                        Ok(())
+                    },
+                    || Ok(()),
+                )
+                .await
+        });
+        cleanup_entered_rx
+            .await
+            .expect("cleanup invalidates transport while holding the gate");
+
+        let start_gate = Arc::clone(&gate);
+        let start_active = Arc::clone(&transport_active);
+        let start_flag = Arc::clone(&presentation_started);
+        let delayed_start = tokio::spawn(async move {
+            start_gate
+                .start_if_active(
+                    async move {
+                        start_active
+                            .load(Ordering::SeqCst)
+                            .then_some(())
+                            .ok_or(PlaybackManagerError::Cancelled)
+                    },
+                    move || {
+                        start_flag.store(true, Ordering::SeqCst);
+                        Ok(())
+                    },
+                )
+                .await
+        });
+        let _ = release_cleanup.send(());
+
+        cleanup
+            .await
+            .expect("cleanup task joins")
+            .expect("cleanup succeeds");
+        assert!(matches!(
+            delayed_start.await.expect("start task joins"),
+            Err(PlaybackManagerError::Cancelled)
+        ));
+        assert!(!presentation_started.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn start_first_is_followed_by_android_cleanup_before_the_gate_reopens() {
+        let gate = Arc::new(AndroidPresentationGate::default());
+        let transport_active = Arc::new(AtomicBool::new(true));
+        let order = Arc::new(StdMutex::new(Vec::new()));
+        let (start_entered, start_entered_rx) = std_mpsc::channel();
+        let (release_start, release_start_rx) = std_mpsc::channel();
+
+        let start_gate = Arc::clone(&gate);
+        let start_active = Arc::clone(&transport_active);
+        let start_order = Arc::clone(&order);
+        let start = tokio::spawn(async move {
+            start_gate
+                .start_if_active(
+                    async move {
+                        start_active
+                            .load(Ordering::SeqCst)
+                            .then_some(())
+                            .ok_or(PlaybackManagerError::Cancelled)
+                    },
+                    move || {
+                        start_order
+                            .lock()
+                            .expect("presentation order is readable")
+                            .push("presentation-start");
+                        start_entered
+                            .send(())
+                            .expect("test observes presentation start");
+                        release_start_rx
+                            .recv()
+                            .expect("test releases presentation start");
+                        Ok(())
+                    },
+                )
+                .await
+        });
+        tokio::task::spawn_blocking(move || start_entered_rx.recv())
+            .await
+            .expect("start observation joins")
+            .expect("start owns the gate");
+
+        let cleanup_gate = Arc::clone(&gate);
+        let cleanup_active = Arc::clone(&transport_active);
+        let cleanup_transport_order = Arc::clone(&order);
+        let cleanup_presentation_order = Arc::clone(&order);
+        let cleanup = tokio::spawn(async move {
+            cleanup_gate
+                .stop_after_transport(
+                    async move {
+                        cleanup_active.store(false, Ordering::SeqCst);
+                        cleanup_transport_order
+                            .lock()
+                            .expect("presentation order is readable")
+                            .push("transport-stop");
+                        Ok(())
+                    },
+                    move || {
+                        cleanup_presentation_order
+                            .lock()
+                            .expect("presentation order is readable")
+                            .push("presentation-stop");
+                        Ok(())
+                    },
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            transport_active.load(Ordering::SeqCst),
+            "cleanup cannot invalidate transport until the in-flight JNI start returns"
+        );
+        release_start
+            .send(())
+            .expect("presentation start is released");
+
+        start
+            .await
+            .expect("start task joins")
+            .expect("start succeeds");
+        cleanup
+            .await
+            .expect("cleanup task joins")
+            .expect("cleanup succeeds");
+        assert_eq!(
+            *order.lock().expect("presentation order is readable"),
+            ["presentation-start", "transport-stop", "presentation-stop"]
+        );
+        assert!(!transport_active.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn lifecycle_order_follows_signal_receipt_when_resume_runs_first() {
+        let order = Arc::new(LifecycleOrder::default());
+        let suspended_sequence = order.reserve().expect("suspend sequence reserves");
+        let resumed_sequence = order.reserve().expect("resume sequence reserves");
+        let events = Arc::new(StdMutex::new(Vec::new()));
+        let resumed_order = Arc::clone(&order);
+        let resumed_events = Arc::clone(&events);
+        let resumed = tokio::spawn(async move {
+            let _turn = resumed_order
+                .wait(resumed_sequence)
+                .await
+                .expect("resume waits for its turn");
+            resumed_events
+                .lock()
+                .expect("lifecycle events are readable")
+                .push("resumed");
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            events
+                .lock()
+                .expect("lifecycle events are readable")
+                .is_empty()
+        );
+
+        let (entered, entered_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = tokio::sync::oneshot::channel();
+        let suspended_order = Arc::clone(&order);
+        let suspended_events = Arc::clone(&events);
+        let suspended = tokio::spawn(async move {
+            let _turn = suspended_order
+                .wait(suspended_sequence)
+                .await
+                .expect("suspend owns the first turn");
+            suspended_events
+                .lock()
+                .expect("lifecycle events are readable")
+                .push("suspend-start");
+            let _ = entered.send(());
+            let _ = release_rx.await;
+            suspended_events
+                .lock()
+                .expect("lifecycle events are readable")
+                .push("suspended");
+        });
+        entered_rx.await.expect("slow suspend starts");
+        assert_eq!(
+            *events.lock().expect("lifecycle events are readable"),
+            ["suspend-start"]
+        );
+        let _ = release.send(());
+        suspended.await.expect("suspend task completes");
+        resumed.await.expect("resume task completes");
+        assert_eq!(
+            *events.lock().expect("lifecycle events are readable"),
+            ["suspend-start", "suspended", "resumed"]
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatched_lifecycle_revisions_follow_source_order() {
+        let directory = TempDir::new().expect("temporary directory");
+        let runtime = Arc::new(
+            InstalledRuntime::open(directory.path().join("app-data"))
+                .await
+                .expect("runtime opens"),
+        );
+        let events = Arc::new(StdMutex::new(Vec::new()));
+        let suspended_events = Arc::clone(&events);
+        let suspended = Arc::clone(&runtime).dispatch_lifecycle(
+            sparrow_core::LifecycleSignal::Suspended,
+            move |event| {
+                suspended_events
+                    .lock()
+                    .expect("lifecycle events are readable")
+                    .push(event);
+            },
+        );
+        let resumed_events = Arc::clone(&events);
+        let resumed = Arc::clone(&runtime).dispatch_lifecycle(
+            sparrow_core::LifecycleSignal::Resumed,
+            move |event| {
+                resumed_events
+                    .lock()
+                    .expect("lifecycle events are readable")
+                    .push(event);
+            },
+        );
+
+        let resumed_task = tokio::spawn(resumed);
+        tokio::task::yield_now().await;
+        assert!(
+            events
+                .lock()
+                .expect("lifecycle events are readable")
+                .is_empty()
+        );
+        let suspended_task = tokio::spawn(suspended);
+        suspended_task
+            .await
+            .expect("suspend task joins")
+            .expect("suspend dispatches");
+        resumed_task
+            .await
+            .expect("resume task joins")
+            .expect("resume dispatches");
+
+        let events = events.lock().expect("lifecycle events are readable");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].revision, 1);
+        assert_eq!(events[0].state, "suspended");
+        assert_eq!(events[1].revision, 2);
+        assert_eq!(events[1].state, "resumed");
+    }
 
     #[tokio::test]
     async fn opens_an_unconfigured_local_composition_and_holds_the_instance_lock() {

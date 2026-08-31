@@ -6,7 +6,10 @@ use sparrow_core::{
 
 use crate::config_store::StoredSourceConfiguration;
 use crate::{
-    playback::{NativeStreamHandle, PlaybackRestartIntent, PlaybackSessionId},
+    android_playback::{AndroidPlaybackControls, AndroidPlaybackIdentity, AndroidPlaybackViewport},
+    playback::{
+        MpvPlaybackControl, MpvVolume, NativeStreamHandle, PlaybackRestartIntent, PlaybackSessionId,
+    },
     selected_transport_stream::AudioTrackId,
 };
 
@@ -145,14 +148,160 @@ impl PlaybackStopInput {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct PlaybackMpvInput {
+pub(crate) struct PlaybackMpvControlInput {
     session_id: String,
+    control: PlaybackMpvControlValue,
 }
 
-impl PlaybackMpvInput {
-    pub(crate) fn into_session_id(self) -> Result<PlaybackSessionId, ClientErrorDto> {
-        PlaybackSessionId::parse(self.session_id).map_err(|_| ClientErrorDto::service_unavailable())
+impl PlaybackMpvControlInput {
+    pub(crate) fn into_playback(
+        self,
+    ) -> Result<(PlaybackSessionId, MpvPlaybackControl), ClientErrorDto> {
+        let session_id = PlaybackSessionId::parse(self.session_id)
+            .map_err(|_| ClientErrorDto::service_unavailable())?;
+        let control = match self.control {
+            PlaybackMpvControlValue::HealthCheck => MpvPlaybackControl::HealthCheck,
+            PlaybackMpvControlValue::Pause => MpvPlaybackControl::Pause,
+            PlaybackMpvControlValue::Resume => MpvPlaybackControl::Resume,
+            PlaybackMpvControlValue::SetVolume { percent } => MpvPlaybackControl::SetVolume(
+                MpvVolume::parse(percent).map_err(|_| ClientErrorDto::service_unavailable())?,
+            ),
+            PlaybackMpvControlValue::SetMuted { muted } => MpvPlaybackControl::SetMuted(muted),
+            PlaybackMpvControlValue::SetFullscreen { fullscreen } => {
+                MpvPlaybackControl::SetFullscreen(fullscreen)
+            }
+        };
+        Ok((session_id, control))
     }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "_tag", rename_all = "kebab-case", deny_unknown_fields)]
+enum PlaybackMpvControlValue {
+    HealthCheck,
+    Pause,
+    Resume,
+    SetVolume { percent: u8 },
+    SetMuted { muted: bool },
+    SetFullscreen { fullscreen: bool },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PlaybackAndroidStartInput {
+    session_id: String,
+    stream_handle: String,
+    viewport: PlaybackAndroidViewportInput,
+    volume: f64,
+    muted: bool,
+}
+
+impl PlaybackAndroidStartInput {
+    pub(crate) fn into_playback(
+        self,
+    ) -> Result<
+        (
+            AndroidPlaybackIdentity,
+            AndroidPlaybackViewport,
+            AndroidPlaybackControls,
+        ),
+        ClientErrorDto,
+    > {
+        Ok((
+            playback_android_identity(self.session_id, self.stream_handle)?,
+            self.viewport.into_playback()?,
+            AndroidPlaybackControls::parse(self.volume, self.muted, false)
+                .map_err(|_| ClientErrorDto::service_unavailable())?,
+        ))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PlaybackAndroidIdentityInput {
+    session_id: String,
+    stream_handle: String,
+}
+
+impl PlaybackAndroidIdentityInput {
+    pub(crate) fn into_playback(self) -> Result<AndroidPlaybackIdentity, ClientErrorDto> {
+        playback_android_identity(self.session_id, self.stream_handle)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PlaybackAndroidControlsInput {
+    session_id: String,
+    stream_handle: String,
+    volume: f64,
+    muted: bool,
+    paused: bool,
+}
+
+impl PlaybackAndroidControlsInput {
+    pub(crate) fn into_playback(
+        self,
+    ) -> Result<(AndroidPlaybackIdentity, AndroidPlaybackControls), ClientErrorDto> {
+        Ok((
+            playback_android_identity(self.session_id, self.stream_handle)?,
+            AndroidPlaybackControls::parse(self.volume, self.muted, self.paused)
+                .map_err(|_| ClientErrorDto::service_unavailable())?,
+        ))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PlaybackAndroidViewportCommandInput {
+    session_id: String,
+    stream_handle: String,
+    viewport: PlaybackAndroidViewportInput,
+}
+
+impl PlaybackAndroidViewportCommandInput {
+    pub(crate) fn into_playback(
+        self,
+    ) -> Result<(AndroidPlaybackIdentity, AndroidPlaybackViewport), ClientErrorDto> {
+        Ok((
+            playback_android_identity(self.session_id, self.stream_handle)?,
+            self.viewport.into_playback()?,
+        ))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PlaybackAndroidViewportInput {
+    left: u32,
+    top: u32,
+    width: u32,
+    height: u32,
+    fullscreen: bool,
+}
+
+impl PlaybackAndroidViewportInput {
+    fn into_playback(self) -> Result<AndroidPlaybackViewport, ClientErrorDto> {
+        AndroidPlaybackViewport::parse(
+            self.left,
+            self.top,
+            self.width,
+            self.height,
+            self.fullscreen,
+        )
+        .map_err(|_| ClientErrorDto::service_unavailable())
+    }
+}
+
+fn playback_android_identity(
+    session_id: String,
+    stream_handle: String,
+) -> Result<AndroidPlaybackIdentity, ClientErrorDto> {
+    Ok(AndroidPlaybackIdentity::new(
+        PlaybackSessionId::parse(session_id).map_err(|_| ClientErrorDto::service_unavailable())?,
+        NativeStreamHandle::parse(stream_handle)
+            .map_err(|_| ClientErrorDto::service_unavailable())?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -546,11 +695,45 @@ mod tests {
         .expect("handle-safe stop shape parses");
         assert!(matches!(stop_with_handle.into_playback(), Ok((_, Some(_)))));
 
-        let mpv: PlaybackMpvInput = serde_json::from_value(json!({
-            "sessionId": "play1_0123456789abcdef0123456789abcdef_a"
+        let android_start: PlaybackAndroidStartInput = serde_json::from_value(json!({
+            "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
+            "streamHandle": "stream1_0123456789abcdef",
+            "viewport": {
+                "left": 0,
+                "top": 24,
+                "width": 1920,
+                "height": 1080,
+                "fullscreen": false
+            },
+            "volume": 0.75,
+            "muted": true
         }))
-        .expect("mpv shape parses");
-        assert!(mpv.into_session_id().is_ok());
+        .expect("Android start shape parses");
+        assert!(android_start.into_playback().is_ok());
+
+        let android_controls: PlaybackAndroidControlsInput = serde_json::from_value(json!({
+            "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
+            "streamHandle": "stream1_0123456789abcdef",
+            "volume": 0.25,
+            "muted": false,
+            "paused": true
+        }))
+        .expect("Android controls shape parses");
+        assert!(android_controls.into_playback().is_ok());
+
+        let android_viewport: PlaybackAndroidViewportCommandInput = serde_json::from_value(json!({
+            "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
+            "streamHandle": "stream1_0123456789abcdef",
+            "viewport": {
+                "left": 0,
+                "top": 0,
+                "width": 2400,
+                "height": 1080,
+                "fullscreen": true
+            }
+        }))
+        .expect("Android viewport shape parses");
+        assert!(android_viewport.into_playback().is_ok());
 
         let restart: PlaybackRestartInput = serde_json::from_value(json!({
             "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
@@ -585,6 +768,16 @@ mod tests {
         .expect("reopen shape parses");
         assert!(reopen.into_session_id().is_ok());
 
+        let mpv_health: PlaybackMpvControlInput = serde_json::from_value(json!({
+            "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
+            "control": { "_tag": "health-check" }
+        }))
+        .expect("mpv health-check shape parses");
+        assert!(matches!(
+            mpv_health.into_playback(),
+            Ok((_, MpvPlaybackControl::HealthCheck))
+        ));
+
         assert!(
             serde_json::from_value::<PlaybackStartInput>(json!({
                 "id": format!("ch1_{}", "a".repeat(64)),
@@ -609,12 +802,40 @@ mod tests {
             .is_err()
         );
         assert!(
-            serde_json::from_value::<PlaybackMpvInput>(json!({
+            serde_json::from_value::<PlaybackAndroidStartInput>(json!({
                 "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
-                "streamHandle": "stream1_0123456789abcdef"
+                "streamHandle": "stream1_0123456789abcdef",
+                "viewport": {
+                    "left": 0,
+                    "top": 0,
+                    "width": 1920,
+                    "height": 1080,
+                    "fullscreen": false
+                },
+                "volume": 1,
+                "muted": true,
+                "source": "https://provider.invalid/private"
             }))
             .is_err()
         );
+        let unbounded_android_start: PlaybackAndroidStartInput = serde_json::from_value(json!({
+            "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
+            "streamHandle": "stream1_0123456789abcdef",
+            "viewport": {
+                "left": 0,
+                "top": 0,
+                "width": 32769,
+                "height": 1080,
+                "fullscreen": false
+            },
+            "volume": 1.01,
+            "muted": false
+        }))
+        .expect("bounded Android values retain their command shape");
+        assert!(matches!(
+            unbounded_android_start.into_playback(),
+            Err(ClientErrorDto::ServiceUnavailable)
+        ));
         assert!(
             serde_json::from_value::<PlaybackSuspendInput>(json!({
                 "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
@@ -649,12 +870,6 @@ mod tests {
                 serde_json::from_value(json!({ "sessionId": invalid })).expect("stop shape parses");
             assert!(matches!(
                 input.into_playback(),
-                Err(ClientErrorDto::ServiceUnavailable)
-            ));
-            let mpv: PlaybackMpvInput =
-                serde_json::from_value(json!({ "sessionId": invalid })).expect("mpv shape parses");
-            assert!(matches!(
-                mpv.into_session_id(),
                 Err(ClientErrorDto::ServiceUnavailable)
             ));
             let suspend: PlaybackSuspendInput =

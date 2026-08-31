@@ -62,7 +62,7 @@ async fn exact_and_unique_name_matches_yield_ordered_bounded_utc_schedules() {
     let repeated = core
         .schedule(schedule(exact.clone(), PageRequest::first(limit(1))))
         .expect("the immutable schedule remains queryable");
-    assert_eq!(first.items().as_ptr(), repeated.items().as_ptr());
+    assert_eq!(first.items(), repeated.items());
     assert_eq!(source.open_count_for(SourceKind::M3u), 1);
     assert_eq!(source.open_count_for(SourceKind::Epg), 1);
     assert_eq!(snapshots.activation_count(), 2);

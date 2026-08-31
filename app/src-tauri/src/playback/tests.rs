@@ -147,12 +147,8 @@ async fn initial_access_failure_retains_the_pinned_session_for_reopen() {
         )
         .await
         .expect("recovered session stops");
-    assert!(
-        pinned.upgrade().is_some(),
-        "the stopped session remains eligible for explicit failover"
-    );
-    drop(manager);
     wait_until(|| pinned.upgrade().is_none()).await;
+    drop(manager);
 }
 
 #[tokio::test]
@@ -399,7 +395,7 @@ async fn suspend_before_start_is_bounded_and_late_start_pins_without_opening() {
 }
 
 #[tokio::test]
-async fn matching_stop_cancels_a_pending_read_and_releases_the_body() {
+async fn matching_generation_suspend_cancels_a_pending_read_and_releases_the_body() {
     let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
     let access = FakeAccess::new([OpenPlan::Stream(vec![StreamStep::Pending])]);
     let manager = PlaybackManager::with_access(Arc::clone(&fixture.core), access.clone());
@@ -414,18 +410,104 @@ async fn matching_stop_cancels_a_pending_read_and_releases_the_body() {
         () = wait_until(|| access.tracker.read_polls() > 0) => {}
     }
     manager
-        .stop(
+        .suspend_generation(
             started.session_id().clone(),
-            Some(started.stream_handle().clone()),
+            started.stream_handle().clone(),
         )
         .await
-        .expect("stop cancels the read");
+        .expect("generation suspend cancels the read");
 
     assert!(matches!(
         pending_read.await,
         Err(PlaybackManagerError::Cancelled)
     ));
     assert_eq!(access.tracker.active(), 0);
+}
+
+#[tokio::test]
+async fn active_generation_validation_tracks_only_the_live_exact_transport() {
+    let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
+    let access = FakeAccess::new([
+        OpenPlan::Stream(vec![StreamStep::Pending]),
+        OpenPlan::Stream(vec![StreamStep::Pending]),
+    ]);
+    let manager = PlaybackManager::with_access(Arc::clone(&fixture.core), access.clone());
+    let started = manager
+        .start(session(0x70a), fixture.channel.clone())
+        .await
+        .expect("playback starts");
+
+    manager
+        .validate_active_generation(
+            started.session_id().clone(),
+            started.stream_handle().clone(),
+        )
+        .await
+        .expect("streaming generation is active");
+    let stale_handle = NativeStreamHandle::parse("stream1_000000000000ffff".to_owned())
+        .expect("stale fixture handle parses");
+    assert!(matches!(
+        manager
+            .validate_active_generation(started.session_id().clone(), stale_handle)
+            .await,
+        Err(PlaybackManagerError::Cancelled)
+    ));
+
+    let mut pending_read = Box::pin(read(&manager, &started));
+    tokio::select! {
+        result = &mut pending_read => panic!("pending read completed unexpectedly: {result:?}"),
+        () = wait_until(|| access.tracker.read_polls() > 0) => {}
+    }
+    manager
+        .validate_active_generation(
+            started.session_id().clone(),
+            started.stream_handle().clone(),
+        )
+        .await
+        .expect("a generation remains active while its read is pending");
+
+    manager
+        .suspend_generation(
+            started.session_id().clone(),
+            started.stream_handle().clone(),
+        )
+        .await
+        .expect("exact generation suspends");
+    assert!(matches!(
+        pending_read.await,
+        Err(PlaybackManagerError::Cancelled)
+    ));
+    assert!(matches!(
+        manager
+            .validate_active_generation(
+                started.session_id().clone(),
+                started.stream_handle().clone(),
+            )
+            .await,
+        Err(PlaybackManagerError::Cancelled)
+    ));
+
+    let reopened = manager
+        .reopen(started.session_id().clone())
+        .await
+        .expect("suspended session reopens at a fresh generation");
+    assert_ne!(reopened.stream_handle(), started.stream_handle());
+    assert!(matches!(
+        manager
+            .validate_active_generation(
+                started.session_id().clone(),
+                started.stream_handle().clone(),
+            )
+            .await,
+        Err(PlaybackManagerError::Cancelled)
+    ));
+    manager
+        .validate_active_generation(
+            reopened.session_id().clone(),
+            reopened.stream_handle().clone(),
+        )
+        .await
+        .expect("only the replacement generation is active");
 }
 
 #[tokio::test]
@@ -668,7 +750,7 @@ async fn dropped_reopen_callers_retire_dormant_sessions_and_pending_opens() {
 }
 
 #[tokio::test]
-async fn stop_retains_only_the_current_source_for_explicit_failover() {
+async fn stop_releases_sources_from_dormant_failures() {
     let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
 
     let access_failure = FakeAccess::new([OpenPlan::Error(PlaybackAccessError::Unavailable)]);
@@ -688,9 +770,8 @@ async fn stop_retains_only_the_current_source_for_explicit_failover() {
         .stop(access_id, None)
         .await
         .expect("access-failed session stops");
-    assert!(access_source.upgrade().is_some());
-    drop(access_manager);
     wait_until(|| access_source.upgrade().is_none()).await;
+    drop(access_manager);
 
     let eof_access = FakeAccess::new([OpenPlan::Stream(vec![])]);
     let eof_manager = PlaybackManager::with_access(Arc::clone(&fixture.core), eof_access.clone());
@@ -709,9 +790,8 @@ async fn stop_retains_only_the_current_source_for_explicit_failover() {
         .stop(eof.session_id().clone(), Some(eof.stream_handle().clone()))
         .await
         .expect("EOF session stops");
-    assert!(eof_source.upgrade().is_some());
-    drop(eof_manager);
     wait_until(|| eof_source.upgrade().is_none()).await;
+    drop(eof_manager);
 
     let read_access = FakeAccess::new([OpenPlan::Stream(vec![StreamStep::Error(
         PlaybackReadError::Interrupted,
@@ -733,77 +813,294 @@ async fn stop_retains_only_the_current_source_for_explicit_failover() {
         )
         .await
         .expect("read-failed session stops");
-    assert!(read_source.upgrade().is_some());
-    drop(read_manager);
     wait_until(|| read_source.upgrade().is_none()).await;
+    drop(read_manager);
 }
 
 #[tokio::test]
-async fn final_fallback_stop_releases_a_stopped_session_idempotently() {
+async fn mpv_primary_bypasses_native_http_and_applies_only_correlated_controls() {
     let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
-    let access = FakeAccess::new([OpenPlan::Stream(vec![StreamStep::Pending])]);
-    let manager = PlaybackManager::with_access(Arc::clone(&fixture.core), access.clone());
-    let started = manager
-        .start(session(0xfa11), fixture.channel.clone())
-        .await
-        .expect("primary playback starts");
-    let session_id = started.session_id().clone();
-    let pinned = access.source(0);
-
-    manager
-        .stop(session_id.clone(), Some(started.stream_handle().clone()))
-        .await
-        .expect("primary playback releases");
-    assert!(pinned.upgrade().is_some(), "failover intent remains pinned");
-    manager
-        .stop_mpv(session_id.clone())
-        .await
-        .expect("final fallback stop ends the session");
-    wait_until(|| pinned.upgrade().is_none()).await;
-    manager
-        .stop_mpv(session_id)
-        .await
-        .expect("final fallback stop is idempotent");
-}
-
-#[tokio::test]
-async fn mpv_launch_requires_primary_release_and_shutdown_reaps_the_child() {
-    let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
-    let access = FakeAccess::new([OpenPlan::Stream(vec![StreamStep::Pending])]);
+    let access = FakeAccess::new([]);
     let mpv = Arc::new(FakeMpv::default());
     let manager =
         PlaybackManager::with_adapters(Arc::clone(&fixture.core), access.clone(), mpv.clone());
+    let session_id = session(0xfa13);
+
     let started = manager
-        .start(session(0xfa12), fixture.channel.clone())
+        .start_mpv_primary(session_id.clone(), fixture.channel.clone())
         .await
-        .expect("primary playback starts");
-    let session_id = started.session_id().clone();
+        .expect("mpv primary starts directly");
+
+    assert_eq!(started.session_id(), &session_id);
+    assert_eq!(access.open_count(), 0, "native HTTP is never opened");
+    assert_eq!(mpv.launches.load(Ordering::Acquire), 1);
+    assert!(mpv.source(0).upgrade().is_some(), "source remains pinned");
 
     assert!(matches!(
-        manager.start_mpv(session_id.clone()).await,
-        Err(PlaybackManagerError::Mpv(MpvFailure::PrimaryActive))
+        manager
+            .control_mpv(session(0xdead), MpvPlaybackControl::Pause)
+            .await,
+        Err(PlaybackManagerError::Mpv(MpvFailure::StaleSession))
     ));
-    assert_eq!(mpv.launches.load(Ordering::Acquire), 0);
-    manager
-        .stop(session_id.clone(), Some(started.stream_handle().clone()))
-        .await
-        .expect("primary release is confirmed");
-    assert_eq!(access.tracker.active(), 0);
+    assert!(
+        mpv.controls().is_empty(),
+        "stale controls do not cross the seam"
+    );
+
+    for control in [
+        MpvPlaybackControl::HealthCheck,
+        MpvPlaybackControl::Pause,
+        MpvPlaybackControl::Resume,
+        MpvPlaybackControl::SetVolume(MpvVolume::parse(42).expect("volume is bounded")),
+        MpvPlaybackControl::SetMuted(true),
+        MpvPlaybackControl::SetFullscreen(true),
+    ] {
+        manager
+            .control_mpv(session_id.clone(), control)
+            .await
+            .expect("correlated control succeeds");
+    }
+    assert_eq!(
+        mpv.controls(),
+        vec![
+            MpvPlaybackControl::HealthCheck,
+            MpvPlaybackControl::Pause,
+            MpvPlaybackControl::Resume,
+            MpvPlaybackControl::SetVolume(MpvVolume::parse(42).expect("fixture volume is valid")),
+            MpvPlaybackControl::SetMuted(true),
+            MpvPlaybackControl::SetFullscreen(true),
+        ]
+    );
+    assert!(matches!(
+        MpvVolume::parse(101),
+        Err(MpvFailure::InvalidControl)
+    ));
 
     manager
-        .start_mpv(session_id.clone())
+        .stop(session_id, None)
         .await
-        .expect("explicit fallback starts");
-    manager
-        .start_mpv(session_id)
-        .await
-        .expect("duplicate explicit start is idempotent");
-    assert_eq!(mpv.launches.load(Ordering::Acquire), 1);
-    assert_eq!(mpv.live.load(Ordering::Acquire), 1);
-
-    manager.shutdown().await.expect("app exit stops fallback");
+        .expect("mpv primary stops deterministically");
     assert_eq!(mpv.stops.load(Ordering::Acquire), 1);
     assert_eq!(mpv.live.load(Ordering::Acquire), 0);
+    wait_until(|| mpv.source(0).upgrade().is_none()).await;
+}
+
+#[tokio::test]
+async fn mpv_primary_switch_stops_before_replacement_and_shutdown_reaps_it() {
+    let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
+    let access = FakeAccess::new([]);
+    let mpv = Arc::new(FakeMpv::default());
+    let manager =
+        PlaybackManager::with_adapters(Arc::clone(&fixture.core), access.clone(), mpv.clone());
+    let first_id = session(0xfa14);
+    let second_id = session(0xfa15);
+
+    manager
+        .start_mpv_primary(first_id, fixture.channel.clone())
+        .await
+        .expect("first mpv primary starts");
+    let first_source = mpv.source(0);
+    manager
+        .start_mpv_primary(second_id.clone(), fixture.channel.clone())
+        .await
+        .expect("replacement mpv primary starts");
+
+    assert_eq!(access.open_count(), 0);
+    assert_eq!(mpv.launches.load(Ordering::Acquire), 2);
+    assert_eq!(mpv.stops.load(Ordering::Acquire), 1);
+    assert_eq!(mpv.live.load(Ordering::Acquire), 1);
+    assert_eq!(mpv.max_live.load(Ordering::Acquire), 1);
+    assert!(
+        first_source.upgrade().is_none(),
+        "replaced source is released"
+    );
+
+    manager
+        .shutdown()
+        .await
+        .expect("shutdown stops replacement");
+    assert_eq!(mpv.stops.load(Ordering::Acquire), 2);
+    assert_eq!(mpv.live.load(Ordering::Acquire), 0);
+    assert!(matches!(
+        manager
+            .control_mpv(second_id, MpvPlaybackControl::Pause)
+            .await,
+        Err(PlaybackManagerError::Unavailable)
+    ));
+}
+
+#[tokio::test]
+async fn mpv_final_stop_accepts_an_owner_already_reaped_by_unexpected_exit() {
+    let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
+    let access = FakeAccess::new([]);
+    let mpv = Arc::new(FakeMpv::with_stop_results([Err(MpvFailure::Terminated)]));
+    let manager =
+        PlaybackManager::with_adapters(Arc::clone(&fixture.core), access.clone(), mpv.clone());
+    let first_id = session(0xfa1a);
+
+    manager
+        .start_mpv_primary(first_id.clone(), fixture.channel.clone())
+        .await
+        .expect("mpv primary starts");
+    manager
+        .stop(first_id, None)
+        .await
+        .expect("an already reaped mpv owner is successful final cleanup");
+    assert_eq!(mpv.stops.load(Ordering::Acquire), 1);
+    assert_eq!(mpv.live.load(Ordering::Acquire), 0);
+
+    let replacement_id = session(0xfa1b);
+    manager
+        .start_mpv_primary(replacement_id.clone(), fixture.channel.clone())
+        .await
+        .expect("cleanup does not strand the actor before a replacement");
+    manager
+        .stop(replacement_id, None)
+        .await
+        .expect("replacement stops normally");
+    assert_eq!(mpv.stops.load(Ordering::Acquire), 2);
+    assert_eq!(mpv.live.load(Ordering::Acquire), 0);
+    assert_eq!(access.open_count(), 0);
+}
+
+#[tokio::test]
+async fn mpv_primary_pause_releases_process_and_resume_reopens_at_live_edge() {
+    let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
+    let access = FakeAccess::new([]);
+    let mpv = Arc::new(FakeMpv::default());
+    let manager =
+        PlaybackManager::with_adapters(Arc::clone(&fixture.core), access.clone(), mpv.clone());
+    let session_id = session(0xfa16);
+
+    manager
+        .start_mpv_primary(session_id.clone(), fixture.channel.clone())
+        .await
+        .expect("mpv primary starts");
+    let pinned = mpv.source(0);
+
+    manager
+        .suspend(session_id.clone())
+        .await
+        .expect("pause stops and reaps mpv");
+    assert_eq!(mpv.stops.load(Ordering::Acquire), 1);
+    assert_eq!(mpv.live.load(Ordering::Acquire), 0);
+    assert!(pinned.upgrade().is_some(), "paused intent remains pinned");
+
+    manager
+        .reopen_mpv(session_id.clone())
+        .await
+        .expect("resume launches at the current live edge");
+    assert_eq!(mpv.launches.load(Ordering::Acquire), 2);
+    assert_eq!(mpv.live.load(Ordering::Acquire), 1);
+    assert_eq!(mpv.max_live.load(Ordering::Acquire), 1);
+    assert!(Weak::ptr_eq(&pinned, &mpv.source(1)));
+    assert_eq!(access.open_count(), 0);
+
+    manager
+        .stop(session_id, None)
+        .await
+        .expect("final stop reaps resumed mpv");
+    assert_eq!(mpv.stops.load(Ordering::Acquire), 2);
+    assert_eq!(mpv.live.load(Ordering::Acquire), 0);
+    wait_until(|| pinned.upgrade().is_none()).await;
+}
+
+#[tokio::test]
+async fn mpv_unexpected_exit_releases_activity_and_wake_before_retry() {
+    let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
+    let access = FakeAccess::new([]);
+    let mpv = Arc::new(FakeMpv::default());
+    let wake = Arc::new(RecordingScreenWake::default());
+    let manager = PlaybackManager::with_all_adapters(
+        Arc::clone(&fixture.core),
+        access,
+        AudioPreferenceStore::disabled(),
+        Arc::new(PassthroughPlaybackTransportSelector),
+        wake.clone(),
+        mpv.clone(),
+    );
+    let session_id = session(0xfa17);
+
+    manager
+        .start_mpv_primary(session_id.clone(), fixture.channel.clone())
+        .await
+        .expect("mpv primary starts");
+    manager
+        .set_activity(session_id.clone(), true)
+        .await
+        .expect("playing mpv owns activity and wake");
+    assert!(wake.active());
+
+    mpv.terminate(0);
+    wait_until(|| mpv.live.load(Ordering::Acquire) == 0 && !wake.active()).await;
+
+    assert!(matches!(
+        manager
+            .control_mpv(session_id.clone(), MpvPlaybackControl::HealthCheck)
+            .await,
+        Err(PlaybackManagerError::Mpv(MpvFailure::Terminated))
+    ));
+
+    manager
+        .reopen_mpv(session_id.clone())
+        .await
+        .expect("failed mpv session remains retryable");
+    manager
+        .stop(session_id, None)
+        .await
+        .expect("retried mpv stops");
+}
+
+#[tokio::test]
+async fn mpv_launch_failure_and_safe_suspend_both_remain_retryable() {
+    let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
+    let access = FakeAccess::new([]);
+    let mpv = Arc::new(FakeMpv::with_plans([
+        Err(MpvFailure::LaunchFailed),
+        Ok(()),
+        Err(MpvFailure::LaunchFailed),
+        Ok(()),
+    ]));
+    let manager = PlaybackManager::with_adapters(Arc::clone(&fixture.core), access, mpv.clone());
+    let direct_retry = session(0xfa18);
+
+    assert!(matches!(
+        manager
+            .start_mpv_primary(direct_retry.clone(), fixture.channel.clone())
+            .await,
+        Err(PlaybackManagerError::Mpv(MpvFailure::LaunchFailed))
+    ));
+    manager
+        .reopen_mpv(direct_retry.clone())
+        .await
+        .expect("launch failure records a retryable dormant state");
+    manager
+        .stop(direct_retry, None)
+        .await
+        .expect("direct retry stops");
+
+    let suspended_retry = session(0xfa19);
+    assert!(matches!(
+        manager
+            .start_mpv_primary(suspended_retry.clone(), fixture.channel.clone())
+            .await,
+        Err(PlaybackManagerError::Mpv(MpvFailure::LaunchFailed))
+    ));
+    manager
+        .suspend(suspended_retry.clone())
+        .await
+        .expect("runner cleanup records a suspended dormant state");
+    manager
+        .reopen_mpv(suspended_retry.clone())
+        .await
+        .expect("safe suspend does not destroy retry eligibility");
+    manager
+        .stop(suspended_retry, None)
+        .await
+        .expect("suspended retry stops");
+
+    assert_eq!(mpv.launches.load(Ordering::Acquire), 4);
+    assert_eq!(mpv.max_live.load(Ordering::Acquire), 1);
 }
 
 #[tokio::test]
@@ -1145,6 +1442,15 @@ async fn audio_restart_is_handle_safe_serialized_and_persists_visible_fallback()
     assert_eq!(access.open_count(), 1);
     assert_eq!(access.tracker.active(), 1);
 
+    manager
+        .suspend_generation(
+            started.session_id().clone(),
+            started.stream_handle().clone(),
+        )
+        .await
+        .expect("matching generation suspends before its presentation is released");
+    assert_eq!(access.tracker.active(), 0);
+
     let selected = manager
         .restart(
             started.session_id().clone(),
@@ -1445,32 +1751,99 @@ fn m3u_server<'a>(
 struct FakeMpv {
     launches: Arc<AtomicUsize>,
     live: Arc<AtomicUsize>,
+    max_live: Arc<AtomicUsize>,
     stops: Arc<AtomicUsize>,
+    controls: Arc<Mutex<Vec<MpvPlaybackControl>>>,
+    sources: Arc<Mutex<Vec<Weak<ResolvedPlaybackSource>>>>,
+    plans: Arc<Mutex<VecDeque<Result<(), MpvFailure>>>>,
+    stop_results: Arc<Mutex<VecDeque<Result<(), MpvFailure>>>>,
+    exits: Arc<Mutex<Vec<Option<tokio::sync::oneshot::Sender<MpvExit>>>>>,
 }
 
-impl NativeMpvFallback for FakeMpv {
-    fn launch(&self, _source: Arc<ResolvedPlaybackSource>) -> MpvLaunchFuture {
-        let live = Arc::clone(&self.live);
-        let stops = Arc::clone(&self.stops);
+impl NativeMpvPlayer for FakeMpv {
+    fn launch(&self, source: Arc<ResolvedPlaybackSource>) -> MpvLaunchFuture {
+        let plan = self
+            .plans
+            .lock()
+            .expect("mpv plan lock")
+            .pop_front()
+            .unwrap_or(Ok(()));
+        let stop_result = self
+            .stop_results
+            .lock()
+            .expect("mpv stop-result lock")
+            .pop_front()
+            .unwrap_or(Ok(()));
         self.launches.fetch_add(1, Ordering::AcqRel);
-        live.fetch_add(1, Ordering::AcqRel);
+        let live = Arc::clone(&self.live);
+        let max_live = Arc::clone(&self.max_live);
+        let stops = Arc::clone(&self.stops);
+        let controls = Arc::clone(&self.controls);
+        self.sources
+            .lock()
+            .expect("mpv sources lock")
+            .push(Arc::downgrade(&source));
+        if let Err(error) = plan {
+            return Box::pin(async move { Err(error) });
+        }
+        let (exit, exited) = tokio::sync::oneshot::channel();
+        self.exits.lock().expect("mpv exit lock").push(Some(exit));
+        let live_count = live.fetch_add(1, Ordering::AcqRel) + 1;
+        max_live.fetch_max(live_count, Ordering::AcqRel);
         Box::pin(async move {
+            let control = Arc::new(move |control| {
+                controls.lock().expect("mpv controls lock").push(control);
+                Box::pin(async { Ok(()) }) as _
+            });
             let stopped_live = Arc::clone(&live);
             let stop = Box::new(move || {
                 stops.fetch_add(1, Ordering::AcqRel);
                 stopped_live.fetch_sub(1, Ordering::AcqRel);
-                Box::pin(async { Ok(()) }) as _
+                Box::pin(async move { stop_result }) as _
             });
             let aborted_live = Arc::clone(&live);
             let abort = Box::new(move || {
                 aborted_live.fetch_sub(1, Ordering::AcqRel);
             });
             Ok(MpvProcess::controlled(
-                Box::pin(std::future::pending()),
+                Box::pin(async move { exited.await.unwrap_or(MpvExit::Terminated) }),
+                control,
                 stop,
                 abort,
             ))
         })
+    }
+}
+
+impl FakeMpv {
+    fn with_plans(plans: impl IntoIterator<Item = Result<(), MpvFailure>>) -> Self {
+        Self {
+            plans: Arc::new(Mutex::new(plans.into_iter().collect())),
+            ..Self::default()
+        }
+    }
+
+    fn with_stop_results(stop_results: impl IntoIterator<Item = Result<(), MpvFailure>>) -> Self {
+        Self {
+            stop_results: Arc::new(Mutex::new(stop_results.into_iter().collect())),
+            ..Self::default()
+        }
+    }
+
+    fn controls(&self) -> Vec<MpvPlaybackControl> {
+        self.controls.lock().expect("mpv controls lock").clone()
+    }
+
+    fn source(&self, index: usize) -> Weak<ResolvedPlaybackSource> {
+        self.sources.lock().expect("mpv sources lock")[index].clone()
+    }
+
+    fn terminate(&self, index: usize) {
+        self.exits.lock().expect("mpv exit lock")[index]
+            .take()
+            .expect("mpv exit remains controllable")
+            .send(MpvExit::Terminated)
+            .expect("mpv exit receiver remains open");
     }
 }
 

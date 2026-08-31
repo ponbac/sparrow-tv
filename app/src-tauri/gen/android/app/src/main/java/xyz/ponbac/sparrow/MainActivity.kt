@@ -8,11 +8,17 @@ import android.view.WindowManager
 import android.webkit.WebView
 import androidx.activity.enableEdgeToEdge
 import androidx.annotation.Keep
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : TauriActivity() {
+  private val nativePlayback by lazy {
+    NativePlaybackController(
+      this,
+      forceSilent =
+        BuildConfig.DEBUG && intent?.getBooleanExtra(ACCEPTANCE_SILENT_EXTRA, false) == true,
+    )
+  }
+
   override fun onCreate(savedInstanceState: Bundle?) {
     if (BuildConfig.DEBUG) {
       WebView.setWebContentsDebuggingEnabled(true)
@@ -22,14 +28,100 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onPause() {
+    // Rust owns final stream teardown. Pause/hide immediately here, then let
+    // its lifecycle path cancel a blocked DataSource read before release.
+    nativePlayback.pauseForLifecycle()
     clearPlaybackKeepScreenOn()
     super.onPause()
   }
 
   override fun onResume() {
     super.onResume()
+    nativePlayback.resumeForLifecycle()
     clearPlaybackKeepScreenOn()
   }
+
+  override fun onDestroy() {
+    // onPause gives Rust the first chance to cancel any blocked native read.
+    // Media3 release/detach are also bounded in NativePlaybackController so a
+    // missing lifecycle callback cannot indefinitely block Activity teardown.
+    nativePlayback.pauseForLifecycle()
+    nativePlayback.stopAll()
+    super.onDestroy()
+  }
+
+  @Keep
+  fun startNativePlayback(
+    sessionId: String,
+    streamHandle: String,
+    left: Int,
+    top: Int,
+    width: Int,
+    height: Int,
+    volume: Float,
+    muted: Boolean,
+    fullscreen: Boolean,
+  ): Boolean = nativePlayback.start(
+    sessionId,
+    streamHandle,
+    left,
+    top,
+    width,
+    height,
+    volume,
+    muted,
+    fullscreen,
+  )
+
+  @Keep
+  fun nativePlaybackStatus(sessionId: String, streamHandle: String): String =
+    nativePlayback.status(sessionId, streamHandle)
+
+  @Keep
+  fun setNativePlaybackControls(
+    sessionId: String,
+    streamHandle: String,
+    volume: Float,
+    muted: Boolean,
+    paused: Boolean,
+  ): Boolean = nativePlayback.setControls(sessionId, streamHandle, volume, muted, paused)
+
+  @Keep
+  fun setNativePlaybackViewport(
+    sessionId: String,
+    streamHandle: String,
+    left: Int,
+    top: Int,
+    width: Int,
+    height: Int,
+    fullscreen: Boolean,
+  ): Boolean = nativePlayback.setViewport(
+    sessionId,
+    streamHandle,
+    left,
+    top,
+    width,
+    height,
+    fullscreen,
+  )
+
+  @Keep
+  fun stopNativePlayback(sessionId: String, streamHandle: String): Boolean =
+    nativePlayback.stop(sessionId, streamHandle)
+
+  @Keep
+  fun stopNativePlaybackSession(sessionId: String): Boolean =
+    nativePlayback.stopSession(sessionId)
+
+  @Keep
+  fun suspendNativePlaybackSession(sessionId: String): Boolean =
+    nativePlayback.suspendSession(sessionId)
+
+  @Keep
+  fun suspendAllNativePlayback(): Boolean = nativePlayback.suspendAll()
+
+  @Keep
+  fun stopAllNativePlayback(): Boolean = nativePlayback.stopAll()
 
   @Keep
   fun setPlaybackKeepScreenOn(active: Boolean): Boolean {
@@ -37,24 +129,35 @@ class MainActivity : TauriActivity() {
       return applyPlaybackKeepScreenOn(active)
     }
 
-    val completed = CountDownLatch(1)
-    val applied = AtomicBoolean(false)
+    val request = NativePlaybackMainThreadRequest(KeepScreenOnOutcome(false, false))
     return try {
       runOnUiThread {
-        try {
-          applied.set(applyPlaybackKeepScreenOn(active))
-        } finally {
-          completed.countDown()
-        }
+        request.execute(
+          operation = {
+            val alreadySet =
+              window.attributes.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON != 0
+            KeepScreenOnOutcome(
+              applied = applyPlaybackKeepScreenOn(active),
+              addedWindowFlag = active && !alreadySet,
+            )
+          },
+          rollback = { outcome ->
+            if (outcome.applied && outcome.addedWindowFlag) {
+              window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            }
+          },
+        )
       }
-      completed.await(2, TimeUnit.SECONDS) && applied.get()
-    } catch (_: InterruptedException) {
-      Thread.currentThread().interrupt()
-      false
+      request.await(2, TimeUnit.SECONDS).applied
     } catch (_: RuntimeException) {
-      false
+      request.await(0, TimeUnit.NANOSECONDS).applied
     }
   }
+
+  private data class KeepScreenOnOutcome(
+    val applied: Boolean,
+    val addedWindowFlag: Boolean,
+  )
 
   private fun applyPlaybackKeepScreenOn(active: Boolean): Boolean = try {
     if (active) {
@@ -82,4 +185,5 @@ class MainActivity : TauriActivity() {
       }
     }
   }
+
 }

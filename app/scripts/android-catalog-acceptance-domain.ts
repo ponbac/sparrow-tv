@@ -11,7 +11,6 @@ type Slot = "a" | "b";
 type SourceKind = "m3u" | "epg";
 
 interface CliArguments {
-  readonly serial: string;
   readonly apk: string;
   readonly output: string;
 }
@@ -156,7 +155,7 @@ const readinessSchema = z
   })
   .strict();
 
-/** Parses the required explicit APK, adb serial, and evidence output arguments. */
+/** Parses only non-sensitive filesystem arguments from the process command line. */
 export function parseCliArguments(argv: readonly string[]): ParseResult<CliArguments> {
   const values = new Map<string, string>();
   for (let index = 0; index < argv.length; index += 2) {
@@ -165,7 +164,7 @@ export function parseCliArguments(argv: readonly string[]): ParseResult<CliArgum
     if (
       flag === undefined ||
       value === undefined ||
-      !["--serial", "--apk", "--output"].includes(flag) ||
+      !["--apk", "--output"].includes(flag) ||
       value.length === 0 ||
       values.has(flag)
     ) {
@@ -173,20 +172,26 @@ export function parseCliArguments(argv: readonly string[]): ParseResult<CliArgum
     }
     values.set(flag, value);
   }
-  const serial = values.get("--serial");
   const apk = values.get("--apk");
   const output = values.get("--output");
-  if (values.size !== 3 || serial === undefined || apk === undefined || output === undefined) {
-    return reject("--serial, --apk, and --output are required");
+  if (values.size !== 2 || apk === undefined || output === undefined) {
+    return reject("--apk and --output are required");
   }
+  return accept({ apk, output });
+}
+
+/** Validates the private standard adb selector read from ANDROID_SERIAL. */
+export function parseAdbSerial(serial: unknown): ParseResult<string> {
   if (
+    typeof serial !== "string" ||
+    serial.length === 0 ||
     Array.from(serial).some(
       (character) => /\s/u.test(character) || character.charCodeAt(0) <= 31,
     )
   ) {
-    return reject("the adb serial has an unsafe shape");
+    return reject("ANDROID_SERIAL is missing or has an unsafe shape");
   }
-  return accept({ serial, apk, output });
+  return accept(serial);
 }
 
 /** Accepts only a physical Realme GT8 Pro (RMX5210), API 36, arm64 device. */

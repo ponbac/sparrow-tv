@@ -36,8 +36,9 @@ use crate::{
 };
 pub(crate) use mpv::MpvFailure;
 #[cfg(test)]
-use mpv::UnsupportedMpvFallback;
-use mpv::{MpvExit, MpvLaunchFuture, MpvProcess, NativeMpvFallback, system_mpv_fallback};
+use mpv::UnsupportedMpvPlayer;
+use mpv::{MpvExit, MpvLaunchFuture, MpvProcess, NativeMpvPlayer, system_mpv_player};
+pub(crate) use mpv::{MpvPlaybackControl, MpvVolume};
 const COMMAND_CAPACITY: usize = 16;
 const READ_CAPACITY: usize = 16;
 const MAX_STOP_TOMBSTONES: usize = 64;
@@ -62,7 +63,7 @@ type SelectedOpenFuture =
     Pin<Box<dyn Future<Output = Result<OpenedPlayback, PendingOpenError>> + Send + 'static>>;
 type DescriptorReply = oneshot::Sender<Result<StartedPlayback, PlaybackManagerError>>;
 type UnitReply = oneshot::Sender<Result<(), PlaybackManagerError>>;
-type MpvReply = oneshot::Sender<Result<MpvFallbackSession, PlaybackManagerError>>;
+type MpvReply = oneshot::Sender<Result<MpvPlaybackSession, PlaybackManagerError>>;
 
 trait NativePlaybackAccess: Send + Sync + 'static {
     fn open(&self, source: Arc<ResolvedPlaybackSource>) -> AccessOpenFuture;
@@ -231,23 +232,30 @@ impl Debug for StartedPlayback {
 
 /// A safe acknowledgement that system mpv owns the selected Playback Session.
 #[derive(Clone, Eq, PartialEq)]
-pub(crate) struct MpvFallbackSession {
+pub(crate) struct MpvPlaybackSession {
     session_id: PlaybackSessionId,
 }
 
-impl MpvFallbackSession {
+impl MpvPlaybackSession {
     pub(crate) fn session_id(&self) -> &PlaybackSessionId {
         &self.session_id
     }
 }
 
-impl Debug for MpvFallbackSession {
+impl Debug for MpvPlaybackSession {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("MpvFallbackSession")
+            .debug_struct("MpvPlaybackSession")
             .field("session_id", &self.session_id)
             .finish()
     }
+}
+
+/// Platform-selected Primary Playback Engine opened for an installed session.
+pub(crate) enum InstalledPlaybackStart {
+    NativeStream(StartedPlayback),
+    #[cfg(target_os = "linux")]
+    LinuxMpv(MpvPlaybackSession),
 }
 
 /// Safe failures from the native playback boundary. Provider locations and
@@ -262,7 +270,7 @@ pub(crate) enum PlaybackManagerError {
     Read(PlaybackReadError),
     #[error("native transport stream inspection failed")]
     TransportStream(TransportStreamError),
-    #[error("system mpv failover failed")]
+    #[error("system mpv playback failed")]
     Mpv(#[source] MpvFailure),
     #[error("the playback operation was cancelled")]
     Cancelled,
@@ -311,7 +319,7 @@ impl PlaybackManager {
             preferences,
             Arc::new(MpegTsPlaybackTransportSelector),
             screen_wake,
-            system_mpv_fallback(private_root),
+            system_mpv_player(private_root),
         )
     }
 
@@ -365,7 +373,7 @@ impl PlaybackManager {
             preferences,
             selector,
             screen_wake,
-            Arc::new(UnsupportedMpvFallback),
+            Arc::new(UnsupportedMpvPlayer),
         )
     }
 
@@ -373,7 +381,7 @@ impl PlaybackManager {
     fn with_adapters(
         core: Arc<SparrowCore>,
         access: Arc<dyn NativePlaybackAccess>,
-        mpv: Arc<dyn NativeMpvFallback>,
+        mpv: Arc<dyn NativeMpvPlayer>,
     ) -> Self {
         Self::with_all_adapters(
             core,
@@ -391,7 +399,7 @@ impl PlaybackManager {
         preferences: AudioPreferenceStore,
         selector: Arc<dyn PlaybackTransportSelector>,
         screen_wake: Arc<dyn ScreenWake>,
-        mpv: Arc<dyn NativeMpvFallback>,
+        mpv: Arc<dyn NativeMpvPlayer>,
     ) -> Self {
         let (controls, control_receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (reads, read_receiver) = mpsc::channel(READ_CAPACITY);
@@ -417,6 +425,7 @@ impl PlaybackManager {
         }
     }
 
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     pub(crate) async fn start(
         &self,
         session_id: PlaybackSessionId,
@@ -455,6 +464,29 @@ impl PlaybackManager {
             .map_err(|_| PlaybackManagerError::Unavailable)?
     }
 
+    /// Confirms that the exact Rust-owned native transport generation is still
+    /// live. Presentation adapters use this immediately before publishing an
+    /// external player so a completed transport cleanup cannot be undone by a
+    /// delayed presentation start.
+    pub(crate) async fn validate_active_generation(
+        &self,
+        session_id: PlaybackSessionId,
+        expected_stream_handle: NativeStreamHandle,
+    ) -> Result<(), PlaybackManagerError> {
+        let (reply, response) = oneshot::channel();
+        self.controls
+            .send(ControlCommand::ValidateActiveGeneration {
+                session_id,
+                expected_stream_handle,
+                reply,
+            })
+            .await
+            .map_err(|_| PlaybackManagerError::Unavailable)?;
+        response
+            .await
+            .map_err(|_| PlaybackManagerError::Unavailable)?
+    }
+
     pub(crate) async fn suspend(
         &self,
         session_id: PlaybackSessionId,
@@ -469,6 +501,28 @@ impl PlaybackManager {
             .map_err(|_| PlaybackManagerError::Unavailable)?
     }
 
+    /// Cancels only the exact native transport generation while retaining its
+    /// pinned session for a coordinated presentation release and restart.
+    pub(crate) async fn suspend_generation(
+        &self,
+        session_id: PlaybackSessionId,
+        expected_stream_handle: NativeStreamHandle,
+    ) -> Result<(), PlaybackManagerError> {
+        let (reply, response) = oneshot::channel();
+        self.controls
+            .send(ControlCommand::SuspendGeneration {
+                session_id,
+                expected_stream_handle,
+                reply,
+            })
+            .await
+            .map_err(|_| PlaybackManagerError::Unavailable)?;
+        response
+            .await
+            .map_err(|_| PlaybackManagerError::Unavailable)?
+    }
+
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     pub(crate) async fn reopen(
         &self,
         session_id: PlaybackSessionId,
@@ -564,13 +618,20 @@ impl PlaybackManager {
             .map_err(|_| PlaybackManagerError::Unavailable)?
     }
 
-    pub(crate) async fn start_mpv(
+    /// Resolves a Channel and starts system mpv as its Primary Playback Engine.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) async fn start_mpv_primary(
         &self,
         session_id: PlaybackSessionId,
-    ) -> Result<MpvFallbackSession, PlaybackManagerError> {
+        channel_id: ChannelId,
+    ) -> Result<MpvPlaybackSession, PlaybackManagerError> {
         let (reply, response) = oneshot::channel();
         self.controls
-            .send(ControlCommand::StartMpv { session_id, reply })
+            .send(ControlCommand::StartMpvPrimary {
+                session_id,
+                channel_id,
+                reply,
+            })
             .await
             .map_err(|_| PlaybackManagerError::Unavailable)?;
         response
@@ -578,13 +639,34 @@ impl PlaybackManager {
             .map_err(|_| PlaybackManagerError::Unavailable)?
     }
 
-    pub(crate) async fn stop_mpv(
+    /// Applies one control only when system mpv owns the correlated Playback Session.
+    pub(crate) async fn control_mpv(
         &self,
         session_id: PlaybackSessionId,
-    ) -> Result<MpvFallbackSession, PlaybackManagerError> {
+        control: MpvPlaybackControl,
+    ) -> Result<(), PlaybackManagerError> {
         let (reply, response) = oneshot::channel();
         self.controls
-            .send(ControlCommand::StopMpv { session_id, reply })
+            .send(ControlCommand::ControlMpv {
+                session_id,
+                control,
+                reply,
+            })
+            .await
+            .map_err(|_| PlaybackManagerError::Unavailable)?;
+        response
+            .await
+            .map_err(|_| PlaybackManagerError::Unavailable)?
+    }
+
+    /// Reopens a suspended Linux mpv Primary Playback Engine at the live edge.
+    pub(crate) async fn reopen_mpv(
+        &self,
+        session_id: PlaybackSessionId,
+    ) -> Result<MpvPlaybackSession, PlaybackManagerError> {
+        let (reply, response) = oneshot::channel();
+        self.controls
+            .send(ControlCommand::ReopenMpv { session_id, reply })
             .await
             .map_err(|_| PlaybackManagerError::Unavailable)?;
         response
@@ -611,6 +693,7 @@ impl Drop for PlaybackManager {
 }
 
 enum ControlCommand {
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     Start {
         session_id: PlaybackSessionId,
         channel_id: ChannelId,
@@ -620,6 +703,17 @@ enum ControlCommand {
         session_id: PlaybackSessionId,
         reply: UnitReply,
     },
+    SuspendGeneration {
+        session_id: PlaybackSessionId,
+        expected_stream_handle: NativeStreamHandle,
+        reply: UnitReply,
+    },
+    ValidateActiveGeneration {
+        session_id: PlaybackSessionId,
+        expected_stream_handle: NativeStreamHandle,
+        reply: UnitReply,
+    },
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     Reopen {
         session_id: PlaybackSessionId,
         reply: DescriptorReply,
@@ -644,11 +738,18 @@ enum ControlCommand {
         lifecycle: PlaybackLifecycle,
         reply: UnitReply,
     },
-    StartMpv {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    StartMpvPrimary {
         session_id: PlaybackSessionId,
+        channel_id: ChannelId,
         reply: MpvReply,
     },
-    StopMpv {
+    ControlMpv {
+        session_id: PlaybackSessionId,
+        control: MpvPlaybackControl,
+        reply: UnitReply,
+    },
+    ReopenMpv {
         session_id: PlaybackSessionId,
         reply: MpvReply,
     },
@@ -675,7 +776,7 @@ struct PlaybackActorDependencies {
     preferences: AudioPreferenceStore,
     selector: Arc<dyn PlaybackTransportSelector>,
     screen_wake: Arc<dyn ScreenWake>,
-    mpv: Arc<dyn NativeMpvFallback>,
+    mpv: Arc<dyn NativeMpvPlayer>,
 }
 
 struct PlaybackActor {
@@ -850,6 +951,14 @@ impl PlaybackActor {
                 let _ = reply.send(Ok(()));
                 ActorState::Idle
             }
+            ControlCommand::SuspendGeneration { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Idle
+            }
+            ControlCommand::ValidateActiveGeneration { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Idle
+            }
             ControlCommand::Reopen { reply, .. } => {
                 let _ = reply.send(Err(PlaybackManagerError::Cancelled));
                 ActorState::Idle
@@ -874,17 +983,23 @@ impl PlaybackActor {
                 let _ = reply.send(result);
                 ActorState::Idle
             }
-            ControlCommand::StartMpv { reply, .. } => {
+            ControlCommand::StartMpvPrimary { reply, .. } if reply.is_closed() => ActorState::Idle,
+            ControlCommand::StartMpvPrimary {
+                session_id, reply, ..
+            } if self.tombstones.contains(&session_id) => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Idle
+            }
+            ControlCommand::StartMpvPrimary {
+                session_id,
+                channel_id,
+                reply,
+            } => self.begin_mpv_primary(session_id, channel_id, reply),
+            ControlCommand::ControlMpv { reply, .. } => {
                 let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::StaleSession)));
                 ActorState::Idle
             }
-            ControlCommand::StopMpv { session_id, reply }
-                if self.tombstones.contains(&session_id) =>
-            {
-                let _ = reply.send(Ok(MpvFallbackSession { session_id }));
-                ActorState::Idle
-            }
-            ControlCommand::StopMpv { reply, .. } => {
+            ControlCommand::ReopenMpv { reply, .. } => {
                 let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::StaleSession)));
                 ActorState::Idle
             }
@@ -942,6 +1057,29 @@ impl PlaybackActor {
                 let _ = reply.send(Ok(()));
                 ActorState::Opening(opening)
             }
+            ControlCommand::SuspendGeneration {
+                session_id,
+                expected_stream_handle,
+                reply,
+            } if session_id == opening.session.id
+                && opening.session.last_stream_handle.as_ref() == Some(&expected_stream_handle) =>
+            {
+                drop(opening.pending);
+                let _ = opening
+                    .reply
+                    .take()
+                    .expect("opening reply exists")
+                    .send(Err(PlaybackManagerError::Cancelled));
+                self.reply_with_dormant(reply, Ok(()), opening.session, DormantReason::Suspended)
+            }
+            ControlCommand::SuspendGeneration { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Opening(opening)
+            }
+            ControlCommand::ValidateActiveGeneration { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Opening(opening)
+            }
             ControlCommand::Reopen { reply, .. } if reply.is_closed() => {
                 ActorState::Opening(opening)
             }
@@ -994,7 +1132,7 @@ impl PlaybackActor {
                     .take()
                     .expect("opening reply exists")
                     .send(Err(PlaybackManagerError::Cancelled));
-                self.reply_with_dormant(reply, Ok(()), opening.session, DormantReason::Stopped)
+                self.reply_with_stopped(reply, opening.session)
             }
             ControlCommand::Stop {
                 session_id, reply, ..
@@ -1003,12 +1141,37 @@ impl PlaybackActor {
                 let _ = reply.send(Ok(()));
                 ActorState::Opening(opening)
             }
-            ControlCommand::StartMpv { reply, .. } => {
+            ControlCommand::StartMpvPrimary { reply, .. } if reply.is_closed() => {
+                ActorState::Opening(opening)
+            }
+            ControlCommand::StartMpvPrimary {
+                session_id, reply, ..
+            } if self.tombstones.contains(&session_id) || session_id == opening.session.id => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Opening(opening)
+            }
+            ControlCommand::StartMpvPrimary {
+                session_id,
+                channel_id,
+                reply,
+            } => {
+                let old_id = opening.session.id.clone();
+                drop(opening.pending);
+                let _ = opening
+                    .reply
+                    .take()
+                    .expect("opening reply exists")
+                    .send(Err(PlaybackManagerError::Cancelled));
+                drop(opening.session);
+                self.retire(old_id);
+                self.begin_mpv_primary(session_id, channel_id, reply)
+            }
+            ControlCommand::ControlMpv { reply, .. } => {
                 let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::PrimaryActive)));
                 ActorState::Opening(opening)
             }
-            ControlCommand::StopMpv { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::StaleSession)));
+            ControlCommand::ReopenMpv { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::PrimaryActive)));
                 ActorState::Opening(opening)
             }
             ControlCommand::Shutdown { reply } => {
@@ -1106,6 +1269,35 @@ impl PlaybackActor {
                 let _ = reply.send(Ok(()));
                 ActorState::Streaming(streaming)
             }
+            ControlCommand::SuspendGeneration {
+                session_id,
+                expected_stream_handle,
+                reply,
+            } if session_id == streaming.session.id
+                && expected_stream_handle == streaming.stream.handle =>
+            {
+                drop(streaming.stream);
+                self.reply_with_dormant(reply, Ok(()), streaming.session, DormantReason::Suspended)
+            }
+            ControlCommand::SuspendGeneration { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Streaming(streaming)
+            }
+            ControlCommand::ValidateActiveGeneration {
+                session_id,
+                expected_stream_handle,
+                reply,
+            } => {
+                let result = if session_id == streaming.session.id
+                    && expected_stream_handle == streaming.stream.handle
+                {
+                    Ok(())
+                } else {
+                    Err(PlaybackManagerError::Cancelled)
+                };
+                let _ = reply.send(result);
+                ActorState::Streaming(streaming)
+            }
             ControlCommand::Reopen { reply, .. } if reply.is_closed() => {
                 ActorState::Streaming(streaming)
             }
@@ -1143,7 +1335,7 @@ impl PlaybackActor {
                 && stream_handle.as_ref() == Some(&streaming.stream.handle) =>
             {
                 drop(streaming.stream);
-                self.reply_with_dormant(reply, Ok(()), streaming.session, DormantReason::Stopped)
+                self.reply_with_stopped(reply, streaming.session)
             }
             ControlCommand::Stop {
                 session_id, reply, ..
@@ -1152,12 +1344,32 @@ impl PlaybackActor {
                 let _ = reply.send(Ok(()));
                 ActorState::Streaming(streaming)
             }
-            ControlCommand::StartMpv { reply, .. } => {
+            ControlCommand::StartMpvPrimary { reply, .. } if reply.is_closed() => {
+                ActorState::Streaming(streaming)
+            }
+            ControlCommand::StartMpvPrimary {
+                session_id, reply, ..
+            } if self.tombstones.contains(&session_id) || session_id == streaming.session.id => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Streaming(streaming)
+            }
+            ControlCommand::StartMpvPrimary {
+                session_id,
+                channel_id,
+                reply,
+            } => {
+                let old_id = streaming.session.id.clone();
+                drop(streaming.stream);
+                drop(streaming.session);
+                self.retire(old_id);
+                self.begin_mpv_primary(session_id, channel_id, reply)
+            }
+            ControlCommand::ControlMpv { reply, .. } => {
                 let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::PrimaryActive)));
                 ActorState::Streaming(streaming)
             }
-            ControlCommand::StopMpv { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::StaleSession)));
+            ControlCommand::ReopenMpv { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::PrimaryActive)));
                 ActorState::Streaming(streaming)
             }
             ControlCommand::Shutdown { reply } => {
@@ -1247,6 +1459,36 @@ impl PlaybackActor {
                 let _ = reply.send(Ok(()));
                 ActorState::Reading(reading)
             }
+            ControlCommand::SuspendGeneration {
+                session_id,
+                expected_stream_handle,
+                reply,
+            } if session_id == reading.session.id
+                && reading.session.last_stream_handle.as_ref() == Some(&expected_stream_handle) =>
+            {
+                drop(reading.pending);
+                let _ = reading.reply.send(Err(PlaybackManagerError::Cancelled));
+                self.reply_with_dormant(reply, Ok(()), reading.session, DormantReason::Suspended)
+            }
+            ControlCommand::SuspendGeneration { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Reading(reading)
+            }
+            ControlCommand::ValidateActiveGeneration {
+                session_id,
+                expected_stream_handle,
+                reply,
+            } => {
+                let result = if session_id == reading.session.id
+                    && reading.session.last_stream_handle.as_ref() == Some(&expected_stream_handle)
+                {
+                    Ok(())
+                } else {
+                    Err(PlaybackManagerError::Cancelled)
+                };
+                let _ = reply.send(result);
+                ActorState::Reading(reading)
+            }
             ControlCommand::Reopen { reply, .. } if reply.is_closed() => {
                 ActorState::Reading(reading)
             }
@@ -1287,7 +1529,7 @@ impl PlaybackActor {
             {
                 drop(reading.pending);
                 let _ = reading.reply.send(Err(PlaybackManagerError::Cancelled));
-                self.reply_with_dormant(reply, Ok(()), reading.session, DormantReason::Stopped)
+                self.reply_with_stopped(reply, reading.session)
             }
             ControlCommand::Stop {
                 session_id, reply, ..
@@ -1296,12 +1538,33 @@ impl PlaybackActor {
                 let _ = reply.send(Ok(()));
                 ActorState::Reading(reading)
             }
-            ControlCommand::StartMpv { reply, .. } => {
+            ControlCommand::StartMpvPrimary { reply, .. } if reply.is_closed() => {
+                ActorState::Reading(reading)
+            }
+            ControlCommand::StartMpvPrimary {
+                session_id, reply, ..
+            } if self.tombstones.contains(&session_id) || session_id == reading.session.id => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Reading(reading)
+            }
+            ControlCommand::StartMpvPrimary {
+                session_id,
+                channel_id,
+                reply,
+            } => {
+                let old_id = reading.session.id.clone();
+                drop(reading.pending);
+                let _ = reading.reply.send(Err(PlaybackManagerError::Cancelled));
+                drop(reading.session);
+                self.retire(old_id);
+                self.begin_mpv_primary(session_id, channel_id, reply)
+            }
+            ControlCommand::ControlMpv { reply, .. } => {
                 let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::PrimaryActive)));
                 ActorState::Reading(reading)
             }
-            ControlCommand::StopMpv { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::StaleSession)));
+            ControlCommand::ReopenMpv { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::PrimaryActive)));
                 ActorState::Reading(reading)
             }
             ControlCommand::Shutdown { reply } => {
@@ -1375,22 +1638,34 @@ impl PlaybackActor {
                 self.begin_start(session_id, channel_id, reply)
             }
             ControlCommand::Suspend { session_id, reply } if session_id == session.id => {
-                let activity = self.update_activity(&mut session, session_id, false, true);
-                let _ = reply.send(activity);
-                ActorState::Dormant(session)
+                self.reply_with_dormant(reply, Ok(()), session, DormantReason::Suspended)
             }
             ControlCommand::Suspend { session_id, reply } => {
                 self.remember_suspend(session_id);
                 let _ = reply.send(Ok(()));
                 ActorState::Dormant(session)
             }
+            ControlCommand::SuspendGeneration {
+                session_id,
+                expected_stream_handle,
+                reply,
+            } if session_id == session.id
+                && session.last_stream_handle.as_ref() == Some(&expected_stream_handle) =>
+            {
+                self.reply_with_dormant(reply, Ok(()), session, DormantReason::Suspended)
+            }
+            ControlCommand::SuspendGeneration { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Dormant(session)
+            }
+            ControlCommand::ValidateActiveGeneration { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Dormant(session)
+            }
             ControlCommand::Reopen { reply, .. } if reply.is_closed() => {
                 ActorState::Dormant(session)
             }
-            ControlCommand::Reopen { session_id, reply }
-                if session_id == session.id
-                    && session.dormant_reason != Some(DormantReason::Stopped) =>
-            {
+            ControlCommand::Reopen { session_id, reply } if session_id == session.id => {
                 self.begin_reopen(session, reply)
             }
             ControlCommand::Reopen { reply, .. } => {
@@ -1421,7 +1696,7 @@ impl PlaybackActor {
             } if session_id == session.id
                 && session.last_stream_handle.as_ref() == stream_handle.as_ref() =>
             {
-                self.reply_with_dormant(reply, Ok(()), session, DormantReason::Stopped)
+                self.reply_with_stopped(reply, session)
             }
             ControlCommand::Stop {
                 session_id, reply, ..
@@ -1434,39 +1709,54 @@ impl PlaybackActor {
                 let _ = reply.send(Err(PlaybackManagerError::Cancelled));
                 ActorState::Dormant(session)
             }
-            ControlCommand::StartMpv { reply, .. } if reply.is_closed() => {
+            ControlCommand::StartMpvPrimary { reply, .. } if reply.is_closed() => {
                 ActorState::Dormant(session)
             }
-            ControlCommand::StartMpv { session_id, reply }
+            ControlCommand::StartMpvPrimary {
+                session_id, reply, ..
+            } if self.tombstones.contains(&session_id) || session_id == session.id => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::Dormant(session)
+            }
+            ControlCommand::StartMpvPrimary {
+                session_id,
+                channel_id,
+                reply,
+            } => {
+                let old_id = session.id.clone();
+                drop(session);
+                self.retire(old_id);
+                self.begin_mpv_primary(session_id, channel_id, reply)
+            }
+            ControlCommand::ControlMpv {
+                session_id, reply, ..
+            } if session_id == session.id
+                && matches!(session.dormant_reason, Some(DormantReason::Failed)) =>
+            {
+                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::Terminated)));
+                ActorState::Dormant(session)
+            }
+            ControlCommand::ControlMpv { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::StaleSession)));
+                ActorState::Dormant(session)
+            }
+            ControlCommand::ReopenMpv { reply, .. } if reply.is_closed() => {
+                ActorState::Dormant(session)
+            }
+            ControlCommand::ReopenMpv { session_id, reply }
                 if session_id == session.id
                     && matches!(
                         session.dormant_reason,
-                        Some(DormantReason::Failed | DormantReason::Stopped)
+                        Some(DormantReason::Failed | DormantReason::Suspended)
                     ) =>
             {
                 self.begin_mpv_open(session, reply)
             }
-            ControlCommand::StartMpv { session_id, reply } if session_id == session.id => {
+            ControlCommand::ReopenMpv { session_id, reply } if session_id == session.id => {
                 let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::PrimaryActive)));
                 ActorState::Dormant(session)
             }
-            ControlCommand::StartMpv { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::StaleSession)));
-                ActorState::Dormant(session)
-            }
-            ControlCommand::StopMpv { session_id, reply } if session_id == session.id => {
-                drop(session);
-                self.retire(session_id.clone());
-                let _ = reply.send(Ok(MpvFallbackSession { session_id }));
-                ActorState::Idle
-            }
-            ControlCommand::StopMpv { session_id, reply }
-                if self.tombstones.contains(&session_id) =>
-            {
-                let _ = reply.send(Ok(MpvFallbackSession { session_id }));
-                ActorState::Dormant(session)
-            }
-            ControlCommand::StopMpv { reply, .. } => {
+            ControlCommand::ReopenMpv { reply, .. } => {
                 let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::StaleSession)));
                 ActorState::Dormant(session)
             }
@@ -1492,6 +1782,44 @@ impl PlaybackActor {
         }
     }
 
+    fn begin_mpv_primary(
+        &mut self,
+        session_id: PlaybackSessionId,
+        channel_id: ChannelId,
+        reply: MpvReply,
+    ) -> ActorState {
+        if self.tombstones.contains(&session_id) {
+            let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+            return ActorState::Idle;
+        }
+
+        let source = match self.dependencies.core.resolve_playback(&channel_id) {
+            Ok(source) => Arc::new(source),
+            Err(error) => {
+                let _ = reply.send(Err(PlaybackManagerError::Core(error)));
+                return ActorState::Idle;
+            }
+        };
+        let session = Session {
+            id: session_id,
+            channel_id,
+            source,
+            current_track: None,
+            last_stream_handle: None,
+            resume_activity: None,
+            dormant_reason: None,
+        };
+        if !self.foreground || self.take_suspend(&session.id) {
+            return self.reply_with_dormant(
+                reply,
+                Err(PlaybackManagerError::Cancelled),
+                session,
+                DormantReason::Suspended,
+            );
+        }
+        self.begin_mpv_open(session, reply)
+    }
+
     fn begin_mpv_open(&mut self, session: Session, reply: MpvReply) -> ActorState {
         let pending = self.dependencies.mpv.launch(Arc::clone(&session.source));
         ActorState::OpeningMpv(MpvOpeningState {
@@ -1509,7 +1837,7 @@ impl PlaybackActor {
         let reply = opening.reply.take().expect("mpv opening reply exists");
         match result {
             Ok(process) => {
-                let started = MpvFallbackSession {
+                let started = MpvPlaybackSession {
                     session_id: opening.session.id.clone(),
                 };
                 match reply.send(Ok(started)) {
@@ -1523,10 +1851,12 @@ impl PlaybackActor {
                     }
                 }
             }
-            Err(error) => match reply.send(Err(PlaybackManagerError::Mpv(error))) {
-                Ok(()) => ActorState::Dormant(opening.session),
-                Err(_) => self.drop_session(opening.session),
-            },
+            Err(error) => self.reply_with_dormant(
+                reply,
+                Err(PlaybackManagerError::Mpv(error)),
+                opening.session,
+                DormantReason::Failed,
+            ),
         }
     }
 
@@ -1568,12 +1898,25 @@ impl PlaybackActor {
                 self.begin_start(session_id, channel_id, reply)
             }
             ControlCommand::Suspend { session_id, reply } if session_id == opening.session.id => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::PrimaryActive)));
-                ActorState::OpeningMpv(opening)
+                drop(opening.pending);
+                let _ = opening
+                    .reply
+                    .take()
+                    .expect("mpv opening reply exists")
+                    .send(Err(PlaybackManagerError::Cancelled));
+                self.reply_with_dormant(reply, Ok(()), opening.session, DormantReason::Suspended)
             }
             ControlCommand::Suspend { session_id, reply } => {
                 self.remember_suspend(session_id);
                 let _ = reply.send(Ok(()));
+                ActorState::OpeningMpv(opening)
+            }
+            ControlCommand::SuspendGeneration { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::OpeningMpv(opening)
+            }
+            ControlCommand::ValidateActiveGeneration { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
                 ActorState::OpeningMpv(opening)
             }
             ControlCommand::Reopen { reply, .. } | ControlCommand::Restart { reply, .. } => {
@@ -1609,11 +1952,21 @@ impl PlaybackActor {
                 let _ = reply.send(Err(PlaybackManagerError::Cancelled));
                 ActorState::OpeningMpv(opening)
             }
-            ControlCommand::StartMpv { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::PrimaryActive)));
+            ControlCommand::StartMpvPrimary { reply, .. } if reply.is_closed() => {
                 ActorState::OpeningMpv(opening)
             }
-            ControlCommand::StopMpv { session_id, reply } if session_id == opening.session.id => {
+            ControlCommand::StartMpvPrimary {
+                session_id, reply, ..
+            } if self.tombstones.contains(&session_id) || session_id == opening.session.id => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::OpeningMpv(opening)
+            }
+            ControlCommand::StartMpvPrimary {
+                session_id,
+                channel_id,
+                reply,
+            } => {
+                let old_id = opening.session.id.clone();
                 drop(opening.pending);
                 let _ = opening
                     .reply
@@ -1621,12 +1974,17 @@ impl PlaybackActor {
                     .expect("mpv opening reply exists")
                     .send(Err(PlaybackManagerError::Cancelled));
                 drop(opening.session);
-                self.retire(session_id.clone());
-                let _ = reply.send(Ok(MpvFallbackSession { session_id }));
-                ActorState::Idle
+                self.retire(old_id);
+                self.begin_mpv_primary(session_id, channel_id, reply)
             }
-            ControlCommand::StopMpv { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::StaleSession)));
+            ControlCommand::ControlMpv { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Mpv(
+                    MpvFailure::ControlUnavailable,
+                )));
+                ActorState::OpeningMpv(opening)
+            }
+            ControlCommand::ReopenMpv { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::PrimaryActive)));
                 ActorState::OpeningMpv(opening)
             }
             ControlCommand::Shutdown { reply } => {
@@ -1689,8 +2047,34 @@ impl PlaybackActor {
                     }
                 }
             }
-            ControlCommand::Suspend { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::PrimaryActive)));
+            ControlCommand::Suspend { session_id, reply } if session_id == playing.session.id => {
+                let result = playing.process.stop().await;
+                match result {
+                    Ok(()) => self.reply_with_dormant(
+                        reply,
+                        Ok(()),
+                        playing.session,
+                        DormantReason::Suspended,
+                    ),
+                    Err(error) => {
+                        drop(playing.session);
+                        self.retire(session_id);
+                        let _ = reply.send(Err(PlaybackManagerError::Mpv(error)));
+                        ActorState::Idle
+                    }
+                }
+            }
+            ControlCommand::Suspend { session_id, reply } => {
+                self.remember_suspend(session_id);
+                let _ = reply.send(Ok(()));
+                ActorState::MpvPlaying(playing)
+            }
+            ControlCommand::SuspendGeneration { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::MpvPlaying(playing)
+            }
+            ControlCommand::ValidateActiveGeneration { reply, .. } => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
                 ActorState::MpvPlaying(playing)
             }
             ControlCommand::Reopen { reply, .. } | ControlCommand::Restart { reply, .. } => {
@@ -1721,25 +2105,54 @@ impl PlaybackActor {
                 let _ = reply.send(Err(PlaybackManagerError::Cancelled));
                 ActorState::MpvPlaying(playing)
             }
-            ControlCommand::StartMpv { session_id, reply } if session_id == playing.session.id => {
-                let _ = reply.send(Ok(MpvFallbackSession { session_id }));
+            ControlCommand::StartMpvPrimary { reply, .. } if reply.is_closed() => {
                 ActorState::MpvPlaying(playing)
             }
-            ControlCommand::StartMpv { reply, .. } => {
+            ControlCommand::StartMpvPrimary {
+                session_id, reply, ..
+            } if self.tombstones.contains(&session_id) || session_id == playing.session.id => {
+                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
+                ActorState::MpvPlaying(playing)
+            }
+            ControlCommand::StartMpvPrimary {
+                session_id,
+                channel_id,
+                reply,
+            } => {
+                let old_id = playing.session.id.clone();
+                let result = playing.process.stop().await;
+                drop(playing.session);
+                self.retire(old_id);
+                match result {
+                    Ok(()) => self.begin_mpv_primary(session_id, channel_id, reply),
+                    Err(error) => {
+                        let _ = reply.send(Err(PlaybackManagerError::Mpv(error)));
+                        ActorState::Idle
+                    }
+                }
+            }
+            ControlCommand::ControlMpv {
+                session_id,
+                control,
+                reply,
+            } if session_id == playing.session.id => {
+                let result = playing
+                    .process
+                    .control(control)
+                    .await
+                    .map_err(PlaybackManagerError::Mpv);
+                let _ = reply.send(result);
+                ActorState::MpvPlaying(playing)
+            }
+            ControlCommand::ControlMpv { reply, .. } => {
                 let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::StaleSession)));
                 ActorState::MpvPlaying(playing)
             }
-            ControlCommand::StopMpv { session_id, reply } if session_id == playing.session.id => {
-                let result = playing.process.stop().await;
-                drop(playing.session);
-                self.retire(session_id.clone());
-                let result = result
-                    .map(|()| MpvFallbackSession { session_id })
-                    .map_err(PlaybackManagerError::Mpv);
-                let _ = reply.send(result);
-                ActorState::Idle
+            ControlCommand::ReopenMpv { session_id, reply } if session_id == playing.session.id => {
+                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::PrimaryActive)));
+                ActorState::MpvPlaying(playing)
             }
-            ControlCommand::StopMpv { reply, .. } => {
+            ControlCommand::ReopenMpv { reply, .. } => {
                 let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::StaleSession)));
                 ActorState::MpvPlaying(playing)
             }
@@ -1770,7 +2183,7 @@ impl PlaybackActor {
         match exit {
             MpvExit::Terminated => {
                 drop(playing.process);
-                Self::dormant(playing.session, DormantReason::Failed)
+                self.failed_dormant(playing.session)
             }
         }
     }
@@ -2066,6 +2479,21 @@ impl PlaybackActor {
         }
     }
 
+    fn reply_with_stopped(&mut self, reply: UnitReply, session: Session) -> ActorState {
+        let id = session.id.clone();
+        drop(session);
+        self.retire(id);
+        let _ = reply.send(Ok(()));
+        ActorState::Idle
+    }
+
+    fn failed_dormant(&mut self, mut session: Session) -> ActorState {
+        session.resume_activity = None;
+        self.clear_activity_for(&session.id);
+        session.dormant_reason = Some(DormantReason::Failed);
+        ActorState::Dormant(session)
+    }
+
     fn dormant(mut session: Session, reason: DormantReason) -> ActorState {
         session.dormant_reason = Some(reason);
         ActorState::Dormant(session)
@@ -2113,10 +2541,7 @@ impl PlaybackActor {
         active: bool,
         preacquire_activity: bool,
     ) -> Result<(), PlaybackManagerError> {
-        if session.id != session_id
-            || (active
-                && (!self.foreground || session.dormant_reason == Some(DormantReason::Stopped)))
-        {
+        if session.id != session_id || (active && !self.foreground) {
             return Err(PlaybackManagerError::Cancelled);
         }
         if active {
@@ -2277,7 +2702,6 @@ struct MpvPlayingState {
 enum DormantReason {
     Failed,
     Suspended,
-    Stopped,
 }
 
 /// Pins one resolved source independently of its replaceable transport.

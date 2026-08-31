@@ -940,57 +940,73 @@ impl ChannelQuery {
 pub struct Page<T> {
     generation: CatalogGeneration,
     items: Arc<[T]>,
-    range: Range<usize>,
     next: Option<PageCursor>,
 }
 
 impl<T> Page<T> {
+    /// Projects only the requested bounded window from an immutable collection.
     pub(crate) fn from_request(
         generation: CatalogGeneration,
         items: Arc<[T]>,
         collection: Range<usize>,
         request: &PageRequest,
         query: CursorQueryHash,
-    ) -> Result<Self, CoreError> {
-        debug_assert!(collection.start <= collection.end);
-        debug_assert!(collection.end <= items.len());
-
-        let window = page_window(generation, collection.len(), request, query)?;
-        let range = (collection.start + window.range.start)..(collection.start + window.range.end);
-
-        Ok(Self {
-            generation,
-            items,
-            range,
-            next: window.next,
-        })
-    }
-
-    /// Builds a page by shallow-cloning only the selected bounded window.
-    pub(crate) fn from_selection(
-        generation: CatalogGeneration,
-        source: &[T],
-        selection: &[usize],
-        request: &PageRequest,
-        query: CursorQueryHash,
     ) -> Result<Self, CoreError>
     where
         T: Clone,
     {
-        debug_assert!(selection.iter().all(|index| *index < source.len()));
-        let window = page_window(generation, selection.len(), request, query)?;
-        let items: Arc<[T]> = Arc::from(
-            selection[window.range]
-                .iter()
-                .map(|index| source[*index].clone())
-                .collect::<Vec<_>>(),
-        );
-        let range = 0..items.len();
+        Self::from_projection(
+            generation,
+            items.as_ref(),
+            collection,
+            request,
+            query,
+            Clone::clone,
+        )
+    }
+
+    /// Projects only the requested bounded window from an internal source model.
+    pub(crate) fn from_projection<U>(
+        generation: CatalogGeneration,
+        source: &[U],
+        collection: Range<usize>,
+        request: &PageRequest,
+        query: CursorQueryHash,
+        project: impl FnMut(&U) -> T,
+    ) -> Result<Self, CoreError> {
+        debug_assert!(collection.start <= collection.end);
+        debug_assert!(collection.end <= source.len());
+
+        let window = page_window(generation, collection.len(), request, query)?;
+        let range = (collection.start + window.range.start)..(collection.start + window.range.end);
+        let items = source[range].iter().map(project).collect::<Vec<_>>();
 
         Ok(Self {
             generation,
-            items,
-            range,
+            items: Arc::from(items),
+            next: window.next,
+        })
+    }
+
+    /// Projects only selected indexes that fall inside the requested page window.
+    pub(crate) fn from_selection_projection<U>(
+        generation: CatalogGeneration,
+        source: &[U],
+        selection: &[usize],
+        request: &PageRequest,
+        query: CursorQueryHash,
+        mut project: impl FnMut(&U) -> T,
+    ) -> Result<Self, CoreError> {
+        debug_assert!(selection.iter().all(|index| *index < source.len()));
+        let window = page_window(generation, selection.len(), request, query)?;
+        let items = selection[window.range]
+            .iter()
+            .map(|index| project(&source[*index]))
+            .collect::<Vec<_>>();
+
+        Ok(Self {
+            generation,
+            items: Arc::from(items),
             next: window.next,
         })
     }
@@ -1002,7 +1018,7 @@ impl<T> Page<T> {
 
     /// Returns the items in this bounded page without cloning the catalog.
     pub fn items(&self) -> &[T] {
-        &self.items[self.range.clone()]
+        &self.items
     }
 
     /// Returns the opaque continuation cursor when more items remain.

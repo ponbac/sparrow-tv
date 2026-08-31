@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "accept:android:catalog": "bun scripts/android-catalog-acceptance.ts",
+    "accept:android:playback": "bun scripts/android-playback-acceptance.ts",
     "release:acceptance": "bun scripts/release-acceptance.ts",
     "release:contract": "bun scripts/release-contract.ts",
     "hosted:cutover": "bun scripts/hosted-cutover.ts",
