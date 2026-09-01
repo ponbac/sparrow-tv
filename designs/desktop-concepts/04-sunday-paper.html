@@ -1,0 +1,1770 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light" />
+  <title>Sparrow · The Television Paper · Evening edition</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Figtree:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400;1,500&family=Libre+Bodoni:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600;1,700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --paper: #f3e6c9;
+      --paper-deep: #e7d5a8;
+      --ink: #1c1410;
+      --ink-soft: #3a322c;
+      --vermillion: #c4281c;
+      --forest: #245c45;
+      --hairline: #cbb892;
+      --clip: #faf6eb;
+      --rule: #1c1410;
+      --display: "Libre Bodoni", "Iowan Old Style", serif;
+      --ui: "Figtree", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: var(--paper-deep);
+      color: var(--ink);
+      color-scheme: light;
+    }
+
+    body {
+      font-family: var(--ui);
+      font-weight: 500;
+      letter-spacing: 0.005em;
+    }
+
+    ::selection {
+      background: var(--vermillion);
+      color: var(--paper);
+    }
+
+    button, input { font: inherit; color: inherit; }
+    button { cursor: pointer; }
+    img { display: block; }
+
+    :focus { outline: none; }
+    :focus-visible {
+      outline: 2px solid var(--ink);
+      outline-offset: 3px;
+    }
+
+    .desk {
+      height: 100vh;
+      padding: 10px 14px 12px;
+      position: relative;
+    }
+
+    .spread {
+      position: relative;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      background: var(--paper);
+      box-shadow:
+        0 1px 0 rgba(28, 20, 16, 0.06),
+        0 18px 40px -24px rgba(28, 20, 16, 0.35);
+      overflow: hidden;
+    }
+
+    .spread::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 8;
+      opacity: 0.22;
+      mix-blend-mode: multiply;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    }
+
+    .spread::after {
+      content: "";
+      position: absolute;
+      right: 0;
+      bottom: 0;
+      width: 92px;
+      height: 92px;
+      pointer-events: none;
+      z-index: 9;
+      background:
+        linear-gradient(225deg, rgba(250, 246, 235, 0.95) 0 42%, transparent 43%),
+        linear-gradient(225deg, #e7d5a8 42%, #cbb892 78%, #8a7350 100%);
+      clip-path: polygon(100% 0, 100% 100%, 0 100%);
+      box-shadow: -10px -10px 18px rgba(28, 20, 16, 0.12);
+    }
+
+    .crop {
+      position: absolute;
+      width: 11px;
+      height: 11px;
+      border-color: var(--ink);
+      border-style: solid;
+      opacity: 0.28;
+      z-index: 10;
+      pointer-events: none;
+    }
+    .crop-tl { top: 7px; left: 7px; border-width: 1px 0 0 1px; }
+    .crop-tr { top: 7px; right: 7px; border-width: 1px 1px 0 0; }
+    .crop-bl { bottom: 7px; left: 7px; border-width: 0 0 1px 1px; }
+    .crop-br { bottom: 7px; right: 7px; border-width: 0 1px 1px 0; }
+
+    .masthead {
+      position: relative;
+      z-index: 2;
+      flex: 0 0 auto;
+      padding: 10px 28px 0;
+    }
+
+    .mast-top {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: end;
+      gap: 12px;
+      min-height: 2.4rem;
+    }
+
+    .folio-meta,
+    .mast-fresh {
+      font-size: 0.62rem;
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--ink-soft);
+    }
+
+    .folio-meta { justify-self: start; }
+    .mast-fresh {
+      justify-self: end;
+      text-align: right;
+      max-width: 16rem;
+    }
+
+    .wordmark {
+      margin: 0;
+      font-family: var(--display);
+      font-weight: 700;
+      font-size: clamp(2.35rem, 4.4vw, 3.85rem);
+      letter-spacing: 0.14em;
+      line-height: 0.86;
+      text-align: center;
+      text-transform: uppercase;
+      font-optical-sizing: auto;
+    }
+
+    .price {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      margin-left: 0.75rem;
+      padding: 0.28rem 0.5rem 0.26rem 0.42rem;
+      border: 1.5px solid var(--vermillion);
+      box-shadow: inset 0 0 0 1px var(--vermillion);
+      color: var(--vermillion);
+      font-size: 0.62rem;
+      font-weight: 800;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      vertical-align: 0.35rem;
+      background: color-mix(in srgb, var(--paper) 88%, white);
+    }
+
+    .live-dot {
+      width: 0.45rem;
+      height: 0.45rem;
+      background: var(--vermillion);
+      border-radius: 50%;
+    }
+
+    .nameplate-rule {
+      height: 7px;
+      margin: 0.35rem 0 0.4rem;
+      border-top: 2.5px solid var(--ink);
+      border-bottom: 1px solid var(--ink);
+    }
+
+    .nameplate-rule em {
+      display: none;
+    }
+
+    .mast-kicker {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 1rem;
+      padding-bottom: 0.45rem;
+    }
+
+    .mast-kicker p {
+      margin: 0;
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .mast-kicker span {
+      color: var(--vermillion);
+    }
+
+    .classifieds {
+      position: relative;
+      z-index: 2;
+      flex: 0 0 auto;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 1rem;
+      margin: 0 28px;
+      padding: 0.45rem 0 0.55rem;
+      border-bottom: 1px solid var(--ink);
+    }
+
+    .classifieds-label,
+    .boxno {
+      font-size: 0.62rem;
+      font-weight: 800;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .boxno { color: var(--ink-soft); }
+
+    .seek {
+      display: block;
+      min-width: 0;
+    }
+
+    .seek input,
+    .seek input[type="search"] {
+      width: 100%;
+      appearance: none;
+      -webkit-appearance: none;
+      background: transparent;
+      border: none;
+      border-bottom: 1px solid var(--ink);
+      border-radius: 0;
+      padding: 0.1rem 0 0.18rem;
+      font-family: var(--display);
+      font-style: italic;
+      font-size: 1.08rem;
+      font-weight: 500;
+      color: var(--ink);
+      outline-offset: 4px;
+    }
+
+    .seek input::-webkit-search-decoration,
+    .seek input::-webkit-search-cancel-button,
+    .seek input::-webkit-search-results-button {
+      -webkit-appearance: none;
+      appearance: none;
+      display: none;
+    }
+
+    .seek input::placeholder {
+      color: color-mix(in srgb, var(--ink) 52%, var(--paper));
+      opacity: 1;
+    }
+
+    .pages {
+      position: relative;
+      z-index: 2;
+      flex: 1 1 auto;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 0.42fr) 10px minmax(0, 0.58fr);
+      padding: 0.7rem 28px 0.55rem;
+    }
+
+    .gutter {
+      position: relative;
+      margin: 0.35rem 0 0.8rem;
+    }
+
+    .gutter::before,
+    .gutter::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      width: 1px;
+      background: var(--hairline);
+    }
+
+    .gutter::before {
+      top: 4px;
+      bottom: 10px;
+      transform: translateX(-2px) rotate(0.35deg);
+    }
+
+    .gutter::after {
+      top: 0;
+      bottom: 6px;
+      transform: translateX(1.5px) rotate(-0.2deg);
+      opacity: 0.85;
+    }
+
+    .page {
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .page-left { padding-right: 1.35rem; }
+    .page-right { padding-left: 1.5rem; }
+
+    .kicker {
+      margin: 0 0 0.15rem;
+      font-size: 0.62rem;
+      font-weight: 800;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--vermillion);
+    }
+
+    .headline {
+      margin: 0;
+      font-family: var(--display);
+      font-style: italic;
+      font-weight: 700;
+      font-size: clamp(1.85rem, 3.15vw, 3.15rem);
+      line-height: 0.92;
+      letter-spacing: -0.02em;
+      text-shadow: 0.35px 0.35px 0 rgba(28, 20, 16, 0.12);
+    }
+
+    .byline {
+      margin: 0.45rem 0 0.55rem;
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--ink-soft);
+    }
+
+    .dek {
+      margin: 0 0 0.5rem;
+      max-width: 36rem;
+      font-family: var(--display);
+      font-size: 0.92rem;
+      font-weight: 500;
+      line-height: 1.36;
+    }
+
+    .drop {
+      float: left;
+      font-family: var(--display);
+      font-style: italic;
+      font-weight: 700;
+      font-size: 3.55rem;
+      line-height: 0.72;
+      padding: 0.12em 0.1em 0 0;
+      color: var(--vermillion);
+    }
+
+    .clip-wrap {
+      position: relative;
+      flex: 0 1 152px;
+      min-height: 108px;
+      margin: 0 0 0.48rem;
+    }
+
+    .clipping {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      background: var(--clip);
+      padding: 7px 7px 0;
+      box-shadow:
+        1px 1px 0 rgba(28, 20, 16, 0.08),
+        3px 4px 0 rgba(28, 20, 16, 0.08);
+      transform: rotate(-0.35deg);
+    }
+
+    .plate {
+      position: relative;
+      flex: 1 1 auto;
+      min-height: 96px;
+      overflow: hidden;
+      background: #1c1410;
+    }
+
+    .plate .g {
+      position: absolute;
+      pointer-events: none;
+    }
+
+    .plate[data-mood="iris"] { background: #16110e; }
+    .plate[data-mood="iris"] .g1 {
+      inset: -18%;
+      background:
+        radial-gradient(circle at 48% 46%, transparent 12%, #1c1410 13% 18%, transparent 19%),
+        radial-gradient(circle at 48% 46%, transparent 26%, #245c45 27% 29%, transparent 30%),
+        radial-gradient(circle at 48% 46%, transparent 40%, #c4281c 41% 42.5%, transparent 43.5%),
+        radial-gradient(ellipse at 30% 60%, rgba(36, 92, 69, 0.55), transparent 42%);
+    }
+    .plate[data-mood="iris"] .g2 {
+      width: 38%;
+      height: 22%;
+      left: 8%;
+      bottom: 18%;
+      background: #3a322c;
+      box-shadow: 22px -28px 0 -6px #245c45;
+    }
+    .plate[data-mood="iris"] .g3 {
+      width: 14px;
+      height: 14px;
+      right: 16%;
+      top: 18%;
+      border-radius: 50%;
+      background: var(--vermillion);
+      box-shadow: 0 0 0 6px rgba(196, 40, 28, 0.22);
+    }
+    .plate[data-mood="iris"] .g4 {
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 18%;
+      background: linear-gradient(#245c45, #1c1410);
+    }
+    .plate[data-mood="iris"] .g5 {
+      width: 46%;
+      height: 7px;
+      left: 27%;
+      top: 44%;
+      background: color-mix(in srgb, var(--paper) 55%, transparent);
+      transform: rotate(-8deg);
+    }
+
+    .plate[data-mood="aurora"] .g1 {
+      inset: 0;
+      background:
+        linear-gradient(180deg, #0f1c18, #245c45 38%, #1c1410 62%, #3a1a14);
+    }
+    .plate[data-mood="aurora"] .g2 {
+      left: -10%;
+      right: -10%;
+      top: 18%;
+      height: 36%;
+      background: radial-gradient(ellipse at 50% 0, rgba(196, 40, 28, 0.45), transparent 70%);
+      transform: rotate(-6deg);
+    }
+    .plate[data-mood="aurora"] .g3 {
+      left: 10%;
+      right: 8%;
+      top: 28%;
+      height: 22%;
+      background: radial-gradient(ellipse at 40% 80%, rgba(243, 230, 201, 0.28), transparent 70%);
+    }
+    .plate[data-mood="aurora"] .g4 {
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 28%;
+      background: repeating-linear-gradient(90deg, #1c1410 0 18px, #24352c 18px 20px);
+      opacity: 0.55;
+    }
+    .plate[data-mood="aurora"] .g5 { display: none; }
+
+    .plate[data-mood="chevron"] .g1 {
+      inset: 0;
+      background:
+        repeating-linear-gradient(135deg, #1c1410 0 18px, #245c45 18px 22px, #1c1410 22px 40px);
+    }
+    .plate[data-mood="chevron"] .g2 {
+      inset: 18%;
+      background: var(--vermillion);
+      clip-path: polygon(0 50%, 55% 0, 100% 0, 45% 50%, 100% 100%, 55% 100%);
+      opacity: 0.88;
+    }
+    .plate[data-mood="chevron"] .g3,
+    .plate[data-mood="chevron"] .g4,
+    .plate[data-mood="chevron"] .g5 { display: none; }
+
+    .plate[data-mood="window"] .g1 {
+      inset: 0;
+      background: linear-gradient(#2a221c, #1c1410);
+    }
+    .plate[data-mood="window"] .g2,
+    .plate[data-mood="window"] .g3 {
+      top: 12%;
+      width: 28%;
+      height: 68%;
+      background: #245c45;
+      border-radius: 40% 40% 4px 4px;
+    }
+    .plate[data-mood="window"] .g2 { left: 14%; }
+    .plate[data-mood="window"] .g3 { right: 14%; background: #3d2a22; box-shadow: inset 0 18px 0 var(--vermillion); }
+    .plate[data-mood="window"] .g4 {
+      left: 8%;
+      right: 8%;
+      bottom: 10%;
+      height: 10%;
+      background: var(--paper);
+      opacity: 0.35;
+    }
+    .plate[data-mood="window"] .g5 { display: none; }
+
+    .plate[data-mood="burst"] .g1 {
+      inset: -30%;
+      background: conic-gradient(from 18deg, #1c1410, #245c45, #1c1410, #c4281c, #1c1410, #e7d5a8, #1c1410);
+      opacity: 0.9;
+    }
+    .plate[data-mood="burst"] .g2 {
+      inset: 28%;
+      border-radius: 50%;
+      background: #1c1410;
+      box-shadow: 0 0 0 4px var(--paper);
+    }
+    .plate[data-mood="burst"] .g3,
+    .plate[data-mood="burst"] .g4,
+    .plate[data-mood="burst"] .g5 { display: none; }
+
+    .plate[data-mood="stripe"] .g1 {
+      inset: 0;
+      background: repeating-linear-gradient(90deg, #1c1410 0 11%, #245c45 11% 14%, #1c1410 14% 22%, #c4281c 22% 24%);
+    }
+    .plate[data-mood="stripe"] .g2 {
+      left: 18%;
+      top: 20%;
+      width: 64%;
+      height: 58%;
+      background: rgba(250, 246, 235, 0.12);
+      border: 1px solid rgba(243, 230, 201, 0.35);
+    }
+    .plate[data-mood="stripe"] .g3,
+    .plate[data-mood="stripe"] .g4,
+    .plate[data-mood="stripe"] .g5 { display: none; }
+
+    .plate[data-mood="wire"] .g1 {
+      inset: 0;
+      background:
+        radial-gradient(circle at 50% 50%, #c4281c 0 6%, transparent 7%),
+        repeating-radial-gradient(circle at 50% 50%, transparent 0 10px, rgba(243, 230, 201, 0.18) 11px 12px),
+        #1c1410;
+    }
+    .plate[data-mood="wire"] .g2 {
+      left: 0;
+      right: 0;
+      top: 46%;
+      height: 1px;
+      background: var(--paper);
+      opacity: 0.35;
+    }
+    .plate[data-mood="wire"] .g3 {
+      top: 0;
+      bottom: 0;
+      left: 50%;
+      width: 1px;
+      background: var(--paper);
+      opacity: 0.35;
+    }
+    .plate[data-mood="wire"] .g4,
+    .plate[data-mood="wire"] .g5 { display: none; }
+
+    .clipping figcaption {
+      margin: 0;
+      padding: 0.32rem 0.15rem 0.4rem;
+      font-size: 0.62rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--ink-soft);
+    }
+
+    .stamp {
+      position: absolute;
+      right: -10px;
+      top: -16px;
+      z-index: 3;
+      width: 86px;
+      height: 86px;
+      display: grid;
+      place-items: center;
+      border: 3px solid var(--vermillion);
+      border-radius: 50%;
+      color: var(--vermillion);
+      background: radial-gradient(circle, rgba(243, 230, 201, 0.2), transparent 68%);
+      transform: rotate(-13deg);
+      mix-blend-mode: multiply;
+      filter: url("#ink");
+      animation: stamp-press 0.55s ease-out both;
+    }
+
+    .stamp::before {
+      content: "";
+      position: absolute;
+      inset: 6px;
+      border: 1px solid var(--vermillion);
+      border-radius: 50%;
+      opacity: 0.75;
+    }
+
+    .stamp span {
+      font-size: 0.68rem;
+      font-weight: 800;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      text-align: center;
+      line-height: 1.05;
+    }
+
+    @keyframes stamp-press {
+      from { opacity: 0; transform: rotate(-13deg) scale(1.35); }
+      to { opacity: 0.92; transform: rotate(-13deg) scale(1); }
+    }
+
+    .issue-row {
+      display: grid;
+      grid-template-columns: 7.6rem 1fr;
+      gap: 0.85rem;
+      align-items: start;
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+
+    .coupon {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 0.15rem;
+      padding: 0.55rem 0.5rem 0.5rem;
+      background: var(--clip);
+      border: 1.5px dashed var(--vermillion);
+      color: var(--vermillion);
+      text-align: center;
+      box-shadow: 2px 2px 0 var(--paper-deep);
+    }
+
+    .coupon small {
+      font-size: 0.52rem;
+      font-weight: 800;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+    }
+
+    .coupon strong {
+      font-family: var(--display);
+      font-size: 0.82rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .coupon em {
+      font-family: var(--ui);
+      font-style: normal;
+      font-size: 0.58rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      color: var(--ink-soft);
+    }
+
+    .coupon[data-issued="true"] {
+      color: var(--forest);
+      border-color: var(--forest);
+    }
+
+    .contents {
+      min-height: 0;
+      overflow: auto;
+      scrollbar-width: thin;
+      scrollbar-color: var(--hairline) transparent;
+    }
+
+    .contents h2,
+    .dir-head h2 {
+      margin: 0 0 0.35rem;
+      font-family: var(--display);
+      font-style: italic;
+      font-weight: 600;
+      font-size: 1.15rem;
+      letter-spacing: 0;
+      text-transform: none;
+    }
+
+    .contents ol {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .contents li {
+      display: grid;
+      grid-template-columns: 2.7rem minmax(0, 1fr) auto;
+      align-items: baseline;
+      gap: 0.35rem;
+      padding: 0.18rem 0;
+      border-bottom: 1px dotted var(--hairline);
+      font-size: 0.8rem;
+    }
+
+    .contents time {
+      color: var(--vermillion);
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .contents .title {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .now-mark {
+      font-size: 0.58rem;
+      font-weight: 800;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--vermillion);
+    }
+
+    .colophon {
+      position: relative;
+      z-index: 4;
+      flex: 0 0 auto;
+      margin-top: 0.45rem;
+      padding-top: 0.35rem;
+      border-top: 1px solid var(--hairline);
+      display: flex;
+      justify-content: space-between;
+      gap: 0.75rem;
+      align-items: baseline;
+    }
+
+    .colophon p {
+      margin: 0;
+      font-size: 0.62rem;
+      line-height: 1.35;
+      color: var(--ink-soft);
+      max-width: 28rem;
+    }
+
+    .colophon button {
+      background: none;
+      border: none;
+      border-bottom: 1px solid var(--ink);
+      border-radius: 0;
+      padding: 0 0 1px;
+      font-size: 0.62rem;
+      font-weight: 800;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .dir-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 1rem;
+      margin-bottom: 0.15rem;
+    }
+
+    .dir-head p {
+      margin: 0;
+      font-size: 0.62rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--ink-soft);
+    }
+
+    .dept {
+      display: flex;
+      margin: 0.2rem 0 0.7rem;
+      border-top: 2px solid var(--ink);
+      border-bottom: 1px solid var(--ink);
+    }
+
+    .dept button {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.05rem;
+      margin: 0;
+      padding: 0.42rem 0.15rem 0.38rem;
+      background: transparent;
+      border: none;
+      border-right: 1px solid var(--hairline);
+      border-radius: 0;
+    }
+
+    .dept button:last-child { border-right: none; }
+
+    .dept-name {
+      font-size: 0.58rem;
+      font-weight: 800;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+    }
+
+    .dept-count {
+      font-family: var(--display);
+      font-size: 1.02rem;
+      font-weight: 600;
+      font-variant-numeric: lining-nums;
+    }
+
+    .dept button[aria-pressed="true"] {
+      color: var(--vermillion);
+    }
+
+    .directory-body {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+      scrollbar-width: thin;
+      scrollbar-color: var(--hairline) transparent;
+    }
+
+    .listings {
+      columns: 2;
+      column-gap: 1.6rem;
+      column-rule: 1px solid var(--hairline);
+    }
+
+    .listing {
+      display: block;
+      width: 100%;
+      break-inside: avoid;
+      margin: 0 0 0.15rem;
+      padding: 0.48rem 0.55rem 0.5rem 0.7rem;
+      background: transparent;
+      border: none;
+      border-bottom: 1px dotted var(--hairline);
+      border-radius: 0;
+      text-align: left;
+      box-shadow: inset 3px 0 0 transparent;
+      transition: box-shadow 0.16s ease, background 0.16s ease;
+    }
+
+    .listing:hover {
+      box-shadow: inset 3px 0 0 var(--vermillion);
+      background: color-mix(in srgb, var(--vermillion) 5%, transparent);
+    }
+
+    .listing[aria-current="true"] {
+      background: color-mix(in srgb, var(--paper-deep) 70%, var(--paper));
+      box-shadow: inset 3px 0 0 var(--ink);
+    }
+
+    .listing-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 0.5rem;
+    }
+
+    .ch-name {
+      font-size: 0.66rem;
+      font-weight: 800;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    .ch-time {
+      color: var(--vermillion);
+      font-size: 0.72rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .ch-now {
+      margin: 0.12rem 0 0;
+      font-size: 0.92rem;
+      font-weight: 600;
+      line-height: 1.2;
+    }
+
+    .ch-next {
+      margin: 0.08rem 0 0;
+      font-size: 0.72rem;
+      color: var(--ink-soft);
+    }
+
+    .featured-mark {
+      display: none;
+      margin-top: 0.18rem;
+      font-size: 0.58rem;
+      font-weight: 800;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--vermillion);
+    }
+
+    .listing[aria-current="true"] .featured-mark { display: block; }
+
+    .search-cols {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0 1.6rem;
+    }
+
+    .search-cols section {
+      min-width: 0;
+      padding-top: 0.1rem;
+    }
+
+    .search-cols h3 {
+      margin: 0 0 0.4rem;
+      padding-bottom: 0.2rem;
+      border-bottom: 1px solid var(--ink);
+      font-size: 0.62rem;
+      font-weight: 800;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+    }
+
+    .search-cols .listings {
+      columns: 1;
+      column-rule: none;
+    }
+
+    .empty-sheet {
+      margin: 1.2rem 0 0;
+      max-width: 22rem;
+      font-family: var(--display);
+      font-style: italic;
+      font-size: 1.15rem;
+      line-height: 1.35;
+    }
+
+    .folio {
+      flex: 0 0 auto;
+      display: flex;
+      justify-content: space-between;
+      margin-top: 0.35rem;
+      padding-top: 0.25rem;
+      font-size: 0.58rem;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--ink-soft);
+    }
+
+    dialog {
+      width: min(36rem, calc(100vw - 3rem));
+      padding: 0;
+      border: none;
+      background: transparent;
+    }
+
+    dialog::backdrop {
+      background: rgb(28 20 16 / 0.42);
+    }
+
+    .note {
+      background: var(--paper);
+      padding: 1.4rem 1.5rem 1.2rem;
+      border: 1px solid var(--ink);
+      box-shadow: 6px 8px 0 rgba(28, 20, 16, 0.12);
+      position: relative;
+    }
+
+    .note::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.14;
+      mix-blend-mode: multiply;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    }
+
+    .note header { position: relative; }
+
+    .note .kicker { margin-bottom: 0.25rem; }
+
+    .note h2 {
+      margin: 0 0 0.85rem;
+      font-family: var(--display);
+      font-style: italic;
+      font-size: 1.85rem;
+      font-weight: 600;
+      line-height: 1.05;
+    }
+
+    .imprint {
+      position: relative;
+      display: grid;
+      gap: 0.85rem;
+      margin: 0 0 1rem;
+    }
+
+    .imprint article {
+      padding-bottom: 0.7rem;
+      border-bottom: 1px dotted var(--hairline);
+    }
+
+    .imprint h3 {
+      margin: 0 0 0.2rem;
+      font-size: 0.62rem;
+      font-weight: 800;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+    }
+
+    .imprint p {
+      margin: 0;
+      font-size: 0.9rem;
+      line-height: 1.4;
+    }
+
+    .imprint .issn {
+      font-family: var(--display);
+      font-style: italic;
+    }
+
+    .note-actions {
+      position: relative;
+      display: flex;
+      justify-content: flex-end;
+    }
+
+    .note-actions button {
+      background: none;
+      border: none;
+      border-bottom: 1px solid var(--ink);
+      padding: 0 0 2px;
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    .sr {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    .filters {
+      position: absolute;
+      width: 0;
+      height: 0;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <svg class="filters" aria-hidden="true" focusable="false">
+    <filter id="ink">
+      <feTurbulence type="fractalNoise" baseFrequency="1.1" numOctaves="2" result="n" />
+      <feDisplacementMap in="SourceGraphic" in2="n" scale="1.6" />
+    </filter>
+  </svg>
+
+  <div class="desk">
+    <div class="spread">
+      <span class="crop crop-tl"></span>
+      <span class="crop crop-tr"></span>
+      <span class="crop crop-bl"></span>
+      <span class="crop crop-br"></span>
+
+      <header class="masthead">
+        <div class="mast-top">
+          <p class="folio-meta">Vol. IV · No. 36 · Helsinki</p>
+          <h1 class="wordmark">Sparrow</h1>
+          <p class="mast-fresh">Updated 2 minutes past</p>
+        </div>
+        <div class="nameplate-rule"></div>
+        <div class="mast-kicker">
+          <p>The Television Paper · Evening edition · <span>Tuesday 1 September</span></p>
+          <div class="price">
+            <span class="live-dot" aria-hidden="true"></span>
+            Live · <time id="edition-time" datetime="2026-09-01T21:18">21:18</time>
+          </div>
+        </div>
+      </header>
+
+      <div class="classifieds">
+        <span class="classifieds-label">Classifieds</span>
+        <label class="seek">
+          <span class="sr">Seek a programme</span>
+          <input id="seek" type="search" placeholder="Seek a programme…" autocomplete="off" spellcheck="false" />
+        </label>
+        <span class="boxno">Box No. 4</span>
+      </div>
+
+      <div class="pages">
+        <article class="page page-left" aria-labelledby="headline">
+          <p class="kicker" id="feature-kicker">Cover story · Now on the air</p>
+          <h2 class="headline" id="headline">A-studio</h2>
+          <p class="byline" id="byline">Yle TV1 HD · Finland</p>
+          <p class="dek" id="dek"><span class="drop">T</span>onight the studio in Pasila keeps the nation at the table: ministers, unfinished business, and the hour that still goes out live.</p>
+
+          <div class="clip-wrap">
+            <figure class="clipping">
+              <div class="plate" id="plate" data-mood="iris">
+                <div class="g g1"></div>
+                <div class="g g2"></div>
+                <div class="g g3"></div>
+                <div class="g g4"></div>
+                <div class="g g5"></div>
+              </div>
+              <figcaption id="plate-caption">Ink wash · Studio 1, Pasila</figcaption>
+            </figure>
+            <div class="stamp" aria-hidden="true"><span>On<br />Air</span></div>
+          </div>
+
+          <div class="issue-row">
+            <button class="coupon" id="coupon" type="button">
+              <small>✂ Clip and keep</small>
+              <strong>Watch now</strong>
+              <em>Evening pass · not for sale</em>
+            </button>
+            <div class="contents">
+              <h2>Tonight’s contents</h2>
+              <ol id="schedule"></ol>
+            </div>
+          </div>
+
+          <footer class="colophon">
+            <p>
+              Printed from the M3U Source, ISSN 2841-0001 · XMLTV forme at 192.168.1.42 ·
+              Last impression 2 minutes past; EPG twelve.
+            </p>
+            <button type="button" id="open-colophon">Publisher’s note</button>
+          </footer>
+        </article>
+
+        <div class="gutter" aria-hidden="true"></div>
+
+        <section class="page page-right" aria-labelledby="dir-title">
+          <div class="dir-head">
+            <h2 id="dir-title">Channel directory</h2>
+            <p id="dir-sub">Evening sheet, set for Finland</p>
+          </div>
+
+          <nav class="dept" id="dept" aria-label="Channel groups"></nav>
+
+          <div class="directory-body" id="directory-body"></div>
+
+          <p class="folio">
+            <span>The Television Paper</span>
+            <span>1 September 2026 · Page 2</span>
+          </p>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <dialog id="colophon-dialog" aria-labelledby="note-title">
+    <div class="note">
+      <header>
+        <p class="kicker">Publisher’s note</p>
+        <h2 id="note-title">From the compositor’s desk</h2>
+      </header>
+      <div class="imprint">
+        <article>
+          <h3>House</h3>
+          <p>Private edition, set on the premises at <span class="issn">192.168.1.42</span>. Not for the newsstand. The Channel Catalog is composed from the Source Configuration kept in this house.</p>
+        </article>
+        <article>
+          <h3>M3U Source</h3>
+          <p><span class="issn">ISSN 2841-0001</span> — the playlist from which Channels and Channel Groups are derived. Live impression; last pulled <strong>2 minutes past</strong>.</p>
+        </article>
+        <article>
+          <h3>EPG Source</h3>
+          <p><span class="issn">XMLTV forme 12</span> — schedule copy supplied to the printer. Last pulled <strong>12 minutes past</strong>.</p>
+        </article>
+      </div>
+      <div class="note-actions">
+        <button type="button" id="close-colophon">Return to the paper</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script>
+    const GROUPS = [
+      { id: "all", label: "All", count: "2,841" },
+      { id: "finland", label: "Finland", count: "86" },
+      { id: "news", label: "News", count: "120" },
+      { id: "sports", label: "Sport", count: "64" },
+      { id: "anime", label: "Anime", count: "41" },
+      { id: "4k", label: "4K", count: "12" },
+    ];
+
+    const CHANNELS = [
+      {
+        id: "hero",
+        name: "Hero HD FI",
+        sheet: "finland",
+        groups: ["finland", "4k"],
+        byline: "Hero HD FI · Finland",
+        caption: "Ink wash · Engine house, Chicago",
+        mood: "stripe",
+        dek: "On the wet tarmac the engine house returns to Hero: shouted orders, a long red truck, and an hour already in progress.",
+        now: { title: "Chicago Fire", start: "20:55", end: "21:50" },
+        next: { title: "Chicago P.D.", start: "21:50" },
+        schedule: [
+          { time: "20:00", title: "Law & Order" },
+          { time: "20:55", title: "Chicago Fire", now: true },
+          { time: "21:50", title: "Chicago P.D." },
+          { time: "22:40", title: "Chicago Med" },
+          { time: "23:30", title: "Elokuva: Night Run" },
+        ],
+      },
+      {
+        id: "jim",
+        name: "JIM HD FI",
+        sheet: "finland",
+        groups: ["finland", "sports"],
+        byline: "JIM HD FI · Finland",
+        caption: "Ink wash · The last crusade",
+        mood: "chevron",
+        dek: "Arman walks another last crusade. JIM prints the miles, the dust, and the argument that follows him home.",
+        now: { title: "Arman ja viimeinen ristiretki", start: "21:00", end: "21:45" },
+        next: { title: "Gordon Ramsay", start: "21:45" },
+        schedule: [
+          { time: "20:00", title: "Kultakuume" },
+          { time: "20:30", title: "Käytettyä parempi" },
+          { time: "21:00", title: "Arman ja viimeinen ristiretki", now: true },
+          { time: "21:45", title: "Gordon Ramsay" },
+          { time: "22:35", title: "JIM D: Moottorit" },
+        ],
+      },
+      {
+        id: "ava",
+        name: "MTV Ava HD FI",
+        sheet: "finland",
+        groups: ["finland"],
+        byline: "MTV Ava HD FI · Finland",
+        caption: "Ink wash · The village, evening",
+        mood: "window",
+        dek: "Emmerdale keeps its secrets in the usual order. Ava sets them in two columns and a commercial break.",
+        now: { title: "Emmerdale", start: "21:00", end: "21:30" },
+        next: { title: "Salatut elämät", start: "21:30" },
+        schedule: [
+          { time: "20:00", title: "Emmerdale" },
+          { time: "20:30", title: "Kauniit ja rohkeat" },
+          { time: "21:00", title: "Emmerdale", now: true },
+          { time: "21:30", title: "Salatut elämät" },
+          { time: "22:00", title: "Murdoch Mysteries" },
+        ],
+      },
+      {
+        id: "mtv3",
+        name: "MTV3 HD FI",
+        sheet: "finland",
+        groups: ["finland", "news", "4k"],
+        byline: "MTV3 HD FI · Finland",
+        caption: "Ink wash · The ten o’clock desk",
+        mood: "iris",
+        dek: "Kymmenen uutiset accounts for the republic at the usual hour: headlines first, weather after, the country set in type.",
+        now: { title: "Kymmenen uutiset", start: "21:00", end: "21:25" },
+        next: { title: "Rikospaikka", start: "21:25" },
+        schedule: [
+          { time: "20:00", title: "Tulosruutu" },
+          { time: "20:30", title: "Salatut elämät" },
+          { time: "21:00", title: "Kymmenen uutiset", now: true },
+          { time: "21:25", title: "Rikospaikka" },
+          { time: "22:00", title: "Kolmosen document" },
+        ],
+      },
+      {
+        id: "nelonen",
+        name: "Nelonen HD FI",
+        sheet: "finland",
+        groups: ["finland", "4k"],
+        byline: "Nelonen HD FI · Finland",
+        caption: "Ink wash · Four chairs",
+        mood: "burst",
+        dek: "Four chairs, one republic of voices. Nelonen gives the evening to the blind auditions and the long red notes.",
+        now: { title: "The Voice of Finland", start: "20:00", end: "22:00" },
+        next: { title: "Nelonen uutiset", start: "22:00" },
+        schedule: [
+          { time: "19:00", title: "The Voice of Finland" },
+          { time: "20:00", title: "The Voice of Finland", now: true },
+          { time: "22:00", title: "Nelonen uutiset" },
+          { time: "22:20", title: "Late Night" },
+          { time: "23:00", title: "Elokuva" },
+        ],
+      },
+      {
+        id: "sub",
+        name: "Sub HD FI",
+        sheet: "finland",
+        groups: ["finland"],
+        byline: "Sub HD FI · Finland",
+        caption: "Ink wash · The yellow house",
+        mood: "burst",
+        dek: "Springfield again, filed under tonight’s lighter matter. Sub keeps the yellow house in the second column.",
+        now: { title: "Simpsonit", start: "21:00", end: "21:25" },
+        next: { title: "Family Guy", start: "21:25" },
+        schedule: [
+          { time: "20:00", title: "Simpsonit" },
+          { time: "20:30", title: "Simpsonit" },
+          { time: "21:00", title: "Simpsonit", now: true },
+          { time: "21:25", title: "Family Guy" },
+          { time: "21:50", title: "American Dad!" },
+        ],
+      },
+      {
+        id: "yle-tv1",
+        name: "Yle TV1 HD",
+        sheet: "finland",
+        groups: ["finland", "news", "4k"],
+        tags: ["news"],
+        byline: "Yle TV1 HD · Finland",
+        caption: "Ink wash · Studio 1, Pasila",
+        mood: "iris",
+        dek: "Tonight the studio in Pasila keeps the nation at the table: ministers, unfinished business, and the hour that still goes out live.",
+        now: { title: "A-studio", start: "21:00", end: "21:45" },
+        next: { title: "Oddasat", start: "21:45" },
+        schedule: [
+          { time: "20:00", title: "Yle Uutiset", tags: ["news"] },
+          { time: "20:30", title: "Puoli seitsemän" },
+          { time: "21:00", title: "A-studio", now: true, tags: ["news"] },
+          { time: "21:45", title: "Oddasat" },
+          { time: "22:00", title: "Yle Uutiset", tags: ["news"] },
+          { time: "22:25", title: "Novosti Yle" },
+          { time: "22:30", title: "Document: Arctic Light" },
+        ],
+      },
+      {
+        id: "yle-tv2",
+        name: "Yle TV2 HD",
+        sheet: "finland",
+        groups: ["finland", "sports"],
+        byline: "Yle TV2 HD · Finland",
+        caption: "Ink wash · The running",
+        mood: "chevron",
+        dek: "Urheiluruutu sets the day’s running in the old order: result, then replay, then the quiet after the whistle.",
+        now: { title: "Urheiluruutu", start: "21:00", end: "21:15" },
+        next: { title: "Akuutti", start: "21:15" },
+        schedule: [
+          { time: "20:00", title: "Satuhäät" },
+          { time: "20:30", title: "Sohvasurffaajat" },
+          { time: "21:00", title: "Urheiluruutu", now: true },
+          { time: "21:15", title: "Akuutti" },
+          { time: "21:45", title: "Document: Home Ice" },
+        ],
+      },
+      {
+        id: "teema",
+        name: "Yle Teema Fem HD",
+        sheet: "finland",
+        groups: ["finland"],
+        byline: "Yle Teema Fem HD · Finland",
+        caption: "Ink wash · Manuscript paper",
+        mood: "aurora",
+        dek: "Manuscript paper, a forest of strings, a long fade into Fem: an hour for the national composer, set without hurry.",
+        now: { title: "Dokumentti: Sibelius", start: "21:00", end: "21:55" },
+        next: { title: "Konst", start: "21:55" },
+        schedule: [
+          { time: "20:00", title: "Historia: 1918" },
+          { time: "20:45", title: "Teema: prelude" },
+          { time: "21:00", title: "Dokumentti: Sibelius", now: true },
+          { time: "21:55", title: "Konst" },
+          { time: "22:40", title: "Fem: Nytt" },
+        ],
+      },
+      {
+        id: "kutonen",
+        name: "Kutonen HD FI",
+        sheet: "finland",
+        groups: ["finland", "sports"],
+        byline: "Kutonen HD FI · Finland",
+        caption: "Ink wash · Track and wreckage",
+        mood: "chevron",
+        dek: "Petrol, three men, the usual wreckage. Kutonen prints motoring as entertainment, not advice.",
+        now: { title: "Top Gear", start: "20:50", end: "21:45" },
+        next: { title: "Wheeler Dealers", start: "21:45" },
+        schedule: [
+          { time: "20:00", title: "Wheeler Dealers" },
+          { time: "20:50", title: "Top Gear", now: true },
+          { time: "21:45", title: "Wheeler Dealers" },
+          { time: "22:35", title: "Storage Wars" },
+          { time: "23:00", title: "Cops" },
+        ],
+      },
+      {
+        id: "frii",
+        name: "Frii HD FI",
+        sheet: "finland",
+        groups: ["finland"],
+        byline: "Frii HD FI · Finland",
+        caption: "Ink wash · Night shift",
+        mood: "window",
+        dek: "Seattle Grace keeps its night shift. Frii files another hour of hands, corridors, and unfinished sentences.",
+        now: { title: "Greyn anatomia", start: "21:00", end: "21:50" },
+        next: { title: "Private Practice", start: "21:50" },
+        schedule: [
+          { time: "20:00", title: "Greyn anatomia" },
+          { time: "21:00", title: "Greyn anatomia", now: true },
+          { time: "21:50", title: "Private Practice" },
+          { time: "22:40", title: "Station 19" },
+          { time: "23:30", title: "Frii: rerun" },
+        ],
+      },
+      {
+        id: "tlc",
+        name: "TLC HD FI",
+        sheet: "finland",
+        groups: ["finland"],
+        byline: "TLC HD FI · Finland",
+        caption: "Ink wash · Airports, a countdown",
+        mood: "stripe",
+        dek: "Love, airports, and a countdown already printed in the margin. TLC keeps the serial where the serial lives.",
+        now: { title: "90 Day Fiancé", start: "21:00", end: "22:00" },
+        next: { title: "Cake Boss", start: "22:00" },
+        schedule: [
+          { time: "20:00", title: "90 Day Fiancé" },
+          { time: "21:00", title: "90 Day Fiancé", now: true },
+          { time: "22:00", title: "Cake Boss" },
+          { time: "22:45", title: "Say Yes to the Dress" },
+          { time: "23:15", title: "TLC: late" },
+        ],
+      },
+      {
+        id: "cnn",
+        name: "CNN International",
+        sheet: "wire",
+        groups: ["news"],
+        tags: ["news"],
+        byline: "CNN International · World desk",
+        caption: "Ink wash · The American hour",
+        mood: "wire",
+        dek: "Rolling copy, stacked chyrons, a world still being set in type. The wire service of the American hour.",
+        now: { title: "CNN Newsroom", start: "21:00", end: "22:00" },
+        next: { title: "The Lead", start: "22:00" },
+        schedule: [
+          { time: "21:00", title: "CNN Newsroom", now: true, tags: ["news"] },
+          { time: "22:00", title: "The Lead" },
+          { time: "22:30", title: "World Sport" },
+          { time: "23:00", title: "CNN Tonight" },
+        ],
+      },
+      {
+        id: "bbc",
+        name: "BBC World News",
+        sheet: "wire",
+        groups: ["news"],
+        tags: ["news"],
+        byline: "BBC World News · London",
+        caption: "Ink wash · Broadcasting House",
+        mood: "wire",
+        dek: "From London, the world in measured sentences. BBC World News keeps the same clock as this paper.",
+        now: { title: "BBC World News", start: "21:00", end: "21:30" },
+        next: { title: "HARDtalk", start: "21:30" },
+        schedule: [
+          { time: "21:00", title: "BBC World News", now: true, tags: ["news"] },
+          { time: "21:30", title: "HARDtalk" },
+          { time: "22:00", title: "GMT" },
+          { time: "22:30", title: "World Business Report" },
+        ],
+      },
+    ];
+
+    const state = {
+      group: "all",
+      selected: "yle-tv1",
+      query: "",
+      issued: false,
+    };
+
+    const els = {
+      seek: document.getElementById("seek"),
+      headline: document.getElementById("headline"),
+      byline: document.getElementById("byline"),
+      dek: document.getElementById("dek"),
+      kicker: document.getElementById("feature-kicker"),
+      plate: document.getElementById("plate"),
+      caption: document.getElementById("plate-caption"),
+      schedule: document.getElementById("schedule"),
+      coupon: document.getElementById("coupon"),
+      dept: document.getElementById("dept"),
+      dirTitle: document.getElementById("dir-title"),
+      dirSub: document.getElementById("dir-sub"),
+      body: document.getElementById("directory-body"),
+      time: document.getElementById("edition-time"),
+      dialog: document.getElementById("colophon-dialog"),
+      openNote: document.getElementById("open-colophon"),
+      closeNote: document.getElementById("close-colophon"),
+    };
+
+    function channelById(id) {
+      return CHANNELS.find((c) => c.id === id);
+    }
+
+    function inGroup(ch, group) {
+      if (group === "all") return ch.sheet === "finland";
+      if (group === "finland") return ch.groups.includes("finland");
+      if (group === "news") return ch.groups.includes("news");
+      if (group === "sports") return ch.groups.includes("sports");
+      if (group === "anime") return ch.groups.includes("anime");
+      if (group === "4k") return ch.groups.includes("4k");
+      return false;
+    }
+
+    function hay(ch) {
+      return [ch.name, ch.now.title, ch.next.title, ...(ch.tags || [])]
+        .join(" ")
+        .toLowerCase();
+    }
+
+    function matchesQuery(ch, q) {
+      if (!q) return true;
+      return hay(ch).includes(q);
+    }
+
+    function programmeHits(q) {
+      if (!q) return [];
+      const hits = [];
+      const seen = new Set();
+      for (const ch of CHANNELS) {
+        for (const slot of ch.schedule) {
+          const blob = `${slot.title} ${(slot.tags || []).join(" ")}`.toLowerCase();
+          if (!blob.includes(q)) continue;
+          if (slot.title.toLowerCase() === ch.name.toLowerCase()) continue;
+          const key = `${ch.id}:${slot.title}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          hits.push({ channel: ch, slot });
+        }
+      }
+      return hits;
+    }
+
+    function listingButton(ch, extra = "") {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "listing";
+      btn.dataset.id = ch.id;
+      btn.setAttribute("aria-current", ch.id === state.selected ? "true" : "false");
+      btn.innerHTML =
+        `<div class="listing-top"><span class="ch-name"></span><span class="ch-time"></span></div>` +
+        `<p class="ch-now"></p><p class="ch-next"></p>` +
+        (extra ? `<p class="ch-next extra"></p>` : "") +
+        `<p class="featured-mark">Featured · page 1</p>`;
+      btn.querySelector(".ch-name").textContent = ch.name;
+      btn.querySelector(".ch-time").textContent = ch.now.start;
+      btn.querySelector(".ch-now").textContent = ch.now.title;
+      btn.querySelector(".ch-next").textContent = `then ${ch.next.title} · ${ch.next.start}`;
+      if (extra) btn.querySelector(".extra").textContent = extra;
+      return btn;
+    }
+
+    function renderSchedule(ch) {
+      els.schedule.replaceChildren();
+      for (const slot of ch.schedule) {
+        const li = document.createElement("li");
+        const time = document.createElement("time");
+        time.textContent = slot.time;
+        const title = document.createElement("span");
+        title.className = "title";
+        title.textContent = slot.title;
+        const mark = document.createElement("span");
+        if (slot.now) {
+          mark.className = "now-mark";
+          mark.textContent = "Now";
+        }
+        li.append(time, title, mark);
+        els.schedule.append(li);
+      }
+    }
+
+    function renderFeature(ch) {
+      els.headline.textContent = ch.now.title;
+      els.byline.textContent = ch.byline;
+      els.caption.textContent = ch.caption;
+      els.plate.dataset.mood = ch.mood;
+      els.kicker.textContent = ch.id === "yle-tv1" ? "Cover story · Now on the air" : "Now on the air · From the sheet";
+      const letter = ch.dek.trim().charAt(0);
+      const rest = ch.dek.trim().slice(1);
+      els.dek.replaceChildren();
+      const drop = document.createElement("span");
+      drop.className = "drop";
+      drop.textContent = letter;
+      els.dek.append(drop, document.createTextNode(rest));
+      renderSchedule(ch);
+      if (state.issued) {
+        els.coupon.dataset.issued = "true";
+        els.coupon.querySelector("strong").textContent = "Issued";
+        els.coupon.querySelector("em").textContent = `Now with ${ch.name}`;
+      } else {
+        els.coupon.dataset.issued = "false";
+        els.coupon.querySelector("strong").textContent = "Watch now";
+        els.coupon.querySelector("em").textContent = "Evening pass · not for sale";
+      }
+    }
+
+    function renderDept() {
+      els.dept.replaceChildren();
+      for (const g of GROUPS) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.dataset.group = g.id;
+        btn.setAttribute("aria-pressed", g.id === state.group && !state.query ? "true" : "false");
+        const name = document.createElement("span");
+        name.className = "dept-name";
+        name.textContent = g.label;
+        const count = document.createElement("span");
+        count.className = "dept-count";
+        count.textContent = g.count;
+        btn.append(name, count);
+        els.dept.append(btn);
+      }
+    }
+
+    function renderDirectory() {
+      const q = state.query.trim().toLowerCase();
+      els.body.replaceChildren();
+
+      if (q) {
+        els.dirTitle.textContent = "Search edition";
+        els.dirSub.textContent = `Notices matching “${state.query.trim()}”`;
+        const stations = CHANNELS.filter((ch) => matchesQuery(ch, q));
+        const programmes = programmeHits(q);
+        const wrap = document.createElement("div");
+        wrap.className = "search-cols";
+
+        const st = document.createElement("section");
+        const sth = document.createElement("h3");
+        sth.textContent = "Stations";
+        st.append(sth);
+        if (stations.length === 0) {
+          const empty = document.createElement("p");
+          empty.className = "empty-sheet";
+          empty.textContent = "No station notices in this enquiry.";
+          st.append(empty);
+        } else {
+          const list = document.createElement("div");
+          list.className = "listings";
+          stations.forEach((ch) => list.append(listingButton(ch)));
+          st.append(list);
+        }
+
+        const pr = document.createElement("section");
+        const prh = document.createElement("h3");
+        prh.textContent = "Programmes";
+        pr.append(prh);
+        if (programmes.length === 0) {
+          const empty = document.createElement("p");
+          empty.className = "empty-sheet";
+          empty.textContent = "No programme notices in this enquiry.";
+          pr.append(empty);
+        } else {
+          const list = document.createElement("div");
+          list.className = "listings";
+          programmes.forEach(({ channel, slot }) => {
+            const btn = listingButton(channel);
+            btn.querySelector(".ch-now").textContent = slot.title;
+            btn.querySelector(".ch-time").textContent = slot.time;
+            btn.querySelector(".ch-next").textContent = "In this evening’s sheet";
+            btn.querySelector(".featured-mark")?.remove();
+            list.append(btn);
+          });
+          pr.append(list);
+        }
+
+        wrap.append(st, pr);
+        els.body.append(wrap);
+        return;
+      }
+
+      els.dirTitle.textContent = "Channel directory";
+      const current = GROUPS.find((g) => g.id === state.group);
+      els.dirSub.textContent =
+        state.group === "all"
+          ? "Evening sheet, set for Finland"
+          : `${current.label} · ${current.count} in the full run`;
+
+      const rows = CHANNELS.filter((ch) => inGroup(ch, state.group));
+      if (rows.length === 0) {
+        const empty = document.createElement("p");
+        empty.className = "empty-sheet";
+        empty.textContent =
+          "The Anime sheet is held overleaf in the full run of forty-one. This evening’s Finland edition carries none.";
+        els.body.append(empty);
+        return;
+      }
+
+      const list = document.createElement("div");
+      list.className = "listings";
+      rows.forEach((ch) => list.append(listingButton(ch)));
+      els.body.append(list);
+    }
+
+    function selectChannel(id) {
+      const ch = channelById(id);
+      if (!ch) return;
+      state.selected = id;
+      renderFeature(ch);
+      renderDirectory();
+    }
+
+    els.dept.addEventListener("click", (event) => {
+      const btn = event.target.closest("button[data-group]");
+      if (!btn) return;
+      state.group = btn.dataset.group;
+      state.query = "";
+      els.seek.value = "";
+      renderDept();
+      renderDirectory();
+    });
+
+    els.body.addEventListener("click", (event) => {
+      const btn = event.target.closest("button.listing");
+      if (!btn) return;
+      selectChannel(btn.dataset.id);
+    });
+
+    els.seek.addEventListener("input", () => {
+      state.query = els.seek.value;
+      renderDept();
+      renderDirectory();
+    });
+
+    els.coupon.addEventListener("click", () => {
+      state.issued = true;
+      const ch = channelById(state.selected);
+      renderFeature(ch);
+    });
+
+    els.openNote.addEventListener("click", () => els.dialog.showModal());
+    els.closeNote.addEventListener("click", () => els.dialog.close());
+    els.dialog.addEventListener("click", (event) => {
+      if (event.target === els.dialog) els.dialog.close();
+    });
+
+    const start = new Date(2026, 8, 1, 21, 18, 0);
+    function tick(from) {
+      const h = String(from.getHours()).padStart(2, "0");
+      const m = String(from.getMinutes()).padStart(2, "0");
+      els.time.textContent = `${h}:${m}`;
+    }
+    tick(start);
+    window.setInterval(() => {
+      start.setSeconds(start.getSeconds() + 1);
+      tick(start);
+    }, 1000);
+
+    renderDept();
+    renderFeature(channelById(state.selected));
+    renderDirectory();
+  </script>
+</body>
+</html>

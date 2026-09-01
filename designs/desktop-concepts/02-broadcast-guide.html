@@ -1,0 +1,1657 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#07131d" />
+  <meta name="color-scheme" content="dark" />
+  <title>Sparrow · Night Grid</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700&family=Literata:ital,opsz,wght@0,7..72,500;0,7..72,650;0,7..72,700;1,7..72,560;1,7..72,650&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #07131d;
+      --panel: #0e2233;
+      --line: #1b3a52;
+      --now: #ff7a3c;
+      --cyan: #3ec8ff;
+      --text: #eaf4fb;
+      --dim: #7fa3b8;
+      --wash: rgba(255, 122, 60, 0.12);
+      --ink: #07131d;
+      --cell: #0c1d2c;
+      --cell-now: #16364c;
+      --gutter: 154px;
+      --now-frac: 0.12;
+      --epg: "Barlow Condensed", sans-serif;
+      --display: "Literata", serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--epg);
+    }
+
+    body::before {
+      content: "";
+      pointer-events: none;
+      position: fixed;
+      inset: 0;
+      z-index: 80;
+      background: radial-gradient(ellipse at 50% 42%, transparent 55%, rgba(0, 0, 0, 0.38) 100%);
+    }
+
+    body::after {
+      content: "";
+      pointer-events: none;
+      position: fixed;
+      inset: 0;
+      z-index: 81;
+      background: repeating-linear-gradient(
+        to bottom,
+        rgba(234, 244, 251, 0.03) 0px,
+        rgba(234, 244, 251, 0.03) 1px,
+        transparent 1px,
+        transparent 4px
+      );
+    }
+
+    button, input { font-family: inherit; color: inherit; }
+
+    .app {
+      height: 100vh;
+      display: grid;
+      grid-template-columns: 278px 1fr;
+      grid-template-rows: 46px 1fr 82px;
+      background:
+        linear-gradient(180deg, rgba(62, 200, 255, 0.04), transparent 28%),
+        var(--bg);
+    }
+
+    .top {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 0 18px 0 14px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      z-index: 12;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      min-width: 0;
+    }
+
+    .mark {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+    }
+
+    .mark svg { width: 22px; height: 22px; display: block; }
+
+    .wordmark {
+      font-family: var(--display);
+      font-style: italic;
+      font-weight: 650;
+      font-size: 22px;
+      letter-spacing: 0.01em;
+      line-height: 1;
+    }
+
+    .wordmark span { color: var(--now); }
+
+    .clock {
+      font-size: 26px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+    }
+
+    .epg-live {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--cyan);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+    }
+
+    .epg-live i {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--cyan);
+      box-shadow: 0 0 0 0 rgba(62, 200, 255, 0.7);
+      animation: livepulse 1.8s ease-out infinite;
+    }
+
+    @keyframes livepulse {
+      70% { box-shadow: 0 0 0 8px rgba(62, 200, 255, 0); }
+    }
+
+    .fresh {
+      color: var(--dim);
+      font-size: 13px;
+      font-weight: 500;
+      letter-spacing: 0.08em;
+    }
+
+    .fresh b { color: var(--text); font-weight: 600; }
+
+    .top-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .search-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+
+    .search-wrap svg {
+      position: absolute;
+      left: 9px;
+      width: 13px;
+      height: 13px;
+      pointer-events: none;
+      color: var(--dim);
+    }
+
+    #search {
+      width: 188px;
+      height: 30px;
+      background: var(--bg);
+      border: 1px solid var(--line);
+      padding: 0 12px 0 28px;
+      font-size: 15px;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+      outline: none;
+      transition: width 0.18s ease, border-color 0.15s ease;
+    }
+
+    #search:focus {
+      width: 248px;
+      border-color: var(--cyan);
+    }
+
+    .feeds-btn {
+      background: none;
+      border: 0;
+      height: 30px;
+      padding: 0 10px;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--dim);
+      cursor: pointer;
+    }
+
+    .feeds-btn:hover, .feeds-btn:focus-visible { color: var(--text); }
+
+    .rail {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      background: var(--panel);
+      border-right: 1px solid var(--line);
+    }
+
+    .player {
+      flex: 0 0 auto;
+      padding: 10px 10px 8px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .screen {
+      position: relative;
+      aspect-ratio: 16 / 9;
+      overflow: hidden;
+      background: #040a10;
+      border: 1px solid var(--line);
+      box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.55);
+    }
+
+    .pix { position: absolute; inset: 0; overflow: hidden; }
+
+    .wall {
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(ellipse at 50% 30%, rgba(62, 200, 255, 0.16), transparent 42%),
+        linear-gradient(180deg, #123044 0%, #07141e 62%);
+    }
+
+    .screen[data-scene="sports"] .wall {
+      background:
+        radial-gradient(ellipse at 50% 110%, rgba(40, 120, 70, 0.55), transparent 50%),
+        linear-gradient(180deg, #0a1c18 0%, #07140f 100%);
+    }
+
+    .screen[data-scene="drama"] .wall {
+      background:
+        radial-gradient(ellipse at 70% 40%, rgba(180, 90, 50, 0.18), transparent 45%),
+        linear-gradient(180deg, #1a1420 0%, #0a0c12 100%);
+    }
+
+    .screen[data-scene="ent"] .wall {
+      background:
+        radial-gradient(circle at 20% 30%, rgba(62, 200, 255, 0.12), transparent 30%),
+        radial-gradient(circle at 80% 60%, rgba(255, 122, 60, 0.1), transparent 28%),
+        linear-gradient(180deg, #102030, #07131d);
+    }
+
+    .pitch {
+      display: none;
+      position: absolute;
+      left: 8%;
+      right: 8%;
+      bottom: 22%;
+      top: 18%;
+      border: 1px solid rgba(234, 244, 251, 0.22);
+      border-radius: 50%;
+    }
+
+    .pitch::before, .pitch::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      background: rgba(234, 244, 251, 0.22);
+    }
+
+    .pitch::before { top: 0; bottom: 0; width: 1px; }
+    .pitch::after {
+      top: 50%;
+      width: 22%;
+      height: 22%;
+      border: 1px solid rgba(234, 244, 251, 0.22);
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+      background: none;
+    }
+
+    .screen[data-scene="sports"] .pitch { display: block; }
+
+    .sil {
+      position: absolute;
+      bottom: 26%;
+      width: 16%;
+      height: 38%;
+      background: #050b11;
+      border-radius: 46% 46% 8% 8%;
+      box-shadow: 0 0 0 1px rgba(62, 200, 255, 0.12);
+    }
+
+    .sil.a { left: 28%; }
+    .sil.b { left: 54%; width: 15%; height: 34%; bottom: 26%; }
+
+    .screen[data-scene="sports"] .sil,
+    .screen[data-scene="ent"] .sil { display: none; }
+
+    .desk {
+      position: absolute;
+      left: 10%;
+      right: 10%;
+      bottom: 18%;
+      height: 11%;
+      background: linear-gradient(#1c455c, #0b1c28);
+      border-top: 2px solid var(--cyan);
+    }
+
+    .screen[data-scene="sports"] .desk,
+    .screen[data-scene="drama"] .desk { display: none; }
+
+    .bug {
+      position: absolute;
+      top: 8px;
+      left: 8px;
+      background: var(--cyan);
+      color: var(--ink);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      padding: 2px 6px;
+      line-height: 1.2;
+    }
+
+    .score {
+      display: none;
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      background: rgba(7, 19, 29, 0.82);
+      border: 1px solid var(--line);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      padding: 3px 7px;
+    }
+
+    .screen[data-scene="sports"] .score { display: block; }
+
+    .ticker {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 18%;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 8px;
+      background: linear-gradient(90deg, rgba(255, 122, 60, 0.95), rgba(14, 34, 51, 0.92) 28%);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      overflow: hidden;
+    }
+
+    .ticker b {
+      background: var(--ink);
+      color: var(--now);
+      padding: 1px 5px;
+      font-size: 10px;
+    }
+
+    .grain {
+      position: absolute;
+      inset: 0;
+      opacity: 0.09;
+      pointer-events: none;
+      mix-blend-mode: screen;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)' opacity='0.9'/%3E%3C/svg%3E");
+      animation: grain 0.44s steps(4) infinite;
+    }
+
+    @keyframes grain {
+      0% { transform: translate(0, 0); }
+      25% { transform: translate(-2%, 1%); }
+      50% { transform: translate(1%, -2%); }
+      100% { transform: translate(0, 0); }
+    }
+
+    .nowblock { padding: 8px 2px 2px; }
+
+    .play-ch {
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      color: var(--cyan);
+      text-transform: uppercase;
+    }
+
+    .play-title {
+      font-family: var(--display);
+      font-size: 16px;
+      font-weight: 650;
+      line-height: 1.2;
+      margin: 1px 0 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .play-next {
+      font-size: 13px;
+      color: var(--dim);
+      letter-spacing: 0.04em;
+    }
+
+    .play-next em { color: var(--text); font-style: normal; font-weight: 600; }
+
+    .pbar {
+      height: 3px;
+      background: #1b3a52;
+      margin: 8px 0 4px;
+    }
+
+    .pbar i {
+      display: block;
+      height: 100%;
+      width: 40%;
+      background: var(--now);
+      box-shadow: 0 0 8px rgba(255, 122, 60, 0.55);
+    }
+
+    .pmeta {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      color: var(--dim);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .zap-head {
+      font-family: var(--display);
+      font-size: 12px;
+      font-style: italic;
+      color: var(--dim);
+      padding: 8px 12px 4px;
+      letter-spacing: 0.04em;
+    }
+
+    .zap {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+    }
+
+    .zap-item {
+      display: grid;
+      grid-template-columns: 28px 1fr;
+      gap: 8px;
+      width: 100%;
+      text-align: left;
+      background: none;
+      border: 0;
+      border-left: 3px solid transparent;
+      padding: 6px 12px 6px 10px;
+      cursor: pointer;
+    }
+
+    .zap-item:hover { background: rgba(62, 200, 255, 0.05); }
+
+    .zap-item.is-playing {
+      border-left-color: var(--cyan);
+      background: rgba(62, 200, 255, 0.08);
+    }
+
+    .zap-item.is-focus:not(.is-playing) { border-left-color: var(--dim); }
+
+    .zap-num {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--dim);
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.04em;
+    }
+
+    .zap-item.is-playing .zap-num { color: var(--cyan); }
+
+    .zap-name {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .main {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+    }
+
+    .groups {
+      display: flex;
+      gap: 2px;
+      padding: 6px 12px 4px;
+      flex: 0 0 auto;
+      border-bottom: 1px solid var(--line);
+      background: rgba(14, 34, 51, 0.55);
+    }
+
+    .group {
+      background: none;
+      border: 0;
+      color: var(--dim);
+      padding: 4px 10px 6px;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+    }
+
+    .group em {
+      font-style: normal;
+      font-weight: 500;
+      margin-left: 6px;
+      opacity: 0.7;
+    }
+
+    .group:hover { color: var(--text); }
+
+    .group.is-on {
+      color: var(--text);
+      border-bottom-color: var(--now);
+    }
+
+    .grid-frame {
+      position: relative;
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .timehead {
+      display: grid;
+      grid-template-columns: var(--gutter) 1fr;
+      flex: 0 0 32px;
+      border-bottom: 1px solid var(--line);
+      background: #0b1a27;
+      z-index: 6;
+    }
+
+    .timehead .gutter-lab {
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      color: var(--dim);
+    }
+
+    .timeline {
+      position: relative;
+    }
+
+    .tick {
+      position: absolute;
+      top: 0;
+      height: 100%;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      font-variant-numeric: tabular-nums;
+      color: var(--dim);
+    }
+
+    .tick::before {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 18px;
+      bottom: 0;
+      width: 1px;
+      background: var(--line);
+    }
+
+    .tick.is-hour { color: var(--text); font-weight: 700; }
+    .tick:first-child { transform: none; padding-left: 8px; }
+    .tick:first-child::before { left: 0; }
+
+    .epg-scroll {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #rows { display: contents; }
+
+    .epg-row {
+      display: grid;
+      grid-template-columns: var(--gutter) 1fr;
+      flex: 0 0 calc(100% / 9);
+      min-height: 48px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .epg-row.is-dim { opacity: 0.28; }
+    .epg-row.is-playing .row-ch { color: var(--cyan); }
+
+    .row-ch {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px;
+      background: #0b1c2a;
+      border-right: 1px solid var(--line);
+      min-width: 0;
+    }
+
+    .row-num {
+      flex: 0 0 22px;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--dim);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .epg-row.is-playing .row-num { color: var(--cyan); }
+
+    .row-name {
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .track {
+      position: relative;
+      background-image: repeating-linear-gradient(
+        90deg,
+        transparent 0,
+        transparent calc(20% - 1px),
+        var(--line) calc(20% - 1px),
+        var(--line) 20%
+      );
+    }
+
+    .cell {
+      position: absolute;
+      top: 5px;
+      bottom: 5px;
+      overflow: hidden;
+      background: var(--cell);
+      border: 1px solid var(--line);
+      color: var(--text);
+      text-align: left;
+      padding: 0 10px;
+      font-size: 15px;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+      cursor: pointer;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .cell.is-now {
+      background: linear-gradient(90deg, var(--wash), rgba(255, 122, 60, 0.05)), var(--cell-now);
+      font-weight: 600;
+    }
+
+    .cell.is-now::before {
+      content: "";
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background: var(--now);
+      box-shadow: 0 0 6px var(--now);
+      flex: 0 0 auto;
+    }
+
+    .cell .t {
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .cell.is-remind::after {
+      content: "";
+      position: absolute;
+      top: 5px;
+      right: 6px;
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--cyan);
+    }
+
+    .cell:hover,
+    .cell:focus-visible,
+    .cell.is-focus {
+      outline: 2px solid var(--cyan);
+      outline-offset: -2px;
+      background: #1a3d55;
+      z-index: 2;
+    }
+
+    .cell.is-now:hover,
+    .cell.is-now:focus-visible,
+    .cell.is-now.is-focus {
+      background: linear-gradient(90deg, var(--wash), rgba(255, 122, 60, 0.08)), #1d4660;
+    }
+
+    .now-playhead {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: calc(var(--gutter) + (100% - var(--gutter)) * var(--now-frac));
+      width: 4px;
+      margin-left: -2px;
+      background: var(--now);
+      box-shadow: 0 0 14px rgba(255, 122, 60, 0.55), 0 0 1px #ffb08a;
+      z-index: 9;
+      pointer-events: none;
+    }
+
+    .now-playhead::before {
+      content: "NOW";
+      position: absolute;
+      top: 7px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--now);
+      color: var(--ink);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      padding: 2px 7px;
+      line-height: 1.1;
+    }
+
+    .now-wash {
+      position: absolute;
+      top: 32px;
+      bottom: 0;
+      left: calc(var(--gutter) + (100% - var(--gutter)) * var(--now-frac));
+      width: 18px;
+      margin-left: -9px;
+      background: var(--wash);
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    .search-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 20;
+      background: rgba(7, 19, 29, 0.78);
+      padding: 28px 32px;
+      display: none;
+    }
+
+    .search-overlay.is-open { display: block; }
+
+    .search-panel {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 32px;
+      max-width: 860px;
+    }
+
+    .search-panel h2 {
+      font-family: var(--display);
+      font-style: italic;
+      font-size: 18px;
+      font-weight: 560;
+      margin-bottom: 10px;
+    }
+
+    .hit {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-left: 3px solid var(--cyan);
+      padding: 8px 12px;
+      margin-bottom: 6px;
+      cursor: pointer;
+    }
+
+    .hit:hover, .hit:focus-visible {
+      outline: 2px solid var(--cyan);
+      outline-offset: -2px;
+    }
+
+    .hit b {
+      display: block;
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }
+
+    .hit span {
+      font-size: 13px;
+      color: var(--dim);
+      letter-spacing: 0.04em;
+    }
+
+    .search-empty {
+      color: var(--dim);
+      font-size: 16px;
+    }
+
+    .detail {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 24px;
+      align-items: center;
+      padding: 10px 20px 10px 16px;
+      background: var(--panel);
+      border-top: 1px solid var(--line);
+      z-index: 12;
+    }
+
+    .d-kicker {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      color: var(--now);
+      text-transform: uppercase;
+    }
+
+    .d-kicker.is-later { color: var(--dim); }
+
+    .d-title {
+      font-family: var(--display);
+      font-size: 22px;
+      font-weight: 650;
+      line-height: 1.1;
+      margin: 1px 0 3px;
+    }
+
+    .d-meta {
+      font-size: 13px;
+      font-weight: 500;
+      letter-spacing: 0.06em;
+      color: var(--dim);
+      margin-bottom: 3px;
+    }
+
+    .d-syn {
+      font-size: 15px;
+      font-weight: 400;
+      letter-spacing: 0.02em;
+      color: #c5dce8;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 92ch;
+    }
+
+    .d-actions { display: flex; gap: 8px; align-items: center; }
+
+    .btn {
+      border: 1px solid var(--line);
+      background: transparent;
+      height: 36px;
+      padding: 0 16px;
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+
+    .btn:hover, .btn:focus-visible { border-color: var(--cyan); color: var(--cyan); }
+
+    .btn-now {
+      background: var(--now);
+      border-color: var(--now);
+      color: var(--ink);
+    }
+
+    .btn-now:hover, .btn-now:focus-visible {
+      background: #ff8d55;
+      color: var(--ink);
+      border-color: #ff8d55;
+    }
+
+    .btn.is-on { border-color: var(--cyan); color: var(--cyan); }
+
+    .scrim {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(7, 19, 29, 0.72);
+      z-index: 40;
+    }
+
+    .scrim.is-open { display: block; }
+
+    .sheet {
+      position: fixed;
+      left: 50%;
+      bottom: 0;
+      transform: translate(-50%, 110%);
+      width: min(640px, 96vw);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-bottom: 0;
+      z-index: 41;
+      padding: 22px 24px 20px;
+      box-shadow: 0 -20px 60px rgba(0, 0, 0, 0.45);
+      transition: transform 0.22s ease;
+    }
+
+    .sheet.is-open { transform: translate(-50%, 0); }
+
+    .sheet h2 {
+      font-family: var(--display);
+      font-style: italic;
+      font-size: 26px;
+      font-weight: 650;
+    }
+
+    .sheet-host {
+      color: var(--dim);
+      font-size: 14px;
+      letter-spacing: 0.08em;
+      margin: 4px 0 18px;
+    }
+
+    .sheet-host b { color: var(--cyan); font-weight: 600; }
+
+    .field { margin-bottom: 14px; }
+
+    .field label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--dim);
+      margin-bottom: 6px;
+    }
+
+    .pill {
+      color: var(--cyan);
+      font-weight: 700;
+      letter-spacing: 0.1em;
+    }
+
+    .field input {
+      width: 100%;
+      height: 38px;
+      background: var(--bg);
+      border: 1px solid var(--line);
+      padding: 0 12px;
+      font-size: 16px;
+      font-weight: 500;
+      outline: none;
+    }
+
+    .field input:focus { border-color: var(--cyan); }
+
+    .sheet-foot {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 8px;
+    }
+
+    .zap::-webkit-scrollbar,
+    .epg-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+
+    .zap::-webkit-scrollbar-thumb,
+    .epg-scroll::-webkit-scrollbar-thumb { background: var(--line); }
+
+    .zap::-webkit-scrollbar-track,
+    .epg-scroll::-webkit-scrollbar-track { background: transparent; }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+      .sheet.is-open { transform: translate(-50%, 0); }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="top">
+      <div class="brand">
+        <div class="mark">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path fill="#3ec8ff" d="M3.2 13.4c5.2-1.1 7.6-6.4 9.2-10.2 1.4 4.2 3.8 7.8 8.4 10.2-3.6.2-5.5 1.6-6.4 5.6-.9-2.8-3.6-4.6-11.2-5.6z"/>
+            <path fill="#ff7a3c" d="M11.6 8.2c.6 1.8 1.6 3.2 3.2 4.2-1.8-.1-3.2-.8-4.4-2.2.3-.7.8-1.4 1.2-2z"/>
+          </svg>
+          <div class="wordmark">Sparrow<span>.</span></div>
+        </div>
+        <div class="clock">21:18</div>
+        <div class="epg-live"><i></i>EPG LIVE</div>
+        <div class="fresh">Guide · <b>12m</b></div>
+      </div>
+      <div class="top-right">
+        <div class="search-wrap">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.5" cy="6.5" r="4.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M9.8 9.8 L13.2 13.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="square"/></svg>
+          <input id="search" type="search" placeholder="Search" autocomplete="off" spellcheck="false" />
+        </div>
+        <button type="button" class="feeds-btn" id="feedsBtn">Feeds</button>
+      </div>
+    </header>
+
+    <aside class="rail">
+      <div class="player">
+        <div class="screen" id="screen" data-scene="news">
+          <div class="pix">
+            <div class="wall"></div>
+            <div class="pitch"></div>
+            <div class="sil a"></div>
+            <div class="sil b"></div>
+            <div class="desk"></div>
+            <div class="bug">LIVE</div>
+            <div class="score">TAP 1–0 HIF</div>
+            <div class="ticker" id="ticker"><b>YLE</b> A-studio · live from Helsinki · 21:18</div>
+            <div class="grain"></div>
+          </div>
+        </div>
+        <div class="nowblock">
+          <div class="play-ch" id="playCh">CH07 · Yle TV1 HD</div>
+          <div class="play-title" id="playTitle">A-studio</div>
+          <div class="play-next" id="playNext">next <em>Oddasat</em></div>
+          <div class="pbar"><i id="pfill"></i></div>
+          <div class="pmeta"><span id="pStart">21:00</span><span id="pEnd">21:45</span></div>
+        </div>
+      </div>
+      <div class="zap-head">Zap</div>
+      <div class="zap" id="zap"></div>
+    </aside>
+
+    <section class="main">
+      <div class="groups" id="groups"></div>
+      <div class="grid-frame" id="gridFrame">
+        <div class="timehead">
+          <div class="gutter-lab">CH</div>
+          <div class="timeline" id="timeline"></div>
+        </div>
+        <div class="epg-scroll" id="epgScroll">
+          <div id="rows"></div>
+        </div>
+        <div class="now-wash"></div>
+        <div class="now-playhead" aria-hidden="true"></div>
+      </div>
+      <div class="search-overlay" id="searchOverlay" hidden>
+        <div class="search-panel" id="searchPanel"></div>
+      </div>
+    </section>
+
+    <footer class="detail">
+      <div>
+        <div class="d-kicker" id="dKicker">Live now</div>
+        <div class="d-title" id="dTitle">A-studio</div>
+        <div class="d-meta" id="dMeta">Yle TV1 HD · 21:00–21:45 · 27 min remaining</div>
+        <div class="d-syn" id="dSyn">A-studio — live current affairs from Yle. Tonight’s desk takes the week’s politics to task, with guests from parliament and the regions.</div>
+      </div>
+      <div class="d-actions">
+        <button type="button" class="btn" id="remindBtn">Remind</button>
+        <button type="button" class="btn btn-now" id="watchBtn">Watch now</button>
+      </div>
+    </footer>
+  </div>
+
+  <div class="scrim" id="scrim"></div>
+  <aside class="sheet" id="sheet" role="dialog" aria-labelledby="sheetTitle" aria-modal="true">
+    <h2 id="sheetTitle">Feeds</h2>
+    <p class="sheet-host">Local <b>192.168.1.42</b></p>
+    <div class="field">
+      <label>M3U Source <span class="pill">LIVE · FRESH 2m</span></label>
+      <input value="http://192.168.1.42:8080/catalog.m3u" spellcheck="false" />
+    </div>
+    <div class="field">
+      <label>EPG Source · XMLTV <span class="pill">LIVE · FRESH 12m</span></label>
+      <input value="http://192.168.1.42:8080/guide.xml" spellcheck="false" />
+    </div>
+    <div class="sheet-foot">
+      <button type="button" class="btn btn-now" id="sheetDone">Done</button>
+    </div>
+  </aside>
+
+  <script>
+    const WIN0 = 21 * 60;
+    const SPAN = 150;
+    const NOW = 21 * 60 + 18;
+    const NOW_FRAC = (NOW - WIN0) / SPAN;
+
+    const GROUPS = [
+      { id: "all", label: "All", count: 2841 },
+      { id: "finland", label: "Finland", count: 86 },
+      { id: "news", label: "News", count: 120 },
+      { id: "sports", label: "Sports", count: 64 },
+      { id: "anime", label: "Anime", count: 41 },
+      { id: "fourk", label: "4K", count: 12 }
+    ];
+
+    const CHANNELS = [
+      {
+        id: "ch01", num: "01", name: "Hero HD FI", guide: true, groups: ["finland", "sports"], genre: "sports",
+        programmes: [
+          { title: "Premier League", start: "20:30", end: "22:00", syn: "Arsenal host Aston Villa. Second-half tension from the Emirates, with Finnish commentary." },
+          { title: "SportsNight", start: "22:00", end: "23:00", syn: "Desk recap of the night’s goals, cards, and the table that actually matters." },
+          { title: "Fight Night Preview", start: "23:00", end: "24:00", syn: "Undercard stories and weigh-in tape ahead of Saturday’s main event." }
+        ]
+      },
+      {
+        id: "ch02", num: "02", name: "JIM HD FI", guide: true, groups: ["finland"], genre: "ent",
+        programmes: [
+          { title: "Arman ja viimeinen ristiretki", start: "20:45", end: "21:35", syn: "Arman Alizad walks into another room the rest of us would leave." },
+          { title: "Poliisit", start: "21:35", end: "22:30", syn: "Ride-along night shift. Radios, rain, and the long Finnish highway." },
+          { title: "Graffiti", start: "22:30", end: "23:25", syn: "Street artists, city walls, and the argument over who owns a brick face." },
+          { title: "Leijonan luola", start: "23:25", end: "24:10", syn: "Pitches, pauses, and the kind of silence that costs a percentage." }
+        ]
+      },
+      {
+        id: "ch03", num: "03", name: "MTV Ava HD FI", guide: true, groups: ["finland"], genre: "drama",
+        programmes: [
+          { title: "Emmerdale", start: "20:55", end: "21:50", syn: "The village keeps its secrets in kitchens and at the wool-pack bar." },
+          { title: "Salatut elämät", start: "21:50", end: "22:45", syn: "Pihlajakatu after dark. Doors close; someone always listens through them." },
+          { title: "The Split", start: "22:45", end: "23:40", syn: "Divorce lawyers, family blood, and a London firm that cannot keep its own house." }
+        ]
+      },
+      {
+        id: "ch04", num: "04", name: "MTV3 HD FI", guide: true, groups: ["finland", "news"], genre: "news",
+        programmes: [
+          { title: "Seitsemän uutiset", start: "21:00", end: "21:25", syn: "National bulletin: parliament, weather over the Gulf, and the day’s one picture." },
+          { title: "Sydänjää", start: "21:25", end: "22:15", syn: "A northern crime hour. Ice, kinship, and a case that will not stay buried." },
+          { title: "Kymmenen uutiset", start: "22:15", end: "22:45", syn: "Late news. Markets, sport, and the overnight forecast for the whole country." },
+          { title: "Rantabaari", start: "22:45", end: "23:35", syn: "Harbour-side serial. Last call, old debts, a table that never quite empties." }
+        ]
+      },
+      {
+        id: "ch05", num: "05", name: "Nelonen HD FI", guide: true, groups: ["finland"], genre: "ent",
+        programmes: [
+          { title: "The Voice of Finland", start: "21:00", end: "21:58", syn: "Blind auditions. Chairs turn; a country listens for a voice it already knows." },
+          { title: "House of the Dragon", start: "21:58", end: "22:55", syn: "Succession by fire. Dragons, claims, and the cost of a name." },
+          { title: "Late Night Finland", start: "22:55", end: "23:50", syn: "Desk, band, one sharp guest, and the week’s clips from the other channels." }
+        ]
+      },
+      {
+        id: "ch06", num: "06", name: "Sub HD FI", guide: true, groups: ["finland"], genre: "ent",
+        programmes: [
+          { title: "Simpsonit", start: "20:50", end: "21:45", syn: "Springfield in Finnish. A couch gag, a scheme, a town that never learns." },
+          { title: "Family Guy", start: "21:45", end: "22:15", syn: "Cutaways, cut-price philosophy, and a dog with better timing than the family." },
+          { title: "South Park", start: "22:15", end: "23:10", syn: "The mountain town takes another swing at the week’s argument." },
+          { title: "C.S.I.", start: "23:10", end: "24:05", syn: "Las Vegas lab light. Evidence on the glass; a story under the blacklight." }
+        ]
+      },
+      {
+        id: "ch07", num: "07", name: "Yle TV1 HD", guide: true, groups: ["finland", "news"], genre: "news", keywords: ["news"],
+        programmes: [
+          { title: "Yle Uutiset", start: "20:00", end: "20:30", syn: "The national news of record. Headlines from Finland and the world.", keywords: ["news"] },
+          { title: "Puoli seitsemän", start: "20:30", end: "21:00", syn: "Magazine hour before the evening turn: people, places, a lighter desk." },
+          { title: "A-studio", start: "21:00", end: "21:45", syn: "A-studio — live current affairs from Yle. Tonight’s desk takes the week’s politics to task, with guests from parliament and the regions.", keywords: ["news"] },
+          { title: "Oddasat", start: "21:45", end: "22:00", syn: "Sámi news from the north — weather, community, and the day’s stories in Northern Sámi." },
+          { title: "Yle Uutiset", start: "22:00", end: "22:25", syn: "Late bulletin. The day’s last pass over parliament, the regions, and the world.", keywords: ["news"] },
+          { title: "Novosti Yle", start: "22:25", end: "22:30", syn: "Russian-language news from Yle. Five tight minutes for the day’s facts." },
+          { title: "Document: Arctic Light", start: "22:30", end: "24:00", syn: "A winter-long look at light, work, and silence above the Arctic Circle." }
+        ]
+      },
+      {
+        id: "ch08", num: "08", name: "Yle TV2 HD", guide: true, groups: ["finland", "sports"], genre: "sports",
+        programmes: [
+          { title: "SM-liiga: Tappara–HIFK", start: "21:00", end: "22:15", syn: "Tampere ice. Tappara and HIFK, second period already loud in the stands." },
+          { title: "Urheiluruutu", start: "22:15", end: "22:30", syn: "The night’s results, the table, and one clip they will play again tomorrow." },
+          { title: "Aikuiset", start: "22:30", end: "23:00", syn: "Comedy of people who should know better and absolutely do not." },
+          { title: "Friday Sports Replay", start: "23:00", end: "24:00", syn: "Goals and fights from the week, run again for anyone still awake." }
+        ]
+      },
+      {
+        id: "ch09", num: "09", name: "Yle Teema Fem HD", guide: true, groups: ["finland"], genre: "drama",
+        programmes: [
+          { title: "Prisma: Revontulet", start: "21:00", end: "22:00", syn: "Science hour on the aurora — solar wind, cameras, and a sky that will not sit still." },
+          { title: "Film: The Disciple", start: "22:00", end: "23:50", syn: "A raga, a teacher, a life spent almost arriving. Teema’s evening film." }
+        ]
+      },
+      {
+        id: "ch10", num: "10", name: "Kutonen HD FI", guide: true, groups: ["finland"], genre: "drama",
+        programmes: [
+          { title: "John Wick: Chapter 4", start: "21:00", end: "22:50", syn: "A man, a gun, a continent of unfinished business. Continental rules still apply." },
+          { title: "Two and a Half Men", start: "22:50", end: "23:45", syn: "Malibu furniture and the same argument, recast as a laugh track." }
+        ]
+      },
+      {
+        id: "ch11", num: "11", name: "Frii HD FI", guide: true, groups: ["finland"], genre: "drama",
+        programmes: [
+          { title: "Grey's Anatomy", start: "21:00", end: "21:45", syn: "Grey Sloan night shift. A surgery, a speech, a lift that will not close in time." },
+          { title: "Station 19", start: "21:45", end: "22:30", syn: "Engine company, a house fire, and the personal weather nobody radioed in." },
+          { title: "Criminal Minds", start: "22:30", end: "23:25", syn: "The team boards another jet. Profile first; the map fills in after." }
+        ]
+      },
+      {
+        id: "ch12", num: "12", name: "TLC HD FI", guide: true, groups: ["finland"], genre: "ent",
+        programmes: [
+          { title: "90 Day Fiancé", start: "21:00", end: "21:50", syn: "The clock on the visa, the family at the gate, a relationship under fluorescent light." },
+          { title: "Cake Boss", start: "21:50", end: "22:40", syn: "Hoboken sugar architecture. A wedding cake that has to travel standing up." },
+          { title: "My 600-lb Life", start: "22:40", end: "23:40", syn: "Clinic days, weigh-ins, and the long arithmetic of a body changing." }
+        ]
+      },
+      {
+        id: "cnn", num: "142", name: "CNN International", guide: false, groups: ["news"], genre: "news", keywords: ["news"],
+        programmes: [
+          { title: "International Desk", start: "21:00", end: "22:00", syn: "International desk. A world still moving at 21:18, mapped in chyrons." },
+          { title: "The Lead", start: "22:00", end: "23:00", syn: "One story held long enough to see the edges." }
+        ]
+      },
+      {
+        id: "bbc", num: "140", name: "BBC World News", guide: false, groups: ["news"], genre: "news", keywords: ["news"],
+        programmes: [
+          { title: "World Briefing", start: "21:00", end: "21:30", syn: "London hour. Correspondents, a clock, the world’s second pass at the facts." },
+          { title: "HARDtalk", start: "21:30", end: "22:00", syn: "One guest, no cushion. The interview as a held note." },
+          { title: "World Briefing", start: "22:00", end: "22:30", syn: "Late world bulletin from Broadcasting House." }
+        ]
+      }
+    ];
+
+    const state = {
+      playingId: "ch07",
+      focusCh: "ch07",
+      focusIdx: 2,
+      group: "all",
+      query: "",
+      sheet: false,
+      reminds: {}
+    };
+
+    const $ = (id) => document.getElementById(id);
+
+    function toMin(hhmm) {
+      const [h, m] = hhmm.split(":").map(Number);
+      return h * 60 + m;
+    }
+
+    function fmt(min) {
+      const h = Math.floor(min / 60) % 24;
+      const m = min % 60;
+      return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
+    }
+
+    function ch(id) {
+      return CHANNELS.find((c) => c.id === id);
+    }
+
+    function liveProg(channel) {
+      return channel.programmes.find((p) => toMin(p.start) <= NOW && NOW < toMin(p.end)) || channel.programmes[0];
+    }
+
+    function nextProg(channel) {
+      const i = channel.programmes.findIndex((p) => toMin(p.start) <= NOW && NOW < toMin(p.end));
+      return channel.programmes[i + 1] || null;
+    }
+
+    function inWindow(p) {
+      const s = toMin(p.start);
+      const e = toMin(p.end);
+      return e > WIN0 && s < WIN0 + SPAN;
+    }
+
+    function geometry(p) {
+      const s = Math.max(toMin(p.start), WIN0);
+      const e = Math.min(toMin(p.end), WIN0 + SPAN);
+      return {
+        left: ((s - WIN0) / SPAN) * 100,
+        width: ((e - s) / SPAN) * 100
+      };
+    }
+
+    function visibleGuide() {
+      return CHANNELS.filter((c) => {
+        if (!c.guide) return false;
+        if (state.group === "all") return true;
+        return c.groups.includes(state.group);
+      });
+    }
+
+    function matchesGroup(c) {
+      return state.group === "all" || c.groups.includes(state.group);
+    }
+
+    function keyOf(c, i) {
+      return c.id + ":" + i;
+    }
+
+    function renderGroups() {
+      $("groups").innerHTML = GROUPS.map((g) =>
+        `<button type="button" class="group${state.group === g.id ? " is-on" : ""}" data-g="${g.id}">${g.label}<em>${g.count}</em></button>`
+      ).join("");
+    }
+
+    function renderTimeline() {
+      const marks = [
+        { t: "21:00", p: 0, hour: true },
+        { t: "21:30", p: 20, hour: false },
+        { t: "22:00", p: 40, hour: true },
+        { t: "22:30", p: 60, hour: false },
+        { t: "23:00", p: 80, hour: true }
+      ];
+      $("timeline").innerHTML = marks.map((m) =>
+        `<span class="tick${m.hour ? " is-hour" : ""}" style="left:${m.p}%">${m.t}</span>`
+      ).join("");
+    }
+
+    function renderZap() {
+      $("zap").innerHTML = CHANNELS.filter((c) => c.guide).map((c) => `
+        <button type="button" class="zap-item${c.id === state.playingId ? " is-playing" : ""}${c.id === state.focusCh ? " is-focus" : ""}" data-ch="${c.id}">
+          <span class="zap-num">${c.num}</span>
+          <span class="zap-name">${c.name}</span>
+        </button>
+      `).join("");
+    }
+
+    function renderRows() {
+      $("rows").innerHTML = CHANNELS.filter((c) => c.guide).map((c) => {
+        const cells = c.programmes.map((p, i) => {
+          if (!inWindow(p)) return "";
+          const g = geometry(p);
+          const now = toMin(p.start) <= NOW && NOW < toMin(p.end);
+          return `<button type="button" class="cell${now ? " is-now" : ""}" data-ch="${c.id}" data-i="${i}" style="left:${g.left}%;width:${g.width}%" title="${p.title}"><span class="t">${p.title}</span></button>`;
+        }).join("");
+        return `<div class="epg-row" data-ch="${c.id}">
+          <div class="row-ch"><span class="row-num">${c.num}</span><span class="row-name">${c.name}</span></div>
+          <div class="track">${cells}</div>
+        </div>`;
+      }).join("");
+    }
+
+    function mid(p) {
+      return (toMin(p.start) + toMin(p.end)) / 2;
+    }
+
+    function idxAtTime(channel, t) {
+      const hit = channel.programmes.findIndex((p) => inWindow(p) && toMin(p.start) <= t && t < toMin(p.end));
+      if (hit >= 0) return hit;
+      const vis = channel.programmes.map((p, i) => ({ p, i })).filter((x) => inWindow(x.p));
+      if (!vis.length) return 0;
+      return vis.reduce((best, x) => Math.abs(mid(x.p) - t) < Math.abs(mid(channel.programmes[best]) - t) ? x.i : best, vis[0].i);
+    }
+
+    function windowIdxs(channel) {
+      return channel.programmes.map((p, i) => i).filter((i) => inWindow(channel.programmes[i]));
+    }
+
+    function applyChrome() {
+      document.querySelectorAll(".epg-row").forEach((row) => {
+        const id = row.dataset.ch;
+        const c = ch(id);
+        row.classList.toggle("is-playing", id === state.playingId);
+        row.classList.toggle("is-dim", !matchesGroup(c));
+      });
+      document.querySelectorAll(".cell").forEach((el) => {
+        const on = el.dataset.ch === state.focusCh && Number(el.dataset.i) === state.focusIdx;
+        el.classList.toggle("is-focus", on);
+        el.classList.toggle("is-remind", Boolean(state.reminds[keyOf(ch(el.dataset.ch), Number(el.dataset.i))]));
+        if (on) {
+          el.focus({ preventScroll: true });
+          el.closest(".epg-row")?.scrollIntoView({ block: "nearest" });
+        }
+      });
+      document.querySelectorAll(".zap-item").forEach((el) => {
+        el.classList.toggle("is-playing", el.dataset.ch === state.playingId);
+        el.classList.toggle("is-focus", el.dataset.ch === state.focusCh);
+      });
+      document.querySelectorAll(".group").forEach((el) => {
+        el.classList.toggle("is-on", el.dataset.g === state.group);
+      });
+      $("remindBtn").classList.toggle("is-on", Boolean(state.reminds[keyOf(ch(state.focusCh), state.focusIdx)]));
+    }
+
+    function setPlayer(channel) {
+      const live = liveProg(channel);
+      const nxt = nextProg(channel);
+      const span = Math.max(toMin(live.end) - toMin(live.start), 1);
+      const pct = Math.min(100, Math.max(0, ((NOW - toMin(live.start)) / span) * 100));
+      $("screen").dataset.scene = channel.genre;
+      $("playCh").textContent = "CH" + channel.num + " · " + channel.name;
+      $("playTitle").textContent = live.title;
+      $("playNext").innerHTML = nxt ? "next <em>" + nxt.title + "</em>" : "end of night";
+      $("pfill").style.width = pct + "%";
+      $("pStart").textContent = live.start;
+      $("pEnd").textContent = live.end === "24:00" ? "00:00" : live.end;
+      const tag = channel.name.replace(" HD FI", "").replace(" HD", "");
+      $("ticker").innerHTML = "<b>" + tag.slice(0, 8).toUpperCase() + "</b> " + live.title + " · live · 21:18";
+    }
+
+    function setDetail() {
+      const channel = ch(state.focusCh);
+      const p = channel.programmes[state.focusIdx];
+      const live = toMin(p.start) <= NOW && NOW < toMin(p.end);
+      const later = toMin(p.start) > NOW;
+      const rem = toMin(p.end) - NOW;
+      $("dKicker").textContent = live ? "Live now" : later ? "Up next on the grid" : "Earlier";
+      $("dKicker").classList.toggle("is-later", !live);
+      $("dTitle").textContent = p.title;
+      const end = p.end === "24:00" ? "00:00" : p.end;
+      const remTxt = live ? " · " + rem + " min remaining" : " · " + (toMin(p.end) - toMin(p.start)) + " min";
+      $("dMeta").textContent = channel.name + " · " + p.start + "–" + end + remTxt;
+      $("dSyn").textContent = p.syn;
+    }
+
+    function select(channelId, idx, tune) {
+      state.focusCh = channelId;
+      state.focusIdx = idx;
+      if (tune) {
+        state.playingId = channelId;
+        setPlayer(ch(channelId));
+      }
+      setDetail();
+      applyChrome();
+    }
+
+    function zapTo(id) {
+      const channel = ch(id);
+      const live = channel.programmes.findIndex((p) => toMin(p.start) <= NOW && NOW < toMin(p.end));
+      const idx = live >= 0 ? live : windowIdxs(channel)[0] || 0;
+      select(id, idx, true);
+      document.querySelector('.epg-row[data-ch="' + id + '"]')?.scrollIntoView({ block: "nearest" });
+      document.querySelector('.zap-item[data-ch="' + id + '"]')?.scrollIntoView({ block: "nearest" });
+    }
+
+    function move(dir) {
+      const vis = visibleGuide();
+      if (!vis.length) return;
+      let ci = vis.findIndex((c) => c.id === state.focusCh);
+      if (ci < 0) {
+        select(vis[0].id, windowIdxs(vis[0])[0] || 0, false);
+        return;
+      }
+      let channel = vis[ci];
+      let idxs = windowIdxs(channel);
+      let pi = idxs.indexOf(state.focusIdx);
+      if (pi < 0) pi = 0;
+
+      if (dir === "left") {
+        if (pi > 0) pi -= 1;
+        else {
+          ci = (ci - 1 + vis.length) % vis.length;
+          channel = vis[ci];
+          idxs = windowIdxs(channel);
+          pi = idxs.length - 1;
+        }
+      } else if (dir === "right") {
+        if (pi < idxs.length - 1) pi += 1;
+        else {
+          ci = (ci + 1) % vis.length;
+          channel = vis[ci];
+          idxs = windowIdxs(channel);
+          pi = 0;
+        }
+      } else if (dir === "up" || dir === "down") {
+        const t = mid(channel.programmes[state.focusIdx]);
+        ci = dir === "up" ? (ci - 1 + vis.length) % vis.length : (ci + 1) % vis.length;
+        channel = vis[ci];
+        select(channel.id, idxAtTime(channel, t), false);
+        return;
+      }
+
+      select(channel.id, idxs[pi], false);
+    }
+
+    function searchHits(q) {
+      const s = q.trim().toLowerCase();
+      if (!s) return { channels: [], programmes: [] };
+      const hasKw = (obj) => (obj.keywords || []).some((k) => k.includes(s));
+      const channels = CHANNELS.filter((c) => c.name.toLowerCase().includes(s) || hasKw(c));
+      const byTitle = new Map();
+      CHANNELS.forEach((c) => {
+        c.programmes.forEach((p, i) => {
+          if (!(p.title.toLowerCase().includes(s) || hasKw(p))) return;
+          const prev = byTitle.get(p.title);
+          if (!prev || (!inWindow(prev.p) && inWindow(p))) byTitle.set(p.title, { c, p, i });
+        });
+      });
+      return { channels, programmes: [...byTitle.values()] };
+    }
+
+    function renderSearch() {
+      const overlay = $("searchOverlay");
+      const q = state.query.trim();
+      if (!q) {
+        overlay.classList.remove("is-open");
+        overlay.hidden = true;
+        return;
+      }
+      overlay.hidden = false;
+      overlay.classList.add("is-open");
+      const { channels, programmes } = searchHits(q);
+      const col = (title, items) => {
+        if (!items) return "<div><h2>" + title + "</h2><p class='search-empty'>No matches</p></div>";
+        return "<div><h2>" + title + "</h2>" + items + "</div>";
+      };
+      const chHtml = channels.length
+        ? channels.map((c) => `<button type="button" class="hit" data-hit="ch" data-id="${c.id}"><b>${c.name}</b><span>CH${c.num}${c.guide ? "" : " · catalog"}</span></button>`).join("")
+        : null;
+      const pHtml = programmes.length
+        ? programmes.map((x) => `<button type="button" class="hit" data-hit="p" data-id="${x.c.id}" data-i="${x.i}"><b>${x.p.title}</b><span>${x.c.name} · ${x.p.start}–${x.p.end === "24:00" ? "00:00" : x.p.end}</span></button>`).join("")
+        : null;
+      $("searchPanel").innerHTML = col("Channels", chHtml) + col("Programmes", pHtml);
+    }
+
+    function openSheet(open) {
+      state.sheet = open;
+      $("sheet").classList.toggle("is-open", open);
+      $("scrim").classList.toggle("is-open", open);
+    }
+
+    function closeSearch() {
+      state.query = "";
+      $("search").value = "";
+      $("search").blur();
+      renderSearch();
+    }
+
+    document.querySelector(".grid-frame").style.setProperty("--now-frac", String(NOW_FRAC));
+
+    renderGroups();
+    renderTimeline();
+    renderZap();
+    renderRows();
+    setPlayer(ch(state.playingId));
+    setDetail();
+    applyChrome();
+
+    $("groups").addEventListener("click", (e) => {
+      const btn = e.target.closest(".group");
+      if (!btn) return;
+      state.group = btn.dataset.g;
+      const vis = visibleGuide();
+      if (vis.length && !vis.some((c) => c.id === state.focusCh)) {
+        const idx = windowIdxs(vis[0])[0] || 0;
+        state.focusCh = vis[0].id;
+        state.focusIdx = idx;
+        setDetail();
+      }
+      renderGroups();
+      applyChrome();
+    });
+
+    $("zap").addEventListener("click", (e) => {
+      const btn = e.target.closest(".zap-item");
+      if (btn) zapTo(btn.dataset.ch);
+    });
+
+    $("rows").addEventListener("click", (e) => {
+      const btn = e.target.closest(".cell");
+      if (!btn) return;
+      select(btn.dataset.ch, Number(btn.dataset.i), true);
+    });
+
+    $("watchBtn").addEventListener("click", () => {
+      select(state.focusCh, state.focusIdx, true);
+    });
+
+    $("remindBtn").addEventListener("click", () => {
+      const k = keyOf(ch(state.focusCh), state.focusIdx);
+      if (state.reminds[k]) delete state.reminds[k];
+      else state.reminds[k] = true;
+      applyChrome();
+    });
+
+    $("feedsBtn").addEventListener("click", () => openSheet(true));
+    $("sheetDone").addEventListener("click", () => openSheet(false));
+    $("scrim").addEventListener("click", () => openSheet(false));
+
+    $("search").addEventListener("input", (e) => {
+      state.query = e.target.value;
+      renderSearch();
+    });
+
+    $("search").addEventListener("focus", () => {
+      if (state.query.trim()) renderSearch();
+    });
+
+    $("searchOverlay").addEventListener("click", (e) => {
+      const hit = e.target.closest(".hit");
+      if (!hit) return;
+      const id = hit.dataset.id;
+      const channel = ch(id);
+      if (hit.dataset.hit === "ch") {
+        if (channel.guide) zapTo(id);
+        else {
+          state.playingId = id;
+          state.focusCh = id;
+          const live = channel.programmes.findIndex((p) => toMin(p.start) <= NOW && NOW < toMin(p.end));
+          state.focusIdx = live >= 0 ? live : 0;
+          setPlayer(channel);
+          setDetail();
+          applyChrome();
+        }
+      } else {
+        const i = Number(hit.dataset.i);
+        if (channel.guide) select(id, i, true);
+        else {
+          state.playingId = id;
+          state.focusCh = id;
+          state.focusIdx = i;
+          setPlayer(channel);
+          setDetail();
+          applyChrome();
+        }
+      }
+      closeSearch();
+    });
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        if (state.sheet) openSheet(false);
+        else closeSearch();
+        return;
+      }
+      if (e.key === "/" && document.activeElement !== $("search") && document.activeElement.tagName !== "INPUT") {
+        e.preventDefault();
+        $("search").focus();
+        return;
+      }
+      if (document.activeElement && (document.activeElement.tagName === "INPUT" || document.activeElement.tagName === "TEXTAREA")) return;
+      if (state.sheet) return;
+      if (state.query && $("searchOverlay").classList.contains("is-open")) return;
+      const map = { ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right" };
+      if (map[e.key]) {
+        e.preventDefault();
+        move(map[e.key]);
+      }
+    });
+  </script>
+</body>
+</html>

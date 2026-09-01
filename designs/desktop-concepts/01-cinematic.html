@@ -1,0 +1,1294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sparrow — Night Theatre</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600;1,700&family=Sora:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #070709;
+      --surface: #121218;
+      --gold: #c9a36a;
+      --wine: #8e2f45;
+      --text: #f3ece2;
+      --muted: #9a9288;
+      --gold-line: rgba(201, 163, 106, 0.22);
+      --gold-soft: rgba(201, 163, 106, 0.55);
+      --wine-glow: rgba(142, 47, 69, 0.5);
+      --serif: "Cormorant Garamond", "Times New Roman", serif;
+      --sans: "Sora", "Gill Sans", sans-serif;
+      --chrome: 52px;
+      --hero: 58vh;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      overflow: hidden;
+      color-scheme: dark;
+    }
+
+    body {
+      font-size: 13px;
+      font-weight: 400;
+      letter-spacing: 0.01em;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    ::selection { background: var(--wine); color: var(--text); }
+
+    button, input {
+      font-family: inherit;
+      color: inherit;
+      background: none;
+      border: 0;
+    }
+
+    button { cursor: pointer; }
+
+    :focus { outline: none; }
+
+    :focus-visible {
+      outline: 1px solid var(--gold);
+      outline-offset: 3px;
+    }
+
+    .proscenium {
+      position: fixed;
+      inset: 8px;
+      border: 1px solid var(--gold-line);
+      pointer-events: none;
+      z-index: 80;
+    }
+
+    .curtain {
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      width: min(6.5vw, 88px);
+      pointer-events: none;
+      z-index: 70;
+    }
+
+    .curtain-l {
+      left: 0;
+      background:
+        repeating-linear-gradient(90deg, rgba(201, 163, 106, 0.045) 0 1px, transparent 1px 13px),
+        linear-gradient(90deg, #040406 0%, rgba(7, 7, 9, 0.92) 42%, transparent 100%);
+    }
+
+    .curtain-r {
+      right: 0;
+      background:
+        repeating-linear-gradient(90deg, transparent 0 12px, rgba(201, 163, 106, 0.045) 12px 13px),
+        linear-gradient(270deg, #040406 0%, rgba(7, 7, 9, 0.92) 42%, transparent 100%);
+    }
+
+    .vignette {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 60;
+      background:
+        radial-gradient(ellipse at 50% 38%, transparent 28%, rgba(7, 7, 9, 0.45) 72%, rgba(7, 7, 9, 0.88) 100%);
+    }
+
+    .grain {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 90;
+      opacity: 0.07;
+      mix-blend-mode: overlay;
+    }
+
+    .grain svg { width: 100%; height: 100%; display: block; }
+
+    .chrome {
+      position: relative;
+      z-index: 30;
+      height: var(--chrome);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 42px 0 48px;
+      animation: fade-up 0.9s ease both;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .wordmark {
+      font-family: var(--serif);
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 0.48em;
+      text-indent: 0.48em;
+      line-height: 1;
+    }
+
+    .live-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 4px 9px 4px 8px;
+      border: 1px solid rgba(142, 47, 69, 0.55);
+      background: rgba(142, 47, 69, 0.14);
+    }
+
+    .live-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--wine);
+      box-shadow: 0 0 8px var(--wine-glow);
+      animation: breathe 2.6s ease-in-out infinite;
+    }
+
+    .live-pill span {
+      font-size: 9px;
+      font-weight: 500;
+      letter-spacing: 0.28em;
+      color: #e8cfc8;
+    }
+
+    .chrome-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .icon-btn {
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      transition: color 0.2s ease;
+    }
+
+    .icon-btn:hover { color: var(--gold); }
+
+    .icon-btn svg {
+      width: 16px;
+      height: 16px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 1.4;
+    }
+
+    .stage {
+      position: relative;
+      height: var(--hero);
+      margin: 0 28px 0 36px;
+      overflow: hidden;
+      animation: fade-up 1s ease 0.08s both;
+    }
+
+    .still {
+      position: absolute;
+      inset: -8%;
+      transform-origin: 42% 38%;
+      animation: kenburns 32s ease-in-out infinite alternate;
+      transition: filter 0.5s ease, opacity 0.6s ease;
+    }
+
+    .stage.is-held .still {
+      filter: brightness(0.42) saturate(0.65);
+    }
+
+    .still-wash {
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 70% 55% at 62% 38%, rgba(201, 163, 106, 0.28), transparent 62%),
+        radial-gradient(ellipse 45% 40% at 28% 58%, var(--wine-glow), transparent 70%),
+        radial-gradient(ellipse 80% 70% at 50% 100%, rgba(18, 18, 24, 0.95), transparent 55%),
+        linear-gradient(118deg, #1a120e 0%, #2a1c14 28%, #3d2418 48%, #1c1014 72%, #0c0b10 100%);
+    }
+
+    .still-bloom {
+      position: absolute;
+      width: 42%;
+      height: 48%;
+      right: 12%;
+      top: 10%;
+      background: radial-gradient(circle, rgba(243, 236, 226, 0.22), rgba(201, 163, 106, 0.08) 42%, transparent 70%);
+      filter: blur(8px);
+    }
+
+    .still-scan {
+      position: absolute;
+      inset: 0;
+      background: repeating-linear-gradient(
+        180deg,
+        transparent 0 3px,
+        rgba(7, 7, 9, 0.08) 3px 4px
+      );
+      opacity: 0.35;
+    }
+
+    .stage-veil {
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(90deg, rgba(7, 7, 9, 0.72) 0%, rgba(7, 7, 9, 0.28) 38%, transparent 62%),
+        linear-gradient(180deg, rgba(7, 7, 9, 0.15) 0%, transparent 28%, rgba(7, 7, 9, 0.88) 100%);
+    }
+
+    .stage-copy {
+      position: relative;
+      z-index: 2;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      padding: 0 28px 22px 20px;
+    }
+
+    .on-air {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 14px;
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: 0.38em;
+      color: var(--gold);
+    }
+
+    .on-air i {
+      font-style: normal;
+      color: #d7a0ab;
+      letter-spacing: 0.32em;
+    }
+
+    .on-air::before {
+      content: "";
+      width: 18px;
+      height: 1px;
+      background: var(--gold);
+      opacity: 0.7;
+    }
+
+    .ch-kicker {
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.34em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    .programme {
+      font-family: var(--serif);
+      font-style: italic;
+      font-weight: 500;
+      font-size: clamp(4.4rem, 8.4vw, 8.2rem);
+      line-height: 0.88;
+      letter-spacing: -0.02em;
+      color: var(--text);
+      text-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+      max-width: 14ch;
+    }
+
+    .stage-meta {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 32px;
+      margin-top: 22px;
+    }
+
+    .transport {
+      display: flex;
+      align-items: center;
+      gap: 0;
+    }
+
+    .t-btn {
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: 0.3em;
+      text-transform: uppercase;
+      color: var(--muted);
+      padding: 8px 0;
+      transition: color 0.2s ease;
+    }
+
+    .t-btn:hover { color: var(--gold); }
+
+    .t-btn.is-on { color: var(--text); }
+
+    .t-rule {
+      width: 1px;
+      height: 10px;
+      margin: 0 16px;
+      background: var(--gold-line);
+    }
+
+    .remain {
+      font-size: 11px;
+      letter-spacing: 0.18em;
+      color: var(--gold);
+      margin-left: 8px;
+    }
+
+    .tonight {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      max-width: 58%;
+      overflow: hidden;
+      mask-image: linear-gradient(90deg, #000 70%, transparent);
+    }
+
+    .tonight-item {
+      flex: 0 0 auto;
+      padding: 0 16px;
+      border-left: 1px solid var(--gold-line);
+      min-width: 0;
+    }
+
+    .tonight-item:first-child { border-left: 0; padding-left: 0; }
+
+    .tonight-item time {
+      display: block;
+      font-size: 9px;
+      letter-spacing: 0.2em;
+      color: var(--muted);
+      margin-bottom: 3px;
+    }
+
+    .tonight-item b {
+      display: block;
+      font-weight: 400;
+      font-size: 12px;
+      color: var(--text);
+      white-space: nowrap;
+    }
+
+    .tonight-item.is-now time { color: var(--gold); }
+
+    .tonight-item.is-now b { color: #e8d3b0; }
+
+    .tonight-item.is-now {
+      position: relative;
+    }
+
+    .tonight-item.is-now::after {
+      content: "";
+      position: absolute;
+      left: 16px;
+      right: 16px;
+      bottom: -8px;
+      height: 1px;
+      background: var(--wine);
+    }
+
+    .shelves {
+      position: relative;
+      z-index: 20;
+      height: calc(100vh - var(--chrome) - var(--hero));
+      overflow-x: hidden;
+      overflow-y: auto;
+      padding: 6px 36px 28px 48px;
+      scrollbar-width: none;
+      animation: fade-up 1.05s ease 0.22s both;
+    }
+
+    .shelves::-webkit-scrollbar { display: none; }
+
+    .chips {
+      display: flex;
+      align-items: baseline;
+      gap: 4px;
+      margin-bottom: 14px;
+    }
+
+    .chip {
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--muted);
+      padding: 6px 10px;
+      transition: color 0.2s ease;
+    }
+
+    .chip:hover { color: var(--text); }
+
+    .chip.is-on {
+      color: var(--gold);
+    }
+
+    .chip small {
+      font-size: 9px;
+      letter-spacing: 0.08em;
+      margin-left: 6px;
+      opacity: 0.7;
+      font-weight: 400;
+    }
+
+    .chip-rule {
+      color: rgba(154, 146, 136, 0.35);
+      font-size: 10px;
+      padding: 0 2px;
+    }
+
+    .rail {
+      margin-bottom: 18px;
+    }
+
+    .rail-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      padding-right: 12px;
+    }
+
+    .rail-head h2 {
+      font-family: var(--serif);
+      font-weight: 500;
+      font-size: 18px;
+      letter-spacing: 0.04em;
+      color: #e8dfd4;
+    }
+
+    .rail-head span {
+      font-size: 9px;
+      letter-spacing: 0.28em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .track {
+      display: flex;
+      gap: 10px;
+      overflow-x: auto;
+      padding: 4px 4px 10px 2px;
+      scroll-snap-type: x mandatory;
+      scrollbar-width: none;
+    }
+
+    .track::-webkit-scrollbar { display: none; }
+
+    .card {
+      flex: 0 0 auto;
+      width: min(16.2vw, 268px);
+      scroll-snap-align: start;
+      text-align: left;
+      cursor: pointer;
+      transform: translateZ(0);
+      transition: transform 0.35s ease;
+    }
+
+    .card:hover { transform: scale(1.045); }
+
+    .card.is-selected .still-card {
+      box-shadow: inset 0 0 0 1px var(--gold);
+    }
+
+    .still-card {
+      aspect-ratio: 1.85 / 1;
+      position: relative;
+      overflow: hidden;
+      background:
+        radial-gradient(ellipse at 28% 36%, var(--c2), transparent 56%),
+        radial-gradient(ellipse at 78% 72%, var(--c3), transparent 52%),
+        linear-gradient(158deg, var(--c1), #0a0a0d);
+    }
+
+    .still-card::after {
+      content: "";
+      position: absolute;
+      left: 10%;
+      right: 10%;
+      bottom: 28%;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--gold-soft), transparent);
+      opacity: 0.28;
+    }
+
+    .card-progress {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 2px;
+      background: rgba(243, 236, 226, 0.12);
+      z-index: 1;
+    }
+
+    .card-progress i {
+      display: block;
+      height: 100%;
+      background: var(--gold);
+      font-style: normal;
+    }
+
+    .card-meta {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 8px 2px 0;
+      position: relative;
+    }
+
+    .card-meta::after {
+      content: "";
+      position: absolute;
+      left: 2px;
+      bottom: -5px;
+      width: 0;
+      height: 1px;
+      background: var(--gold);
+      transition: width 0.35s ease;
+    }
+
+    .card:hover .card-meta::after,
+    .card.is-selected .card-meta::after { width: 42%; }
+
+    .card-ch {
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.06em;
+      color: var(--text);
+    }
+
+    .card-now {
+      font-size: 11px;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .card.is-hidden { display: none; }
+
+    .empty-shelf {
+      display: none;
+      padding: 28px 4px 12px;
+      font-family: var(--serif);
+      font-style: italic;
+      font-size: 20px;
+      color: var(--muted);
+    }
+
+    .empty-shelf.is-on { display: block; }
+
+    .timed {
+      width: min(13.4vw, 210px);
+    }
+
+    .timed .still-card {
+      aspect-ratio: 2.15 / 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      padding: 12px 14px;
+    }
+
+    .timed .still-card::after { display: none; }
+
+    .timed time {
+      font-family: var(--serif);
+      font-size: 22px;
+      font-weight: 500;
+      line-height: 1;
+      color: var(--gold);
+    }
+
+    .timed .timed-title {
+      margin-top: 4px;
+      font-size: 12px;
+      color: var(--text);
+    }
+
+    .timed.is-live .still-card {
+      box-shadow: inset 0 0 0 1px rgba(142, 47, 69, 0.7);
+    }
+
+    .timed .now-tag {
+      position: absolute;
+      top: 10px;
+      right: 12px;
+      font-size: 8px;
+      letter-spacing: 0.28em;
+      color: #d7a0ab;
+    }
+
+    .veil {
+      position: fixed;
+      inset: 0;
+      background: rgba(7, 7, 9, 0.72);
+      z-index: 100;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.28s ease;
+    }
+
+    .veil.is-on {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .search {
+      position: fixed;
+      inset: 0;
+      z-index: 110;
+      display: flex;
+      flex-direction: column;
+      padding: 56px 10vw 40px;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(10px);
+      transition: opacity 0.32s ease, transform 0.32s ease;
+    }
+
+    .search.is-on {
+      opacity: 1;
+      pointer-events: auto;
+      transform: none;
+    }
+
+    .search-top {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--gold-line);
+      padding-bottom: 10px;
+    }
+
+    .search-top label {
+      font-size: 10px;
+      letter-spacing: 0.32em;
+      text-transform: uppercase;
+      color: var(--gold);
+      display: block;
+      margin-bottom: 8px;
+    }
+
+    #q {
+      width: min(640px, 70vw);
+      font-family: var(--serif);
+      font-style: italic;
+      font-size: clamp(2rem, 4vw, 3.2rem);
+      line-height: 1.1;
+      caret-color: var(--gold);
+    }
+
+    #q::placeholder { color: rgba(154, 146, 136, 0.45); }
+
+    .esc-hint {
+      font-size: 10px;
+      letter-spacing: 0.28em;
+      color: var(--muted);
+      padding-bottom: 12px;
+    }
+
+    .results {
+      display: grid;
+      grid-template-columns: 1fr 1px 1fr;
+      gap: 0 48px;
+      margin-top: 36px;
+      min-height: 0;
+      flex: 1;
+    }
+
+    .col-rule {
+      background: var(--gold-line);
+    }
+
+    .col h3 {
+      font-size: 10px;
+      letter-spacing: 0.32em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 16px;
+    }
+
+    .hit {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      width: 100%;
+      padding: 12px 0;
+      border-bottom: 1px solid rgba(201, 163, 106, 0.1);
+      text-align: left;
+      transition: color 0.2s ease;
+    }
+
+    .hit:hover .hit-name,
+    .hit:focus-visible .hit-name { color: var(--gold); }
+
+    .hit-name {
+      font-family: var(--serif);
+      font-size: 26px;
+      font-weight: 500;
+      line-height: 1.1;
+    }
+
+    .hit-meta {
+      margin-top: 4px;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+
+    .no-hits {
+      font-family: var(--serif);
+      font-style: italic;
+      color: var(--muted);
+      font-size: 18px;
+      padding-top: 8px;
+    }
+
+    .drawer {
+      position: fixed;
+      top: 8px;
+      right: 8px;
+      bottom: 8px;
+      width: min(400px, 38vw);
+      background: #0d0d12;
+      border-left: 1px solid var(--gold-line);
+      z-index: 120;
+      transform: translateX(104%);
+      transition: transform 0.38s cubic-bezier(0.22, 1, 0.36, 1);
+      padding: 36px 36px 28px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .drawer.is-on { transform: none; }
+
+    .drawer h2 {
+      font-family: var(--serif);
+      font-style: italic;
+      font-weight: 500;
+      font-size: 34px;
+      line-height: 1;
+      margin-bottom: 6px;
+    }
+
+    .drawer-lead {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 36px;
+    }
+
+    .field {
+      margin-bottom: 26px;
+    }
+
+    .field span {
+      display: block;
+      font-size: 9px;
+      letter-spacing: 0.28em;
+      text-transform: uppercase;
+      color: var(--gold);
+      margin-bottom: 8px;
+    }
+
+    .field input {
+      width: 100%;
+      font-size: 13px;
+      letter-spacing: 0.02em;
+      padding: 8px 0 10px;
+      border-bottom: 1px solid var(--gold-line);
+      color: var(--text);
+    }
+
+    .field input:focus { border-bottom-color: var(--gold); }
+
+    .drawer-actions {
+      display: flex;
+      gap: 28px;
+      margin: 8px 0 40px;
+    }
+
+    .text-act {
+      font-size: 10px;
+      letter-spacing: 0.28em;
+      text-transform: uppercase;
+      color: var(--muted);
+      padding: 8px 0;
+      border-bottom: 1px solid transparent;
+      transition: color 0.2s ease, border-color 0.2s ease;
+    }
+
+    .text-act:hover {
+      color: var(--gold);
+      border-bottom-color: var(--gold);
+    }
+
+    .status {
+      margin-top: auto;
+      display: grid;
+      gap: 10px;
+      padding-top: 20px;
+      border-top: 1px solid var(--gold-line);
+    }
+
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .status-row b {
+      font-weight: 500;
+      color: var(--text);
+    }
+
+    .status-row b em {
+      font-style: normal;
+      color: var(--gold);
+      margin-right: 8px;
+    }
+
+    @keyframes kenburns {
+      from { transform: scale(1) translate(0, 0); }
+      to { transform: scale(1.1) translate(-2.4%, -1.2%); }
+    }
+
+    @keyframes fade-up {
+      from { opacity: 0; transform: translateY(16px); }
+      to { opacity: 1; transform: none; }
+    }
+
+    @keyframes breathe {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .still { animation: none; }
+      .live-dot { animation: none; }
+      .chrome, .stage, .shelves { animation: none; }
+      .search, .drawer, .veil, .card, .t-btn, .icon-btn, .chip, .text-act, .hit-name {
+        transition: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="proscenium" aria-hidden="true"></div>
+  <div class="curtain curtain-l" aria-hidden="true"></div>
+  <div class="curtain curtain-r" aria-hidden="true"></div>
+  <div class="vignette" aria-hidden="true"></div>
+  <div class="grain" aria-hidden="true">
+    <svg xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
+      <filter id="film">
+        <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="4" stitchTiles="stitch"/>
+      </filter>
+      <rect width="100%" height="100%" filter="url(#film)"></rect>
+    </svg>
+  </div>
+
+  <header class="chrome">
+    <div class="brand">
+      <div class="wordmark">SPARROW</div>
+      <div class="live-pill" title="On air">
+        <span class="live-dot" aria-hidden="true"></span>
+        <span>LIVE</span>
+      </div>
+    </div>
+    <div class="chrome-actions">
+      <button class="icon-btn" id="open-search" type="button" aria-label="Search" title="Search  /">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.2"/><path d="M15.4 15.4 20 20"/></svg>
+      </button>
+      <button class="icon-btn" id="open-sources" type="button" aria-label="Sources" title="Sources">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="3.1"/>
+          <path d="M12 3.6v1.8M12 18.6v1.8M4.9 6.4l1.3 1.3M17.8 16.3l1.3 1.3M3.6 12h1.8M18.6 12h1.8M4.9 17.6l1.3-1.3M17.8 7.7l1.3-1.3"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <section class="stage" id="stage">
+    <div class="still" id="still">
+      <div class="still-wash" id="still-wash"></div>
+      <div class="still-bloom"></div>
+      <div class="still-scan"></div>
+    </div>
+    <div class="stage-veil"></div>
+    <div class="stage-copy">
+      <div class="on-air" id="on-air"><i>ON AIR</i></div>
+      <div class="ch-kicker" id="ch-kicker">CH07 · Yle TV1 HD</div>
+      <h1 class="programme" id="programme">A-studio</h1>
+      <div class="stage-meta">
+        <div>
+          <div class="transport">
+            <button class="t-btn is-on" id="btn-play" type="button">Play</button>
+            <span class="t-rule"></span>
+            <button class="t-btn" id="btn-stop" type="button">Stop</button>
+            <span class="t-rule"></span>
+            <button class="t-btn" id="btn-vol" type="button">Vol 72</button>
+            <span class="remain" id="remain">21:00–21:45 · 27 min left</span>
+          </div>
+        </div>
+        <div class="tonight" id="tonight-strip" aria-label="Tonight on this channel"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="shelves">
+    <div class="chips" role="tablist" aria-label="Channel groups">
+      <button class="chip is-on" data-group="all" type="button">All<small>2841</small></button>
+      <span class="chip-rule" aria-hidden="true">·</span>
+      <button class="chip" data-group="finland" type="button">Finland<small>86</small></button>
+      <span class="chip-rule" aria-hidden="true">·</span>
+      <button class="chip" data-group="news" type="button">News<small>120</small></button>
+      <span class="chip-rule" aria-hidden="true">·</span>
+      <button class="chip" data-group="sports" type="button">Sports<small>64</small></button>
+      <span class="chip-rule" aria-hidden="true">·</span>
+      <button class="chip" data-group="anime" type="button">Anime<small>41</small></button>
+      <span class="chip-rule" aria-hidden="true">·</span>
+      <button class="chip" data-group="uhd" type="button">4K<small>12</small></button>
+    </div>
+
+    <div class="rail" data-rail="continue">
+      <div class="rail-head">
+        <h2>Continue watching</h2>
+        <span>From last night</span>
+      </div>
+      <div class="track" id="rail-continue"></div>
+    </div>
+
+    <div class="rail" data-rail="catalogue">
+      <div class="rail-head">
+        <h2 id="catalogue-title">Finland</h2>
+        <span id="catalogue-sub">National terrestrials</span>
+      </div>
+      <div class="track" id="rail-catalogue"></div>
+      <p class="empty-shelf" id="empty-shelf">Nothing on this shelf tonight.</p>
+    </div>
+
+    <div class="rail" data-rail="news">
+      <div class="rail-head">
+        <h2>News</h2>
+        <span>World desks</span>
+      </div>
+      <div class="track" id="rail-news"></div>
+    </div>
+
+    <div class="rail" data-rail="guide">
+      <div class="rail-head">
+        <h2>Tonight on the guide</h2>
+        <span>Yle TV1 HD</span>
+      </div>
+      <div class="track" id="rail-guide"></div>
+    </div>
+  </section>
+
+  <div class="veil" id="veil" hidden></div>
+
+  <div class="search" id="search" role="dialog" aria-modal="true" aria-labelledby="search-label" hidden>
+    <div class="search-top">
+      <div>
+        <label id="search-label" for="q">Search the house</label>
+        <input id="q" type="search" placeholder="Channels, programmes…" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="esc-hint">ESC</div>
+    </div>
+    <div class="results">
+      <div class="col">
+        <h3>Channels</h3>
+        <div id="hits-ch"></div>
+      </div>
+      <div class="col-rule" aria-hidden="true"></div>
+      <div class="col">
+        <h3>Programmes</h3>
+        <div id="hits-pg"></div>
+      </div>
+    </div>
+  </div>
+
+  <aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="src-title" hidden>
+    <h2 id="src-title">Sources</h2>
+    <p class="drawer-lead">The catalogue and the evening’s guide. Local house at 192.168.1.42.</p>
+    <label class="field">
+      <span>M3U URL</span>
+      <input id="m3u" type="url" value="http://192.168.1.42:8080/playlist.m3u">
+    </label>
+    <label class="field">
+      <span>XMLTV URL</span>
+      <input id="xmltv" type="url" value="http://192.168.1.42:8080/epg.xml">
+    </label>
+    <div class="drawer-actions">
+      <button class="text-act" id="btn-replace" type="button">Replace</button>
+      <button class="text-act" id="btn-refresh" type="button">Refresh</button>
+    </div>
+    <div class="status">
+      <div class="status-row"><span>Channels</span><b><em>LIVE</em>2m ago</b></div>
+      <div class="status-row"><span>Guide</span><b><em>LIVE</em>12m ago</b></div>
+      <div class="status-row"><span>House</span><b>192.168.1.42</b></div>
+    </div>
+  </aside>
+
+  <script>
+    const CHANNELS = {
+      ch01: { id: "ch01", name: "Hero HD FI", kicker: "CH01 · Hero HD FI", now: "Heroes of the North", next: "Late Night Mix", slot: "20:45–21:30 · 12 min left", groups: ["all", "finland", "uhd"], still: ["#24160e", "#c9a36a", "#8e2f45"], continue: 9 },
+      ch02: { id: "ch02", name: "JIM HD FI", kicker: "CH02 · JIM HD FI", now: "Poliisit", next: "Arman Pohjantähden alla", slot: "21:00–21:40 · 22 min left", groups: ["all", "finland"], still: ["#0e1c1a", "#3a6b58", "#c9a36a"] },
+      ch03: { id: "ch03", name: "MTV Ava HD FI", kicker: "CH03 · MTV Ava HD FI", now: "Emmerdale", next: "Naapureina", slot: "21:00–21:30 · 12 min left", groups: ["all", "finland"], still: ["#1a1014", "#8e2f45", "#c9a36a"] },
+      ch04: { id: "ch04", name: "MTV3 HD FI", kicker: "CH04 · MTV3 HD FI", now: "Salatut elämät", next: "Kymmenen uutiset", slot: "21:00–21:30 · 12 min left", groups: ["all", "finland"], still: ["#1c1208", "#b56a32", "#c9a36a"], continue: 18 },
+      ch05: { id: "ch05", name: "Nelonen HD FI", kicker: "CH05 · Nelonen HD FI", now: "House", next: "The Voice of Finland", slot: "20:55–21:45 · 27 min left", groups: ["all", "finland"], still: ["#0d1420", "#2c4a78", "#c9a36a"], continue: 41 },
+      ch06: { id: "ch06", name: "Sub HD FI", kicker: "CH06 · Sub HD FI", now: "Simpsonit", next: "Family Guy", slot: "21:00–21:30 · 12 min left", groups: ["all", "finland"], still: ["#180e16", "#6a3060", "#c9a36a"] },
+      ch07: { id: "ch07", name: "Yle TV1 HD", kicker: "CH07 · Yle TV1 HD", now: "A-studio", next: "Oddasat", slot: "21:00–21:45 · 27 min left", groups: ["all", "finland", "news"], still: ["#141018", "#8e2f45", "#c9a36a"], continue: 62 },
+      ch08: { id: "ch08", name: "Yle TV2 HD", kicker: "CH08 · Yle TV2 HD", now: "Urheiluruutu", next: "A-tuubi", slot: "21:00–21:15 · 3 min left", groups: ["all", "finland", "sports", "news"], still: ["#0e1812", "#2f5a3a", "#c9a36a"] },
+      ch09: { id: "ch09", name: "Yle Teema Fem HD", kicker: "CH09 · Yle Teema Fem HD", now: "Dokumentti: Sibelius", next: "Konzert", slot: "20:45–21:40 · 22 min left", groups: ["all", "finland", "uhd"], still: ["#1a1018", "#6e2a40", "#e8d3b0"], continue: 77 },
+      ch10: { id: "ch10", name: "Kutonen HD FI", kicker: "CH10 · Kutonen HD FI", now: "Top Gear", next: "Wheeler Dealers", slot: "20:50–21:45 · 27 min left", groups: ["all", "finland", "sports"], still: ["#1a100c", "#8a3a1c", "#c9a36a"] },
+      ch11: { id: "ch11", name: "Frii HD FI", kicker: "CH11 · Frii HD FI", now: "Grey's Anatomy", next: "Station 19", slot: "21:00–21:55 · 37 min left", groups: ["all", "finland"], still: ["#161018", "#8e2f45", "#d4b48a"] },
+      ch12: { id: "ch12", name: "TLC HD FI", kicker: "CH12 · TLC HD FI", now: "90 Day Fiancé", next: "Sister Wives", slot: "21:00–22:00 · 42 min left", groups: ["all", "finland"], still: ["#1c0e10", "#8e2f45", "#c9a36a"] },
+      cnn: { id: "cnn", name: "CNN International", kicker: "News · CNN International", now: "CNN Newsroom", next: "The Lead", slot: "21:00–22:00 · 42 min left", groups: ["all", "news"], still: ["#10141c", "#8e2f45", "#c9a36a"] },
+      bbc: { id: "bbc", name: "BBC World News", kicker: "News · BBC World News", now: "BBC News", next: "Impact", slot: "21:00–21:30 · 12 min left", groups: ["all", "news"], still: ["#101018", "#3a3058", "#c9a36a"] }
+    };
+
+    const FINLAND = ["ch01", "ch02", "ch03", "ch04", "ch05", "ch06", "ch07", "ch08", "ch09", "ch10", "ch11", "ch12"];
+    const CONTINUE = ["ch07", "ch05", "ch04", "ch09", "ch01"];
+    const NEWS = ["ch07", "cnn", "bbc", "ch08"];
+
+    const SCHEDULE = [
+      { t: "20:00", title: "Yle Uutiset" },
+      { t: "20:30", title: "Puoli seitsemän" },
+      { t: "21:00", title: "A-studio", now: true },
+      { t: "21:45", title: "Oddasat" },
+      { t: "22:00", title: "Yle Uutiset" },
+      { t: "22:25", title: "Novosti Yle" },
+      { t: "22:30", title: "Document: Arctic Light" }
+    ];
+
+    const SEARCH_CH = [
+      { id: "ch07", name: "Yle TV1 HD", meta: "Finland · News" },
+      { id: "cnn", name: "CNN International", meta: "News" },
+      { id: "bbc", name: "BBC World News", meta: "News" },
+      { id: "ch08", name: "Yle TV2 HD", meta: "Finland" },
+      { id: "ch01", name: "Hero HD FI", meta: "Finland · 4K" },
+      { id: "ch04", name: "MTV3 HD FI", meta: "Finland" }
+    ];
+
+    const SEARCH_PG = [
+      { id: "ch07", name: "Yle Uutiset", meta: "Yle TV1 HD · 20:00 · News" },
+      { id: "ch07", name: "A-studio", meta: "Yle TV1 HD · 21:00 · News" },
+      { id: "ch07", name: "Oddasat", meta: "Yle TV1 HD · 21:45" },
+      { id: "bbc", name: "BBC News", meta: "BBC World News · 21:00 · News" },
+      { id: "cnn", name: "CNN Newsroom", meta: "CNN International · 21:00 · News" }
+    ];
+
+    const GROUP_COPY = {
+      all: { title: "Finland", sub: "National terrestrials" },
+      finland: { title: "Finland", sub: "National terrestrials" },
+      news: { title: "News", sub: "Desks still lit" },
+      sports: { title: "Sports", sub: "Tracks and pits" },
+      anime: { title: "Anime", sub: "After dark" },
+      uhd: { title: "4K", sub: "The large canvas" }
+    };
+
+    const els = {
+      stage: document.getElementById("stage"),
+      stillWash: document.getElementById("still-wash"),
+      onAir: document.getElementById("on-air"),
+      kicker: document.getElementById("ch-kicker"),
+      programme: document.getElementById("programme"),
+      remain: document.getElementById("remain"),
+      tonight: document.getElementById("tonight-strip"),
+      continue: document.getElementById("rail-continue"),
+      catalogue: document.getElementById("rail-catalogue"),
+      news: document.getElementById("rail-news"),
+      guide: document.getElementById("rail-guide"),
+      catTitle: document.getElementById("catalogue-title"),
+      catSub: document.getElementById("catalogue-sub"),
+      empty: document.getElementById("empty-shelf"),
+      search: document.getElementById("search"),
+      drawer: document.getElementById("drawer"),
+      veil: document.getElementById("veil"),
+      q: document.getElementById("q"),
+      hitsCh: document.getElementById("hits-ch"),
+      hitsPg: document.getElementById("hits-pg"),
+      play: document.getElementById("btn-play"),
+      stop: document.getElementById("btn-stop"),
+      vol: document.getElementById("btn-vol")
+    };
+
+    let selected = "ch07";
+    let playing = true;
+    let muted = false;
+    let group = "all";
+
+    function cardHTML(ch, opts = {}) {
+      const [c1, c2, c3] = ch.still;
+      const progress = opts.progress != null
+        ? `<div class="card-progress"><i style="width:${opts.progress}%"></i></div>`
+        : "";
+      return `<button class="card${ch.id === selected ? " is-selected" : ""}" type="button" data-id="${ch.id}" data-groups="${ch.groups.join(" ")}">
+        <div class="still-card" style="--c1:${c1};--c2:${c2};--c3:${c3}">${progress}</div>
+        <div class="card-meta">
+          <span class="card-ch">${ch.name}</span>
+          <span class="card-now">${ch.now} · next ${ch.next}</span>
+        </div>
+      </button>`;
+    }
+
+    function timedHTML(item) {
+      return `<button class="card timed${item.now ? " is-live" : ""}" type="button" data-id="ch07">
+        <div class="still-card" style="--c1:#141018;--c2:#8e2f45;--c3:#c9a36a">
+          ${item.now ? '<span class="now-tag">NOW</span>' : ""}
+          <time>${item.t}</time>
+          <span class="timed-title">${item.title}</span>
+        </div>
+      </button>`;
+    }
+
+    function paintTonight() {
+      els.tonight.innerHTML = SCHEDULE.map((s) =>
+        `<div class="tonight-item${s.now ? " is-now" : ""}"><time>${s.t}</time><b>${s.title}</b></div>`
+      ).join("");
+    }
+
+    function paintRails() {
+      els.continue.innerHTML = CONTINUE.map((id) => cardHTML(CHANNELS[id], { progress: CHANNELS[id].continue })).join("");
+      els.news.innerHTML = NEWS.map((id) => cardHTML(CHANNELS[id])).join("");
+      els.guide.innerHTML = SCHEDULE.map(timedHTML).join("");
+      paintCatalogue();
+    }
+
+    function paintCatalogue() {
+      const copy = GROUP_COPY[group];
+      els.catTitle.textContent = copy.title;
+      els.catSub.textContent = copy.sub;
+      const ids = Object.keys(CHANNELS).filter((id) => {
+        const ch = CHANNELS[id];
+        if (group === "all" || group === "finland") return FINLAND.includes(id);
+        return ch.groups.includes(group);
+      });
+      els.catalogue.innerHTML = ids.map((id) => cardHTML(CHANNELS[id])).join("");
+      els.empty.classList.toggle("is-on", ids.length === 0);
+    }
+
+    function applyStill(ch) {
+      const [c1, c2, c3] = ch.still;
+      els.stillWash.style.background = `
+        radial-gradient(ellipse 70% 55% at 62% 38%, rgba(201,163,106,0.28), transparent 62%),
+        radial-gradient(ellipse 45% 40% at 28% 58%, ${c2}99, transparent 70%),
+        radial-gradient(ellipse 80% 70% at 50% 100%, rgba(18,18,24,0.95), transparent 55%),
+        linear-gradient(118deg, ${c1} 0%, ${c2} 46%, ${c3}55 72%, #0c0b10 100%)
+      `;
+    }
+
+    function selectChannel(id) {
+      const ch = CHANNELS[id];
+      if (!ch) return;
+      selected = id;
+      els.kicker.textContent = ch.kicker;
+      els.programme.textContent = ch.now;
+      els.remain.textContent = ch.slot;
+      applyStill(ch);
+      document.querySelectorAll(".card[data-id]").forEach((n) => {
+        n.classList.toggle("is-selected", n.dataset.id === id && !n.classList.contains("timed"));
+      });
+      if (!playing) setPlaying(true);
+    }
+
+    function setPlaying(on) {
+      playing = on;
+      els.stage.classList.toggle("is-held", !on);
+      els.onAir.innerHTML = on ? "<i>ON AIR</i>" : "<i>HELD</i>";
+      els.play.classList.toggle("is-on", on);
+      els.stop.classList.toggle("is-on", !on);
+    }
+
+    function setOpen(which) {
+      const searchOn = which === "search";
+      const drawerOn = which === "drawer";
+      els.search.classList.toggle("is-on", searchOn);
+      els.drawer.classList.toggle("is-on", drawerOn);
+      els.veil.classList.toggle("is-on", searchOn || drawerOn);
+      els.search.hidden = !searchOn;
+      els.drawer.hidden = !drawerOn;
+      els.veil.hidden = !(searchOn || drawerOn);
+      if (searchOn) {
+        els.q.focus();
+        renderSearch(els.q.value);
+      }
+    }
+
+    function renderSearch(raw) {
+      const q = raw.trim().toLowerCase();
+      const ch = SEARCH_CH.filter((x) => !q || x.name.toLowerCase().includes(q) || x.meta.toLowerCase().includes(q));
+      const pg = SEARCH_PG.filter((x) => !q || x.name.toLowerCase().includes(q) || x.meta.toLowerCase().includes(q));
+      const hit = (x) => `<button class="hit" type="button" data-id="${x.id}"><span class="hit-name">${x.name}</span><span class="hit-meta">${x.meta}</span></button>`;
+      els.hitsCh.innerHTML = ch.length ? ch.map(hit).join("") : '<p class="no-hits">No channels in the house.</p>';
+      els.hitsPg.innerHTML = pg.length ? pg.map(hit).join("") : '<p class="no-hits">No programmes match.</p>';
+    }
+
+    document.querySelector(".shelves").addEventListener("click", (e) => {
+      const card = e.target.closest(".card[data-id]");
+      if (card) selectChannel(card.dataset.id);
+    });
+
+    document.querySelector(".chips").addEventListener("click", (e) => {
+      const chip = e.target.closest(".chip");
+      if (!chip) return;
+      group = chip.dataset.group;
+      document.querySelectorAll(".chip").forEach((c) => c.classList.toggle("is-on", c === chip));
+      paintCatalogue();
+    });
+
+    els.play.addEventListener("click", () => setPlaying(true));
+    els.stop.addEventListener("click", () => setPlaying(false));
+    els.vol.addEventListener("click", () => {
+      muted = !muted;
+      els.vol.textContent = muted ? "Vol —" : "Vol 72";
+      els.vol.classList.toggle("is-on", !muted);
+    });
+
+    document.getElementById("open-search").addEventListener("click", () => setOpen("search"));
+    document.getElementById("open-sources").addEventListener("click", () => setOpen("drawer"));
+    els.veil.addEventListener("click", () => setOpen(null));
+    els.q.addEventListener("input", () => renderSearch(els.q.value));
+
+    els.search.addEventListener("click", (e) => {
+      const hit = e.target.closest(".hit");
+      if (!hit) return;
+      selectChannel(hit.dataset.id);
+      setOpen(null);
+    });
+
+    document.getElementById("btn-replace").addEventListener("click", (e) => {
+      e.currentTarget.textContent = "Replaced";
+    });
+    document.getElementById("btn-refresh").addEventListener("click", (e) => {
+      e.currentTarget.textContent = "Fresh";
+    });
+
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "/" && document.activeElement !== els.q && document.activeElement !== document.getElementById("m3u") && document.activeElement !== document.getElementById("xmltv")) {
+        e.preventDefault();
+        setOpen("search");
+      }
+      if (e.key === "Escape") setOpen(null);
+    });
+
+    paintTonight();
+    paintRails();
+    applyStill(CHANNELS.ch07);
+    els.vol.classList.add("is-on");
+  </script>
+</body>
+</html>

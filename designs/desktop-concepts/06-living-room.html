@@ -1,0 +1,1773 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sparrow · Koti</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;500;700;800&family=Nunito+Sans:opsz,wght@6..12,400;6..12,500;6..12,600;6..12,700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --wall: #efe6d8;
+        --tile: #fffaf3;
+        --ink: #2b2724;
+        --ink-soft: #5e574f;
+        --sky: #6ba7c9;
+        --sky-soft: #d7ebf4;
+        --coral: #e07a5f;
+        --coral-soft: #f6d4c8;
+        --mint: #7cbc9a;
+        --mint-soft: #d4ebdd;
+        --butter: #f2c14e;
+        --butter-soft: #f8e7b8;
+        --recess: #e4d8c7;
+        --dusk: #3f3a36;
+        --dusk-deep: #2e2a27;
+        --glass: rgba(255, 250, 243, 0.72);
+        --display: "M PLUS Rounded 1c", ui-rounded, sans-serif;
+        --body: "Nunito Sans", ui-sans-serif, sans-serif;
+        --shadow-tile: 0 10px 28px rgba(43, 39, 36, 0.08);
+        --shadow-lift: 0 18px 40px rgba(43, 39, 36, 0.14);
+        --shadow-sky: 0 18px 44px rgba(107, 167, 201, 0.32);
+        --radius-tile: 28px;
+        --radius-pill: 999px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        color: var(--ink);
+        font-family: var(--body);
+        background: var(--wall);
+        overflow: hidden;
+      }
+
+      button,
+      input {
+        font: inherit;
+        color: inherit;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      button:focus-visible,
+      input:focus-visible,
+      .tile:focus-visible,
+      .dock-btn:focus-visible,
+      .group-btn:focus-visible,
+      .result:focus-visible,
+      .slot:focus-visible {
+        outline: 3px solid var(--sky);
+        outline-offset: 3px;
+      }
+
+      .blobs {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 0;
+        overflow: hidden;
+      }
+
+      .blob {
+        position: absolute;
+        border-radius: 50%;
+        filter: blur(90px);
+        opacity: 0.42;
+        animation: drift 36s ease-in-out infinite;
+      }
+
+      .blob.a {
+        width: 420px;
+        height: 420px;
+        left: -80px;
+        top: -60px;
+        background: var(--butter);
+      }
+
+      .blob.b {
+        width: 520px;
+        height: 520px;
+        right: -120px;
+        top: 12%;
+        background: var(--sky);
+        animation-duration: 44s;
+        animation-delay: -8s;
+      }
+
+      .blob.c {
+        width: 380px;
+        height: 380px;
+        left: 28%;
+        bottom: -120px;
+        background: var(--mint);
+        animation-duration: 40s;
+        animation-delay: -16s;
+      }
+
+      .blob.d {
+        width: 300px;
+        height: 300px;
+        right: 22%;
+        bottom: 8%;
+        background: var(--coral);
+        opacity: 0.28;
+        animation-duration: 48s;
+      }
+
+      @keyframes drift {
+        0%,
+        100% {
+          transform: translate(0, 0) scale(1);
+        }
+        50% {
+          transform: translate(28px, -18px) scale(1.06);
+        }
+      }
+
+      .app {
+        position: relative;
+        z-index: 1;
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        height: 100dvh;
+        padding: 18px 28px 10px;
+        gap: 14px;
+      }
+
+      .top {
+        display: flex;
+        align-items: center;
+        gap: 22px;
+        flex: 0 0 auto;
+        min-height: 72px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex: 0 0 auto;
+      }
+
+      .kamon {
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        background: var(--tile);
+        box-shadow: var(--shadow-tile);
+        display: grid;
+        place-items: center;
+      }
+
+      .kamon svg {
+        display: block;
+      }
+
+      .wordmark {
+        font-family: var(--display);
+        font-weight: 800;
+        font-size: 13px;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+      }
+
+      .hello {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+
+      .hello h1 {
+        margin: 0;
+        font-family: var(--display);
+        font-weight: 800;
+        font-size: clamp(26px, 2.4vw, 34px);
+        letter-spacing: -0.02em;
+        line-height: 1.1;
+      }
+
+      .freshness {
+        margin: 4px 0 0;
+        font-size: 14px;
+        color: var(--ink-soft);
+        font-weight: 500;
+      }
+
+      .search-wrap {
+        position: relative;
+        flex: 1 1 420px;
+        max-width: 560px;
+      }
+
+      .search-pill {
+        width: 100%;
+        height: 56px;
+        border: 0;
+        border-radius: var(--radius-pill);
+        background: var(--tile);
+        box-shadow: inset 0 2px 8px rgba(43, 39, 36, 0.06), var(--shadow-tile);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 0 8px 0 20px;
+      }
+
+      .search-pill svg {
+        flex: 0 0 auto;
+        opacity: 0.55;
+      }
+
+      .search-pill input {
+        flex: 1;
+        min-width: 0;
+        border: 0;
+        background: transparent;
+        font-size: 17px;
+        outline: none;
+      }
+
+      .search-pill input::placeholder {
+        color: #8a8176;
+      }
+
+      .go {
+        width: 42px;
+        height: 42px;
+        border: 0;
+        border-radius: 50%;
+        background: var(--sky-soft);
+        display: grid;
+        place-items: center;
+      }
+
+      .live-chip {
+        flex: 0 0 auto;
+        height: 48px;
+        padding: 0 18px 0 14px;
+        border: 0;
+        border-radius: var(--radius-pill);
+        background: var(--tile);
+        box-shadow: var(--shadow-tile);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-family: var(--display);
+        font-weight: 800;
+        font-size: 13px;
+        letter-spacing: 0.14em;
+      }
+
+      .live-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--coral);
+        box-shadow: 0 0 0 6px rgba(224, 122, 95, 0.18);
+        animation: pulse 2.8s ease-in-out infinite;
+      }
+
+      @keyframes pulse {
+        50% {
+          box-shadow: 0 0 0 10px rgba(224, 122, 95, 0.06);
+        }
+      }
+
+      .results {
+        display: none;
+        position: absolute;
+        z-index: 50;
+        top: calc(100% + 12px);
+        left: 0;
+        right: 0;
+        padding: 12px;
+        border-radius: 28px;
+        background: var(--tile);
+        box-shadow: 0 28px 64px rgba(43, 39, 36, 0.16);
+      }
+
+      .results.open {
+        display: block;
+      }
+
+      .results-hint {
+        padding: 16px 18px;
+        color: var(--ink-soft);
+        font-size: 15px;
+      }
+
+      .result {
+        width: 100%;
+        min-height: 56px;
+        border: 0;
+        border-radius: 18px;
+        background: transparent;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 10px 14px;
+        text-align: left;
+      }
+
+      .result:hover {
+        background: var(--wall);
+      }
+
+      .result-kind {
+        flex: 0 0 76px;
+        height: 28px;
+        border-radius: var(--radius-pill);
+        background: var(--mint-soft);
+        color: #2f5d48;
+        font-family: var(--display);
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        display: grid;
+        place-items: center;
+      }
+
+      .result-kind.programme {
+        background: var(--butter-soft);
+        color: #6a4e10;
+      }
+
+      .result strong {
+        display: block;
+        font-family: var(--display);
+        font-size: 17px;
+        font-weight: 800;
+      }
+
+      .result span {
+        display: block;
+        margin-top: 2px;
+        font-size: 13px;
+        color: var(--ink-soft);
+      }
+
+      .stage {
+        flex: 1 1 auto;
+        min-height: 0;
+        display: grid;
+        grid-template-columns: minmax(0, 1.18fr) minmax(280px, 0.82fr);
+        gap: 18px;
+        transition: grid-template-columns 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+
+      body[data-mode="guide"] .stage {
+        grid-template-columns: minmax(0, 0.72fr) minmax(320px, 1.28fr);
+      }
+
+      .well {
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        padding: 12px 12px 0;
+        border-radius: 36px;
+        background: linear-gradient(180deg, #f4ebe0 0%, #ddcfc0 100%);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.65),
+          inset 0 -10px 28px rgba(43, 39, 36, 0.08),
+          0 22px 48px rgba(43, 39, 36, 0.08);
+      }
+
+      .screen {
+        position: relative;
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: hidden;
+        border-radius: 26px;
+        background:
+          radial-gradient(120% 80% at 80% 10%, var(--glow, rgba(107, 167, 201, 0.35)), transparent 55%),
+          linear-gradient(165deg, #5a534c 0%, var(--dusk) 42%, var(--dusk-deep) 100%);
+        box-shadow: inset 0 18px 50px rgba(20, 22, 24, 0.35);
+        color: #f7f1e8;
+        padding: 22px 26px 20px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        transition: filter 0.4s ease, background 0.5s ease;
+      }
+
+      body.is-stopped .screen {
+        filter: saturate(0.7) brightness(0.72);
+      }
+
+      .screen-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-family: var(--display);
+        font-weight: 800;
+        font-size: 13px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        opacity: 0.86;
+      }
+
+      .on-air {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .on-air i {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--coral);
+        display: block;
+      }
+
+      .copy {
+        max-width: 92%;
+      }
+
+      .ch-name {
+        margin: 0 0 6px;
+        font-size: clamp(15px, 1.4vw, 18px);
+        font-weight: 600;
+        opacity: 0.82;
+      }
+
+      .prog {
+        margin: 0;
+        font-family: var(--display);
+        font-weight: 800;
+        font-size: clamp(32px, 3.6vw, 52px);
+        line-height: 1.05;
+        letter-spacing: -0.03em;
+      }
+
+      .window {
+        margin: 10px 0 0;
+        font-family: var(--display);
+        font-weight: 700;
+        font-size: clamp(16px, 1.5vw, 20px);
+        color: #cfe6d8;
+      }
+
+      .transport {
+        display: grid;
+        grid-template-columns: 1fr auto auto;
+        gap: 12px;
+        align-items: center;
+      }
+
+      .bar {
+        height: 16px;
+        border-radius: var(--radius-pill);
+        background: rgba(247, 241, 232, 0.18);
+        overflow: hidden;
+      }
+
+      .bar > i {
+        display: block;
+        height: 100%;
+        width: var(--progress, 40%);
+        border-radius: inherit;
+        background: linear-gradient(90deg, var(--mint), var(--sky));
+      }
+
+      .pill {
+        min-width: 120px;
+        height: 52px;
+        border: 0;
+        border-radius: var(--radius-pill);
+        font-family: var(--display);
+        font-weight: 800;
+        font-size: 17px;
+        padding: 0 22px;
+      }
+
+      .pill.play {
+        background: var(--tile);
+        color: var(--ink);
+      }
+
+      .pill.stop {
+        background: rgba(247, 241, 232, 0.22);
+        color: #f7f1e8;
+        box-shadow: inset 0 0 0 2px rgba(247, 241, 232, 0.28);
+      }
+
+      .chin {
+        height: 28px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 18px;
+        color: #8a7d70;
+        font-family: var(--display);
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.28em;
+        text-transform: uppercase;
+      }
+
+      .dots {
+        display: flex;
+        gap: 4px;
+      }
+
+      .dots i {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: #b6a898;
+      }
+
+      .tonight {
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        padding: 20px 18px 16px;
+        border-radius: 32px;
+        background: var(--tile);
+        box-shadow: var(--shadow-tile);
+        transition: box-shadow 0.35s ease, transform 0.35s ease;
+      }
+
+      body[data-mode="guide"] .tonight {
+        box-shadow: var(--shadow-sky);
+        transform: translateY(-2px);
+      }
+
+      .tonight-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 12px;
+        padding: 0 8px 12px;
+      }
+
+      .tonight-head h2 {
+        margin: 0;
+        font-family: var(--display);
+        font-weight: 800;
+        font-size: 16px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .tonight-head p {
+        margin: 0;
+        font-size: 13px;
+        color: var(--ink-soft);
+      }
+
+      .slots {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding-right: 4px;
+      }
+
+      .slot {
+        display: grid;
+        grid-template-columns: 76px minmax(0, 1fr);
+        gap: 8px;
+        align-items: center;
+        min-height: 56px;
+        padding: 10px 16px;
+        border: 0;
+        border-radius: 20px;
+        background: var(--wall);
+        text-align: left;
+      }
+
+      .slot time {
+        font-family: var(--display);
+        font-weight: 800;
+        font-size: 18px;
+        color: var(--mint);
+      }
+
+      .slot b {
+        font-family: var(--display);
+        font-weight: 800;
+        font-size: clamp(16px, 1.35vw, 20px);
+        letter-spacing: -0.02em;
+      }
+
+      .slot.now {
+        background: #fff;
+        box-shadow: var(--shadow-sky);
+        outline: 3px solid var(--sky);
+        outline-offset: 0;
+      }
+
+      .slot.now time {
+        color: var(--sky);
+      }
+
+      .slot .now-tag {
+        display: none;
+        margin-left: 8px;
+        font-family: var(--display);
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+        color: var(--coral);
+        vertical-align: 2px;
+      }
+
+      .slot.now .now-tag {
+        display: inline;
+      }
+
+      body[data-mode="guide"] .slot {
+        min-height: 64px;
+      }
+
+      .shelf {
+        position: relative;
+        flex: 0 0 auto;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        min-height: 0;
+      }
+
+      .groups {
+        display: flex;
+        gap: 6px;
+        width: fit-content;
+        max-width: 100%;
+        padding: 6px;
+        border-radius: var(--radius-pill);
+        background: rgba(255, 250, 243, 0.7);
+        box-shadow: inset 0 1px 4px rgba(43, 39, 36, 0.06);
+        overflow-x: auto;
+      }
+
+      .group-btn {
+        height: 48px;
+        border: 0;
+        border-radius: var(--radius-pill);
+        background: transparent;
+        padding: 0 16px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        white-space: nowrap;
+        font-family: var(--display);
+        font-weight: 800;
+        font-size: 15px;
+      }
+
+      .group-btn em {
+        font-style: normal;
+        font-family: var(--body);
+        font-weight: 600;
+        font-size: 12px;
+        color: var(--ink-soft);
+      }
+
+      .group-btn[aria-pressed="true"] {
+        background: var(--tile);
+        box-shadow: var(--shadow-tile);
+      }
+
+      .tiles {
+        display: flex;
+        gap: 16px;
+        overflow-x: auto;
+        scroll-snap-type: x mandatory;
+        scroll-padding-inline: 8px;
+        padding: 10px 8px 18px;
+      }
+
+      .tile {
+        flex: 0 0 228px;
+        height: 140px;
+        scroll-snap-align: start;
+        border: 0;
+        border-radius: var(--radius-tile);
+        background: var(--tile);
+        box-shadow: var(--shadow-tile);
+        padding: 16px 18px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        text-align: left;
+        transition:
+          transform 0.35s cubic-bezier(0.22, 1, 0.36, 1),
+          box-shadow 0.35s ease;
+      }
+
+      .tile:hover {
+        transform: translateY(-6px);
+        box-shadow: var(--shadow-lift);
+      }
+
+      .tile.selected {
+        transform: translateY(-4px);
+        box-shadow: var(--shadow-sky);
+        outline: 3px solid var(--sky);
+        outline-offset: 3px;
+      }
+
+      .tile[data-wash="sky"] {
+        background: linear-gradient(155deg, var(--sky-soft) 0%, var(--tile) 58%);
+      }
+
+      .tile[data-wash="coral"] {
+        background: linear-gradient(155deg, var(--coral-soft) 0%, var(--tile) 58%);
+      }
+
+      .tile[data-wash="mint"] {
+        background: linear-gradient(155deg, var(--mint-soft) 0%, var(--tile) 58%);
+      }
+
+      .tile[data-wash="butter"] {
+        background: linear-gradient(155deg, var(--butter-soft) 0%, var(--tile) 58%);
+      }
+
+      .tile-num {
+        font-family: var(--display);
+        font-weight: 800;
+        font-size: 28px;
+        line-height: 1;
+        letter-spacing: -0.04em;
+        opacity: 0.88;
+      }
+
+      .tile-name {
+        font-family: var(--display);
+        font-weight: 800;
+        font-size: 16px;
+        line-height: 1.15;
+      }
+
+      .tile-now {
+        margin-top: 4px;
+        font-size: 12px;
+        color: var(--ink-soft);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .empty {
+        flex: 0 0 420px;
+        height: 124px;
+        border-radius: var(--radius-tile);
+        background: var(--tile);
+        box-shadow: var(--shadow-tile);
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        padding: 0 28px;
+      }
+
+      .empty strong {
+        font-family: var(--display);
+        font-size: 20px;
+        font-weight: 800;
+      }
+
+      .empty p {
+        margin: 6px 0 0;
+        color: var(--ink-soft);
+        font-size: 14px;
+      }
+
+      .dock-wrap {
+        display: flex;
+        justify-content: center;
+        padding-top: 2px;
+      }
+
+      .dock {
+        display: flex;
+        gap: 8px;
+        padding: 8px;
+        border-radius: 32px;
+        background: var(--tile);
+        box-shadow: 0 14px 40px rgba(43, 39, 36, 0.1);
+      }
+
+      .dock-btn {
+        width: 104px;
+        height: 76px;
+        border: 0;
+        border-radius: 24px;
+        background: transparent;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        font-family: var(--display);
+        font-weight: 800;
+        font-size: 12px;
+      }
+
+      .glyph {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        background: var(--wall);
+      }
+
+      .dock-btn[aria-current="page"] .glyph.home {
+        background: var(--sky);
+        color: #fff;
+      }
+
+      .dock-btn[aria-current="page"] .glyph.guide {
+        background: var(--mint);
+        color: #fff;
+      }
+
+      .dock-btn[aria-current="page"] .glyph.search {
+        background: var(--butter);
+        color: var(--ink);
+      }
+
+      .dock-btn[aria-current="page"] .glyph.sources {
+        background: var(--coral);
+        color: #fff;
+      }
+
+      .sheet-back {
+        display: none;
+        position: fixed;
+        inset: 0;
+        z-index: 80;
+        background: rgba(43, 39, 36, 0.22);
+        align-items: flex-end;
+        justify-content: center;
+        padding: 24px 24px 118px;
+      }
+
+      .sheet-back.open {
+        display: flex;
+      }
+
+      .sheet {
+        width: min(680px, 100%);
+        border-radius: 36px;
+        background: var(--tile);
+        box-shadow: 0 30px 80px rgba(43, 39, 36, 0.2);
+        padding: 28px 28px 24px;
+      }
+
+      .sheet-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 16px;
+        margin-bottom: 22px;
+      }
+
+      .sheet h2 {
+        margin: 0;
+        font-family: var(--display);
+        font-weight: 800;
+        font-size: 28px;
+        letter-spacing: -0.03em;
+      }
+
+      .sheet-top p {
+        margin: 6px 0 0;
+        color: var(--ink-soft);
+        font-size: 15px;
+      }
+
+      .close {
+        width: 48px;
+        height: 48px;
+        border: 0;
+        border-radius: 50%;
+        background: var(--wall);
+        font-size: 22px;
+        line-height: 1;
+      }
+
+      .fields {
+        display: grid;
+        gap: 16px;
+      }
+
+      label {
+        display: grid;
+        gap: 8px;
+        font-family: var(--display);
+        font-weight: 800;
+        font-size: 14px;
+      }
+
+      label input {
+        height: 56px;
+        border: 2px solid transparent;
+        border-radius: 18px;
+        background: var(--wall);
+        padding: 0 18px;
+        font-size: 16px;
+      }
+
+      label input:hover {
+        border-color: rgba(107, 167, 201, 0.35);
+      }
+
+      .meta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 18px;
+      }
+
+      .chip {
+        height: 40px;
+        padding: 0 14px;
+        border-radius: var(--radius-pill);
+        background: var(--wall);
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .chip b {
+        font-family: var(--display);
+        font-weight: 800;
+      }
+
+      .save {
+        margin-top: 18px;
+        width: 100%;
+        height: 56px;
+        border: 0;
+        border-radius: 18px;
+        background: var(--sky);
+        color: #fff;
+        font-family: var(--display);
+        font-weight: 800;
+        font-size: 18px;
+      }
+
+      .save.ok {
+        background: var(--mint);
+      }
+
+      .slots::-webkit-scrollbar,
+      .tiles::-webkit-scrollbar,
+      .groups::-webkit-scrollbar {
+        height: 8px;
+        width: 8px;
+      }
+
+      .slots::-webkit-scrollbar-thumb,
+      .tiles::-webkit-scrollbar-thumb,
+      .groups::-webkit-scrollbar-thumb {
+        background: rgba(43, 39, 36, 0.16);
+        border-radius: 99px;
+      }
+
+      @media (max-width: 1180px) {
+        .hello h1 {
+          font-size: 24px;
+        }
+
+        .search-wrap {
+          max-width: 380px;
+        }
+
+        .tile {
+          flex-basis: 188px;
+          height: 120px;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .blob,
+        .live-dot {
+          animation: none;
+        }
+
+        .tile,
+        .stage,
+        .tonight,
+        .screen,
+        .slot {
+          transition: none;
+        }
+
+        .tile:hover,
+        .tile.selected {
+          transform: none;
+        }
+      }
+    </style>
+  </head>
+  <body data-mode="home">
+    <div class="blobs" aria-hidden="true">
+      <div class="blob a"></div>
+      <div class="blob b"></div>
+      <div class="blob c"></div>
+      <div class="blob d"></div>
+    </div>
+
+    <div class="app">
+      <header class="top">
+        <div class="brand">
+          <div class="kamon" aria-hidden="true">
+            <svg width="26" height="26" viewBox="0 0 26 26" fill="none">
+              <circle cx="13" cy="13" r="12" fill="#efe6d8" />
+              <path
+                d="M7.2 14.6c1.8-4.2 5-6.6 9.4-7.2-1.2 2.4-1 4.6.4 6.6-2.4-.2-4.4.6-6.2 2.4-1.2-1.2-2.4-1.6-3.6-1.8Z"
+                fill="#6ba7c9"
+              />
+              <path d="M17.8 8.2c1.6.4 2.8 1.2 3.4 2.2-1.4.2-2.4.2-3.6-.2.2-.8.2-1.4.2-2Z" fill="#e07a5f" />
+            </svg>
+          </div>
+          <div class="wordmark">Sparrow</div>
+        </div>
+        <div class="hello">
+          <h1>Good evening</h1>
+          <p class="freshness">Guide updated 12 minutes ago</p>
+        </div>
+        <div class="search-wrap">
+          <form class="search-pill" id="search-form" role="search">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <circle cx="8.5" cy="8.5" r="5.5" stroke="#2b2724" stroke-width="2" />
+              <path d="M12.8 12.8 17 17" stroke="#2b2724" stroke-width="2" stroke-linecap="round" />
+            </svg>
+            <input id="search" type="search" placeholder="Find a channel or show" autocomplete="off" />
+            <button class="go" type="submit" aria-label="Search">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M4 8h8M9 4l4 4-4 4" stroke="#2b2724" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+          </form>
+          <div class="results" id="results" hidden></div>
+        </div>
+        <div class="live-chip" aria-label="Live">
+          <span class="live-dot"></span>
+          LIVE
+        </div>
+      </header>
+
+      <main class="stage">
+        <section class="well" aria-label="Now playing">
+          <div class="screen" id="screen">
+            <div class="screen-top">
+              <span class="on-air" id="on-air"><i></i> Playing</span>
+              <span id="clock">21:18</span>
+            </div>
+            <div class="copy">
+              <p class="ch-name" id="now-channel">Yle TV1 HD</p>
+              <h2 class="prog" id="now-title">A-studio</h2>
+              <p class="window" id="now-window">21:00 – 21:45 · next Oddasat</p>
+            </div>
+            <div class="transport">
+              <div class="bar" aria-label="Programme progress"><i id="progress"></i></div>
+              <button class="pill play" id="play" type="button">Pause</button>
+              <button class="pill stop" id="stop" type="button">Stop</button>
+            </div>
+          </div>
+          <div class="chin" aria-hidden="true">
+            <span class="dots"><i></i><i></i><i></i></span>
+            sparrow
+            <span class="dots"><i></i><i></i><i></i></span>
+          </div>
+        </section>
+
+        <aside class="tonight" aria-label="Tonight’s schedule">
+          <div class="tonight-head">
+            <h2 id="guide-label">Tonight</h2>
+            <p id="guide-channel">Yle TV1 HD</p>
+          </div>
+          <div class="slots" id="slots"></div>
+        </aside>
+      </main>
+
+      <section class="shelf" aria-label="Channels">
+        <div class="groups" id="groups" role="tablist" aria-label="Channel groups"></div>
+        <div class="tiles" id="tiles" tabindex="0"></div>
+      </section>
+
+      <nav class="dock-wrap" aria-label="Home dock">
+        <div class="dock">
+          <button class="dock-btn" data-dock="home" type="button" aria-current="page">
+            <span class="glyph home">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+                <path d="M3 8.2 9 3l6 5.2V15a1 1 0 0 1-1 1h-3.2v-4.2H7.2V16H4a1 1 0 0 1-1-1V8.2Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
+              </svg>
+            </span>
+            Home
+          </button>
+          <button class="dock-btn" data-dock="guide" type="button">
+            <span class="glyph guide">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+                <rect x="3" y="4" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.8" />
+                <path d="M3 8h12M7 4v3.5M11 4v3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+              </svg>
+            </span>
+            Guide
+          </button>
+          <button class="dock-btn" data-dock="search" type="button">
+            <span class="glyph search">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+                <circle cx="8" cy="8" r="4.2" stroke="currentColor" stroke-width="1.8" />
+                <path d="m11.2 11.2 3.3 3.3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+              </svg>
+            </span>
+            Search
+          </button>
+          <button class="dock-btn" data-dock="sources" type="button">
+            <span class="glyph sources">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+                <circle cx="9" cy="9" r="2.2" stroke="currentColor" stroke-width="1.8" />
+                <path d="M4.2 4.2a6.8 6.8 0 0 1 9.6 0M5.8 5.8a4.5 4.5 0 0 1 6.4 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                <path d="M9 11.2V15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+              </svg>
+            </span>
+            Sources
+          </button>
+        </div>
+      </nav>
+    </div>
+
+    <div class="sheet-back" id="sheet-back" hidden>
+      <div class="sheet" role="dialog" aria-labelledby="src-title" aria-modal="true">
+        <div class="sheet-top">
+          <div>
+            <h2 id="src-title">Sources</h2>
+            <p>Keep the catalog on this television, even when the house is quiet.</p>
+          </div>
+          <button class="close" id="sheet-close" type="button" aria-label="Close">×</button>
+        </div>
+        <form class="fields" id="src-form">
+          <label>
+            M3U Source
+            <input type="url" name="m3u" value="http://192.168.1.42:8080/playlist.m3u" />
+          </label>
+          <label>
+            XMLTV
+            <input type="url" name="xmltv" value="http://192.168.1.42:8080/guide.xml" />
+          </label>
+          <div class="meta-row">
+            <span class="chip"><span class="live-dot"></span> <b>LIVE</b></span>
+            <span class="chip">Playlist <b>2m</b></span>
+            <span class="chip">Guide <b>12m</b></span>
+            <span class="chip">This TV <b>192.168.1.42</b></span>
+          </div>
+          <button class="save" id="save" type="submit">Save on this TV</button>
+        </form>
+      </div>
+    </div>
+
+    <script>
+      const CLOCK = { h: 21, m: 18 };
+
+      const CHANNELS = [
+        {
+          id: "CH01",
+          num: "01",
+          name: "Hero HD FI",
+          groups: ["all", "finland"],
+          wash: "coral",
+          now: { title: "Kesäillan vieras", start: "20:45", end: "22:20" },
+          next: "Uutisikkuna",
+          schedule: [
+            { time: "20:00", title: "Hero Extra" },
+            { time: "20:45", title: "Kesäillan vieras", now: true },
+            { time: "22:20", title: "Uutisikkuna" },
+            { time: "22:35", title: "Sarja: Satama" },
+            { time: "23:20", title: "Elokuvan jälkilämpö" },
+          ],
+        },
+        {
+          id: "CH02",
+          num: "02",
+          name: "JIM HD FI",
+          groups: ["all", "finland"],
+          wash: "butter",
+          now: { title: "Poliisit", start: "21:00", end: "21:55" },
+          next: "Käytännön hommat",
+          schedule: [
+            { time: "20:00", title: "Duudsonit" },
+            { time: "21:00", title: "Poliisit", now: true },
+            { time: "21:55", title: "Käytännön hommat" },
+            { time: "22:45", title: "Late Night JIM" },
+            { time: "23:30", title: "Autonrakentajat" },
+          ],
+        },
+        {
+          id: "CH03",
+          num: "03",
+          name: "MTV Ava HD FI",
+          groups: ["all", "finland"],
+          wash: "sky",
+          now: { title: "Emmerdale", start: "21:00", end: "21:30" },
+          next: "Kauniit ja rohkeat",
+          schedule: [
+            { time: "20:00", title: "Emmerdale" },
+            { time: "21:00", title: "Emmerdale", now: true },
+            { time: "21:30", title: "Kauniit ja rohkeat" },
+            { time: "22:00", title: "Avan elokuva" },
+            { time: "23:40", title: "Unien aika" },
+          ],
+        },
+        {
+          id: "CH04",
+          num: "04",
+          name: "MTV3 HD FI",
+          groups: ["all", "finland"],
+          wash: "mint",
+          now: { title: "Salatut elämät", start: "21:00", end: "21:30" },
+          next: "Kymmenen uutiset",
+          schedule: [
+            { time: "20:00", title: "Tulosruutu" },
+            { time: "20:30", title: "Seitsemän uutiset" },
+            { time: "21:00", title: "Salatut elämät", now: true },
+            { time: "21:30", title: "Putous" },
+            { time: "22:00", title: "Kymmenen uutiset" },
+            { time: "22:25", title: "Sää" },
+          ],
+        },
+        {
+          id: "CH05",
+          num: "05",
+          name: "Nelonen HD FI",
+          groups: ["all", "finland"],
+          wash: "coral",
+          now: { title: "The Voice of Finland", start: "20:00", end: "22:00" },
+          next: "House",
+          schedule: [
+            { time: "20:00", title: "The Voice of Finland", now: true },
+            { time: "22:00", title: "House" },
+            { time: "22:55", title: "Nelosen uutiset" },
+            { time: "23:10", title: "Sää" },
+            { time: "23:15", title: "Late night" },
+          ],
+        },
+        {
+          id: "CH06",
+          num: "06",
+          name: "Sub HD FI",
+          groups: ["all", "finland"],
+          wash: "sky",
+          now: { title: "Simpsonit", start: "21:00", end: "21:30" },
+          next: "Family Guy",
+          schedule: [
+            { time: "20:00", title: "C.S.I." },
+            { time: "21:00", title: "Simpsonit", now: true },
+            { time: "21:30", title: "Family Guy" },
+            { time: "22:00", title: "Subleffa" },
+            { time: "23:50", title: "Yöjakso" },
+          ],
+        },
+        {
+          id: "CH07",
+          num: "07",
+          name: "Yle TV1 HD",
+          groups: ["all", "finland", "news"],
+          wash: "mint",
+          now: { title: "A-studio", start: "21:00", end: "21:45" },
+          next: "Oddasat",
+          schedule: [
+            { time: "20:00", title: "Yle Uutiset" },
+            { time: "20:30", title: "Puoli seitsemän" },
+            { time: "21:00", title: "A-studio", now: true },
+            { time: "21:45", title: "Oddasat" },
+            { time: "22:00", title: "Yle Uutiset" },
+            { time: "22:25", title: "Novosti Yle" },
+            { time: "22:30", title: "Document: Arctic Light" },
+          ],
+        },
+        {
+          id: "CH08",
+          num: "08",
+          name: "Yle TV2 HD",
+          groups: ["all", "finland"],
+          wash: "butter",
+          now: { title: "Sohvasurffaajat", start: "21:00", end: "21:45" },
+          next: "Urheiluruutu",
+          schedule: [
+            { time: "20:00", title: "Galaxi" },
+            { time: "20:30", title: "Pikku Kakkonen" },
+            { time: "21:00", title: "Sohvasurffaajat", now: true },
+            { time: "21:45", title: "Urheiluruutu" },
+            { time: "22:00", title: "Yle Uutiset" },
+            { time: "22:30", title: "Dokumenttiprojekti" },
+          ],
+        },
+        {
+          id: "CH09",
+          num: "09",
+          name: "Yle Teema Fem HD",
+          groups: ["all", "finland"],
+          wash: "sky",
+          now: { title: "Hiljainen metsä", start: "21:00", end: "22:05" },
+          next: "Fem: Kultur",
+          schedule: [
+            { time: "20:00", title: "Historia" },
+            { time: "21:00", title: "Hiljainen metsä", now: true },
+            { time: "22:05", title: "Fem: Kultur" },
+            { time: "22:45", title: "Klassinen ilta" },
+            { time: "23:30", title: "Teema yö" },
+          ],
+        },
+        {
+          id: "CH10",
+          num: "10",
+          name: "Kutonen HD FI",
+          groups: ["all", "finland"],
+          wash: "coral",
+          now: { title: "Elokuva: Midnight Run", start: "20:50", end: "23:00" },
+          next: "Kutonen Extra",
+          schedule: [
+            { time: "20:00", title: "Musavisa" },
+            { time: "20:50", title: "Elokuva: Midnight Run", now: true },
+            { time: "23:00", title: "Kutonen Extra" },
+            { time: "23:30", title: "Videot" },
+          ],
+        },
+        {
+          id: "CH11",
+          num: "11",
+          name: "Frii HD FI",
+          groups: ["all", "finland"],
+          wash: "mint",
+          now: { title: "Huvila & Huussi", start: "21:00", end: "22:00" },
+          next: "Koti kuntoon",
+          schedule: [
+            { time: "20:00", title: "Unelmakodit" },
+            { time: "21:00", title: "Huvila & Huussi", now: true },
+            { time: "22:00", title: "Koti kuntoon" },
+            { time: "23:00", title: "Sisustusilta" },
+          ],
+        },
+        {
+          id: "CH12",
+          num: "12",
+          name: "TLC HD FI",
+          groups: ["all", "finland"],
+          wash: "butter",
+          now: { title: "90 Day Fiancé", start: "21:00", end: "22:00" },
+          next: "Cake Boss",
+          schedule: [
+            { time: "20:00", title: "Say Yes to the Dress" },
+            { time: "21:00", title: "90 Day Fiancé", now: true },
+            { time: "22:00", title: "Cake Boss" },
+            { time: "22:45", title: "TLC Extra" },
+            { time: "23:30", title: "Yöjakso" },
+          ],
+        },
+        {
+          id: "CNN",
+          num: "N1",
+          name: "CNN International",
+          groups: ["news"],
+          wash: "sky",
+          hidden: true,
+          now: { title: "International Desk", start: "21:00", end: "22:00" },
+          next: "World Sport",
+          schedule: [
+            { time: "20:00", title: "The Brief" },
+            { time: "21:00", title: "International Desk", now: true },
+            { time: "22:00", title: "World Sport" },
+            { time: "22:30", title: "Newsroom" },
+          ],
+        },
+        {
+          id: "BBC",
+          num: "N2",
+          name: "BBC World News",
+          groups: ["news"],
+          wash: "coral",
+          hidden: true,
+          now: { title: "GMT", start: "21:00", end: "22:00" },
+          next: "World Business Report",
+          schedule: [
+            { time: "20:00", title: "BBC News" },
+            { time: "21:00", title: "GMT", now: true },
+            { time: "22:00", title: "World Business Report" },
+            { time: "22:30", title: "Newsnight" },
+          ],
+        },
+      ];
+
+      const GROUPS = [
+        { id: "all", label: "All", count: 2841 },
+        { id: "finland", label: "Finland", count: 86 },
+        { id: "news", label: "News", count: 120 },
+        { id: "sports", label: "Sports", count: 64 },
+        { id: "anime", label: "Anime", count: 41 },
+        { id: "uhd", label: "4K", count: 12 },
+      ];
+
+      const SEARCH_HITS = [
+        { kind: "channel", title: "Yle TV1 HD", meta: "News · Finland", id: "CH07" },
+        { kind: "channel", title: "CNN International", meta: "News", id: "CNN" },
+        { kind: "channel", title: "BBC World News", meta: "News", id: "BBC" },
+        { kind: "programme", title: "Yle Uutiset", meta: "Tonight 20:00 · Yle TV1 HD", id: "CH07" },
+        { kind: "programme", title: "A-studio", meta: "Now · Yle TV1 HD", id: "CH07" },
+      ];
+
+      const EMPTY = {
+        sports: ["Sports is having a quiet evening", "Those 64 channels live in the full guide — this sofa row is still empty."],
+        anime: ["Anime is tucked away for now", "Forty-one channels are in the catalog. This row keeps tonight’s living-room set."],
+        uhd: ["No 4K in this row", "Twelve ultra-hd channels are installed. None of tonight’s twelve sit in that group."],
+      };
+
+      const GLOW = {
+        sky: "rgba(107, 167, 201, 0.42)",
+        coral: "rgba(224, 122, 95, 0.38)",
+        mint: "rgba(124, 188, 154, 0.4)",
+        butter: "rgba(242, 193, 78, 0.38)",
+      };
+
+      const state = {
+        group: "all",
+        channelId: "CH07",
+        playing: true,
+        stopped: false,
+        mode: "home",
+      };
+
+      const $ = (id) => document.getElementById(id);
+      const groupsEl = $("groups");
+      const tilesEl = $("tiles");
+      const slotsEl = $("slots");
+      const resultsEl = $("results");
+      const searchEl = $("search");
+      const sheetBack = $("sheet-back");
+      const playEl = $("play");
+      const screenEl = $("screen");
+
+      function minutes(hhmm) {
+        const [h, m] = hhmm.split(":").map(Number);
+        return h * 60 + m;
+      }
+
+      function progressOf(now) {
+        const t = CLOCK.h * 60 + CLOCK.m;
+        const a = minutes(now.start);
+        const b = minutes(now.end);
+        const p = (t - a) / Math.max(1, b - a);
+        return Math.min(0.96, Math.max(0.08, p));
+      }
+
+      function current() {
+        return CHANNELS.find((c) => c.id === state.channelId);
+      }
+
+      function visible() {
+        return CHANNELS.filter((c) => {
+          if (state.group === "all") return !c.hidden;
+          return c.groups.includes(state.group);
+        });
+      }
+
+      function setPlaybackChrome() {
+        document.body.classList.toggle("is-stopped", state.stopped);
+        $("on-air").innerHTML = state.stopped
+          ? "<i></i> Ready"
+          : state.playing
+            ? "<i></i> Playing"
+            : "<i></i> Paused";
+        playEl.textContent = state.stopped || !state.playing ? "Play" : "Pause";
+      }
+
+      function renderPlayer() {
+        const ch = current();
+        $("now-channel").textContent = ch.name;
+        $("now-title").textContent = ch.now.title;
+        $("now-window").textContent = ch.now.start + " – " + ch.now.end + " · next " + ch.next;
+        $("progress").style.width = Math.round(progressOf(ch.now) * 100) + "%";
+        screenEl.style.setProperty("--glow", GLOW[ch.wash]);
+        $("guide-channel").textContent = ch.name;
+        $("guide-label").textContent = state.mode === "guide" ? "Evening guide" : "Tonight";
+        setPlaybackChrome();
+      }
+
+      function renderSchedule() {
+        const ch = current();
+        slotsEl.innerHTML = ch.schedule
+          .map(
+            (row) =>
+              `<button class="slot${row.now ? " now" : ""}" type="button">
+                <time>${row.time}</time>
+                <b>${row.title}<span class="now-tag"> NOW</span></b>
+              </button>`
+          )
+          .join("");
+      }
+
+      function renderGroups() {
+        groupsEl.innerHTML = GROUPS.map(
+          (g) =>
+            `<button class="group-btn" type="button" role="tab" data-group="${g.id}" aria-pressed="${
+              state.group === g.id
+            }">${g.label} <em>${g.count}</em></button>`
+        ).join("");
+      }
+
+      function renderTiles() {
+        const list = visible();
+        if (!list.length) {
+          const copy = EMPTY[state.group] || ["Nothing here tonight", "Try All to return to the sofa row."];
+          tilesEl.innerHTML = `<div class="empty"><strong>${copy[0]}</strong><p>${copy[1]}</p></div>`;
+          return;
+        }
+        tilesEl.innerHTML = list
+          .map(
+            (ch) =>
+              `<button class="tile${ch.id === state.channelId ? " selected" : ""}" type="button" data-id="${
+                ch.id
+              }" data-wash="${ch.wash}">
+                <div class="tile-num">${ch.num}</div>
+                <div>
+                  <div class="tile-name">${ch.name}</div>
+                  <div class="tile-now">${ch.now.title}</div>
+                </div>
+              </button>`
+          )
+          .join("");
+        const selected = tilesEl.querySelector(".tile.selected");
+        if (selected) {
+          selected.scrollIntoView({ inline: "nearest", block: "nearest", behavior: "auto" });
+        }
+      }
+
+      function selectChannel(id, opts) {
+        const ch = CHANNELS.find((c) => c.id === id);
+        if (!ch) return;
+        state.channelId = id;
+        state.playing = true;
+        state.stopped = false;
+        if (ch.hidden && state.group === "all") {
+          state.group = "news";
+        }
+        renderAll();
+        if (!opts || opts.scroll !== false) {
+          const tile = tilesEl.querySelector(`[data-id="${id}"]`);
+          if (tile) tile.scrollIntoView({ inline: "nearest", block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+        }
+      }
+
+      function renderAll() {
+        renderGroups();
+        renderTiles();
+        renderPlayer();
+        renderSchedule();
+      }
+
+      function openSearch(focus) {
+        resultsEl.hidden = false;
+        resultsEl.classList.add("open");
+        paintResults(searchEl.value);
+        if (focus) searchEl.focus();
+      }
+
+      function closeSearch() {
+        resultsEl.classList.remove("open");
+        resultsEl.hidden = true;
+      }
+
+      function paintResults(q) {
+        const query = q.trim().toLowerCase();
+        let hits = [];
+        if (!query) {
+          resultsEl.innerHTML = `<p class="results-hint">Try “news” — channels and tonight’s programmes will gather here.</p>`;
+          return;
+        }
+        if (query.includes("news") || "news".startsWith(query)) {
+          hits = SEARCH_HITS;
+        } else {
+          hits = SEARCH_HITS.filter(
+            (h) => h.title.toLowerCase().includes(query) || h.meta.toLowerCase().includes(query)
+          );
+          CHANNELS.filter((c) => !c.hidden && c.name.toLowerCase().includes(query)).forEach((c) => {
+            if (!hits.some((h) => h.id === c.id && h.kind === "channel")) {
+              hits.push({ kind: "channel", title: c.name, meta: "Finland", id: c.id });
+            }
+          });
+        }
+        if (!hits.length) {
+          resultsEl.innerHTML = `<p class="results-hint">Nothing matching “${q.trim()}”. Try news, Yle, or a channel name.</p>`;
+          return;
+        }
+        resultsEl.innerHTML = hits
+          .map(
+            (h) =>
+              `<button class="result" type="button" data-id="${h.id}">
+                <span class="result-kind ${h.kind}">${h.kind}</span>
+                <span><strong>${h.title}</strong><span>${h.meta}</span></span>
+              </button>`
+          )
+          .join("");
+      }
+
+      function setMode(mode) {
+        state.mode = mode;
+        document.body.dataset.mode = mode === "sources" ? "home" : mode;
+        document.querySelectorAll(".dock-btn").forEach((btn) => {
+          btn.removeAttribute("aria-current");
+          if (btn.dataset.dock === mode) btn.setAttribute("aria-current", "page");
+        });
+        if (mode !== "search") closeSearch();
+        if (mode !== "sources") closeSheet();
+        if (mode === "search") openSearch(true);
+        if (mode === "sources") openSheet();
+        if (mode === "home" || mode === "guide") renderPlayer();
+      }
+
+      function openSheet() {
+        sheetBack.hidden = false;
+        sheetBack.classList.add("open");
+      }
+
+      function closeSheet() {
+        sheetBack.classList.remove("open");
+        sheetBack.hidden = true;
+        if (state.mode === "sources") {
+          state.mode = "home";
+          document.body.dataset.mode = "home";
+          document.querySelectorAll(".dock-btn").forEach((btn) => {
+            btn.removeAttribute("aria-current");
+            if (btn.dataset.dock === "home") btn.setAttribute("aria-current", "page");
+          });
+        }
+      }
+
+      groupsEl.addEventListener("click", (e) => {
+        const btn = e.target.closest("[data-group]");
+        if (!btn) return;
+        state.group = btn.dataset.group;
+        renderGroups();
+        renderTiles();
+      });
+
+      tilesEl.addEventListener("click", (e) => {
+        const btn = e.target.closest(".tile");
+        if (!btn) return;
+        selectChannel(btn.dataset.id);
+      });
+
+      tilesEl.addEventListener("keydown", (e) => {
+        const tiles = [...tilesEl.querySelectorAll(".tile")];
+        if (!tiles.length) return;
+        const active = document.activeElement;
+        const i = tiles.indexOf(active);
+        if (e.key === "ArrowRight") {
+          e.preventDefault();
+          const next = tiles[i < 0 ? 0 : Math.min(tiles.length - 1, i + 1)];
+          next.focus();
+        } else if (e.key === "ArrowLeft") {
+          e.preventDefault();
+          const prev = tiles[i < 0 ? 0 : Math.max(0, i - 1)];
+          prev.focus();
+        } else if (e.key === "Home") {
+          e.preventDefault();
+          tiles[0].focus();
+        } else if (e.key === "End") {
+          e.preventDefault();
+          tiles[tiles.length - 1].focus();
+        } else if (e.key === "Enter" && i >= 0) {
+          e.preventDefault();
+          selectChannel(tiles[i].dataset.id);
+        }
+      });
+
+      playEl.addEventListener("click", () => {
+        if (state.stopped) {
+          state.stopped = false;
+          state.playing = true;
+        } else {
+          state.playing = !state.playing;
+        }
+        setPlaybackChrome();
+      });
+
+      $("stop").addEventListener("click", () => {
+        state.stopped = true;
+        state.playing = false;
+        setPlaybackChrome();
+      });
+
+      searchEl.addEventListener("focus", () => openSearch(false));
+      searchEl.addEventListener("input", () => {
+        openSearch(false);
+        paintResults(searchEl.value);
+      });
+
+      $("search-form").addEventListener("submit", (e) => {
+        e.preventDefault();
+        openSearch(false);
+        paintResults(searchEl.value);
+      });
+
+      resultsEl.addEventListener("click", (e) => {
+        const btn = e.target.closest(".result");
+        if (!btn) return;
+        selectChannel(btn.dataset.id);
+        closeSearch();
+        searchEl.blur();
+        setMode("home");
+      });
+
+      document.querySelector(".dock").addEventListener("click", (e) => {
+        const btn = e.target.closest(".dock-btn");
+        if (!btn) return;
+        setMode(btn.dataset.dock);
+      });
+
+      $("sheet-close").addEventListener("click", closeSheet);
+      sheetBack.addEventListener("click", (e) => {
+        if (e.target === sheetBack) closeSheet();
+      });
+
+      $("src-form").addEventListener("submit", (e) => {
+        e.preventDefault();
+        const save = $("save");
+        save.textContent = "Saved on this TV";
+        save.classList.add("ok");
+        setTimeout(() => closeSheet(), 700);
+      });
+
+      document.addEventListener("click", (e) => {
+        if (!e.target.closest(".search-wrap") && !e.target.closest('[data-dock="search"]')) {
+          if (state.mode !== "search") closeSearch();
+        }
+      });
+
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+          closeSearch();
+          closeSheet();
+          if (state.mode === "search" || state.mode === "sources") setMode("home");
+        }
+      });
+
+      renderAll();
+    </script>
+  </body>
+</html>

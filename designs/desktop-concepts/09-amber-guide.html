@@ -1,0 +1,1646 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#161411" />
+  <meta name="color-scheme" content="dark" />
+  <title>Sparrow · Amber Guide</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo+Narrow:wght@400;500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,520;1,9..144,680&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #161411;
+      --panel: #211e19;
+      --cell: #2a261f;
+      --line: #3a342c;
+      --honey: #e8b84a;
+      --terracotta: #c45c38;
+      --cream: #f3ead8;
+      --dim: #a89b88;
+      --ink: #161411;
+      --lamp: rgba(232, 184, 74, 0.2);
+      --gutter: 168px;
+      --now-frac: 0.15;
+      --grid: "Archivo Narrow", sans-serif;
+      --display: "Fraunces", serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--cream);
+      font-family: var(--grid);
+    }
+
+    body {
+      background:
+        radial-gradient(ellipse 92% 72% at 0% 0%, rgba(232, 184, 74, 0.2), transparent 54%),
+        radial-gradient(ellipse 50% 40% at 100% 100%, rgba(196, 92, 56, 0.08), transparent 48%),
+        var(--bg);
+    }
+
+    body::before {
+      content: "";
+      pointer-events: none;
+      position: fixed;
+      inset: 0;
+      z-index: 70;
+      opacity: 0.14;
+      mix-blend-mode: overlay;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23g)' opacity='0.9'/%3E%3C/svg%3E");
+    }
+
+    button, input { font-family: inherit; color: inherit; }
+    button { cursor: pointer; }
+
+    button:focus-visible,
+    input:focus-visible {
+      outline: 2px solid var(--honey);
+      outline-offset: 2px;
+    }
+
+    .app {
+      height: 100vh;
+      height: 100dvh;
+      display: grid;
+      grid-template-rows: auto 18vh auto minmax(0, 1fr) auto;
+      min-height: 0;
+    }
+
+    .top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 28px;
+      padding: 14px 28px 10px;
+      z-index: 8;
+    }
+
+    .mantel {
+      display: flex;
+      align-items: flex-end;
+      gap: 22px;
+      min-width: 0;
+    }
+
+    .clock {
+      font-family: var(--display);
+      font-optical-sizing: auto;
+      font-weight: 500;
+      font-size: clamp(42px, 6.2vh, 64px);
+      line-height: 0.9;
+      letter-spacing: -0.03em;
+      color: var(--cream);
+      font-variant-numeric: tabular-nums;
+      text-shadow: 0 10px 36px rgba(232, 184, 74, 0.18);
+    }
+
+    .clock::after {
+      content: "";
+      display: block;
+      width: 42%;
+      height: 3px;
+      margin-top: 8px;
+      border-radius: 99px;
+      background: linear-gradient(90deg, var(--honey), transparent);
+    }
+
+    .identity {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      padding-bottom: 6px;
+    }
+
+    .wordmark {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--display);
+      font-style: italic;
+      font-weight: 680;
+      font-optical-sizing: auto;
+      font-size: 22px;
+      letter-spacing: -0.02em;
+      line-height: 1;
+    }
+
+    .wordmark svg { width: 18px; height: 18px; display: block; }
+
+    .meta-row {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--dim);
+    }
+
+    .live {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--honey);
+    }
+
+    .live i {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--honey);
+      box-shadow: 0 0 0 0 rgba(232, 184, 74, 0.7);
+      animation: glow 2.2s ease-out infinite;
+    }
+
+    @keyframes glow {
+      70% { box-shadow: 0 0 0 8px rgba(232, 184, 74, 0); }
+    }
+
+    .fresh b { color: var(--cream); font-weight: 700; }
+
+    .top-tools {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .search-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+
+    .search-wrap svg {
+      position: absolute;
+      left: 12px;
+      width: 14px;
+      height: 14px;
+      color: var(--dim);
+      pointer-events: none;
+    }
+
+    #search {
+      width: 168px;
+      height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--panel);
+      padding: 0 14px 0 34px;
+      font-size: 15px;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+      outline: none;
+      transition: width 0.2s ease, border-color 0.15s ease, background 0.15s ease;
+    }
+
+    #search::placeholder { color: var(--dim); }
+
+    #search:focus {
+      width: 240px;
+      border-color: var(--honey);
+      background: #26221c;
+    }
+
+    .feeds-btn {
+      height: 36px;
+      padding: 0 16px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: transparent;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--dim);
+    }
+
+    .feeds-btn:hover { color: var(--cream); border-color: var(--dim); }
+
+    .preview {
+      display: grid;
+      grid-template-columns: calc((18vh - 20px) * 16 / 9) minmax(0, 1fr);
+      gap: 28px;
+      align-items: stretch;
+      padding: 6px 28px 8px;
+      min-height: 0;
+    }
+
+    .thumb {
+      position: relative;
+      height: 100%;
+      min-height: 0;
+      border-radius: 14px;
+      overflow: hidden;
+      background: #1a1713;
+      box-shadow:
+        0 18px 40px rgba(12, 9, 6, 0.45),
+        inset 0 0 0 1px rgba(243, 234, 216, 0.08);
+    }
+
+    .photo { position: absolute; inset: 0; overflow: hidden; }
+
+    .photo .wash {
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 80% 50% at 50% 0%, rgba(232, 184, 74, 0.28), transparent 52%),
+        linear-gradient(180deg, #3a3228 0%, #1a1612 70%);
+    }
+
+    .thumb[data-scene="sports"] .wash {
+      background:
+        radial-gradient(ellipse 70% 55% at 50% 110%, rgba(90, 110, 70, 0.55), transparent 55%),
+        linear-gradient(180deg, #2a261c, #14120e);
+    }
+
+    .thumb[data-scene="drama"] .wash {
+      background:
+        radial-gradient(ellipse 50% 60% at 78% 30%, rgba(196, 92, 56, 0.35), transparent 50%),
+        linear-gradient(180deg, #2c241c, #14110e);
+    }
+
+    .thumb[data-scene="ent"] .wash {
+      background:
+        radial-gradient(circle at 22% 20%, rgba(232, 184, 74, 0.28), transparent 28%),
+        radial-gradient(circle at 78% 70%, rgba(196, 92, 56, 0.22), transparent 30%),
+        linear-gradient(180deg, #322a20, #161310);
+    }
+
+    .fig {
+      position: absolute;
+      bottom: 30%;
+      width: 15%;
+      height: 42%;
+      background: #100e0c;
+      border-radius: 46% 46% 10% 10%;
+    }
+
+    .fig.a { left: 30%; }
+    .fig.b { left: 54%; width: 13%; height: 36%; }
+
+    .thumb[data-scene="sports"] .fig,
+    .thumb[data-scene="ent"] .fig { display: none; }
+
+    .desk {
+      position: absolute;
+      left: 8%;
+      right: 8%;
+      bottom: 22%;
+      height: 10%;
+      background: linear-gradient(#5a4630, #2a2218);
+      border-top: 3px solid var(--honey);
+    }
+
+    .thumb[data-scene="sports"] .desk,
+    .thumb[data-scene="drama"] .desk { display: none; }
+
+    .rink {
+      display: none;
+      position: absolute;
+      left: 10%;
+      right: 10%;
+      top: 18%;
+      bottom: 22%;
+      border: 2px solid rgba(243, 234, 216, 0.28);
+      border-radius: 50%;
+    }
+
+    .rink::before {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: rgba(243, 234, 216, 0.28);
+    }
+
+    .thumb[data-scene="sports"] .rink { display: block; }
+
+    .window {
+      display: none;
+      position: absolute;
+      right: 14%;
+      top: 16%;
+      width: 22%;
+      height: 38%;
+      border-radius: 4px 4px 2px 2px;
+      background:
+        linear-gradient(180deg, rgba(232, 184, 74, 0.55), rgba(196, 92, 56, 0.2));
+      box-shadow: 0 0 40px rgba(232, 184, 74, 0.25);
+    }
+
+    .thumb[data-scene="drama"] .window { display: block; }
+
+    .spots {
+      display: none;
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(circle at 30% 0%, rgba(243, 234, 216, 0.35), transparent 22%),
+        radial-gradient(circle at 70% 0%, rgba(232, 184, 74, 0.28), transparent 24%);
+    }
+
+    .thumb[data-scene="ent"] .spots { display: block; }
+
+    .bug {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 2;
+      background: var(--honey);
+      color: var(--ink);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      padding: 3px 7px;
+      border-radius: 4px;
+    }
+
+    .bug.is-later {
+      background: var(--panel);
+      color: var(--cream);
+      box-shadow: inset 0 0 0 1px var(--line);
+    }
+
+    .chyron {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 22%;
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      background: rgba(22, 20, 17, 0.9);
+      border-top: 2px solid var(--honey);
+      color: var(--cream);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      overflow: hidden;
+    }
+
+    .now-copy {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-width: 0;
+      padding: 4px 4px 4px 0;
+    }
+
+    .now-ch {
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--honey);
+    }
+
+    .now-title {
+      font-family: var(--display);
+      font-optical-sizing: auto;
+      font-weight: 600;
+      font-size: clamp(28px, 3.6vh, 42px);
+      letter-spacing: -0.03em;
+      line-height: 1.05;
+      margin: 4px 0 8px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .now-next {
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--dim);
+      margin-bottom: 12px;
+    }
+
+    .now-next em {
+      color: var(--cream);
+      font-style: normal;
+      font-weight: 600;
+    }
+
+    .pbar {
+      height: 7px;
+      border-radius: 99px;
+      background: #2f2a24;
+      overflow: hidden;
+    }
+
+    .pbar i {
+      display: block;
+      height: 100%;
+      width: 40%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #d7a63a, var(--honey));
+    }
+
+    .pmeta {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 7px;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      color: var(--dim);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .pills {
+      display: flex;
+      gap: 8px;
+      padding: 4px 28px 10px;
+      flex-wrap: wrap;
+    }
+
+    .pill {
+      height: 32px;
+      padding: 0 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(243, 234, 216, 0.22);
+      background: transparent;
+      color: var(--cream);
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .pill em {
+      font-style: normal;
+      font-weight: 500;
+      margin-left: 7px;
+      color: var(--dim);
+    }
+
+    .pill:hover { border-color: var(--honey); }
+
+    .pill.is-on {
+      background: var(--honey);
+      border-color: var(--honey);
+      color: var(--ink);
+    }
+
+    .pill.is-on em { color: rgba(22, 20, 17, 0.62); }
+
+    .guide {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      padding: 0 18px 0 20px;
+    }
+
+    .timehead {
+      position: relative;
+      display: grid;
+      grid-template-columns: var(--gutter) 1fr;
+      flex: 0 0 36px;
+      z-index: 6;
+    }
+
+    .tonight {
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--dim);
+    }
+
+    .timeline { position: relative; }
+
+    .tick {
+      position: absolute;
+      top: 0;
+      height: 100%;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      font-variant-numeric: tabular-nums;
+      color: var(--dim);
+    }
+
+    .tick.is-hour { color: var(--cream); font-weight: 700; }
+    .tick:first-child { transform: none; padding-left: 6px; }
+    .tick:last-child { transform: translateX(-100%); padding-right: 4px; }
+
+    .now-tag {
+      position: absolute;
+      top: 4px;
+      left: calc(var(--gutter) + (100% - var(--gutter)) * var(--now-frac));
+      transform: translateX(-50%);
+      z-index: 10;
+      background: var(--honey);
+      color: var(--ink);
+      font-family: var(--display);
+      font-optical-sizing: auto;
+      font-weight: 600;
+      font-size: 15px;
+      letter-spacing: -0.02em;
+      padding: 3px 10px 4px;
+      border-radius: 999px;
+      box-shadow: 0 8px 20px rgba(232, 184, 74, 0.28);
+      font-variant-numeric: tabular-nums;
+      pointer-events: none;
+    }
+
+    .grid-body {
+      position: relative;
+      flex: 1;
+      min-height: 0;
+    }
+
+    .epg-scroll {
+      height: 100%;
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #rows { display: contents; }
+
+    .epg-row {
+      display: grid;
+      grid-template-columns: var(--gutter) 1fr;
+      flex: 0 0 calc(100% / 9);
+      min-height: 0;
+    }
+
+    .epg-row.is-dim { opacity: 0.28; }
+    .epg-row.is-watching .row-num { color: var(--terracotta); }
+
+    .row-ch {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 12px 0 10px;
+      min-width: 0;
+    }
+
+    .row-num {
+      flex: 0 0 22px;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--dim);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .row-name {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .track { position: relative; }
+
+    .track::before {
+      content: "";
+      position: absolute;
+      inset: 8px 0;
+      pointer-events: none;
+      background-image: repeating-linear-gradient(
+        90deg,
+        transparent 0,
+        transparent calc(25% - 1px),
+        rgba(58, 52, 44, 0.7) calc(25% - 1px),
+        rgba(58, 52, 44, 0.7) 25%
+      );
+      border-radius: 10px;
+    }
+
+    .cell {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      padding: 6px 4px 6px 0;
+      border: 0;
+      background: transparent;
+      color: var(--cream);
+      text-align: left;
+      cursor: pointer;
+      z-index: 2;
+    }
+
+    .frame {
+      position: relative;
+      height: 100%;
+      overflow: hidden;
+      border-radius: 10px;
+      background: var(--cell);
+      box-shadow: inset 0 0 0 1px rgba(243, 234, 216, 0.07);
+    }
+
+    .still {
+      position: absolute;
+      inset: 0;
+      opacity: 0.3;
+      pointer-events: none;
+    }
+
+    .still::before,
+    .still::after {
+      content: "";
+      position: absolute;
+    }
+
+    .still-studio {
+      background:
+        linear-gradient(180deg, transparent 66%, #2a2018 66%, #17130f 100%),
+        radial-gradient(ellipse 70% 46% at 50% 8%, #c9a060, transparent 55%),
+        linear-gradient(180deg, #46382c, #1c1814);
+    }
+
+    .still-studio::before {
+      left: 24%;
+      bottom: 28%;
+      width: 16%;
+      height: 46%;
+      background: #110e0c;
+      border-radius: 50% 50% 10% 10%;
+    }
+
+    .still-studio::after {
+      left: 52%;
+      bottom: 28%;
+      width: 14%;
+      height: 40%;
+      background: #110e0c;
+      border-radius: 50% 50% 10% 10%;
+    }
+
+    .still-ice {
+      background:
+        radial-gradient(ellipse 80% 70% at 50% 60%, rgba(180, 170, 150, 0.55), transparent 55%),
+        linear-gradient(180deg, #2a281f, #14130f);
+    }
+
+    .still-ice::before {
+      left: 12%;
+      right: 12%;
+      top: 18%;
+      bottom: 22%;
+      border: 2px solid rgba(243, 234, 216, 0.45);
+      border-radius: 50%;
+    }
+
+    .still-pitch {
+      background:
+        radial-gradient(ellipse 90% 40% at 50% 100%, #3a4a30, transparent 50%),
+        linear-gradient(180deg, #2c2a1c, #14120e);
+    }
+
+    .still-pitch::before {
+      left: 18%;
+      right: 18%;
+      top: 22%;
+      bottom: 22%;
+      border: 2px solid rgba(243, 234, 216, 0.35);
+      border-radius: 50%;
+    }
+
+    .still-aurora {
+      background:
+        linear-gradient(110deg, rgba(232, 184, 74, 0.55) 10%, transparent 42%, rgba(196, 92, 56, 0.4) 78%),
+        linear-gradient(180deg, #1c221c, #12100c);
+    }
+
+    .still-aurora::after {
+      inset: 0;
+      background: radial-gradient(ellipse 40% 80% at 70% 10%, rgba(243, 234, 216, 0.35), transparent 50%);
+    }
+
+    .still-stage {
+      background:
+        radial-gradient(circle at 28% 0%, rgba(243, 234, 216, 0.55), transparent 32%),
+        radial-gradient(circle at 72% 0%, rgba(232, 184, 74, 0.4), transparent 30%),
+        linear-gradient(180deg, #2c2418, #14110e);
+    }
+
+    .still-street {
+      background:
+        linear-gradient(180deg, #2a261f 0%, #1a1713 55%, #3a2a1c 55%, #1c1612 100%);
+    }
+
+    .still-street::before {
+      right: 18%;
+      top: 10%;
+      width: 22%;
+      height: 38%;
+      background: rgba(232, 184, 74, 0.55);
+      border-radius: 2px;
+      box-shadow: 0 0 16px rgba(232, 184, 74, 0.35);
+    }
+
+    .still-hearth {
+      background:
+        radial-gradient(ellipse 50% 60% at 70% 40%, rgba(196, 92, 56, 0.65), transparent 50%),
+        linear-gradient(180deg, #2c2018, #120e0c);
+    }
+
+    .still-crowd {
+      background:
+        radial-gradient(circle at 20% 70%, #3a3228 0 6px, transparent 7px),
+        radial-gradient(circle at 40% 62%, #2a241c 0 5px, transparent 6px),
+        radial-gradient(circle at 58% 74%, #3a3228 0 7px, transparent 8px),
+        radial-gradient(circle at 76% 64%, #2a241c 0 5px, transparent 6px),
+        linear-gradient(180deg, #3a2c20, #161310);
+    }
+
+    .still-night {
+      background:
+        radial-gradient(circle at 78% 22%, rgba(243, 234, 216, 0.55) 0 8%, transparent 12%),
+        linear-gradient(180deg, #1a1814 0%, #12100c 58%, #2a2218 58%);
+    }
+
+    .still-field {
+      background:
+        linear-gradient(180deg, #3a3428 0%, #2a281c 42%, #3a4a30 42%, #1c1a12 100%);
+    }
+
+    .label {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      height: 100%;
+      padding: 0 12px;
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      text-shadow: 0 1px 10px rgba(22, 20, 17, 0.85);
+    }
+
+    .cell.is-now .frame {
+      background:
+        linear-gradient(90deg, rgba(232, 184, 74, 0.28), rgba(232, 184, 74, 0.08)),
+        var(--cell);
+      box-shadow:
+        inset 0 0 0 1px rgba(232, 184, 74, 0.28),
+        inset 3px 0 0 var(--honey);
+    }
+
+    .cell.is-now .label { font-weight: 700; }
+
+    .cell:hover .frame,
+    .cell:focus-visible .frame {
+      box-shadow: inset 0 0 0 1px rgba(243, 234, 216, 0.28);
+    }
+
+    .cell.is-focus {
+      z-index: 4;
+    }
+
+    .cell.is-focus .frame {
+      box-shadow: 0 0 0 2.5px var(--terracotta), 0 10px 24px rgba(196, 92, 56, 0.22);
+    }
+
+    .ribbon {
+      position: absolute;
+      top: -8px;
+      bottom: 0;
+      left: calc(var(--gutter) + (100% - var(--gutter)) * var(--now-frac));
+      width: 11px;
+      margin-left: -5.5px;
+      border-radius: 8px;
+      background: linear-gradient(180deg, var(--honey), #d4a43c);
+      box-shadow: 0 0 22px rgba(232, 184, 74, 0.38);
+      pointer-events: none;
+      z-index: 9;
+    }
+
+    .detail {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 28px;
+      align-items: center;
+      padding: 12px 28px 16px;
+      background:
+        linear-gradient(180deg, transparent, rgba(33, 30, 25, 0.9) 28%),
+        var(--panel);
+      box-shadow: 0 -18px 40px rgba(12, 9, 6, 0.25);
+      z-index: 12;
+    }
+
+    .d-kicker {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--honey);
+    }
+
+    .d-kicker.is-later { color: var(--dim); }
+
+    .d-title {
+      font-family: var(--display);
+      font-optical-sizing: auto;
+      font-weight: 600;
+      font-size: 26px;
+      letter-spacing: -0.03em;
+      line-height: 1.1;
+      margin: 2px 0 4px;
+    }
+
+    .d-meta {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      color: var(--dim);
+      margin-bottom: 4px;
+    }
+
+    .d-syn {
+      font-size: 15px;
+      font-weight: 400;
+      color: #d4c8b4;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 92ch;
+    }
+
+    .watch {
+      height: 44px;
+      padding: 0 22px;
+      border: 0;
+      border-radius: 999px;
+      background: var(--terracotta);
+      color: var(--cream);
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      box-shadow: 0 10px 24px rgba(196, 92, 56, 0.28);
+    }
+
+    .watch:hover { filter: brightness(1.08); }
+
+    .search-overlay {
+      display: none;
+      position: absolute;
+      inset: 0;
+      z-index: 20;
+      padding: 22px 28px;
+      background: rgba(22, 20, 17, 0.82);
+      backdrop-filter: blur(8px);
+    }
+
+    .search-overlay.is-open { display: block; }
+
+    .search-panel {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 36px;
+      max-width: 880px;
+    }
+
+    .search-panel h2 {
+      font-family: var(--display);
+      font-style: italic;
+      font-optical-sizing: auto;
+      font-weight: 520;
+      font-size: 22px;
+      margin-bottom: 12px;
+    }
+
+    .hit {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: var(--panel);
+      border: 0;
+      border-radius: 12px;
+      padding: 10px 14px;
+      margin-bottom: 8px;
+      box-shadow: inset 0 0 0 1px var(--line);
+    }
+
+    .hit:hover,
+    .hit:focus-visible {
+      box-shadow: inset 0 0 0 1px var(--honey);
+    }
+
+    .hit b {
+      display: block;
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+
+    .hit span {
+      font-size: 13px;
+      color: var(--dim);
+    }
+
+    .search-empty {
+      color: var(--dim);
+      font-size: 16px;
+    }
+
+    .scrim {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(22, 20, 17, 0.72);
+      z-index: 40;
+    }
+
+    .scrim.is-open { display: block; }
+
+    .sheet {
+      position: fixed;
+      left: 50%;
+      bottom: 0;
+      transform: translate(-50%, 110%);
+      width: min(560px, 94vw);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-bottom: 0;
+      border-radius: 22px 22px 0 0;
+      z-index: 41;
+      padding: 26px 28px 24px;
+      box-shadow: 0 -24px 60px rgba(12, 9, 6, 0.5);
+      transition: transform 0.24s ease;
+    }
+
+    .sheet.is-open { transform: translate(-50%, 0); }
+
+    .sheet h2 {
+      font-family: var(--display);
+      font-style: italic;
+      font-optical-sizing: auto;
+      font-weight: 600;
+      font-size: 28px;
+    }
+
+    .sheet-host {
+      color: var(--dim);
+      font-size: 14px;
+      letter-spacing: 0.06em;
+      margin: 4px 0 20px;
+    }
+
+    .sheet-host b { color: var(--honey); font-weight: 700; }
+
+    .field { margin-bottom: 16px; }
+
+    .field label {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--dim);
+      margin-bottom: 7px;
+    }
+
+    .status {
+      color: var(--ink);
+      background: var(--honey);
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 10px;
+    }
+
+    .field input {
+      width: 100%;
+      height: 42px;
+      background: var(--bg);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 0 14px;
+      font-size: 16px;
+      font-weight: 500;
+      outline: none;
+    }
+
+    .field input:focus { border-color: var(--honey); }
+
+    .sheet-foot {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 8px;
+    }
+
+    .epg-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+    .epg-scroll::-webkit-scrollbar-thumb { background: var(--line); border-radius: 99px; }
+    .epg-scroll::-webkit-scrollbar-track { background: transparent; }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+      .sheet.is-open { transform: translate(-50%, 0); }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="top">
+      <div class="mantel">
+        <div class="clock">21:18</div>
+        <div class="identity">
+          <div class="wordmark">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path fill="#e8b84a" d="M3.4 13.6c5.1-1.2 7.4-6.2 9-10 1.4 4.1 3.8 7.6 8.2 10-3.5.2-5.4 1.5-6.3 5.4-.9-2.7-3.5-4.5-10.9-5.4z"/>
+              <path fill="#c45c38" d="M11.7 8.4c.6 1.7 1.6 3.1 3.1 4.1-1.7-.1-3.1-.8-4.3-2.1.3-.7.8-1.4 1.2-2z"/>
+            </svg>
+            Sparrow
+          </div>
+          <div class="meta-row">
+            <span class="live"><i></i>EPG Live</span>
+            <span class="fresh">Guide · <b>12m</b></span>
+          </div>
+        </div>
+      </div>
+      <div class="top-tools">
+        <div class="search-wrap">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.5" cy="6.5" r="4.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M9.8 9.8 L13.2 13.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <input id="search" type="search" placeholder="Search" autocomplete="off" spellcheck="false" />
+        </div>
+        <button type="button" class="feeds-btn" id="feedsBtn">Feeds</button>
+      </div>
+    </header>
+
+    <section class="preview" aria-label="Now playing">
+      <div class="thumb" id="thumb" data-scene="news">
+        <div class="photo">
+          <div class="wash"></div>
+          <div class="fig a"></div>
+          <div class="fig b"></div>
+          <div class="desk"></div>
+          <div class="rink"></div>
+          <div class="window"></div>
+          <div class="spots"></div>
+          <div class="bug" id="bug">LIVE</div>
+          <div class="chyron" id="chyron">Yle · A-studio · Helsinki · 21:18</div>
+        </div>
+      </div>
+      <div class="now-copy">
+        <div class="now-ch" id="playCh">CH07 · Yle TV1 HD</div>
+        <div class="now-title" id="playTitle">A-studio</div>
+        <div class="now-next" id="playNext">then <em>Oddasat</em></div>
+        <div class="pbar"><i id="pfill"></i></div>
+        <div class="pmeta"><span id="pStart">21:00</span><span id="pRemain">27 min remaining</span><span id="pEnd">21:45</span></div>
+      </div>
+    </section>
+
+    <div class="pills" id="groups"></div>
+
+    <section class="guide" id="guide">
+      <div class="timehead">
+        <div class="tonight">Tonight</div>
+        <div class="timeline" id="timeline"></div>
+        <div class="now-tag">21:18</div>
+      </div>
+      <div class="grid-body">
+        <div class="epg-scroll" id="epgScroll">
+          <div id="rows"></div>
+        </div>
+        <div class="ribbon" aria-hidden="true"></div>
+      </div>
+      <div class="search-overlay" id="searchOverlay" hidden>
+        <div class="search-panel" id="searchPanel"></div>
+      </div>
+    </section>
+
+    <footer class="detail">
+      <div>
+        <div class="d-kicker" id="dKicker">Live now</div>
+        <div class="d-title" id="dTitle">A-studio</div>
+        <div class="d-meta" id="dMeta">Yle TV1 HD · 21:00–21:45 · 27 min remaining</div>
+        <div class="d-syn" id="dSyn">A-studio — live current affairs from Yle. Tonight’s desk takes the week’s politics to task, with guests from parliament and the regions.</div>
+      </div>
+      <button type="button" class="watch" id="watchBtn">Watch now</button>
+    </footer>
+  </div>
+
+  <div class="scrim" id="scrim"></div>
+  <aside class="sheet" id="sheet" role="dialog" aria-labelledby="sheetTitle" aria-modal="true" hidden>
+    <h2 id="sheetTitle">Feeds</h2>
+    <p class="sheet-host">Local <b>192.168.1.42</b></p>
+    <div class="field">
+      <label>M3U Source <span class="status">LIVE · 2m</span></label>
+      <input value="http://192.168.1.42:8080/catalog.m3u" spellcheck="false" />
+    </div>
+    <div class="field">
+      <label>EPG Source · XMLTV <span class="status">LIVE · 12m</span></label>
+      <input value="http://192.168.1.42:8080/guide.xml" spellcheck="false" />
+    </div>
+    <div class="sheet-foot">
+      <button type="button" class="watch" id="sheetDone">Done</button>
+    </div>
+  </aside>
+
+  <script>
+    const WIN0 = 21 * 60;
+    const SPAN = 120;
+    const NOW = 21 * 60 + 18;
+
+    const GROUPS = [
+      { id: "all", label: "All", count: 2841 },
+      { id: "finland", label: "Finland", count: 86 },
+      { id: "news", label: "News", count: 120 },
+      { id: "sports", label: "Sports", count: 64 },
+      { id: "anime", label: "Anime", count: 41 },
+      { id: "fourk", label: "4K", count: 12 }
+    ];
+
+    const CHANNELS = [
+      {
+        id: "ch01", num: "01", name: "Hero HD FI", guide: true, groups: ["finland", "sports"], genre: "sports",
+        programmes: [
+          { title: "Premier League", start: "20:30", end: "22:00", still: "pitch", syn: "Arsenal host Aston Villa. Second-half tension from the Emirates, with Finnish commentary." },
+          { title: "SportsNight", start: "22:00", end: "23:00", still: "studio", syn: "Desk recap of the night’s goals, cards, and the table that actually matters." }
+        ]
+      },
+      {
+        id: "ch02", num: "02", name: "JIM HD FI", guide: true, groups: ["finland"], genre: "ent",
+        programmes: [
+          { title: "Arman ja viimeinen ristiretki", start: "20:45", end: "21:35", still: "street", syn: "Arman Alizad walks into another room the rest of us would leave." },
+          { title: "Poliisit", start: "21:35", end: "22:30", still: "night", syn: "Ride-along night shift. Radios, rain, and the long Finnish highway." },
+          { title: "Graffiti", start: "22:30", end: "23:25", still: "street", syn: "Street artists, city walls, and the argument over who owns a brick face." }
+        ]
+      },
+      {
+        id: "ch03", num: "03", name: "MTV Ava HD FI", guide: true, groups: ["finland"], genre: "drama",
+        programmes: [
+          { title: "Emmerdale", start: "20:55", end: "21:50", still: "field", syn: "The village keeps its secrets in kitchens and at the wool-pack bar." },
+          { title: "Salatut elämät", start: "21:50", end: "22:45", still: "hearth", syn: "Pihlajakatu after dark. Doors close; someone always listens through them." },
+          { title: "The Split", start: "22:45", end: "23:40", still: "street", syn: "Divorce lawyers, family blood, and a London firm that cannot keep its own house." }
+        ]
+      },
+      {
+        id: "ch04", num: "04", name: "MTV3 HD FI", guide: true, groups: ["finland", "news"], genre: "news",
+        programmes: [
+          { title: "Seitsemän uutiset", start: "21:00", end: "21:25", still: "studio", syn: "National bulletin: parliament, weather over the Gulf, and the day’s one picture." },
+          { title: "Sydänjää", start: "21:25", end: "22:15", still: "night", syn: "A northern crime hour. Ice, kinship, and a case that will not stay buried." },
+          { title: "Kymmenen uutiset", start: "22:15", end: "22:45", still: "studio", syn: "Late news. Markets, sport, and the overnight forecast for the whole country." },
+          { title: "Rantabaari", start: "22:45", end: "23:35", still: "hearth", syn: "Harbour-side serial. Last call, old debts, a table that never quite empties." }
+        ]
+      },
+      {
+        id: "ch05", num: "05", name: "Nelonen HD FI", guide: true, groups: ["finland"], genre: "ent",
+        programmes: [
+          { title: "The Voice of Finland", start: "21:00", end: "21:58", still: "stage", syn: "Blind auditions. Chairs turn; a country listens for a voice it already knows." },
+          { title: "House of the Dragon", start: "21:58", end: "22:55", still: "hearth", syn: "Succession by fire. Dragons, claims, and the cost of a name." },
+          { title: "Late Night Finland", start: "22:55", end: "23:50", still: "studio", syn: "Desk, band, one sharp guest, and the week’s clips from the other channels." }
+        ]
+      },
+      {
+        id: "ch06", num: "06", name: "Sub HD FI", guide: true, groups: ["finland"], genre: "ent",
+        programmes: [
+          { title: "Simpsonit", start: "20:50", end: "21:45", still: "stage", syn: "Springfield in Finnish. A couch gag, a scheme, a town that never learns." },
+          { title: "Family Guy", start: "21:45", end: "22:15", still: "crowd", syn: "Cutaways, cut-price philosophy, and a dog with better timing than the family." },
+          { title: "South Park", start: "22:15", end: "23:10", still: "field", syn: "The mountain town takes another swing at the week’s argument." }
+        ]
+      },
+      {
+        id: "ch07", num: "07", name: "Yle TV1 HD", guide: true, groups: ["finland", "news"], genre: "news", keywords: ["news"],
+        programmes: [
+          { title: "Yle Uutiset", start: "20:00", end: "20:30", still: "studio", syn: "The national news of record. Headlines from Finland and the world.", keywords: ["news"] },
+          { title: "Puoli seitsemän", start: "20:30", end: "21:00", still: "studio", syn: "Magazine hour before the evening turn: people, places, a lighter desk." },
+          { title: "A-studio", start: "21:00", end: "21:45", still: "studio", syn: "A-studio — live current affairs from Yle. Tonight’s desk takes the week’s politics to task, with guests from parliament and the regions.", keywords: ["news"] },
+          { title: "Oddasat", start: "21:45", end: "22:00", still: "aurora", syn: "Sámi news from the north — weather, community, and the day’s stories in Northern Sámi." },
+          { title: "Yle Uutiset", start: "22:00", end: "22:25", still: "studio", syn: "Late bulletin. The day’s last pass over parliament, the regions, and the world.", keywords: ["news"] },
+          { title: "Novosti Yle", start: "22:25", end: "22:30", still: "studio", syn: "Russian-language news from Yle. Five tight minutes for the day’s facts." },
+          { title: "Document: Arctic Light", start: "22:30", end: "24:00", still: "aurora", syn: "A winter-long look at light, work, and silence above the Arctic Circle." }
+        ]
+      },
+      {
+        id: "ch08", num: "08", name: "Yle TV2 HD", guide: true, groups: ["finland", "sports"], genre: "sports",
+        programmes: [
+          { title: "SM-liiga: Tappara–HIFK", start: "21:00", end: "22:15", still: "ice", syn: "Tampere ice. Tappara and HIFK, second period already loud in the stands." },
+          { title: "Urheiluruutu", start: "22:15", end: "22:30", still: "studio", syn: "The night’s results, the table, and one clip they will play again tomorrow." },
+          { title: "Aikuiset", start: "22:30", end: "23:00", still: "hearth", syn: "Comedy of people who should know better and absolutely do not." }
+        ]
+      },
+      {
+        id: "ch09", num: "09", name: "Yle Teema Fem HD", guide: true, groups: ["finland"], genre: "drama",
+        programmes: [
+          { title: "Prisma: Revontulet", start: "21:00", end: "22:00", still: "aurora", syn: "Science hour on the aurora — solar wind, cameras, and a sky that will not sit still." },
+          { title: "Film: The Disciple", start: "22:00", end: "23:50", still: "stage", syn: "A raga, a teacher, a life spent almost arriving. Teema’s evening film." }
+        ]
+      },
+      {
+        id: "ch10", num: "10", name: "Kutonen HD FI", guide: true, groups: ["finland"], genre: "drama",
+        programmes: [
+          { title: "John Wick: Chapter 4", start: "21:00", end: "22:50", still: "night", syn: "A man, a gun, a continent of unfinished business. Continental rules still apply." },
+          { title: "Two and a Half Men", start: "22:50", end: "23:45", still: "hearth", syn: "Malibu furniture and the same argument, recast as a laugh track." }
+        ]
+      },
+      {
+        id: "ch11", num: "11", name: "Frii HD FI", guide: true, groups: ["finland"], genre: "drama",
+        programmes: [
+          { title: "Grey's Anatomy", start: "21:00", end: "21:45", still: "studio", syn: "Grey Sloan night shift. A surgery, a speech, a lift that will not close in time." },
+          { title: "Station 19", start: "21:45", end: "22:30", still: "hearth", syn: "Engine company, a house fire, and the personal weather nobody radioed in." },
+          { title: "Criminal Minds", start: "22:30", end: "23:25", still: "street", syn: "The team boards another jet. Profile first; the map fills in after." }
+        ]
+      },
+      {
+        id: "ch12", num: "12", name: "TLC HD FI", guide: true, groups: ["finland"], genre: "ent",
+        programmes: [
+          { title: "90 Day Fiancé", start: "21:00", end: "21:50", still: "crowd", syn: "The clock on the visa, the family at the gate, a relationship under fluorescent light." },
+          { title: "Cake Boss", start: "21:50", end: "22:40", still: "stage", syn: "Hoboken sugar architecture. A wedding cake that has to travel standing up." },
+          { title: "My 600-lb Life", start: "22:40", end: "23:40", still: "field", syn: "Clinic days, weigh-ins, and the long arithmetic of a body changing." }
+        ]
+      },
+      {
+        id: "cnn", num: "142", name: "CNN International", guide: false, groups: ["news"], genre: "news", keywords: ["news"],
+        programmes: [
+          { title: "International Desk", start: "21:00", end: "22:00", still: "studio", syn: "International desk. A world still moving at 21:18, mapped in chyrons." },
+          { title: "The Lead", start: "22:00", end: "23:00", still: "studio", syn: "One story held long enough to see the edges." }
+        ]
+      },
+      {
+        id: "bbc", num: "140", name: "BBC World News", guide: false, groups: ["news"], genre: "news", keywords: ["news"],
+        programmes: [
+          { title: "World Briefing", start: "21:00", end: "21:30", still: "studio", syn: "London hour. Correspondents, a clock, the world’s second pass at the facts." },
+          { title: "HARDtalk", start: "21:30", end: "22:00", still: "studio", syn: "One guest, no cushion. The interview as a held note." },
+          { title: "World Briefing", start: "22:00", end: "22:30", still: "studio", syn: "Late world bulletin from Broadcasting House." }
+        ]
+      }
+    ];
+
+    const state = {
+      playingId: "ch07",
+      focusCh: "ch07",
+      focusIdx: 2,
+      group: "all",
+      query: "",
+      sheet: false
+    };
+
+    const $ = (id) => document.getElementById(id);
+
+    function toMin(hhmm) {
+      const [h, m] = hhmm.split(":").map(Number);
+      return h * 60 + m;
+    }
+
+    function ch(id) {
+      return CHANNELS.find((c) => c.id === id);
+    }
+
+    function endLabel(t) {
+      return t === "24:00" ? "00:00" : t;
+    }
+
+    function inWindow(p) {
+      return toMin(p.end) > WIN0 && toMin(p.start) < WIN0 + SPAN;
+    }
+
+    function geometry(p) {
+      const s = Math.max(toMin(p.start), WIN0);
+      const e = Math.min(toMin(p.end), WIN0 + SPAN);
+      return {
+        left: ((s - WIN0) / SPAN) * 100,
+        width: ((e - s) / SPAN) * 100
+      };
+    }
+
+    function isLive(p) {
+      return toMin(p.start) <= NOW && NOW < toMin(p.end);
+    }
+
+    function nextAfter(channel, p) {
+      const i = channel.programmes.indexOf(p);
+      return channel.programmes[i + 1] || null;
+    }
+
+    function matchesGroup(c) {
+      return state.group === "all" || c.groups.includes(state.group);
+    }
+
+    function visibleGuide() {
+      return CHANNELS.filter((c) => c.guide && matchesGroup(c));
+    }
+
+    function windowIdxs(channel) {
+      return channel.programmes.map((p, i) => i).filter((i) => inWindow(channel.programmes[i]));
+    }
+
+    function mid(p) {
+      return (toMin(p.start) + toMin(p.end)) / 2;
+    }
+
+    function idxAtTime(channel, t) {
+      const hit = channel.programmes.findIndex((p) => inWindow(p) && toMin(p.start) <= t && t < toMin(p.end));
+      if (hit >= 0) return hit;
+      const vis = channel.programmes.map((p, i) => ({ p, i })).filter((x) => inWindow(x.p));
+      if (!vis.length) return 0;
+      return vis.reduce((best, x) => Math.abs(mid(x.p) - t) < Math.abs(mid(channel.programmes[best]) - t) ? x.i : best, vis[0].i);
+    }
+
+    function renderGroups() {
+      $("groups").innerHTML = GROUPS.map((g) =>
+        `<button type="button" class="pill${state.group === g.id ? " is-on" : ""}" data-g="${g.id}">${g.label}<em>${g.count}</em></button>`
+      ).join("");
+    }
+
+    function renderTimeline() {
+      const marks = [
+        { t: "21:00", p: 0, hour: true },
+        { t: "21:30", p: 25, hour: false },
+        { t: "22:00", p: 50, hour: true },
+        { t: "22:30", p: 75, hour: false },
+        { t: "23:00", p: 100, hour: true }
+      ];
+      $("timeline").innerHTML = marks.map((m) =>
+        `<span class="tick${m.hour ? " is-hour" : ""}" style="left:${m.p}%">${m.t}</span>`
+      ).join("");
+    }
+
+    function renderRows() {
+      $("rows").innerHTML = CHANNELS.filter((c) => c.guide).map((c) => {
+        const cells = c.programmes.map((p, i) => {
+          if (!inWindow(p)) return "";
+          const g = geometry(p);
+          const now = isLive(p);
+          const still = p.still || "studio";
+          return `<button type="button" class="cell${now ? " is-now" : ""}" data-ch="${c.id}" data-i="${i}" style="left:${g.left}%;width:${g.width}%" title="${p.title}"><span class="frame"><span class="still still-${still}"></span><span class="label">${p.title}</span></span></button>`;
+        }).join("");
+        return `<div class="epg-row" data-ch="${c.id}"><div class="row-ch"><span class="row-num">${c.num}</span><span class="row-name">${c.name}</span></div><div class="track">${cells}</div></div>`;
+      }).join("");
+    }
+
+    function applyChrome() {
+      document.querySelectorAll(".epg-row").forEach((row) => {
+        const c = ch(row.dataset.ch);
+        row.classList.toggle("is-watching", row.dataset.ch === state.playingId);
+        row.classList.toggle("is-dim", !matchesGroup(c));
+      });
+      document.querySelectorAll(".cell").forEach((el) => {
+        const on = el.dataset.ch === state.focusCh && Number(el.dataset.i) === state.focusIdx;
+        el.classList.toggle("is-focus", on);
+        if (on) {
+          el.focus({ preventScroll: true });
+          const row = el.closest(".epg-row");
+          const port = $("epgScroll");
+          if (row && port) {
+            const r = row.getBoundingClientRect();
+            const p = port.getBoundingClientRect();
+            if (r.top < p.top + 1 || r.bottom > p.bottom - 1) {
+              row.scrollIntoView({ block: "nearest" });
+            }
+          }
+        }
+      });
+      document.querySelectorAll(".pill").forEach((el) => {
+        el.classList.toggle("is-on", el.dataset.g === state.group);
+      });
+    }
+
+    function setPreview() {
+      const channel = ch(state.focusCh);
+      const p = channel.programmes[state.focusIdx];
+      const live = isLive(p);
+      const later = toMin(p.start) > NOW;
+      const nxt = nextAfter(channel, p);
+      const span = Math.max(toMin(p.end) - toMin(p.start), 1);
+      const pct = live ? Math.min(100, Math.max(0, ((NOW - toMin(p.start)) / span) * 100)) : later ? 0 : 100;
+      const rem = toMin(p.end) - NOW;
+      $("thumb").dataset.scene = channel.genre;
+      $("playCh").textContent = "CH" + channel.num + " · " + channel.name;
+      $("playTitle").textContent = p.title;
+      $("playNext").innerHTML = nxt ? "then <em>" + nxt.title + "</em>" : "end of night";
+      $("pfill").style.width = pct + "%";
+      $("pStart").textContent = p.start;
+      $("pEnd").textContent = endLabel(p.end);
+      $("pRemain").textContent = live ? rem + " min remaining" : later ? "starts " + p.start : "ended";
+      $("bug").textContent = live ? "LIVE" : later ? "NEXT" : "ENDED";
+      $("bug").classList.toggle("is-later", !live);
+      const tag = channel.name.replace(" HD FI", "").replace(" HD", "");
+      $("chyron").textContent = tag + " · " + p.title + " · 21:18";
+    }
+
+    function setDetail() {
+      const channel = ch(state.focusCh);
+      const p = channel.programmes[state.focusIdx];
+      const live = isLive(p);
+      const later = toMin(p.start) > NOW;
+      const rem = toMin(p.end) - NOW;
+      $("dKicker").textContent = live ? "Live now" : later ? "Later tonight" : "Earlier";
+      $("dKicker").classList.toggle("is-later", !live);
+      $("dTitle").textContent = p.title;
+      const remTxt = live ? " · " + rem + " min remaining" : " · " + (toMin(p.end) - toMin(p.start)) + " min";
+      $("dMeta").textContent = channel.name + " · " + p.start + "–" + endLabel(p.end) + remTxt;
+      $("dSyn").textContent = p.syn;
+    }
+
+    function select(channelId, idx, watch) {
+      state.focusCh = channelId;
+      state.focusIdx = idx;
+      if (watch) state.playingId = channelId;
+      setPreview();
+      setDetail();
+      applyChrome();
+    }
+
+    function move(dir) {
+      const vis = visibleGuide();
+      if (!vis.length) return;
+      let ci = vis.findIndex((c) => c.id === state.focusCh);
+      if (ci < 0) {
+        select(vis[0].id, windowIdxs(vis[0])[0] || 0, false);
+        return;
+      }
+      let channel = vis[ci];
+      let idxs = windowIdxs(channel);
+      let pi = idxs.indexOf(state.focusIdx);
+      if (pi < 0) pi = 0;
+
+      if (dir === "left") {
+        if (pi > 0) pi -= 1;
+        else {
+          ci = (ci - 1 + vis.length) % vis.length;
+          channel = vis[ci];
+          idxs = windowIdxs(channel);
+          pi = idxs.length - 1;
+        }
+      } else if (dir === "right") {
+        if (pi < idxs.length - 1) pi += 1;
+        else {
+          ci = (ci + 1) % vis.length;
+          channel = vis[ci];
+          idxs = windowIdxs(channel);
+          pi = 0;
+        }
+      } else if (dir === "up" || dir === "down") {
+        const t = mid(channel.programmes[state.focusIdx]);
+        ci = dir === "up" ? (ci - 1 + vis.length) % vis.length : (ci + 1) % vis.length;
+        channel = vis[ci];
+        select(channel.id, idxAtTime(channel, t), false);
+        return;
+      }
+
+      select(channel.id, idxs[pi], false);
+    }
+
+    function searchHits(q) {
+      const s = q.trim().toLowerCase();
+      if (!s) return { channels: [], programmes: [] };
+      const hasKw = (obj) => (obj.keywords || []).some((k) => k.includes(s));
+      const channels = CHANNELS.filter((c) => c.name.toLowerCase().includes(s) || hasKw(c));
+      const byTitle = new Map();
+      CHANNELS.forEach((c) => {
+        c.programmes.forEach((p, i) => {
+          if (!(p.title.toLowerCase().includes(s) || hasKw(p))) return;
+          const prev = byTitle.get(p.title);
+          if (!prev || (!inWindow(prev.p) && inWindow(p))) byTitle.set(p.title, { c, p, i });
+        });
+      });
+      return { channels, programmes: [...byTitle.values()] };
+    }
+
+    function renderSearch() {
+      const overlay = $("searchOverlay");
+      const q = state.query.trim();
+      if (!q) {
+        overlay.classList.remove("is-open");
+        overlay.hidden = true;
+        return;
+      }
+      overlay.hidden = false;
+      overlay.classList.add("is-open");
+      const { channels, programmes } = searchHits(q);
+      const col = (title, items) => {
+        if (!items) return "<div><h2>" + title + "</h2><p class='search-empty'>No matches</p></div>";
+        return "<div><h2>" + title + "</h2>" + items + "</div>";
+      };
+      const chHtml = channels.length
+        ? channels.map((c) => `<button type="button" class="hit" data-hit="ch" data-id="${c.id}"><b>${c.name}</b><span>CH${c.num}${c.guide ? "" : " · catalog"}</span></button>`).join("")
+        : null;
+      const pHtml = programmes.length
+        ? programmes.map((x) => `<button type="button" class="hit" data-hit="p" data-id="${x.c.id}" data-i="${x.i}"><b>${x.p.title}</b><span>${x.c.name} · ${x.p.start}–${endLabel(x.p.end)}</span></button>`).join("")
+        : null;
+      $("searchPanel").innerHTML = col("Channels", chHtml) + col("Programmes", pHtml);
+    }
+
+    function openSheet(open) {
+      state.sheet = open;
+      $("sheet").classList.toggle("is-open", open);
+      $("sheet").hidden = !open;
+      $("scrim").classList.toggle("is-open", open);
+    }
+
+    function closeSearch() {
+      state.query = "";
+      $("search").value = "";
+      $("search").blur();
+      renderSearch();
+    }
+
+    renderGroups();
+    renderTimeline();
+    renderRows();
+    setPreview();
+    setDetail();
+    applyChrome();
+
+    $("groups").addEventListener("click", (e) => {
+      const btn = e.target.closest(".pill");
+      if (!btn) return;
+      state.group = btn.dataset.g;
+      const vis = visibleGuide();
+      if (vis.length && !vis.some((c) => c.id === state.focusCh)) {
+        state.focusCh = vis[0].id;
+        state.focusIdx = windowIdxs(vis[0])[0] || 0;
+        setPreview();
+        setDetail();
+      }
+      renderGroups();
+      applyChrome();
+    });
+
+    $("rows").addEventListener("click", (e) => {
+      const btn = e.target.closest(".cell");
+      if (!btn) return;
+      select(btn.dataset.ch, Number(btn.dataset.i), false);
+    });
+
+    $("watchBtn").addEventListener("click", () => {
+      select(state.focusCh, state.focusIdx, true);
+    });
+
+    $("feedsBtn").addEventListener("click", () => openSheet(true));
+    $("sheetDone").addEventListener("click", () => openSheet(false));
+    $("scrim").addEventListener("click", () => openSheet(false));
+
+    $("search").addEventListener("input", (e) => {
+      state.query = e.target.value;
+      renderSearch();
+    });
+
+    $("search").addEventListener("focus", () => {
+      if (state.query.trim()) renderSearch();
+    });
+
+    $("searchOverlay").addEventListener("click", (e) => {
+      const hit = e.target.closest(".hit");
+      if (!hit) return;
+      const id = hit.dataset.id;
+      const channel = ch(id);
+      if (hit.dataset.hit === "ch") {
+        const live = channel.programmes.findIndex((p) => isLive(p));
+        const idx = live >= 0 ? live : (windowIdxs(channel)[0] || 0);
+        select(id, idx, true);
+      } else {
+        select(id, Number(hit.dataset.i), true);
+      }
+      closeSearch();
+    });
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        if (state.sheet) openSheet(false);
+        else closeSearch();
+        return;
+      }
+      if (e.key === "/" && document.activeElement !== $("search") && document.activeElement.tagName !== "INPUT") {
+        e.preventDefault();
+        $("search").focus();
+        return;
+      }
+      if (document.activeElement && (document.activeElement.tagName === "INPUT" || document.activeElement.tagName === "TEXTAREA")) return;
+      if (state.sheet) return;
+      if (state.query && $("searchOverlay").classList.contains("is-open")) return;
+      const map = { ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right" };
+      if (map[e.key]) {
+        e.preventDefault();
+        move(map[e.key]);
+      }
+    });
+  </script>
+</body>
+</html>
