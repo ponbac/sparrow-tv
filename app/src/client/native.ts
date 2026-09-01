@@ -18,6 +18,8 @@ import {
   type InstalledPlaybackSession,
   type InstalledPlaybackTransport,
   type InstalledSparrowClient,
+  type GuideWindow,
+  type GuideWindowInput,
   type ListChannelsInput,
   type ListGroupsInput,
   type MpvPlaybackControl,
@@ -51,6 +53,7 @@ export const NATIVE_COMMANDS = Object.freeze({
   channels: "catalog_list_channels",
   channel: "catalog_channel",
   schedule: "catalog_schedule",
+  guideWindow: "catalog_guide_window",
   search: "catalog_search",
   searchChannels: "catalog_search_channels",
   searchProgrammes: "catalog_search_programmes",
@@ -267,7 +270,7 @@ class TauriSparrowClient implements InstalledSparrowClient {
           ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
         },
       },
-      clientSchemas.groupsPage,
+      clientSchemas.groupsPageFor(input),
       input.signal,
     );
   }
@@ -285,6 +288,23 @@ class TauriSparrowClient implements InstalledSparrowClient {
         },
       },
       clientSchemas.channelsPage,
+      input.signal,
+    );
+  }
+
+  guideWindow(input: GuideWindowInput): Promise<ClientResult<GuideWindow>> {
+    return this.#request(
+      NATIVE_COMMANDS.guideWindow,
+      {
+        input: {
+          startsAt: input.startsAt,
+          endsAt: input.endsAt,
+          channelLimit: input.channelLimit,
+          ...(input.group === undefined ? {} : { group: input.group }),
+          ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+        },
+      },
+      clientSchemas.guideWindowFor(input),
       input.signal,
     );
   }

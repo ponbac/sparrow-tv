@@ -9,6 +9,7 @@ use std::{
     },
 };
 
+use sparrow_bounded_blocking::{BlockingTaskCancellation, BoundedBlocking};
 use sparrow_core::{
     ChannelSummary, CoreAdapters, CoreError, Page, PageRequest, ProgrammeSummary, RefreshReport,
     RefreshTrigger, SearchRequest, SearchResults, SearchTerm, SparrowCore, SystemClock,
@@ -21,7 +22,6 @@ use tokio::sync::{Mutex, Notify, watch};
 use crate::{
     android_playback,
     audio_preferences::AudioPreferenceStore,
-    bounded_blocking::{BlockingTaskCancellation, BoundedBlocking},
     config_store::{
         ConfigurationStoreError, SourceConfigurationStore, StoredSourceConfiguration,
         ensure_private_directory,
@@ -1864,6 +1864,13 @@ mod tests {
             "startsAt": "2026-08-30T12:00:00Z",
             "endsAt": "2026-08-30T13:00:00Z"
         });
+        let expected_search_hit = json!({
+            "channel": channels_json["items"][0].clone(),
+            "title": "Morning Bulletin",
+            "titleTruncated": false,
+            "startsAt": "2026-08-30T12:00:00Z",
+            "endsAt": "2026-08-30T13:00:00Z"
+        });
         assert_eq!(
             schedule_before_json,
             json!({
@@ -1883,7 +1890,7 @@ mod tests {
                 },
                 "programmes": {
                     "generation": generation,
-                    "items": [expected_programme],
+                    "items": [expected_search_hit],
                     "next": null
                 }
             })
@@ -1964,7 +1971,6 @@ mod tests {
             .as_str()
             .expect("prior channel id exists")
             .to_owned();
-
         let (replacement_location, request_started, release, replacement_server) =
             blocked_failure_source_server();
         let replacement = tokio::spawn({

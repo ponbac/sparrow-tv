@@ -145,6 +145,8 @@ const fn input_field(field: InputField) -> &'static str {
         InputField::Epg => "epg",
         InputField::ChannelId => "channel-id",
         InputField::ChannelGroup => "channel-group",
+        InputField::GuideWindowStartsAt => "guide-starts-at",
+        InputField::GuideWindowEndsAt => "guide-ends-at",
         InputField::SearchTerm => "search-term",
         InputField::PageLimit => "page-limit",
         InputField::PageCursor => "page-cursor",

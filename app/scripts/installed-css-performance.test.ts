@@ -9,12 +9,14 @@ import { describe, expect, it } from "vitest";
 const installedStylesRoot = fileURLToPath(new URL("../src/", import.meta.url));
 
 describe("installed app repaint contract", () => {
-  it("keeps persistent chrome static", async () => {
+  it("keeps persistent Split Stage chrome static", async () => {
     const continuousChromeSelectors: string[] = [];
+    let persistentChromeRules = 0;
 
     for (const [path, stylesheet] of await installedStylesheets()) {
       stylesheet.walkRules((rule) => {
-        if (!rule.selectors.some(containsSignalLamp)) return;
+        if (!rule.selectors.some(containsPersistentChrome)) return;
+        persistentChromeRules += 1;
 
         rule.walkDecls((declaration) => {
           if (
@@ -28,6 +30,7 @@ describe("installed app repaint contract", () => {
       });
     }
 
+    expect(persistentChromeRules).toBeGreaterThan(0);
     expect(continuousChromeSelectors).toEqual([]);
   });
 
@@ -68,8 +71,10 @@ async function installedStylesheets(): Promise<
   );
 }
 
-function containsSignalLamp(selector: string): boolean {
-  return /(^|[\s>+~,(])\.signal-lamp(?=$|[\s>+~.:#,[)])/u.test(selector);
+function containsPersistentChrome(selector: string): boolean {
+  return /(^|[\s>+~,(])\.split-stage__(?:masthead|identity|freshness|status)(?=$|[\s>+~.:#,[)])/u.test(
+    selector,
+  );
 }
 
 function declarationsByProperty(rule: Rule): ReadonlyMap<string, string> {

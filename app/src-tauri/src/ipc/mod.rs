@@ -12,11 +12,11 @@ use crate::runtime::{InstalledRuntime, InstalledRuntimeSlot};
 use self::{
     dto::{
         AndroidPlaybackStatusDto, CapabilitiesDto, CatalogStatusDto, ChannelDetailsDto,
-        ChannelGroupDto, ChannelSummaryDto, ClientErrorDto, CoreEventDto, PageDto,
-        PlaybackDescriptorDto, ProgrammeDto, RefreshReportDto, SearchResultsDto,
+        ChannelGroupDto, ChannelSummaryDto, ClientErrorDto, CoreEventDto, GuideWindowChannelDto,
+        PageDto, PlaybackDescriptorDto, ProgrammeDto, RefreshReportDto, SearchResultsDto,
     },
     input::{
-        ChannelInput, ListChannelsInput, ListGroupsInput, PlaybackActivityInput,
+        ChannelInput, GuideWindowInput, ListChannelsInput, ListGroupsInput, PlaybackActivityInput,
         PlaybackAndroidControlsInput, PlaybackAndroidIdentityInput, PlaybackAndroidStartInput,
         PlaybackAndroidViewportCommandInput, PlaybackMpvControlInput, PlaybackReadInput,
         PlaybackReopenInput, PlaybackRestartInput, PlaybackStartInput, PlaybackStopInput,
@@ -118,6 +118,27 @@ pub(crate) fn schedule(
         .core()
         .schedule(query)
         .map(|page| PageDto::programmes(&page))
+        .map_err(ClientErrorDto::from)
+}
+
+#[tauri::command]
+pub(crate) async fn catalog_guide_window(
+    slot: State<'_, InstalledRuntimeSlot>,
+    input: GuideWindowInput,
+) -> Result<PageDto<GuideWindowChannelDto>, ClientErrorDto> {
+    let runtime = slot.wait().await;
+    guide_window(runtime.as_ref(), input)
+}
+
+pub(crate) fn guide_window(
+    state: &InstalledRuntime,
+    input: GuideWindowInput,
+) -> Result<PageDto<GuideWindowChannelDto>, ClientErrorDto> {
+    let query = input.into_core()?;
+    state
+        .core()
+        .guide_window(query)
+        .map(|page| PageDto::guide_window(&page))
         .map_err(ClientErrorDto::from)
 }
 

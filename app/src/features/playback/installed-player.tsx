@@ -1,4 +1,4 @@
-import { Pause, Play, RotateCcw, ScrollText } from "lucide-react";
+import { Pause, RotateCcw, ScrollText } from "lucide-react";
 import {
   useEffect,
   useMemo,
@@ -119,16 +119,15 @@ export function InstalledPlayer({
   const phase = state.phase;
   const transportReleased = phase._tag === "failed";
   const usesMpv = state.presentation === "linux-mpv";
-  const overlayAction =
+  const recoveryAction =
     phase._tag === "paused"
-      ? { label: "Resume live signal", onAction: () => void runner.resume() }
+      ? { label: "Resume", onAction: () => void runner.resume() }
       : phase._tag === "failed" && phase.canRestart
-        ? { label: "Restart signal", onAction: () => void runner.restart() }
+        ? { label: "Restart", onAction: () => void runner.restart() }
         : undefined;
   const canPause =
     phase._tag === "starting" ||
     phase._tag === "playing" ||
-    phase._tag === "autoplay-blocked" ||
     phase._tag === "recovering";
   const canRestart =
     phase._tag !== "idle" &&
@@ -191,7 +190,7 @@ export function InstalledPlayer({
           : "Provider details remain inside the installed receiver."
       }
       onPlaying={() => undefined}
-      {...(overlayAction === undefined ? {} : { overlayAction })}
+      {...(recoveryAction === undefined ? {} : { recoveryAction })}
       additionalControls={
         <>
           {state.audio.tracks.length === 0 ? null : (
@@ -232,13 +231,8 @@ export function InstalledPlayer({
               <Pause aria-hidden="true" />
               Pause
             </button>
-          ) : phase._tag === "paused" ? (
-            <button type="button" onClick={() => void runner.resume()}>
-              <Play aria-hidden="true" />
-              Resume
-            </button>
           ) : null}
-          {canRestart ? (
+          {canRestart && recoveryAction === undefined ? (
             <button type="button" onClick={() => void runner.restart()}>
               <RotateCcw aria-hidden="true" />
               Restart

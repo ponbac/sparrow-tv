@@ -4,7 +4,7 @@ import {
   useQueryClient,
   type QueryClient,
 } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   CatalogGeneration,
   CatalogStatus,
@@ -31,19 +31,19 @@ export interface CatalogSynchronization {
   readonly latestEvent: SparrowEvent | null;
   /** Undefined until an event or refresh report supplies an authoritative generation. */
   readonly generationHint: CatalogGeneration | null | undefined;
+  readonly retryStatus: () => void;
   readonly requestRefresh: () => void;
 }
 
 /**
  * Reconciles manual refreshes and ordered transport events into React Query.
- * Successful cached catalog data remains present while active reads refetch.
+ * Immutable catalog reads select their authoritative generation in their keys.
  */
 export function useCatalogSynchronization(
   client: SparrowClient,
 ): CatalogSynchronization {
   const queryClient = useQueryClient();
   const controllerRef = useRef<AbortController | null>(null);
-  const invalidatedGenerationRef = useRef<CatalogGeneration | null>(null);
   const fetchedGenerationRef = useRef<
     CatalogGeneration | null | undefined
   >(undefined);
@@ -56,6 +56,10 @@ export function useCatalogSynchronization(
     queryFn: ({ signal }) => successfulQueryResult(client.status({ signal })),
     retry: false,
   });
+  const { refetch: refetchStatusQuery } = statusQuery;
+  const retryStatus = useCallback(() => {
+    void refetchStatusQuery();
+  }, [refetchStatusQuery]);
   const refreshMutation = useMutation({
     retry: false,
     mutationFn: () => {
@@ -66,11 +70,7 @@ export function useCatalogSynchronization(
     onSuccess: (result) => {
       if (result.ok) {
         setGenerationHint(result.value.status.generation);
-        reconcileStatus(
-          queryClient,
-          result.value.status,
-          invalidatedGenerationRef,
-        );
+        reconcileStatus(queryClient, result.value.status);
       } else if (result.error._tag !== "cancelled") {
         refetchStatus(queryClient);
       }
@@ -94,19 +94,10 @@ export function useCatalogSynchronization(
     fetchedGenerationRef.current = generation;
     setGenerationHint(generation);
     if (
-      previousGeneration !== undefined &&
-      previousGeneration !== generation
+      generation === null &&
+      previousGeneration !== null
     ) {
-      if (generation === null) {
-        invalidateCatalogData(queryClient);
-        invalidatedGenerationRef.current = null;
-      } else {
-        invalidateGeneration(
-          queryClient,
-          generation,
-          invalidatedGenerationRef,
-        );
-      }
+      clearCatalogData(queryClient);
     }
   }, [queryClient, statusQuery.data]);
 
@@ -117,19 +108,10 @@ export function useCatalogSynchronization(
         switch (event._tag) {
           case "catalog-status-changed":
             setGenerationHint(event.status.generation);
-            reconcileStatus(
-              queryClient,
-              event.status,
-              invalidatedGenerationRef,
-            );
+            reconcileStatus(queryClient, event.status);
             return;
           case "catalog-published":
             setGenerationHint(event.generation);
-            invalidateGeneration(
-              queryClient,
-              event.generation,
-              invalidatedGenerationRef,
-            );
             refetchStatus(queryClient);
             return;
           case "refresh-completed":
@@ -155,6 +137,7 @@ export function useCatalogSynchronization(
     refreshResult: refreshMutation.data ?? defectResult,
     latestEvent,
     generationHint,
+    retryStatus,
     requestRefresh: () => refreshMutation.mutate(),
   };
 }
@@ -172,9 +155,6 @@ function refetchStatus(queryClient: QueryClient): void {
 function reconcileStatus(
   queryClient: QueryClient,
   status: CatalogStatus,
-  invalidatedGenerationRef: {
-    current: CatalogGeneration | null;
-  },
 ): void {
   const previous = queryClient.getQueryData<ClientResult<CatalogStatus>>(
     STATUS_QUERY_KEY,
@@ -187,42 +167,22 @@ function reconcileStatus(
   });
   if (previous === undefined || previousGeneration !== status.generation) {
     if (status.generation === null) {
-      invalidateCatalogData(queryClient);
-      invalidatedGenerationRef.current = null;
-    } else {
-      invalidateGeneration(
-        queryClient,
-        status.generation,
-        invalidatedGenerationRef,
-      );
+      clearCatalogData(queryClient);
     }
   }
 }
 
-function invalidateGeneration(
-  queryClient: QueryClient,
-  generation: CatalogGeneration,
-  invalidatedGenerationRef: {
-    current: CatalogGeneration | null;
-  },
-): void {
-  if (invalidatedGenerationRef.current === generation) {
-    return;
-  }
-  invalidatedGenerationRef.current = generation;
-  invalidateCatalogData(queryClient);
-}
-
-function invalidateCatalogData(queryClient: QueryClient): void {
+function clearCatalogData(queryClient: QueryClient): void {
+  const filters = {
+    predicate: ({ queryKey }: { readonly queryKey: readonly unknown[] }) =>
+      queryKey[0] === "catalog" &&
+      queryKey[1] !== "status" &&
+      queryKey[1] !== "capabilities",
+  };
   settle(
-    queryClient.invalidateQueries({
-      predicate: ({ queryKey }) =>
-        queryKey[0] === "catalog" &&
-        queryKey[1] !== "status" &&
-        queryKey[1] !== "capabilities",
-      refetchType: "active",
-    }),
+    queryClient.cancelQueries(filters),
   );
+  queryClient.removeQueries(filters);
 }
 
 function settle(operation: Promise<unknown>): void {

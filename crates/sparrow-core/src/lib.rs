@@ -9,13 +9,14 @@ mod xmltv;
 pub use core::{CoreEventStream, PlaybackActivityLease, SparrowCore};
 pub use domain::{
     CatalogGeneration, CatalogStatus, ChannelDetails, ChannelGroupFilter, ChannelGroupView,
-    ChannelId, ChannelQuery, ChannelSummary, CoreError, CoreEvent, EpgFailureKind, InputField,
-    InputReason, LifecycleSignal, M3uFailureKind, Page, PageCursor, PageLimit, PageRequest,
-    ProgrammeSummary, RedactedSourceConfiguration, RefreshOutcome, RefreshReport,
-    RefreshSkipReason, RefreshTrigger, ResolvedPlaybackSource, SafeFailure, ScheduleQuery,
-    SearchRequest, SearchResults, SearchTerm, SnapshotOperation, SnapshotRecoveryDiagnostic,
-    SnapshotRecoveryReason, SourceAccessError, SourceAccessFailure, SourceConfiguration,
-    SourceConfigurationInput, SourceKind, SourceReadError, SourceState, StoreError,
+    ChannelId, ChannelQuery, ChannelSummary, CoreError, CoreEvent, EpgFailureKind, GuideProgramme,
+    GuideWindowChannel, GuideWindowQuery, InputField, InputReason, LifecycleSignal, M3uFailureKind,
+    Page, PageCursor, PageLimit, PageRequest, ProgrammeSearchHit, ProgrammeSummary,
+    RedactedSourceConfiguration, RefreshOutcome, RefreshReport, RefreshSkipReason, RefreshTrigger,
+    ResolvedPlaybackSource, SafeFailure, ScheduleQuery, SearchRequest, SearchResults, SearchTerm,
+    SnapshotOperation, SnapshotRecoveryDiagnostic, SnapshotRecoveryReason, SourceAccessError,
+    SourceAccessFailure, SourceConfiguration, SourceConfigurationInput, SourceKind,
+    SourceReadError, SourceState, StoreError,
 };
 pub use ports::{
     Clock, CoreAdapters, PrivateSourceValidators, PrivateValidatorError, SnapshotCandidate,

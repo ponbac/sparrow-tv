@@ -56,13 +56,13 @@ const CATALOG_MARKER_EXPRESSION = `(() => {
         .some((candidate) => /^https?:\\/\\//iu.test((candidate ?? "").trim()));
     }).length;
   return {
-    channelCount: document.querySelectorAll(".channel-card").length,
+    channelCount: document.querySelectorAll("[data-acceptance-channel]").length,
     routineUrlCount,
   };
 })()`;
 
 const CLICK_FIRST_CHANNEL_EXPRESSION = `(() => {
-  const card = document.querySelectorAll(".channel-card").item(0);
+  const card = document.querySelectorAll("[data-acceptance-channel]").item(0);
   if (!(card instanceof HTMLButtonElement)) return false;
   card.click();
   return true;
@@ -817,7 +817,7 @@ function clickChannelExpression(targetIndex: 0 | 1): string {
     if (video instanceof HTMLVideoElement) {
       video.setAttribute("data-acceptance-old-channel", "true");
     }
-    const card = document.querySelectorAll(".channel-card").item(${targetIndex});
+    const card = document.querySelectorAll("[data-acceptance-channel]").item(${targetIndex});
     if (!(card instanceof HTMLButtonElement)) return false;
     card.click();
     return true;
@@ -826,7 +826,7 @@ function clickChannelExpression(targetIndex: 0 | 1): string {
 
 function channelSelectedExpression(targetIndex: 0 | 1): string {
   return `(() => {
-    const cards = document.querySelectorAll(".channel-card");
+    const cards = document.querySelectorAll("[data-acceptance-channel]");
     const video = document.querySelector(".hosted-player video");
     return cards.length >= 2 &&
       cards.item(${targetIndex}).getAttribute("aria-pressed") === "true" &&

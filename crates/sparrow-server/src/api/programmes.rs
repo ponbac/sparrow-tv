@@ -5,9 +5,20 @@ use axum::{
 
 use super::{
     ApiError, AppState,
-    dto::{ChannelSummaryDto, PageDto, ProgrammeDto, SearchResultsDto},
-    query::{PageQuery, SearchPageQuery, SearchQuery, extract, schedule_query},
+    dto::{ChannelSummaryDto, GuideWindowChannelDto, PageDto, ProgrammeDto, SearchResultsDto},
+    query::{
+        GuideWindowHttpQuery, PageQuery, SearchPageQuery, SearchQuery, extract, schedule_query,
+    },
 };
+
+pub(crate) async fn guide_window(
+    State(state): State<AppState>,
+    query: Result<Query<GuideWindowHttpQuery>, QueryRejection>,
+) -> Result<Json<PageDto<GuideWindowChannelDto>>, ApiError> {
+    let query = extract(query)?.into_core()?;
+    let page = state.core().guide_window(query).map_err(ApiError::from)?;
+    Ok(Json(PageDto::guide_window(&page)))
+}
 
 pub(crate) async fn schedule(
     State(state): State<AppState>,

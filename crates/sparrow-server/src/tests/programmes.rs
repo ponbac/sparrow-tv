@@ -1,6 +1,174 @@
 use super::*;
 
 #[tokio::test]
+async fn guide_window_projects_grouped_channel_rows_and_overlap_boundaries() {
+    let app = TestApp::fixture_with_guide(PROGRAMME_M3U, PROGRAMME_EPG).await;
+    let guide = get_json(
+        &app.router,
+        "/api/v1/guide?startsAt=2026-08-29T07%3A30%3A00Z&endsAt=2026-08-29T10%3A30%3A00Z&channelLimit=100&group=News",
+    )
+    .await;
+    let rows = guide["items"]
+        .as_array()
+        .expect("the guide response contains rows");
+    assert!(rows.iter().all(|row| row["channel"]["group"] == "News"));
+    let exact = rows
+        .iter()
+        .find(|row| row["channel"]["name"] == "Misleading Name")
+        .expect("the exact fixture Channel is in the News guide");
+    assert_eq!(
+        exact["programmes"],
+        json!([
+            {
+                "title": "Earlier & First",
+                "titleTruncated": false,
+                "startsAt": "2026-08-29T07:00:00Z",
+                "endsAt": "2026-08-29T08:00:00Z",
+            },
+            {
+                "title": "Later Programme",
+                "titleTruncated": false,
+                "startsAt": "2026-08-29T10:00:00Z",
+                "endsAt": "2026-08-29T11:00:00Z",
+            }
+        ])
+    );
+    assert_eq!(exact["programmesTruncated"], false);
+
+    let touching = get_json(
+        &app.router,
+        "/api/v1/guide?startsAt=2026-08-29T08%3A00%3A00Z&endsAt=2026-08-29T10%3A00%3A00Z&channelLimit=100&group=News",
+    )
+    .await;
+    let exact_touching = touching["items"]
+        .as_array()
+        .and_then(|rows| {
+            rows.iter()
+                .find(|row| row["channel"]["name"] == "Misleading Name")
+        })
+        .expect("the exact fixture Channel remains in the boundary guide");
+    assert_eq!(exact_touching["programmes"], json!([]));
+
+    let encoded = guide.to_string();
+    for canary in [
+        CONFIGURATION_CANARY,
+        PROVIDER_CANARY,
+        EPG_CONFIGURATION_CANARY,
+        EPG_PROVIDER_CANARY,
+        "media.fixture.invalid",
+        "exact-private",
+        "https://",
+    ] {
+        assert!(!encoded.contains(canary), "guide response leaked {canary}");
+    }
+}
+
+#[tokio::test]
+async fn guide_window_bounds_titles_and_never_projects_descriptions() {
+    let source_title = "é".repeat(sparrow_core::GuideProgramme::MAX_TITLE_BYTES);
+    let source_description = "large-guide-description".repeat(1_024);
+    let epg = format!(
+        r#"<tv><channel id="exact.id"><display-name>Exact</display-name></channel><programme start="20260829070000 +0000" stop="20260829120000 +0000" channel="exact.id"><title>{source_title}</title><desc>{source_description}</desc></programme></tv>"#
+    );
+    let app = TestApp::fixture_with_guide(PROGRAMME_M3U, epg.as_bytes()).await;
+    let guide = get_json(
+        &app.router,
+        "/api/v1/guide?startsAt=2026-08-29T08%3A00%3A00Z&endsAt=2026-08-29T09%3A00%3A00Z&channelLimit=100",
+    )
+    .await;
+    let programme = guide["items"]
+        .as_array()
+        .and_then(|rows| {
+            rows.iter()
+                .find(|row| row["channel"]["name"] == "Misleading Name")
+        })
+        .and_then(|row| row["programmes"].as_array())
+        .and_then(|programmes| programmes.first())
+        .expect("the oversized-title Programme is projected into the guide");
+
+    assert_eq!(programme["title"], "é".repeat(128));
+    assert_eq!(programme["titleTruncated"], true);
+    assert!(programme.get("description").is_none());
+    assert!(programme.get("channelId").is_none());
+    assert!(!guide.to_string().contains(&source_description));
+
+    let search = get_json(
+        &app.router,
+        "/api/v1/search?term=%C3%A9&channelLimit=1&programmeLimit=1",
+    )
+    .await;
+    let hit = &search["programmes"]["items"][0];
+    assert_eq!(hit["title"], "é".repeat(128));
+    assert_eq!(hit["titleTruncated"], true);
+    assert_eq!(hit["channel"]["name"], "Misleading Name");
+    assert!(hit.get("description").is_none());
+    assert!(hit.get("channelId").is_none());
+    assert!(!search.to_string().contains(&source_description));
+}
+
+#[tokio::test]
+async fn guide_window_refines_times_and_scopes_continuations_to_the_query() {
+    let app = TestApp::fixture_with_guide(PROGRAMME_M3U, PROGRAMME_EPG).await;
+    let first = get_json(
+        &app.router,
+        "/api/v1/guide?startsAt=2026-08-29T07%3A00%3A00Z&endsAt=2026-08-29T12%3A00%3A00Z&channelLimit=1",
+    )
+    .await;
+    let cursor = first["next"]
+        .as_str()
+        .expect("the first guide Channel page continues");
+    let equivalent = get_json(
+        &app.router,
+        &format!(
+            "/api/v1/guide?startsAt=2026-08-29T09%3A00%3A00%2B02%3A00&endsAt=2026-08-29T14%3A00%3A00%2B02%3A00&channelLimit=1&cursor={cursor}"
+        ),
+    )
+    .await;
+    assert_eq!(equivalent["items"].as_array().map(Vec::len), Some(1));
+    let mismatched = send(
+        &app.router,
+        request(
+            Method::GET,
+            &format!(
+                "/api/v1/guide?startsAt=2026-08-29T07%3A00%3A01Z&endsAt=2026-08-29T12%3A00%3A00Z&channelLimit=1&cursor={cursor}"
+            ),
+            Some(PASSWORD),
+        ),
+    )
+    .await;
+    assert_invalid_input(&mismatched, "page-cursor", "cursor-query-mismatch");
+
+    for (uri, field, reason) in [
+        (
+            "/api/v1/guide?startsAt=not-an-instant&endsAt=2026-08-29T12%3A00%3A00Z&channelLimit=1",
+            "guide-starts-at",
+            "invalid-format",
+        ),
+        (
+            "/api/v1/guide?startsAt=2026-08-29T07%3A00%3A00Z&endsAt=2026-08-30T07%3A00%3A01Z&channelLimit=1",
+            "guide-ends-at",
+            "out-of-range",
+        ),
+    ] {
+        let response = send(&app.router, request(Method::GET, uri, Some(PASSWORD))).await;
+        assert_invalid_input(&response, field, reason);
+    }
+    let oversized_start = "x".repeat(65);
+    let response = send(
+        &app.router,
+        request(
+            Method::GET,
+            &format!(
+                "/api/v1/guide?startsAt={oversized_start}&endsAt=2026-08-29T12%3A00%3A00Z&channelLimit=1"
+            ),
+            Some(PASSWORD),
+        ),
+    )
+    .await;
+    assert_invalid_input(&response, "guide-starts-at", "too-long");
+}
+
+#[tokio::test]
 async fn schedule_and_search_project_the_enriched_core_fixture_exactly() {
     let app = TestApp::fixture_with_guide(PROGRAMME_M3U, PROGRAMME_EPG).await;
     let channels = get_json(&app.router, "/api/v1/channels?limit=100").await;
@@ -57,9 +225,13 @@ async fn schedule_and_search_project_the_enriched_core_fixture_exactly() {
     assert_eq!(
         search["programmes"]["items"][0],
         json!({
-            "channelId": fallback_id,
+            "channel": {
+                "id": fallback_id,
+                "name": "FALLBACK One",
+                "group": "News",
+            },
             "title": "Fallback Programme",
-            "description": null,
+            "titleTruncated": false,
             "startsAt": "2026-08-29T11:00:00Z",
             "endsAt": "2026-08-29T12:00:00Z",
         })

@@ -42,10 +42,42 @@ const PROGRAMME_PAGE = clientSchemas.schedulePage.parse({
   next: null,
 });
 
+const GUIDE_START = clientSchemas.isoInstant.parse("2026-08-30T18:00:00Z");
+const GUIDE_END = clientSchemas.isoInstant.parse("2026-08-30T21:00:00Z");
+const GUIDE_WINDOW_PAYLOAD = {
+  generation: 7,
+  items: [
+    {
+      channel: CHANNEL_PAGE.items[0],
+      programmes: [
+        {
+          title: "Evening Report",
+          titleTruncated: false,
+          startsAt: "2026-08-30T19:00:00Z",
+          endsAt: "2026-08-30T20:00:00Z",
+        },
+      ],
+      programmesTruncated: false,
+    },
+  ],
+  next: null,
+} as const;
+const GUIDE_WINDOW = clientSchemas.guideWindow.parse(GUIDE_WINDOW_PAYLOAD);
+
 const SEARCH_RESULTS = clientSchemas.searchResults.parse({
   generation: 7,
   channels: CHANNEL_PAGE,
-  programmes: PROGRAMME_PAGE,
+  programmes: {
+    generation: 7,
+    items: PROGRAMME_PAGE.items.map((programme) => ({
+      channel: CHANNEL_PAGE.items[0],
+      title: programme.title,
+      titleTruncated: false,
+      startsAt: programme.startsAt,
+      endsAt: programme.endsAt,
+    })),
+    next: null,
+  },
 });
 
 const REFRESH_REPORT = clientSchemas.refreshReport.parse({
@@ -67,6 +99,7 @@ describe("hosted and installed query-adapter contract", () => {
   it("returns the same safe successes for refresh, schedule, search, and both continuation lanes", async () => {
     const payloads = [
       REFRESH_REPORT,
+      GUIDE_WINDOW_PAYLOAD,
       PROGRAMME_PAGE,
       SEARCH_RESULTS,
       CHANNEL_PAGE,
@@ -77,6 +110,7 @@ describe("hosted and installed query-adapter contract", () => {
       ipc: new CommandNativeIpc(
         new Map<string, unknown>([
           [NATIVE_COMMANDS.refresh, REFRESH_REPORT],
+          [NATIVE_COMMANDS.guideWindow, GUIDE_WINDOW_PAYLOAD],
           [NATIVE_COMMANDS.schedule, PROGRAMME_PAGE],
           [NATIVE_COMMANDS.search, SEARCH_RESULTS],
           [NATIVE_COMMANDS.searchChannels, CHANNEL_PAGE],
@@ -88,6 +122,11 @@ describe("hosted and installed query-adapter contract", () => {
 
     const hostedResults: readonly ContractResult[] = [
       await http.refresh(),
+      await http.guideWindow({
+        startsAt: GUIDE_START,
+        endsAt: GUIDE_END,
+        channelLimit: 1,
+      }),
       await http.schedule({ id, limit: 1 }),
       await http.search({
         term: "news",
@@ -99,6 +138,11 @@ describe("hosted and installed query-adapter contract", () => {
     ];
     const installedResults: readonly ContractResult[] = [
       await native.refresh(),
+      await native.guideWindow({
+        startsAt: GUIDE_START,
+        endsAt: GUIDE_END,
+        channelLimit: 1,
+      }),
       await native.schedule({ id, limit: 1 }),
       await native.search({
         term: "news",
@@ -110,11 +154,17 @@ describe("hosted and installed query-adapter contract", () => {
     ];
 
     expect(installedResults).toEqual(hostedResults);
+    expect(hostedResults[1]).toEqual({ ok: true, value: GUIDE_WINDOW });
   });
 
   it("returns the same typed failures for every shared query operation", async () => {
     const failures = [
       { _tag: "service-unavailable" },
+      {
+        _tag: "invalid-input",
+        field: "guide-ends-at",
+        reason: "out-of-range",
+      },
       { _tag: "not-found", resource: "channel" },
       {
         _tag: "invalid-input",
@@ -134,10 +184,11 @@ describe("hosted and installed query-adapter contract", () => {
       ipc: new RejectingNativeIpc(
         new Map<string, ClientError>([
           [NATIVE_COMMANDS.refresh, failures[0]],
-          [NATIVE_COMMANDS.schedule, failures[1]],
-          [NATIVE_COMMANDS.search, failures[2]],
-          [NATIVE_COMMANDS.searchChannels, failures[3]],
-          [NATIVE_COMMANDS.searchProgrammes, failures[4]],
+          [NATIVE_COMMANDS.guideWindow, failures[1]],
+          [NATIVE_COMMANDS.schedule, failures[2]],
+          [NATIVE_COMMANDS.search, failures[3]],
+          [NATIVE_COMMANDS.searchChannels, failures[4]],
+          [NATIVE_COMMANDS.searchProgrammes, failures[5]],
         ]),
       ),
     });
@@ -145,6 +196,11 @@ describe("hosted and installed query-adapter contract", () => {
 
     const hostedResults: readonly ContractResult[] = [
       await http.refresh(),
+      await http.guideWindow({
+        startsAt: GUIDE_START,
+        endsAt: GUIDE_END,
+        channelLimit: 1,
+      }),
       await http.schedule({ id, limit: 1 }),
       await http.search({
         term: "news",
@@ -156,6 +212,11 @@ describe("hosted and installed query-adapter contract", () => {
     ];
     const installedResults: readonly ContractResult[] = [
       await native.refresh(),
+      await native.guideWindow({
+        startsAt: GUIDE_START,
+        endsAt: GUIDE_END,
+        channelLimit: 1,
+      }),
       await native.schedule({ id, limit: 1 }),
       await native.search({
         term: "news",

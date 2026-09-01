@@ -15,11 +15,12 @@ tauri-build = { version = "=2.6.3", features = [] }
 [dependencies]
 blake3 = "1"
 bytes = "1"
-chrono = "0.4"
 futures-util = "0.3"
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sparrow-bounded-blocking = { path = "../../crates/sparrow-bounded-blocking" }
+sparrow-client-contract = { path = "../../crates/sparrow-client-contract" }
 sparrow-core = { path = "../../crates/sparrow-core" }
 sparrow-snapshot-store = { path = "../../crates/sparrow-snapshot-store" }
 sparrow-source-http = { path = "../../crates/sparrow-source-http" }
@@ -33,5 +34,6 @@ rustls-platform-verifier = "=0.7.0"
 
 [dev-dependencies]
 async-trait = "0.1"
+chrono = "0.4"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt", "time"] }

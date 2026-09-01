@@ -531,6 +531,7 @@ GET  /api/v1/groups
 GET  /api/v1/channels
 GET  /api/v1/channels/{channelId}
 GET  /api/v1/channels/{channelId}/schedule
+GET  /api/v1/guide
 GET  /api/v1/search
 POST /api/v1/refresh
 GET  /api/v1/events

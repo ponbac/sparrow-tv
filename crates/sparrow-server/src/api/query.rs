@@ -4,8 +4,8 @@ use axum::extract::{
 };
 use serde::Deserialize;
 use sparrow_core::{
-    ChannelGroupFilter, ChannelId, ChannelQuery, PageCursor, PageLimit, PageRequest, ScheduleQuery,
-    SearchRequest, SearchTerm,
+    ChannelGroupFilter, ChannelId, ChannelQuery, GuideWindowQuery, PageCursor, PageLimit,
+    PageRequest, ScheduleQuery, SearchRequest, SearchTerm,
 };
 
 use super::ApiError;
@@ -32,6 +32,30 @@ pub(crate) struct ChannelsQuery {
     cursor: Option<String>,
     group: Option<String>,
     limit: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct GuideWindowHttpQuery {
+    starts_at: String,
+    ends_at: String,
+    channel_limit: String,
+    group: Option<String>,
+    cursor: Option<String>,
+}
+
+impl GuideWindowHttpQuery {
+    pub(crate) fn into_core(self) -> Result<GuideWindowQuery, ApiError> {
+        let page = page_request(self.cursor, Some(self.channel_limit))?;
+        let channels = match self.group {
+            Some(group) => ChannelQuery::in_group(
+                ChannelGroupFilter::parse(group).map_err(ApiError::from)?,
+                page,
+            ),
+            None => ChannelQuery::all(page),
+        };
+        GuideWindowQuery::parse(self.starts_at, self.ends_at, channels).map_err(ApiError::from)
+    }
 }
 
 impl ChannelsQuery {

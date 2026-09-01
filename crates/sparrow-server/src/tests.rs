@@ -393,7 +393,11 @@ async fn capabilities_status_and_browse_match_the_real_core_fixture() {
     let selected = &direct_channels.items()[0];
     let details = get_json(
         &app.router,
-        &format!("/api/v1/channels/{}", selected.id().as_str()),
+        &format!(
+            "/api/v1/channels/{}?generation={}",
+            selected.id().as_str(),
+            direct_channels.generation().get()
+        ),
     )
     .await;
     let direct_details = app

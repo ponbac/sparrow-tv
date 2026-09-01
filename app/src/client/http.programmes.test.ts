@@ -23,11 +23,13 @@ interface FakeHttp {
   readonly requests: readonly RecordedRequest[];
 }
 
+const channel = { id: "channel-one", name: "World News", group: "News" };
+
 const channelOnlySearch = {
   generation: 11,
   channels: {
     generation: 11,
-    items: [{ id: "channel-one", name: "World News", group: "News" }],
+    items: [channel],
     next: null,
   },
   programmes: {
@@ -45,6 +47,14 @@ const programme = {
   endsAt: "2026-08-30T20:00:00Z",
 };
 
+const programmeSearchHit = {
+  channel,
+  title: programme.title,
+  titleTruncated: false,
+  startsAt: programme.startsAt,
+  endsAt: programme.endsAt,
+};
+
 const schedulePage = {
   generation: 11,
   items: [programme],
@@ -55,12 +65,12 @@ const enrichedSearch = {
   generation: 11,
   channels: {
     generation: 11,
-    items: [{ id: "channel-one", name: "World News", group: "News" }],
+    items: [channel],
     next: "channel-next",
   },
   programmes: {
     generation: 11,
-    items: [programme],
+    items: [programmeSearchHit],
     next: "programme-next",
   },
 };
@@ -187,6 +197,18 @@ describe("hosted HTTP Programme client", () => {
       {
         ...enrichedSearch,
         programmes: { ...enrichedSearch.programmes, generation: 12 },
+      },
+      {
+        ...enrichedSearch,
+        programmes: {
+          ...enrichedSearch.programmes,
+          items: [
+            {
+              ...programmeSearchHit,
+              description: privateValue,
+            },
+          ],
+        },
       },
       {
         ...enrichedSearch,

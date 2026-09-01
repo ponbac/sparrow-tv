@@ -1,0 +1,190 @@
+/* The sheet bounds deliberately never cover the native video pane. */
+.feeds-trigger {
+  display: inline-flex;
+  height: 29px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 0 11px;
+  color: var(--bone-dim);
+  border: 1px solid #2e2e2e;
+  background: transparent;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.feeds-trigger:hover,
+.feeds-trigger[data-popup-open],
+.feeds-trigger[data-attention="true"] {
+  color: var(--bone);
+  border-color: var(--tomato);
+}
+
+.feeds-trigger svg {
+  width: 13px;
+}
+
+.feeds-dialog__backdrop {
+  position: fixed;
+  z-index: 48;
+  top: 38px;
+  right: 0;
+  bottom: 0;
+  left: 52%;
+  background: rgb(0 0 0 / 54%);
+}
+
+.feeds-dialog__popup {
+  position: fixed;
+  z-index: 49;
+  top: 38px;
+  right: 0;
+  bottom: 0;
+  width: 48%;
+  min-width: 0;
+  overflow: auto;
+  color: var(--bone);
+  border: 0;
+  border-left: 1px solid #3a3835;
+  outline: none;
+  background: #141414;
+  box-shadow: -24px 0 60px rgb(0 0 0 / 36%);
+}
+
+.feeds-dialog__header {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 22px;
+  border-bottom: 1px solid var(--line);
+  background: #141414;
+}
+
+.feeds-dialog__header p {
+  margin: 0 0 5px;
+  color: var(--tomato);
+  font-family: var(--mono);
+  font-size: 0.55rem;
+  font-weight: 750;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.feeds-dialog__header h2 {
+  margin: 0;
+  font-family: var(--display);
+  font-size: clamp(1.8rem, 3vw, 2.8rem);
+  font-style: italic;
+  line-height: 0.95;
+}
+
+.feeds-dialog__header p:last-child {
+  max-width: 58ch;
+  margin: 8px 0 0;
+  color: var(--bone-dim);
+  font-family: inherit;
+  font-size: 0.69rem;
+  font-weight: 400;
+  letter-spacing: normal;
+  line-height: 1.5;
+  text-transform: none;
+}
+
+.feeds-dialog__close {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: var(--bone-dim);
+  border: 1px solid #35322f;
+  background: transparent;
+}
+
+.feeds-dialog__close svg {
+  width: 16px;
+}
+
+.feeds-dialog__content {
+  padding-bottom: 30px;
+}
+
+.feeds-dialog__loading {
+  margin: 0;
+  padding: 24px 22px;
+  color: var(--bone-dim);
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.feeds-dialog__content .installed-settings,
+.feeds-dialog__content .source-desk {
+  padding: 24px 22px;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+}
+
+.feeds-dialog__content .installed-settings__heading,
+.feeds-dialog__content .installed-settings__body,
+.feeds-dialog__content .source-desk__heading {
+  max-width: none;
+}
+
+.feeds-dialog__content .installed-settings__heading,
+.feeds-dialog__content .source-desk__heading {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.feeds-dialog__content .installed-settings__privacy,
+.feeds-dialog__content .source-desk__refresh {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
+.feeds-dialog__content .installed-settings__body {
+  grid-template-columns: 1fr;
+}
+
+.feeds-dialog__content .installed-settings__form {
+  grid-template-columns: 1fr;
+}
+
+.feeds-dialog__content .installed-settings__form button,
+.feeds-dialog__content .installed-settings__note,
+.feeds-dialog__content .installed-settings__feedback {
+  grid-column: 1;
+}
+
+.feeds-dialog__content .source-desk__grid {
+  grid-template-columns: 1fr;
+}
+
+.feeds-dialog__content .source-card {
+  border-right: 0;
+  border-bottom: 1px solid rgb(239 231 220 / 22%);
+}
+
+.feeds-dialog__content .source-desk__diagnostics > div {
+  grid-template-columns: 1fr;
+}
+
+@media (max-width: 760px) {
+  .feeds-dialog__backdrop,
+  .feeds-dialog__popup {
+    top: calc(38px + 58dvh);
+    left: 0;
+    width: 100%;
+  }
+
+  .feeds-dialog__popup {
+    min-height: 54dvh;
+  }
+}

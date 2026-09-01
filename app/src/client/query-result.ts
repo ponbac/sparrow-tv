@@ -1,4 +1,8 @@
-import type { ClientError, ClientResult } from "./contracts";
+import type {
+  CatalogGeneration,
+  ClientError,
+  ClientResult,
+} from "./contracts";
 
 /** A safe query-layer failure that never retains a thrown transport payload. */
 export class ClientQueryError extends Error {
@@ -17,10 +21,30 @@ export class ClientQueryError extends Error {
  */
 export async function successfulQueryResult<Value>(
   operation: Promise<ClientResult<Value>>,
-): Promise<ClientResult<Value>> {
+): Promise<{ readonly ok: true; readonly value: Value }> {
   const result = await operation;
   if (!result.ok) {
     throw new ClientQueryError(result.error);
+  }
+  return result;
+}
+
+/** Rejects a response that cannot belong to the catalog generation requested by its query. */
+export async function generationBoundResult<
+  Value extends { readonly generation: CatalogGeneration },
+>(
+  operation: Promise<ClientResult<Value>>,
+  expectedGeneration: CatalogGeneration | null,
+): Promise<{ readonly ok: true; readonly value: Value }> {
+  const result = await successfulQueryResult(operation);
+  if (
+    expectedGeneration !== null &&
+    result.value.generation !== expectedGeneration
+  ) {
+    throw new ClientQueryError({
+      _tag: "stale-cursor",
+      current: result.value.generation,
+    });
   }
   return result;
 }

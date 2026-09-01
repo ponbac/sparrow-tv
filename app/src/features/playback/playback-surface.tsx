@@ -15,7 +15,7 @@ export interface PlaybackSurfaceProps {
   readonly transportLabel: string;
   readonly privacyCopy: string;
   readonly onPlaying: () => void;
-  readonly overlayAction?: {
+  readonly recoveryAction?: {
     readonly label: string;
     readonly onAction: () => void;
   };
@@ -41,7 +41,7 @@ export function PlaybackSurface({
   transportLabel,
   privacyCopy,
   onPlaying,
-  overlayAction,
+  recoveryAction,
   additionalControls,
   volume,
   muted,
@@ -93,16 +93,6 @@ export function PlaybackSurface({
           <div className="hosted-player__overlay">
             <p>{presentation.title}</p>
             <span>{presentation.detail}</span>
-            {state._tag === "autoplay-blocked" ? (
-              <button type="button" onClick={beginBlockedPlayback}>
-                Start audio &amp; video
-              </button>
-            ) : overlayAction !== undefined ? (
-              <button type="button" onClick={overlayAction.onAction}>
-                <RotateCcw aria-hidden="true" />
-                {overlayAction.label}
-              </button>
-            ) : null}
           </div>
         ) : null}
       </div>
@@ -112,6 +102,16 @@ export function PlaybackSurface({
         role="group"
         aria-label="Playback controls"
       >
+        {state._tag === "autoplay-blocked" ? (
+          <button type="button" onClick={beginBlockedPlayback}>
+            Start audio &amp; video
+          </button>
+        ) : recoveryAction !== undefined ? (
+          <button type="button" onClick={recoveryAction.onAction}>
+            <RotateCcw aria-hidden="true" />
+            {recoveryAction.label}
+          </button>
+        ) : null}
         {additionalControls}
         {showMediaControls ? (
           <>

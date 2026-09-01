@@ -349,7 +349,7 @@ export function isUsableCatalog(marker: ReadinessMarker): boolean {
     marker.nativeBridge &&
     marker.catalogShell &&
     !marker.loading &&
-    marker.channelCount === 24 &&
+    marker.channelCount === 40 &&
     marker.groupButtonCount > 0 &&
     marker.searchVisible &&
     marker.retainedCatalog &&

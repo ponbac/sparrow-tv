@@ -1,9 +1,13 @@
-use chrono::{DateTime, Datelike, SecondsFormat, Utc};
 use serde::Serialize;
+use sparrow_client_contract::browser_instant as instant;
 use sparrow_core::{
-    CatalogStatus, ChannelDetails, ChannelGroupView, ChannelSummary, CoreError, CoreEvent,
-    InputField, InputReason, Page, ProgrammeSummary, RefreshOutcome, RefreshReport,
-    RefreshSkipReason, SafeFailure, SearchResults, SourceKind, SourceState,
+    CatalogStatus, CoreError, CoreEvent, InputField, InputReason, RefreshOutcome, RefreshReport,
+    RefreshSkipReason, SafeFailure, SourceKind, SourceState,
+};
+
+pub(crate) use sparrow_client_contract::{
+    ChannelDetailsDto, ChannelGroupDto, ChannelSummaryDto, GuideWindowChannelDto, PageDto,
+    ProgrammeDto, SearchResultsDto,
 };
 
 use crate::{
@@ -475,128 +479,6 @@ impl From<CoreEvent> for CoreEventDto {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PageDto<T> {
-    generation: u64,
-    items: Vec<T>,
-    next: Option<String>,
-}
-
-impl PageDto<ChannelGroupDto> {
-    pub(crate) fn groups(page: &Page<ChannelGroupView>) -> Self {
-        Self::new(page, |group| ChannelGroupDto {
-            name: group.name().to_owned(),
-            channel_count: group.channel_count(),
-        })
-    }
-}
-
-impl PageDto<ChannelSummaryDto> {
-    pub(crate) fn channels(page: &Page<ChannelSummary>) -> Self {
-        Self::new(page, |channel| ChannelSummaryDto::from(channel))
-    }
-}
-
-impl PageDto<ProgrammeDto> {
-    pub(crate) fn programmes(page: &Page<ProgrammeSummary>) -> Self {
-        Self::new(page, |programme| ProgrammeDto::from(programme))
-    }
-}
-
-impl<T> PageDto<T> {
-    fn new<U>(page: &Page<U>, project: impl Fn(&U) -> T) -> Self {
-        Self {
-            generation: page.generation().get(),
-            items: page.items().iter().map(project).collect(),
-            next: page.next().map(|cursor| cursor.as_str().to_owned()),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ChannelGroupDto {
-    name: String,
-    channel_count: u32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ChannelSummaryDto {
-    id: String,
-    name: String,
-    group: String,
-}
-
-impl From<&ChannelSummary> for ChannelSummaryDto {
-    fn from(channel: &ChannelSummary) -> Self {
-        Self {
-            id: channel.id().as_str().to_owned(),
-            name: channel.name().to_owned(),
-            group: channel.group().to_owned(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ChannelDetailsDto {
-    id: String,
-    name: String,
-    group: String,
-}
-
-impl From<&ChannelDetails> for ChannelDetailsDto {
-    fn from(channel: &ChannelDetails) -> Self {
-        Self {
-            id: channel.id().as_str().to_owned(),
-            name: channel.name().to_owned(),
-            group: channel.group().to_owned(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ProgrammeDto {
-    channel_id: String,
-    title: String,
-    description: Option<String>,
-    starts_at: String,
-    ends_at: String,
-}
-
-impl From<&ProgrammeSummary> for ProgrammeDto {
-    fn from(programme: &ProgrammeSummary) -> Self {
-        Self {
-            channel_id: programme.channel_id().as_str().to_owned(),
-            title: programme.title().to_owned(),
-            description: programme.description().map(str::to_owned),
-            starts_at: instant(programme.starts_at()),
-            ends_at: instant(programme.ends_at()),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SearchResultsDto {
-    generation: u64,
-    channels: PageDto<ChannelSummaryDto>,
-    programmes: PageDto<ProgrammeDto>,
-}
-
-impl From<&SearchResults> for SearchResultsDto {
-    fn from(results: &SearchResults) -> Self {
-        Self {
-            generation: results.generation().get(),
-            channels: PageDto::channels(results.channels()),
-            programmes: PageDto::programmes(results.programmes()),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "_tag", rename_all = "kebab-case")]
 pub(crate) enum ClientErrorDto {
     ServiceUnavailable,
@@ -692,6 +574,8 @@ const fn input_field(field: InputField) -> &'static str {
         InputField::Epg => "epg",
         InputField::ChannelId => "channel-id",
         InputField::ChannelGroup => "channel-group",
+        InputField::GuideWindowStartsAt => "guide-starts-at",
+        InputField::GuideWindowEndsAt => "guide-ends-at",
         InputField::SearchTerm => "search-term",
         InputField::PageLimit => "page-limit",
         InputField::PageCursor => "page-cursor",
@@ -752,14 +636,6 @@ const fn snapshot_recovery_reason(reason: sparrow_core::SnapshotRecoveryReason) 
         sparrow_core::SnapshotRecoveryReason::SourceMismatch => "source-mismatch",
         sparrow_core::SnapshotRecoveryReason::LengthMismatch => "length-mismatch",
         sparrow_core::SnapshotRecoveryReason::ChecksumMismatch => "checksum-mismatch",
-    }
-}
-
-fn instant(value: DateTime<Utc>) -> String {
-    match value.year() {
-        ..=-1 => "0000-01-01T00:00:00Z".to_owned(),
-        10_000.. => "9999-12-31T23:59:59Z".to_owned(),
-        _ => value.to_rfc3339_opts(SecondsFormat::AutoSi, true),
     }
 }
 
