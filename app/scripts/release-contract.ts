@@ -880,11 +880,13 @@ async function smokeAppImage(
   }
   await chmod(artifact, 0o755);
   const privateRoot = await mkdtemp(join(tmpdir(), "sparrow-appimage-smoke-"));
+  const launchEnvironment = { ...process.env };
+  delete launchEnvironment.WEBKIT_DISABLE_DMABUF_RENDERER;
+  delete launchEnvironment.WEBKIT_DMABUF_RENDERER_FORCE_SHM;
   const child = spawn(artifact, [], {
     env: {
-      ...process.env,
+      ...launchEnvironment,
       APPIMAGE_EXTRACT_AND_RUN: "1",
-      WEBKIT_DISABLE_DMABUF_RENDERER: "1",
       XDG_CACHE_HOME: join(privateRoot, "cache"),
       XDG_CONFIG_HOME: join(privateRoot, "config"),
       XDG_DATA_HOME: join(privateRoot, "data"),

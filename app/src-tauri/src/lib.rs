@@ -14,7 +14,8 @@ mod selected_transport_stream;
 /// Runs the installed Sparrow shell.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    configure_platform_before_webview();
+    #[cfg(target_os = "linux")]
+    configure_linux_webkit_renderer();
     let application = match tauri::Builder::default()
         .manage(runtime::InstalledRuntimeSlot::new())
         .setup(|app| {
@@ -77,11 +78,62 @@ pub fn run() {
     application.run(report_lifecycle);
 }
 
-fn configure_platform_before_webview() {
-    #[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
+const WEBKIT_DISABLE_DMABUF_RENDERER: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
+#[cfg(target_os = "linux")]
+const WEBKIT_DMABUF_RENDERER_FORCE_SHM: &str = "WEBKIT_DMABUF_RENDERER_FORCE_SHM";
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LinuxWebKitRendererPolicy {
+    ForceSharedMemory,
+    DisableDmaBuf,
+    PreserveExplicit,
+}
+
+#[cfg(target_os = "linux")]
+fn configure_linux_webkit_renderer() {
+    let backend = std::env::var("GDK_BACKEND").ok();
+    let policy = linux_webkit_renderer_policy(
+        backend.as_deref(),
+        std::env::var_os(WEBKIT_DISABLE_DMABUF_RENDERER).is_some(),
+        std::env::var_os(WEBKIT_DMABUF_RENDERER_FORCE_SHM).is_some(),
+    );
+
     // SAFETY: this runs before Tauri, WebKit, or any application thread is created.
     unsafe {
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        match policy {
+            LinuxWebKitRendererPolicy::ForceSharedMemory => {
+                std::env::set_var(WEBKIT_DMABUF_RENDERER_FORCE_SHM, "1");
+            }
+            LinuxWebKitRendererPolicy::DisableDmaBuf => {
+                std::env::set_var(WEBKIT_DISABLE_DMABUF_RENDERER, "1");
+            }
+            LinuxWebKitRendererPolicy::PreserveExplicit => {}
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_webkit_renderer_policy(
+    gdk_backend: Option<&str>,
+    disable_is_configured: bool,
+    force_shm_is_configured: bool,
+) -> LinuxWebKitRendererPolicy {
+    if disable_is_configured || force_shm_is_configured {
+        return LinuxWebKitRendererPolicy::PreserveExplicit;
+    }
+
+    let primary_backend = gdk_backend.and_then(|backends| {
+        backends
+            .split(',')
+            .map(str::trim)
+            .find(|value| !value.is_empty())
+    });
+    if primary_backend.is_some_and(|backend| backend.eq_ignore_ascii_case("x11")) {
+        LinuxWebKitRendererPolicy::ForceSharedMemory
+    } else {
+        LinuxWebKitRendererPolicy::DisableDmaBuf
     }
 }
 
@@ -149,5 +201,42 @@ fn report_lifecycle(app: &tauri::AppHandle, event: tauri::RunEvent) {
         tauri::async_runtime::spawn(async move {
             let _ = dispatch.await;
         });
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selects_accelerated_shared_memory_for_the_packaged_x11_backend() {
+        assert_eq!(
+            linux_webkit_renderer_policy(Some("x11"), false, false),
+            LinuxWebKitRendererPolicy::ForceSharedMemory,
+        );
+    }
+
+    #[test]
+    fn retains_the_compatibility_renderer_for_native_wayland() {
+        assert_eq!(
+            linux_webkit_renderer_policy(Some("wayland"), false, false),
+            LinuxWebKitRendererPolicy::DisableDmaBuf,
+        );
+    }
+
+    #[test]
+    fn preserves_explicit_renderer_configuration() {
+        for (disable_is_configured, force_shm_is_configured) in
+            [(true, false), (false, true), (true, true)]
+        {
+            assert_eq!(
+                linux_webkit_renderer_policy(
+                    Some("x11"),
+                    disable_is_configured,
+                    force_shm_is_configured,
+                ),
+                LinuxWebKitRendererPolicy::PreserveExplicit,
+            );
+        }
     }
 }

@@ -10,7 +10,7 @@ The measured Linux and Android failures crossed this ADR's original native-engin
 - The Linux video remains in mpv's separate Wayland window. Sparrow sends mute, volume, and fullscreen changes over the correlated private IPC connection; fullscreen therefore applies to the mpv window rather than the WebView surface. Channel switching stops and reaps the current process before launching its replacement, and final stop or application shutdown deterministically releases the process and socket.
 - Linux Playback Session pause is resource-releasing, not a frozen-stream pause: Sparrow stops and reaps mpv, closing the provider connection while retaining session intent. Resume launches a new mpv process for that session at the current live edge. Visibility and lifecycle suspension use the same release-before-resume rule.
 - Android Audio Track selection remains at the Rust stream boundary: changing the selected PID releases the old stream generation before opening its replacement. Linux delegates track presentation and any direct track choice to mpv's window because mpv receives the original source rather than Sparrow's WebKit stream projection.
-- The required Linux WebKit DMA-BUF workaround remains an independent UI-compositor constraint. Removing WebKit/MSE from Linux playback does not prove that workaround can be removed.
+- Linux WebKit rendering remains an independent UI-compositor constraint. The packaged X11/XWayland GTK path uses WebKit's accelerated backing store with shared-memory transport; native Wayland retains the DMA-BUF-disable compatibility path, and either choice can be overridden explicitly before startup. Removing WebKit/MSE from Linux playback does not remove this renderer boundary.
 
 ## Rejected alternatives
 

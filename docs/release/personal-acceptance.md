@@ -58,20 +58,26 @@ catalog data.
 ## 2. Exercise the exact AppImage on Arch/Hyprland
 
 Restore the executable bit if the download removed it. That changes file mode, not candidate bytes.
-Run with the validated native-Wayland workaround:
+Run without a renderer override. The AppImage's X11 GTK backend selects WebKit's accelerated
+shared-memory transport before the webview starts:
 
 ```bash
 chmod u+x "$candidate_dir"/Sparrow_*_x86_64.AppImage
-WEBKIT_DISABLE_DMABUF_RENDERER=1 \
-  "$candidate_dir"/Sparrow_*_x86_64.AppImage
+"$candidate_dir"/Sparrow_*_x86_64.AppImage
 ```
+
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` remains an explicit compatibility fallback if the accelerated
+transport fails on another Linux graphics stack. Do not use that fallback for acceptance on the
+target host because it disables accelerated compositing and invalidates the scroll-performance
+check.
 
 Set the Linux target fields to `arch`, `wayland`, and `hyprland`, record the version displayed by
 the application, and mark a gate `passed` only after observing all behavior in that row.
 
 | Gate ID                                     | Required observation                                                                                                |
 | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `startup-render-version`                    | Native Wayland startup renders correctly and displays the candidate version/status.                                                  |
+| `startup-render-version`                    | The Wayland/Hyprland session launches the AppImage XWayland window with accelerated shared-memory WebKit transport and displays the candidate version/status. |
+| `browse-scroll-performance`                 | Repeated ordinary scrolling through source status, search, groups, and Channels stays visually smooth without recurring multi-frame stalls.                 |
 | `browse-search-guide`                       | Browse groups/channels, search channels/programmes, and inspect guide/schedule.                                                      |
 | `catalog-first-configuration`               | First source configuration loads the real on-device catalog without revealing source details.                                        |
 | `catalog-offline-restart`                   | Restart from saved snapshots with network unavailable and retain a usable catalog.                                                   |

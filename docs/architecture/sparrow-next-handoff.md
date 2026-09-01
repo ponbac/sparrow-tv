@@ -55,7 +55,7 @@ Those files are evidence of the workflows to preserve—browse/search Channels a
 - Source freshness lasts six hours after complete validation or `304 Not Modified`.
 - Automatic retry delays are 1, 5, 15, then 60 minutes, capped at one attempt per hour and extended by a longer `Retry-After`.
 - Physical Android snapshot cold-start must be at most three seconds with at most 512 MiB peak process memory.
-- Linux applies `WEBKIT_DISABLE_DMABUF_RENDERER=1` before WebKit starts on the target host.
+- Linux selects WebKit's accelerated shared-memory transport for the packaged X11/XWayland GTK backend before WebKit starts. Native Wayland retains the DMA-BUF-disable compatibility path, and explicit renderer environment overrides take precedence.
 - The target Linux system supplies mpv; the AppImage does not bundle it.
 - Hosted production remains the old `master` deployment until the complete replacement passes web, Linux, and Android gates.
 
@@ -633,7 +633,7 @@ Property tests cover Channel Identifier stability/distinction, cursor round-trip
 
 | Gate | Required evidence on the exact AppImage candidate |
 |---|---|
-| Startup/render | Launches on target Arch/Hyprland native Wayland with the validated DMA-BUF workaround and displays version/status |
+| Startup/render | Launches on the target Arch/Hyprland Wayland session through the packaged XWayland GTK backend, uses the accelerated shared-memory WebKit transport, scrolls smoothly, and displays version/status |
 | Catalog | First configuration, restart from saved snapshots without network, stale status, manual refresh, source change invalidation |
 | Primary playback | Representative H.264/AAC picture and audible audio; start, stop, pause/live-edge resume, ordinary Channel changes, restart, fullscreen, volume/mute |
 | Audio Tracks | Enumerates actual available tracks, changes track with brief restart, remembers preference, visibly falls back when absent |
