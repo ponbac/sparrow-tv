@@ -64,6 +64,7 @@ const DESCRIPTOR = clientSchemas.nativePlaybackDescriptor.parse({
   _tag: "tauri-native-stream",
   sessionId: `play1_${"a".repeat(32)}_1`,
   streamHandle: `stream1_${"b".repeat(16)}`,
+  presentation: "webview-mse",
   tracks: [],
   selection: { _tag: "none" },
 });

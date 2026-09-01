@@ -19,9 +19,8 @@ export const LINUX_ACCEPTANCE_GATES = [
   "catalog-stale-manual-refresh",
   "primary-picture-audio",
   "primary-controls-channel-changes",
-  "audio-track-selection-preference-fallback",
   "bounded-recovery-resource-release",
-  "mpv-fallback-cleanup",
+  "primary-mpv-playback-cleanup",
 ] as const;
 
 /** The complete manual physical-Realme gate for one exact signed APK candidate. */

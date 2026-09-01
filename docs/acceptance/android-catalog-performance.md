@@ -31,14 +31,15 @@ The host needs Bun, adb, and `apkanalyzer`. Run from the repository root with a
 new evidence filename; the tool refuses to overwrite an existing file:
 
 ```sh
+ANDROID_SERIAL=REALME_ADB_SERIAL \
 ANDROID_ACCEPTANCE_APK=/absolute/path/to/app-universal-debug.apk \
-ANDROID_ACCEPTANCE_SERIAL=REALME_ADB_SERIAL \
 ANDROID_ACCEPTANCE_OUTPUT=artifacts/android-catalog-acceptance.json \
   mise exec -- just android-catalog-accept
 ```
 
-Use the actual debuggable candidate path. The serial selects the device but is
-never written to evidence.
+Use the actual debuggable candidate path. The standard `ANDROID_SERIAL`
+environment selector keeps the private device identifier out of process
+arguments and evidence.
 
 ## What the harness proves
 

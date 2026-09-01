@@ -602,6 +602,13 @@ describe("release contract", () => {
     expect(checklist).toContain("release-publish");
     expect(checklist).toContain("release-acceptance-seal");
     expect(checklist).toContain("blank or ordinary UI approval is rejected");
+    expect(checklist).toContain(
+      "Primary Linux mpv A/V, controls/fullscreen, Channel switching, any applicable direct mpv Audio Track choice (not Sparrow-persisted), one provider connection, and process/socket cleanup",
+    );
+    expect(checklist).not.toContain(
+      "Startup, version, catalog, and Audio Track behavior",
+    );
+    expect(checklist).not.toContain("mpv fallback");
   });
 });
 

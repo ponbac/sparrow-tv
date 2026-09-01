@@ -67,7 +67,7 @@ release-acceptance-prepare:
     cd app && bun run release:acceptance prepare --candidate "${RELEASE_CANDIDATE:?RELEASE_CANDIDATE is required}" --output "${RELEASE_ACCEPTANCE_OUTPUT:?RELEASE_ACCEPTANCE_OUTPUT is required}"
 
 release-acceptance-prove-continuity:
-    cd app && bun run release:acceptance prove-continuity --candidate "${RELEASE_CANDIDATE:?RELEASE_CANDIDATE is required}" --previous-apk "${RELEASE_PREVIOUS_APK:?RELEASE_PREVIOUS_APK is required}" --previous-version "${RELEASE_PREVIOUS_VERSION:?RELEASE_PREVIOUS_VERSION is required}" --serial "${RELEASE_DEVICE_SERIAL:?RELEASE_DEVICE_SERIAL is required}" --output "${RELEASE_ACCEPTANCE_OUTPUT:?RELEASE_ACCEPTANCE_OUTPUT is required}"
+    cd app && test -n "${ANDROID_SERIAL:?ANDROID_SERIAL is required}" && bun run release:acceptance prove-continuity --candidate "${RELEASE_CANDIDATE:?RELEASE_CANDIDATE is required}" --previous-apk "${RELEASE_PREVIOUS_APK:?RELEASE_PREVIOUS_APK is required}" --previous-version "${RELEASE_PREVIOUS_VERSION:?RELEASE_PREVIOUS_VERSION is required}" --output "${RELEASE_ACCEPTANCE_OUTPUT:?RELEASE_ACCEPTANCE_OUTPUT is required}"
 
 release-acceptance-seal:
     cd app && bun run release:acceptance seal --candidate "${RELEASE_CANDIDATE:?RELEASE_CANDIDATE is required}" --evidence "${RELEASE_ACCEPTANCE_EVIDENCE:?RELEASE_ACCEPTANCE_EVIDENCE is required}" --artifact-id "${RELEASE_ARTIFACT_ID:?RELEASE_ARTIFACT_ID is required}" --artifact-digest "${RELEASE_ARTIFACT_DIGEST:?RELEASE_ARTIFACT_DIGEST is required}" --output "${RELEASE_ACCEPTANCE_OUTPUT:?RELEASE_ACCEPTANCE_OUTPUT is required}"
@@ -106,4 +106,7 @@ hosted-cutover-observe-finish:
     cd app && bun run hosted:cutover finish-production-observation --start "${HOSTED_OBSERVATION_START:?HOSTED_OBSERVATION_START is required}" --route-binding "${HOSTED_ROUTE_BINDING:-}" --result "${HOSTED_RESULT:?HOSTED_RESULT is required}" --failure "${HOSTED_FAILURE:-}" --incident-reference "${HOSTED_INCIDENT_REFERENCE:-}" --evidence-key "${HOSTED_EVIDENCE_KEY:?HOSTED_EVIDENCE_KEY is required}" --output "${HOSTED_OUTPUT:?HOSTED_OUTPUT is required}"
 
 android-catalog-accept:
-    cd app && bun run accept:android:catalog -- --apk "${ANDROID_ACCEPTANCE_APK:?ANDROID_ACCEPTANCE_APK is required}" --serial "${ANDROID_ACCEPTANCE_SERIAL:?ANDROID_ACCEPTANCE_SERIAL is required}" --output "${ANDROID_ACCEPTANCE_OUTPUT:?ANDROID_ACCEPTANCE_OUTPUT is required}"
+    cd app && test -n "${ANDROID_SERIAL:?ANDROID_SERIAL is required}" && bun run accept:android:catalog -- --apk "${ANDROID_ACCEPTANCE_APK:?ANDROID_ACCEPTANCE_APK is required}" --output "${ANDROID_ACCEPTANCE_OUTPUT:?ANDROID_ACCEPTANCE_OUTPUT is required}"
+
+android-playback-accept:
+    cd app && test -n "${ANDROID_SERIAL:?ANDROID_SERIAL is required}" && bun run accept:android:playback -- --apk "${ANDROID_PLAYBACK_ACCEPTANCE_APK:?ANDROID_PLAYBACK_ACCEPTANCE_APK is required}" --output "${ANDROID_PLAYBACK_ACCEPTANCE_OUTPUT:?ANDROID_PLAYBACK_ACCEPTANCE_OUTPUT is required}"

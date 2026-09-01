@@ -4,11 +4,7 @@ const textEncoder = new TextEncoder();
 const withinUtf8ByteLimit = (value: string, limit: number): boolean =>
   textEncoder.encode(value).byteLength <= limit;
 
-const channelIdSchema = z
-  .string()
-  .min(1)
-  .max(1024)
-  .brand<"ChannelId">();
+const channelIdSchema = z.string().min(1).max(1024).brand<"ChannelId">();
 const sameOriginPlaybackEndpointSchema = z
   .string()
   .max(4096)
@@ -92,18 +88,14 @@ export interface HostedCapabilities {
 /** Installed deployment capabilities exposed by the local Tauri shell. */
 export interface InstalledCapabilities {
   readonly sourceConfiguration: "device-writable";
-  readonly playbackTransport: "tauri-native-stream";
+  readonly playbackTransport: "platform-native";
   readonly audioTrackSelection: true;
   readonly mpvFailover: boolean;
 }
 
 /** Audio codecs that the native MPEG-TS selector can safely forward. */
 export type AudioCodec =
-  | "mpeg-1-audio"
-  | "mpeg-2-audio"
-  | "aac-adts"
-  | "aac-latm"
-  | "ac-3";
+  "mpeg-1-audio" | "mpeg-2-audio" | "aac-adts" | "aac-latm" | "ac-3";
 
 /** Safe programme metadata for one compatible native Audio Track. */
 export interface AudioTrack {
@@ -149,7 +141,8 @@ export type SafeFailure =
   | {
       readonly _tag: "source-access";
       readonly source: "m3u" | "epg";
-      readonly reason: "unavailable" | "rejected" | "timed-out" | "invalid-response";
+      readonly reason:
+        "unavailable" | "rejected" | "timed-out" | "invalid-response";
       readonly retryAfterSeconds: number | null;
     }
   | {
@@ -441,36 +434,117 @@ export interface NativePlaybackDescriptor {
   readonly _tag: "tauri-native-stream";
   readonly sessionId: PlaybackSessionId;
   readonly streamHandle: NativeStreamHandle;
+  readonly presentation: "android-media3" | "webview-mse";
   readonly tracks: readonly AudioTrack[];
   readonly selection: AudioSelection;
   readonly preferenceStatus?: AudioPreferenceStatus;
 }
 
-/** Session-scoped installed transport projected without its private session identifier. */
-export interface InstalledPlaybackTransport {
+/** Correlated acknowledgement that Linux mpv owns the Primary Playback Engine. */
+export interface LinuxMpvPlaybackDescriptor {
+  readonly _tag: "linux-mpv";
+  readonly sessionId: PlaybackSessionId;
+}
+
+/** Session-scoped native byte stream projected without its private session identifier. */
+export interface NativeStreamPlaybackTransport {
   readonly _tag: "tauri-native-stream";
   readonly streamHandle: NativeStreamHandle;
+  readonly presentation: "android-media3" | "webview-mse";
   readonly tracks: readonly AudioTrack[];
   readonly selection: AudioSelection;
   readonly preferenceStatus?: AudioPreferenceStatus;
 }
 
-/** Correlated confirmation that system mpv owns the stopped installed session. */
-export interface MpvFallbackPlaying {
-  readonly _tag: "fallback-playing";
-  readonly sessionId: PlaybackSessionId;
+/** Session-scoped Linux process ownership without a provider or stream handle. */
+export interface LinuxMpvPlaybackTransport {
+  readonly _tag: "linux-mpv";
 }
 
-/** Correlated confirmation that the system mpv child has been stopped and reaped. */
-export interface MpvFallbackStopped {
-  readonly _tag: "fallback-stopped";
-  readonly sessionId: PlaybackSessionId;
+/** Platform-selected installed presentation returned by a Playback Session. */
+export type InstalledPlaybackTransport =
+  | NativeStreamPlaybackTransport
+  | LinuxMpvPlaybackTransport;
+
+/** Physical-pixel viewport reserved for Android's native video surface. */
+export interface AndroidPlaybackViewport {
+  readonly left: number;
+  readonly top: number;
+  readonly width: number;
+  readonly height: number;
+  readonly fullscreen: boolean;
 }
+
+/** Safe aggregate state reported by the Android Media3 presentation. */
+export interface AndroidPlaybackStatus {
+  readonly state: "starting" | "playing" | "paused" | "failed" | "stopped";
+  readonly decodedFrames: number;
+  readonly droppedFrames: number;
+  readonly bufferedDurationMs: number;
+  /** Whether the Media3 instance's effective app-scoped output is silent. */
+  readonly silent: boolean;
+}
+
+/** Initial presentation values paired with one exact native stream generation. */
+export interface StartAndroidPlaybackPresentationInput extends ClientRequestOptions {
+  readonly streamHandle: NativeStreamHandle;
+  readonly viewport: AndroidPlaybackViewport;
+  readonly volume: number;
+  readonly muted: boolean;
+}
+
+/**
+ * Client-owned Android presentation resource. It retains only opaque native
+ * identities and serializes every update against an idempotent final stop.
+ */
+export interface AndroidPlaybackPresentation {
+  /** Reads aggregate-only Media3 state and frame/buffer counters. */
+  status(
+    options?: ClientRequestOptions,
+  ): Promise<ClientResult<AndroidPlaybackStatus>>;
+
+  /** Pauses rendering without changing the state-owned volume or mute values. */
+  pause(options?: ClientRequestOptions): Promise<ClientResult<void>>;
+
+  /** Resumes rendering without changing the state-owned volume or mute values. */
+  resume(options?: ClientRequestOptions): Promise<ClientResult<void>>;
+
+  /** Applies a finite 0..1 volume while preserving mute and pause state. */
+  setVolume(
+    volume: number,
+    options?: ClientRequestOptions,
+  ): Promise<ClientResult<void>>;
+
+  /** Applies mute while preserving volume and pause state. */
+  setMuted(
+    muted: boolean,
+    options?: ClientRequestOptions,
+  ): Promise<ClientResult<void>>;
+
+  /** Updates the bounded viewport, including its explicit fullscreen state. */
+  setViewport(
+    viewport: AndroidPlaybackViewport,
+    options?: ClientRequestOptions,
+  ): Promise<ClientResult<void>>;
+
+  /** Idempotently releases Media3 and removes its native surface. */
+  stop(options?: ClientRequestOptions): Promise<ClientResult<void>>;
+}
+
+/** Closed, privacy-safe controls accepted by the Linux mpv process adapter. */
+export type MpvPlaybackControl =
+  | { readonly _tag: "health-check" }
+  | { readonly _tag: "pause" }
+  | { readonly _tag: "resume" }
+  | { readonly _tag: "set-volume"; readonly percent: number }
+  | { readonly _tag: "set-muted"; readonly muted: boolean }
+  | { readonly _tag: "set-fullscreen"; readonly fullscreen: boolean };
 
 /** A capability-selected playback transport that never contains a provider URL. */
 export type PlaybackDescriptor =
   | HostedPlaybackDescriptor
-  | NativePlaybackDescriptor;
+  | NativePlaybackDescriptor
+  | LinuxMpvPlaybackDescriptor;
 
 /** Independently paginated Channel and Programme matches from one catalog generation. */
 export interface SearchResults {
@@ -528,11 +602,12 @@ export type ClientError =
     }
   | {
       readonly _tag: "playback-failed";
-      readonly reason: "rejected" | "timed-out" | "unavailable" | "invalid-response";
+      readonly reason:
+        "rejected" | "timed-out" | "unavailable" | "invalid-response";
       readonly retryable: boolean;
     }
   | {
-      readonly _tag: "fallback-failed";
+      readonly _tag: "mpv-failed";
       readonly reason:
         | "unsupported"
         | "primary-active"
@@ -575,9 +650,7 @@ export interface SparrowClient {
   subscribe(listener: (event: SparrowEvent) => void): () => void;
 
   /** Reads a generation-bound page of channel groups. */
-  listGroups(
-    input: ListGroupsInput,
-  ): Promise<ClientResult<Page<ChannelGroup>>>;
+  listGroups(input: ListGroupsInput): Promise<ClientResult<Page<ChannelGroup>>>;
 
   /** Reads a generation-bound page of channels, optionally within one group. */
   listChannels(
@@ -588,9 +661,7 @@ export interface SparrowClient {
   channel(input: ChannelInput): Promise<ClientResult<ChannelDetails>>;
 
   /** Reads a generation-bound page of Programmes for one Channel. */
-  schedule(
-    input: ScheduleInput,
-  ): Promise<ClientResult<Page<ProgrammeSummary>>>;
+  schedule(input: ScheduleInput): Promise<ClientResult<Page<ProgrammeSummary>>>;
 
   /** Searches Channels and Programmes with independent continuation tokens. */
   search(input: SearchInput): Promise<ClientResult<SearchResults>>;
@@ -634,6 +705,17 @@ export interface InstalledPlaybackSession {
   /** Pulls at most 64 KiB from the exact current native stream handle. */
   read(input: ReadInstalledPlaybackInput): Promise<ClientResult<ArrayBuffer>>;
 
+  /** Starts Android Media3 over this session's exact opaque native transport. */
+  startAndroidPresentation(
+    input: StartAndroidPlaybackPresentationInput,
+  ): Promise<ClientResult<AndroidPlaybackPresentation>>;
+
+  /** Applies one correlated control when Linux mpv owns this session. */
+  controlMpv(
+    control: MpvPlaybackControl,
+    options?: ClientRequestOptions,
+  ): Promise<ClientResult<void>>;
+
   /** Idempotently releases transport work while retaining the pinned session. */
   suspend(options?: ClientRequestOptions): Promise<ClientResult<void>>;
 
@@ -646,15 +728,6 @@ export interface InstalledPlaybackSession {
   /** Idempotently releases the transport and final session ownership. */
   stop(options?: ClientRequestOptions): Promise<ClientResult<void>>;
 
-  /** Explicitly launches system mpv only after this session's primary transport stopped. */
-  startMpvFallback(
-    options?: ClientRequestOptions,
-  ): Promise<ClientResult<MpvFallbackPlaying>>;
-
-  /** Explicitly stops and reaps the system mpv process owned by this session. */
-  stopMpvFallback(
-    options?: ClientRequestOptions,
-  ): Promise<ClientResult<MpvFallbackStopped>>;
 }
 
 /** Installed client extension for atomically replacing on-device source configuration. */
@@ -688,7 +761,7 @@ const hostedCapabilitiesSchema: z.ZodType<HostedCapabilities> = z.strictObject({
 const installedCapabilitiesSchema: z.ZodType<InstalledCapabilities> =
   z.strictObject({
     sourceConfiguration: z.literal("device-writable"),
-    playbackTransport: z.literal("tauri-native-stream"),
+    playbackTransport: z.literal("platform-native"),
     audioTrackSelection: z.literal(true),
     mpvFailover: z.boolean(),
   });
@@ -707,7 +780,12 @@ const safeFailureSchema: z.ZodType<SafeFailure> = z.discriminatedUnion("_tag", [
   z.strictObject({
     _tag: z.literal("source-access"),
     source: sourceKindSchema,
-    reason: z.enum(["unavailable", "rejected", "timed-out", "invalid-response"]),
+    reason: z.enum([
+      "unavailable",
+      "rejected",
+      "timed-out",
+      "invalid-response",
+    ]),
     retryAfterSeconds: safeUnsignedIntegerSchema.nullable(),
   }),
   z.strictObject({
@@ -870,8 +948,7 @@ function refreshOutcomeSchemaFor(
   source: SafeFailure["source"],
 ): z.ZodType<RefreshOutcome> {
   return refreshOutcomeSchema.refine(
-    (outcome) =>
-      outcome._tag !== "failed" || outcome.failure.source === source,
+    (outcome) => outcome._tag !== "failed" || outcome.failure.source === source,
     {
       message: "A refresh failure must identify its containing source.",
       path: ["failure", "source"],
@@ -947,10 +1024,11 @@ const programmeSummarySchema: z.ZodType<ProgrammeSummary> = z
     { message: "Programme end must follow its start." },
   );
 
-const hostedPlaybackDescriptorSchema: z.ZodType<HostedPlaybackDescriptor> = z.strictObject({
-  _tag: z.literal("same-origin-http"),
-  endpoint: sameOriginPlaybackEndpointSchema,
-});
+const hostedPlaybackDescriptorSchema: z.ZodType<HostedPlaybackDescriptor> =
+  z.strictObject({
+    _tag: z.literal("same-origin-http"),
+    endpoint: sameOriginPlaybackEndpointSchema,
+  });
 const audioMetadataSchema = z
   .string()
   .trim()
@@ -1007,6 +1085,7 @@ const nativePlaybackDescriptorSchema: z.ZodType<NativePlaybackDescriptor> = z
     _tag: z.literal("tauri-native-stream"),
     sessionId: playbackSessionIdSchema,
     streamHandle: nativeStreamHandleSchema,
+    presentation: z.enum(["android-media3", "webview-mse"]),
     tracks: z.array(audioTrackSchema).max(32),
     selection: audioSelectionSchema,
     preferenceStatus: audioPreferenceStatusSchema.optional(),
@@ -1053,22 +1132,29 @@ const nativePlaybackDescriptorSchema: z.ZodType<NativePlaybackDescriptor> = z
       });
     }
   });
-const mpvFallbackPlayingSchema: z.ZodType<MpvFallbackPlaying> = z.strictObject({
-  _tag: z.literal("fallback-playing"),
-  sessionId: playbackSessionIdSchema,
-});
-const mpvFallbackStoppedSchema: z.ZodType<MpvFallbackStopped> = z.strictObject({
-  _tag: z.literal("fallback-stopped"),
-  sessionId: playbackSessionIdSchema,
-});
+const linuxMpvPlaybackDescriptorSchema: z.ZodType<LinuxMpvPlaybackDescriptor> =
+  z.strictObject({
+    _tag: z.literal("linux-mpv"),
+    sessionId: playbackSessionIdSchema,
+  });
+const installedPlaybackDescriptorSchema = z.union([
+  nativePlaybackDescriptorSchema,
+  linuxMpvPlaybackDescriptorSchema,
+]);
+const androidPlaybackStatusSchema: z.ZodType<AndroidPlaybackStatus> =
+  z.strictObject({
+    state: z.enum(["starting", "playing", "paused", "failed", "stopped"]),
+    decodedFrames: safeUnsignedIntegerSchema,
+    droppedFrames: safeUnsignedIntegerSchema,
+    bufferedDurationMs: safeUnsignedIntegerSchema,
+    silent: z.boolean(),
+  });
 const playbackDescriptorSchema: z.ZodType<PlaybackDescriptor> = z.union([
   hostedPlaybackDescriptorSchema,
-  nativePlaybackDescriptorSchema,
+  installedPlaybackDescriptorSchema,
 ]);
 
-const pageSchema = <Item>(
-  itemSchema: z.ZodType<Item>,
-): z.ZodType<Page<Item>> =>
+const pageSchema = <Item>(itemSchema: z.ZodType<Item>): z.ZodType<Page<Item>> =>
   z.strictObject({
     generation: catalogGenerationSchema,
     items: z.array(itemSchema).max(100),
@@ -1098,18 +1184,20 @@ const schedulePageSchemaFor = (
 ): z.ZodType<Page<ProgrammeSummary>> =>
   requestedPageSchema(programmeSummarySchema, input.limit)
     .refine(
-      (page) =>
-        isNewCursor(page.next, input.cursor, input.previousCursors),
+      (page) => isNewCursor(page.next, input.cursor, input.previousCursors),
       { message: "A schedule continuation cannot repeat an earlier cursor." },
     )
     .refine(
-      (page) => page.items.every((programme) => programme.channelId === input.id),
-      { message: "Every scheduled Programme must belong to the requested Channel." },
+      (page) =>
+        page.items.every((programme) => programme.channelId === input.id),
+      {
+        message:
+          "Every scheduled Programme must belong to the requested Channel.",
+      },
     )
-    .refine(
-      (page) => isNondecreasingByStart(page.items),
-      { message: "A schedule page must be ordered by Programme start." },
-    )
+    .refine((page) => isNondecreasingByStart(page.items), {
+      message: "A schedule page must be ordered by Programme start.",
+    })
     .refine(
       (page) =>
         input.afterStartsAt === undefined ||
@@ -1197,8 +1285,7 @@ function isNewCursor(
   previous: readonly PageCursor[] | undefined,
 ): boolean {
   return (
-    next === null ||
-    (next !== submitted && previous?.includes(next) !== true)
+    next === null || (next !== submitted && previous?.includes(next) !== true)
   );
 }
 
@@ -1225,81 +1312,86 @@ type ServerClientError = Exclude<
   { readonly _tag: "transport" } | { readonly _tag: "cancelled" }
 >;
 
-const serverClientErrorSchema: z.ZodType<ServerClientError> = z.discriminatedUnion("_tag", [
-  z.strictObject({
-    _tag: z.literal("authentication-required"),
-  }),
-  z.strictObject({
-    _tag: z.literal("service-unavailable"),
-  }),
-  z.strictObject({
-    _tag: z.literal("invalid-input"),
-    field: z.enum([
-      "query",
-      "route",
-      "body",
-      "header",
-      "m3u",
-      "epg",
-      "channel-id",
-      "channel-group",
-      "search-term",
-      "page-limit",
-      "page-cursor",
-    ]),
-    reason: z.enum([
-      "required",
-      "too-long",
-      "contains-control-character",
-      "unsupported-location",
-      "out-of-range",
-      "invalid-format",
-      "cursor-query-mismatch",
-      "cursor-position-out-of-range",
-    ]),
-  }),
-  z.strictObject({
-    _tag: z.literal("not-configured"),
-  }),
-  z.strictObject({
-    _tag: z.literal("catalog-unavailable"),
-    status: catalogStatusSchema,
-  }),
-  z.strictObject({
-    _tag: z.literal("not-found"),
-    resource: z.literal("channel"),
-  }),
-  z.strictObject({
-    _tag: z.literal("stale-cursor"),
-    current: catalogGenerationSchema,
-  }),
-  z.strictObject({
-    _tag: z.literal("playback-failed"),
-    reason: z.enum(["rejected", "timed-out", "unavailable", "invalid-response"]),
-    retryable: z.boolean(),
-  }),
-  z.strictObject({
-    _tag: z.literal("fallback-failed"),
-    reason: z.enum([
-      "unsupported",
-      "primary-active",
-      "stale-session",
-      "not-installed",
-      "incompatible",
-      "launch-failed",
-      "control-unavailable",
-      "terminated",
-    ]),
-    retryable: z.boolean(),
-  }),
-]);
+const serverClientErrorSchema: z.ZodType<ServerClientError> =
+  z.discriminatedUnion("_tag", [
+    z.strictObject({
+      _tag: z.literal("authentication-required"),
+    }),
+    z.strictObject({
+      _tag: z.literal("service-unavailable"),
+    }),
+    z.strictObject({
+      _tag: z.literal("invalid-input"),
+      field: z.enum([
+        "query",
+        "route",
+        "body",
+        "header",
+        "m3u",
+        "epg",
+        "channel-id",
+        "channel-group",
+        "search-term",
+        "page-limit",
+        "page-cursor",
+      ]),
+      reason: z.enum([
+        "required",
+        "too-long",
+        "contains-control-character",
+        "unsupported-location",
+        "out-of-range",
+        "invalid-format",
+        "cursor-query-mismatch",
+        "cursor-position-out-of-range",
+      ]),
+    }),
+    z.strictObject({
+      _tag: z.literal("not-configured"),
+    }),
+    z.strictObject({
+      _tag: z.literal("catalog-unavailable"),
+      status: catalogStatusSchema,
+    }),
+    z.strictObject({
+      _tag: z.literal("not-found"),
+      resource: z.literal("channel"),
+    }),
+    z.strictObject({
+      _tag: z.literal("stale-cursor"),
+      current: catalogGenerationSchema,
+    }),
+    z.strictObject({
+      _tag: z.literal("playback-failed"),
+      reason: z.enum([
+        "rejected",
+        "timed-out",
+        "unavailable",
+        "invalid-response",
+      ]),
+      retryable: z.boolean(),
+    }),
+    z.strictObject({
+      _tag: z.literal("mpv-failed"),
+      reason: z.enum([
+        "unsupported",
+        "primary-active",
+        "stale-session",
+        "not-installed",
+        "incompatible",
+        "launch-failed",
+        "control-unavailable",
+        "terminated",
+      ]),
+      retryable: z.boolean(),
+    }),
+  ]);
 
 const clientErrorEnvelopeSchema: z.ZodType<{
   readonly error: ServerClientError;
-}> =
-  z.strictObject({
-    error: serverClientErrorSchema,
-  });
+}> = z.strictObject({
+  error: serverClientErrorSchema,
+});
 
 /** Runtime parsers and request-aware parser factories for hosted protocol payloads. */
 export const clientSchemas = Object.freeze({
@@ -1327,8 +1419,9 @@ export const clientSchemas = Object.freeze({
   audioPreferenceStatus: audioPreferenceStatusSchema,
   hostedPlaybackDescriptor: hostedPlaybackDescriptorSchema,
   nativePlaybackDescriptor: nativePlaybackDescriptorSchema,
-  mpvFallbackPlaying: mpvFallbackPlayingSchema,
-  mpvFallbackStopped: mpvFallbackStoppedSchema,
+  linuxMpvPlaybackDescriptor: linuxMpvPlaybackDescriptorSchema,
+  installedPlaybackDescriptor: installedPlaybackDescriptorSchema,
+  androidPlaybackStatus: androidPlaybackStatusSchema,
   serverError: serverClientErrorSchema,
   errorEnvelope: clientErrorEnvelopeSchema,
 });

@@ -43,7 +43,7 @@ import {
 } from "../../client/contracts";
 import { CatalogBrowser } from "./catalog-browser";
 import type { HostedPlaybackEngine } from "../playback/mpegts-engine";
-import type { NativePlaybackEngine } from "../playback/native-mpegts-engine";
+import type { InstalledPlaybackEngine } from "../playback/installed-playback-engine";
 
 afterEach(cleanup);
 
@@ -56,7 +56,7 @@ const CAPABILITIES = clientSchemas.capabilities.parse({
 
 const INSTALLED_CAPABILITIES = clientSchemas.capabilities.parse({
   sourceConfiguration: "device-writable",
-  playbackTransport: "tauri-native-stream",
+  playbackTransport: "platform-native",
   audioTrackSelection: true,
   mpvFailover: false,
 });
@@ -453,6 +453,7 @@ class FakeSparrowClient implements InstalledSparrowClient {
               _tag: "tauri-native-stream",
               sessionId: `play1_${"a".repeat(32)}_1`,
               streamHandle: `stream1_${"b".repeat(16)}`,
+              presentation: "webview-mse",
               tracks: [],
               selection: { _tag: "none" },
             })
@@ -471,6 +472,7 @@ class FakeSparrowClient implements InstalledSparrowClient {
       _tag: "tauri-native-stream",
       sessionId: `play1_${"a".repeat(32)}_1`,
       streamHandle: `stream1_${"b".repeat(16)}`,
+      presentation: "webview-mse",
       tracks: [],
       selection: { _tag: "none" },
     });
@@ -482,19 +484,12 @@ class FakeSparrowClient implements InstalledSparrowClient {
       reopen: async () => success(descriptor),
       restart: async () => success(descriptor),
       read: async () => success(new ArrayBuffer(0)),
+      startAndroidPresentation: async () =>
+        success(androidPresentationFixture()),
+      controlMpv: async () => success(undefined),
       suspend: async () => success(undefined),
       setActivity: async () => success(undefined),
       stop: async () => success(undefined),
-      startMpvFallback: async () =>
-        success({
-          _tag: "fallback-playing",
-          sessionId: descriptor.sessionId,
-        }),
-      stopMpvFallback: async () =>
-        success({
-          _tag: "fallback-stopped",
-          sessionId: descriptor.sessionId,
-        }),
     };
   }
 
@@ -1402,12 +1397,31 @@ const TEST_PLAYBACK_ENGINE: HostedPlaybackEngine = {
   },
 };
 
-const TEST_NATIVE_PLAYBACK_ENGINE: NativePlaybackEngine = {
+const TEST_NATIVE_PLAYBACK_ENGINE: InstalledPlaybackEngine = {
   start: ({ onPlaying }) => {
     onPlaying();
     return { stop: () => undefined };
   },
 };
+
+function androidPresentationFixture() {
+  return {
+    status: async () =>
+      success({
+        state: "stopped" as const,
+        decodedFrames: 0,
+        droppedFrames: 0,
+        bufferedDurationMs: 0,
+        silent: true,
+      }),
+    pause: async () => success(undefined),
+    resume: async () => success(undefined),
+    setVolume: async () => success(undefined),
+    setMuted: async () => success(undefined),
+    setViewport: async () => success(undefined),
+    stop: async () => success(undefined),
+  };
+}
 
 function success<Value>(
   value: Value,
@@ -1464,4 +1478,3 @@ function requireMatch<Value>(
   }
   return value;
 }
-

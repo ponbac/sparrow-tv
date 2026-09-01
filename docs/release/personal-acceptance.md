@@ -71,19 +71,30 @@ the application, and mark a gate `passed` only after observing all behavior in t
 
 | Gate ID                                     | Required observation                                                                                                |
 | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `startup-render-version`                    | Native Wayland startup renders correctly and displays the candidate version/status.                                 |
-| `browse-search-guide`                       | Browse groups/channels, search channels/programmes, and inspect guide/schedule.                                     |
-| `catalog-first-configuration`               | First source configuration loads the real on-device catalog without revealing source details.                       |
-| `catalog-offline-restart`                   | Restart from saved snapshots with network unavailable and retain a usable catalog.                                  |
-| `catalog-stale-manual-refresh`              | Stale status and a manual refresh are visible and behave correctly.                                                 |
-| `primary-picture-audio`                     | Representative H.264/AAC produces visible picture and audible audio.                                                |
-| `primary-controls-channel-changes`          | Pause/live-edge resume, stop/restart, fullscreen, volume/mute, and ordinary Channel changes work.                   |
-| `audio-track-selection-preference-fallback` | Enumerate/select an Audio Track, remember preference, and visibly fall back when absent.                            |
-| `bounded-recovery-resource-release`         | Failures are bounded/visible and stop, restart, and Channel change leave no overlapping request or unbounded retry. |
-| `mpv-fallback-cleanup`                      | Invoke system mpv only after releasing primary playback; A/V/fullscreen work and stop reaps the child/socket.       |
+| `startup-render-version`                    | Native Wayland startup renders correctly and displays the candidate version/status.                                                  |
+| `browse-search-guide`                       | Browse groups/channels, search channels/programmes, and inspect guide/schedule.                                                      |
+| `catalog-first-configuration`               | First source configuration loads the real on-device catalog without revealing source details.                                        |
+| `catalog-offline-restart`                   | Restart from saved snapshots with network unavailable and retain a usable catalog.                                                   |
+| `catalog-stale-manual-refresh`              | Stale status and a manual refresh are visible and behave correctly.                                                                  |
+| `primary-picture-audio`                     | Representative H.264/AAC produces visible picture and audible audio through the primary system-mpv engine.                           |
+| `primary-controls-channel-changes`          | Pause/live-edge resume, stop/restart, fullscreen enter/exit, volume/mute, and ordinary Channel changes work through system mpv.      |
+| `bounded-recovery-resource-release`         | Failures are bounded/visible and stop, restart, and Channel change leave no overlapping request or unbounded retry.                  |
+| `primary-mpv-playback-cleanup`              | Primary mpv A/V, controls/fullscreen, Channel switching, and any applicable direct current-playback track choice work with one provider connection; old processes/sockets are reaped. |
 
 One representative playback and a few ordinary Channel changes are sufficient. Do not repeat the
 waived 90-minute soak or the completed 30-switch prototype without a new measured defect.
+
+For the final Linux gate, observe aggregate provider connection count without recording source
+details. Starting playback must establish exactly one provider connection. Pause must retire that
+connection, reap the mpv child, and remove its private socket; resume may establish exactly one new
+connection at the live edge only after the old process and socket are gone. Fullscreen enter/exit
+must not affect connection count. Each Channel change must likewise retire the old connection
+before the next one becomes active. After stop, restart, Channel change, and application exit,
+confirm the superseded mpv child is gone and its private `mpv-v1/mpv-*.sock` IPC socket has been
+removed. If the representative stream exposes multiple audio tracks, confirm a direct mpv track
+choice works for the current playback. Linux acceptance does not require Sparrow to expose or
+persist that choice. Do not copy process arguments, provider locations, or socket paths into
+evidence.
 
 After exiting, confirm the AppImage SHA-256 still matches both `SHA256SUMS` and the candidate
 manifest before marking the final Linux gate passed.
@@ -103,14 +114,16 @@ APK bytes, or changed Android UID/first-install identity.
 RELEASE_CANDIDATE="$candidate_dir" \
 RELEASE_PREVIOUS_APK="$previous_apk" \
 RELEASE_PREVIOUS_VERSION="$previous_version" \
-RELEASE_DEVICE_SERIAL="$realme_adb_serial" \
+ANDROID_SERIAL="$realme_adb_serial" \
 RELEASE_ACCEPTANCE_OUTPUT="$evidence_dir/android-key-continuity.json" \
   just release-acceptance-prove-continuity
 ```
 
 This command changes the installed Sparrow version on the connected target device. Run it only
 when the phone is ready for the release acceptance flow. A failed predecessor install is not worked
-around with an uninstall; resolve the device/version state and start a new continuity run.
+around with an uninstall; resolve the device/version state and start a new continuity run. The
+standard `ANDROID_SERIAL` environment selector keeps the private device identifier out of process
+arguments and evidence.
 
 ## 4. Exercise the accepted APK on that same installation
 

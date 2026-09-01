@@ -1,7 +1,5 @@
 import mpegts from "mpegts.js";
-import type {
-  InstalledPlaybackTransport,
-} from "../../client/contracts";
+import type { NativeStreamPlaybackTransport } from "../../client/contracts";
 import type {
   HostedPlaybackFailure,
   HostedPlaybackHandle,
@@ -16,9 +14,9 @@ import {
 } from "./native-mpegts-loader";
 
 /** Inputs accepted by the installed MPEG-TS adapter. */
-export interface NativePlaybackRequest {
+export interface NativeMpegtsPlaybackRequest {
   readonly session: NativePlaybackClient;
-  readonly descriptor: InstalledPlaybackTransport;
+  readonly descriptor: NativeStreamPlaybackTransport;
   readonly video: HTMLVideoElement;
   readonly onFailure: (
     failure: HostedPlaybackFailure,
@@ -29,9 +27,9 @@ export interface NativePlaybackRequest {
 }
 
 /** Narrow engine seam used by the installed player and deterministic UI tests. */
-export interface NativePlaybackEngine {
+export interface NativeMpegtsPlaybackEngine {
   readonly start: (
-    request: NativePlaybackRequest,
+    request: NativeMpegtsPlaybackRequest,
   ) => HostedPlaybackHandle | HostedPlaybackFailure;
 }
 
@@ -42,7 +40,7 @@ export interface NativeMpegtsRuntime
 /** Builds an installed player around one opaque, Rust-owned stream lease. */
 export function createNativeMpegtsPlaybackEngine(
   runtime: NativeMpegtsRuntime = mpegts,
-): NativePlaybackEngine {
+): NativeMpegtsPlaybackEngine {
   return {
     start(request) {
       if (!runtime.getFeatureList().mseLivePlayback) {

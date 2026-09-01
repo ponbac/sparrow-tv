@@ -1436,8 +1436,11 @@ impl CoreRuntime {
             configuration.catalog_generation(m3u.candidate.metadata().checksum(), epg_checksum);
         let catalog = ChannelCatalog::from_parsed(
             configuration,
-            m3u.parsed.as_slice(),
-            sources.epg.as_ref().map(|source| source.parsed.as_ref()),
+            Arc::clone(&m3u.parsed),
+            sources
+                .epg
+                .as_ref()
+                .map(|source| Arc::clone(&source.parsed)),
             generation,
         );
         (Some(Arc::new(catalog)), Some(generation))
@@ -1730,11 +1733,12 @@ async fn recover_configuration(
     let catalog = generation.map(|generation| {
         Arc::new(ChannelCatalog::from_parsed(
             configuration,
-            m3u.as_ref()
-                .expect("a recovered generation has an M3U contribution")
-                .value
-                .as_slice(),
-            epg.as_ref().map(|epg| epg.value.as_ref()),
+            Arc::clone(
+                &m3u.as_ref()
+                    .expect("a recovered generation has an M3U contribution")
+                    .value,
+            ),
+            epg.as_ref().map(|epg| Arc::clone(&epg.value)),
             generation,
         ))
     });
@@ -1878,8 +1882,8 @@ async fn load_catalog(
     let generation = configuration.catalog_generation(&m3u.checksum, epg_checksum.as_ref());
     let catalog = ChannelCatalog::from_parsed(
         configuration,
-        m3u.value.as_slice(),
-        guide.as_deref(),
+        Arc::clone(&m3u.value),
+        guide.as_ref().map(Arc::clone),
         generation,
     );
     let sources = PublishedSources {

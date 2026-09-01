@@ -1,7 +1,12 @@
 // @vitest-environment node
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { clientSchemas, type ClientResult } from "./contracts";
+import {
+  clientSchemas,
+  type ClientResult,
+  type InstalledPlaybackTransport,
+  type NativeStreamPlaybackTransport,
+} from "./contracts";
 import {
   createNativeSparrowClient,
   NATIVE_COMMANDS,
@@ -13,12 +18,13 @@ afterEach(() => vi.restoreAllMocks());
 
 const INSTALLED_CAPABILITIES = {
   sourceConfiguration: "device-writable",
-  playbackTransport: "tauri-native-stream",
+  playbackTransport: "platform-native",
   audioTrackSelection: true,
   mpvFailover: true,
 } as const;
 
 const EMPTY_AUDIO = {
+  presentation: "android-media3",
   tracks: [],
   selection: { _tag: "none" },
 } as const;
@@ -776,7 +782,8 @@ describe("installed Tauri Sparrow client", () => {
     if (!started.ok) {
       throw new Error("expected the session to start");
     }
-    expect(started.value).toEqual({
+    const startedTransport = requireNativeStream(started.value);
+    expect(startedTransport).toEqual({
       _tag: "tauri-native-stream",
       streamHandle: `stream1_${"1".repeat(16)}`,
       ...EMPTY_AUDIO,
@@ -790,9 +797,12 @@ describe("installed Tauri Sparrow client", () => {
     if (!reopened.ok) {
       throw new Error("expected the session to reopen");
     }
-    expect(reopened.value.streamHandle).not.toBe(started.value.streamHandle);
+    const reopenedTransport = requireNativeStream(reopened.value);
+    expect(reopenedTransport.streamHandle).not.toBe(
+      startedTransport.streamHandle,
+    );
     await expect(
-      session.read({ streamHandle: reopened.value.streamHandle }),
+      session.read({ streamHandle: reopenedTransport.streamHandle }),
     ).resolves.toEqual({ ok: true, value: chunk });
     await expect(session.setActivity(true)).resolves.toEqual({
       ok: true,
@@ -831,7 +841,7 @@ describe("installed Tauri Sparrow client", () => {
         args: {
           input: {
             sessionId,
-            streamHandle: reopened.value.streamHandle,
+            streamHandle: reopenedTransport.streamHandle,
           },
         },
       },
@@ -844,11 +854,358 @@ describe("installed Tauri Sparrow client", () => {
         args: {
           input: {
             sessionId,
-            streamHandle: reopened.value.streamHandle,
+            streamHandle: reopenedTransport.streamHandle,
           },
         },
       },
     ]);
+  });
+
+  it("projects Linux primary ownership and correlates private mpv controls", async () => {
+    const ipc = new FakeNativeIpc((command, args) => {
+      switch (command) {
+        case NATIVE_COMMANDS.startPlayback:
+          return Promise.resolve({
+            _tag: "linux-mpv",
+            sessionId: requirePlaybackSessionId(args),
+          });
+        case NATIVE_COMMANDS.controlMpv:
+        case NATIVE_COMMANDS.stopPlayback:
+          return Promise.resolve(null);
+        default:
+          return Promise.reject(new Error("unexpected fixture command"));
+      }
+    });
+    const session = createNativeSparrowClient({ ipc }).createPlaybackSession({
+      id: CHANNEL.id,
+    });
+
+    await expect(session.start()).resolves.toEqual({
+      ok: true,
+      value: { _tag: "linux-mpv" },
+    });
+    await expect(
+      session.controlMpv({ _tag: "set-volume", percent: 37 }),
+    ).resolves.toEqual({ ok: true, value: undefined });
+    await expect(
+      session.controlMpv({ _tag: "set-muted", muted: true }),
+    ).resolves.toEqual({ ok: true, value: undefined });
+    await expect(
+      session.controlMpv({ _tag: "set-fullscreen", fullscreen: true }),
+    ).resolves.toEqual({ ok: true, value: undefined });
+    await expect(
+      session.controlMpv({ _tag: "health-check" }),
+    ).resolves.toEqual({ ok: true, value: undefined });
+    await session.stop();
+
+    const sessionId = requirePlaybackSessionId(requireFirst(ipc.invokes).args);
+    expect(ipc.invokes).toEqual([
+      {
+        command: NATIVE_COMMANDS.startPlayback,
+        args: { input: { id: CHANNEL.id, sessionId } },
+      },
+      {
+        command: NATIVE_COMMANDS.controlMpv,
+        args: {
+          input: {
+            sessionId,
+            control: { _tag: "set-volume", percent: 37 },
+          },
+        },
+      },
+      {
+        command: NATIVE_COMMANDS.controlMpv,
+        args: {
+          input: {
+            sessionId,
+            control: { _tag: "set-muted", muted: true },
+          },
+        },
+      },
+      {
+        command: NATIVE_COMMANDS.controlMpv,
+        args: {
+          input: {
+            sessionId,
+            control: { _tag: "set-fullscreen", fullscreen: true },
+          },
+        },
+      },
+      {
+        command: NATIVE_COMMANDS.controlMpv,
+        args: {
+          input: {
+            sessionId,
+            control: { _tag: "health-check" },
+          },
+        },
+      },
+      {
+        command: NATIVE_COMMANDS.stopPlayback,
+        args: { input: { sessionId } },
+      },
+    ]);
+    expect(JSON.stringify(ipc.invokes)).not.toContain("provider");
+  });
+
+  it("owns one correlated Android Media3 presentation and serializes safe controls", async () => {
+    const streamHandle = clientSchemas.nativeStreamHandle.parse(
+      `stream1_${"a".repeat(16)}`,
+    );
+    const status = {
+      state: "playing",
+      decodedFrames: 1_200,
+      droppedFrames: 2,
+      bufferedDurationMs: 1_250,
+      silent: true,
+    } as const;
+    const ipc = new FakeNativeIpc((command, args) => {
+      switch (command) {
+        case NATIVE_COMMANDS.startPlayback:
+          return Promise.resolve({
+            _tag: "tauri-native-stream",
+            sessionId: requirePlaybackSessionId(args),
+            streamHandle,
+            ...EMPTY_AUDIO,
+          });
+        case NATIVE_COMMANDS.androidPlaybackStatus:
+          return Promise.resolve(status);
+        case NATIVE_COMMANDS.startAndroidPlayback:
+        case NATIVE_COMMANDS.setAndroidPlaybackControls:
+        case NATIVE_COMMANDS.setAndroidPlaybackViewport:
+        case NATIVE_COMMANDS.stopAndroidPlayback:
+          return Promise.resolve(null);
+        default:
+          return Promise.reject(new Error("unexpected fixture command"));
+      }
+    });
+    const session = createNativeSparrowClient({ ipc }).createPlaybackSession({
+      id: CHANNEL.id,
+    });
+    const started = await session.start();
+    if (!started.ok) {
+      throw new Error("expected the session to start");
+    }
+    const startedTransport = requireNativeStream(started.value);
+    const initialViewport = {
+      left: 8,
+      top: 12,
+      width: 1_280,
+      height: 720,
+      fullscreen: false,
+    } as const;
+    const presented = await session.startAndroidPresentation({
+      streamHandle: startedTransport.streamHandle,
+      viewport: initialViewport,
+      volume: 0.8,
+      muted: false,
+    });
+    if (!presented.ok) {
+      throw new Error("expected Media3 presentation ownership");
+    }
+
+    await expect(presented.value.status()).resolves.toEqual({
+      ok: true,
+      value: status,
+    });
+    await expect(presented.value.pause()).resolves.toEqual({
+      ok: true,
+      value: undefined,
+    });
+    await presented.value.setMuted(true);
+    await presented.value.setVolume(0.35);
+    await presented.value.resume();
+    const fullscreenViewport = {
+      left: 0,
+      top: 0,
+      width: 1_920,
+      height: 1_080,
+      fullscreen: true,
+    } as const;
+    await presented.value.setViewport(fullscreenViewport);
+    const firstStop = presented.value.stop();
+    const secondStop = presented.value.stop();
+    await expect(firstStop).resolves.toEqual({ ok: true, value: undefined });
+    await expect(secondStop).resolves.toEqual({ ok: true, value: undefined });
+    const invokeCountAfterStop = ipc.invokes.length;
+    await expect(presented.value.status()).resolves.toEqual({
+      ok: false,
+      error: { _tag: "cancelled" },
+    });
+    expect(ipc.invokes).toHaveLength(invokeCountAfterStop);
+
+    const sessionId = requirePlaybackSessionId(requireFirst(ipc.invokes).args);
+    const identity = { sessionId, streamHandle };
+    expect(ipc.invokes).toEqual([
+      {
+        command: NATIVE_COMMANDS.startPlayback,
+        args: { input: { id: CHANNEL.id, sessionId } },
+      },
+      {
+        command: NATIVE_COMMANDS.startAndroidPlayback,
+        args: {
+          input: {
+            ...identity,
+            viewport: initialViewport,
+            volume: 0.8,
+            muted: false,
+          },
+        },
+      },
+      {
+        command: NATIVE_COMMANDS.androidPlaybackStatus,
+        args: { input: identity },
+      },
+      {
+        command: NATIVE_COMMANDS.setAndroidPlaybackControls,
+        args: {
+          input: { ...identity, volume: 0.8, muted: false, paused: true },
+        },
+      },
+      {
+        command: NATIVE_COMMANDS.setAndroidPlaybackControls,
+        args: {
+          input: { ...identity, volume: 0.8, muted: true, paused: true },
+        },
+      },
+      {
+        command: NATIVE_COMMANDS.setAndroidPlaybackControls,
+        args: {
+          input: { ...identity, volume: 0.35, muted: true, paused: true },
+        },
+      },
+      {
+        command: NATIVE_COMMANDS.setAndroidPlaybackControls,
+        args: {
+          input: { ...identity, volume: 0.35, muted: true, paused: false },
+        },
+      },
+      {
+        command: NATIVE_COMMANDS.setAndroidPlaybackViewport,
+        args: { input: { ...identity, viewport: fullscreenViewport } },
+      },
+      {
+        command: NATIVE_COMMANDS.stopAndroidPlayback,
+        args: { input: identity },
+      },
+    ]);
+    expect(JSON.stringify(ipc.invokes)).not.toContain("provider");
+  });
+
+  it("rejects Android status context and cleans up a cancelled late start after an early no-owner stop", async () => {
+    const streamHandle = clientSchemas.nativeStreamHandle.parse(
+      `stream1_${"b".repeat(16)}`,
+    );
+    const replacementHandle = clientSchemas.nativeStreamHandle.parse(
+      `stream1_${"c".repeat(16)}`,
+    );
+    const androidStart = deferred<unknown>();
+    let startCount = 0;
+    let kotlinOwned = false;
+    const stopOwnership: boolean[] = [];
+    const ipc = new FakeNativeIpc((command, args) => {
+      switch (command) {
+        case NATIVE_COMMANDS.startPlayback:
+          return Promise.resolve({
+            _tag: "tauri-native-stream",
+            sessionId: requirePlaybackSessionId(args),
+            streamHandle,
+            ...EMPTY_AUDIO,
+          });
+        case NATIVE_COMMANDS.reopenPlayback:
+          return Promise.resolve({
+            _tag: "tauri-native-stream",
+            sessionId: requirePlaybackSessionId(args),
+            streamHandle: replacementHandle,
+            ...EMPTY_AUDIO,
+          });
+        case NATIVE_COMMANDS.startAndroidPlayback:
+          startCount += 1;
+          if (startCount === 1) {
+            kotlinOwned = true;
+            return Promise.resolve(null);
+          }
+          return androidStart.promise.then(() => {
+            kotlinOwned = true;
+            return null;
+          });
+        case NATIVE_COMMANDS.androidPlaybackStatus:
+          return Promise.resolve({
+            state: "playing",
+            decodedFrames: 300,
+            droppedFrames: 0,
+            bufferedDurationMs: 500,
+            silent: true,
+            source: "https://user:secret@provider.invalid/private.ts",
+          });
+        case NATIVE_COMMANDS.stopAndroidPlayback:
+          stopOwnership.push(kotlinOwned);
+          kotlinOwned = false;
+          return Promise.resolve(null);
+        case NATIVE_COMMANDS.suspendPlayback:
+          kotlinOwned = false;
+          return Promise.resolve(null);
+        default:
+          return Promise.reject(new Error("unexpected fixture command"));
+      }
+    });
+    const session = createNativeSparrowClient({ ipc }).createPlaybackSession({
+      id: CHANNEL.id,
+    });
+    const started = await session.start();
+    if (!started.ok) {
+      throw new Error("expected the session to start");
+    }
+    const first = await session.startAndroidPresentation({
+      streamHandle,
+      viewport: { left: 0, top: 0, width: 640, height: 360, fullscreen: false },
+      volume: 1,
+      muted: true,
+    });
+    if (!first.ok) {
+      throw new Error("expected the first presentation to start");
+    }
+    const invalid = await first.value.status();
+    expect(invalid).toEqual(invalidResponse());
+    expect(JSON.stringify(invalid)).not.toContain("provider.invalid");
+    await session.suspend();
+
+    const reopened = await session.reopen();
+    if (!reopened.ok) {
+      throw new Error("expected the replacement transport to open");
+    }
+    const reopenedTransport = requireNativeStream(reopened.value);
+    const controller = new AbortController();
+    const pending = session.startAndroidPresentation({
+      streamHandle: reopenedTransport.streamHandle,
+      viewport: { left: 0, top: 0, width: 640, height: 360, fullscreen: false },
+      volume: 1,
+      muted: true,
+      signal: controller.signal,
+    });
+    controller.abort();
+    await expect(pending).resolves.toEqual({
+      ok: false,
+      error: { _tag: "cancelled" },
+    });
+    await vi.waitFor(() => expect(stopOwnership).toEqual([false]));
+    const retry = session.startAndroidPresentation({
+      streamHandle: reopenedTransport.streamHandle,
+      viewport: { left: 0, top: 0, width: 640, height: 360, fullscreen: false },
+      volume: 1,
+      muted: true,
+    });
+    expect(startCount).toBe(2);
+    androidStart.resolve(null);
+    await vi.waitFor(() => expect(stopOwnership).toEqual([false, true]));
+    const retried = await retry;
+    if (!retried.ok) {
+      throw new Error("expected retry after late cleanup to own Media3");
+    }
+    expect(kotlinOwned).toBe(true);
+    await retried.value.stop();
+    expect(stopOwnership).toEqual([false, true, true]);
+    expect(kotlinOwned).toBe(false);
   });
 
   it("atomically restarts an exact handle for Audio Track selection and rejects stale work locally", async () => {
@@ -900,9 +1257,10 @@ describe("installed Tauri Sparrow client", () => {
     if (!started.ok) {
       throw new Error("expected the session to start");
     }
+    const startedTransport = requireNativeStream(started.value);
 
     const restarted = await session.restart({
-      expectedStreamHandle: started.value.streamHandle,
+      expectedStreamHandle: startedTransport.streamHandle,
       intent: { _tag: "select-audio", audioTrackId: SPANISH_AUDIO_ID },
     });
     expect(restarted).toEqual({
@@ -910,6 +1268,7 @@ describe("installed Tauri Sparrow client", () => {
       value: {
         _tag: "tauri-native-stream",
         streamHandle: secondHandle,
+        presentation: "android-media3",
         tracks: audioTracks(SPANISH_AUDIO_ID),
         selection: {
           _tag: "selected",
@@ -925,9 +1284,10 @@ describe("installed Tauri Sparrow client", () => {
         intent: { _tag: "select-audio", audioTrackId: ENGLISH_AUDIO_ID },
       }),
     ).resolves.toEqual({ ok: false, error: { _tag: "cancelled" } });
-    await expect(
-      session.read({ streamHandle: firstHandle }),
-    ).resolves.toEqual({ ok: false, error: { _tag: "cancelled" } });
+    await expect(session.read({ streamHandle: firstHandle })).resolves.toEqual({
+      ok: false,
+      error: { _tag: "cancelled" },
+    });
     await session.stop();
 
     const sessionId = requirePlaybackSessionId(requireFirst(ipc.invokes).args);
@@ -1002,161 +1362,6 @@ describe("installed Tauri Sparrow client", () => {
         providerLocation: "private-canary",
       }).success,
     ).toBe(false);
-  });
-
-  it("starts and stops one correlated mpv fallback only after primary stop", async () => {
-    const ipc = new FakeNativeIpc((command, args) => {
-      const sessionId = requirePlaybackSessionId(args);
-      switch (command) {
-        case NATIVE_COMMANDS.startPlayback:
-          return Promise.resolve({
-            _tag: "tauri-native-stream",
-            sessionId,
-            streamHandle: `stream1_${"7".repeat(16)}`,
-            ...EMPTY_AUDIO,
-          });
-        case NATIVE_COMMANDS.stopPlayback:
-          return Promise.resolve(null);
-        case NATIVE_COMMANDS.startMpvFallback:
-          return Promise.resolve({ _tag: "fallback-playing", sessionId });
-        case NATIVE_COMMANDS.stopMpvFallback:
-          return Promise.resolve({ _tag: "fallback-stopped", sessionId });
-        default:
-          return Promise.reject(new Error("unexpected fixture command"));
-      }
-    });
-    const session = createNativeSparrowClient({ ipc }).createPlaybackSession({
-      id: CHANNEL.id,
-    });
-
-    await session.start();
-    await expect(session.startMpvFallback()).resolves.toEqual({
-      ok: false,
-      error: {
-        _tag: "fallback-failed",
-        reason: "primary-active",
-        retryable: true,
-      },
-    });
-    await session.stop();
-    const firstStart = session.startMpvFallback();
-    const secondStart = session.startMpvFallback();
-    const started = await firstStart;
-    await expect(secondStart).resolves.toBe(started);
-    expect(started).toMatchObject({
-      ok: true,
-      value: { _tag: "fallback-playing" },
-    });
-    const firstStop = session.stopMpvFallback();
-    const secondStop = session.stopMpvFallback();
-    const stopped = await firstStop;
-    await expect(secondStop).resolves.toBe(stopped);
-    expect(stopped).toMatchObject({
-      ok: true,
-      value: { _tag: "fallback-stopped" },
-    });
-
-    const sessionId = requirePlaybackSessionId(requireFirst(ipc.invokes).args);
-    expect(ipc.invokes.map(({ command }) => command)).toEqual([
-      NATIVE_COMMANDS.startPlayback,
-      NATIVE_COMMANDS.stopPlayback,
-      NATIVE_COMMANDS.startMpvFallback,
-      NATIVE_COMMANDS.stopMpvFallback,
-    ]);
-    expect(ipc.invokes.slice(1).every(({ args }) =>
-      requirePlaybackSessionId(args) === sessionId,
-    )).toBe(true);
-  });
-
-  it("parses typed mpv failures and rejects uncorrelated fallback responses", async () => {
-    let response: "failure" | "uncorrelated" = "failure";
-    const ipc = new FakeNativeIpc((command, args) => {
-      const sessionId = requirePlaybackSessionId(args);
-      switch (command) {
-        case NATIVE_COMMANDS.startPlayback:
-          return Promise.resolve({
-            _tag: "tauri-native-stream",
-            sessionId,
-            streamHandle: `stream1_${"8".repeat(16)}`,
-            ...EMPTY_AUDIO,
-          });
-        case NATIVE_COMMANDS.stopPlayback:
-          return Promise.resolve(null);
-        case NATIVE_COMMANDS.startMpvFallback:
-          return response === "failure"
-            ? Promise.reject({
-                _tag: "fallback-failed",
-                reason: "not-installed",
-                retryable: false,
-              })
-            : Promise.resolve({
-                _tag: "fallback-playing",
-                sessionId: `play1_${"0".repeat(32)}_9`,
-              });
-        default:
-          return Promise.reject(new Error("unexpected fixture command"));
-      }
-    });
-    const session = createNativeSparrowClient({ ipc }).createPlaybackSession({
-      id: CHANNEL.id,
-    });
-    await session.start();
-    await session.stop();
-
-    await expect(session.startMpvFallback()).resolves.toEqual({
-      ok: false,
-      error: {
-        _tag: "fallback-failed",
-        reason: "not-installed",
-        retryable: false,
-      },
-    });
-    response = "uncorrelated";
-    await expect(session.startMpvFallback()).resolves.toEqual(invalidResponse());
-  });
-
-  it("requests mpv cleanup when a launch is cancelled or resolves late", async () => {
-    const launch = deferred<unknown>();
-    const ipc = new FakeNativeIpc((command, args) => {
-      const sessionId = requirePlaybackSessionId(args);
-      switch (command) {
-        case NATIVE_COMMANDS.startPlayback:
-          return Promise.resolve({
-            _tag: "tauri-native-stream",
-            sessionId,
-            streamHandle: `stream1_${"9".repeat(16)}`,
-            ...EMPTY_AUDIO,
-          });
-        case NATIVE_COMMANDS.stopPlayback:
-          return Promise.resolve(null);
-        case NATIVE_COMMANDS.startMpvFallback:
-          return launch.promise;
-        case NATIVE_COMMANDS.stopMpvFallback:
-          return Promise.resolve({ _tag: "fallback-stopped", sessionId });
-        default:
-          return Promise.reject(new Error("unexpected fixture command"));
-      }
-    });
-    const session = createNativeSparrowClient({ ipc }).createPlaybackSession({
-      id: CHANNEL.id,
-    });
-    await session.start();
-    await session.stop();
-    const controller = new AbortController();
-    const result = session.startMpvFallback({ signal: controller.signal });
-    controller.abort();
-
-    await expect(result).resolves.toEqual({
-      ok: false,
-      error: { _tag: "cancelled" },
-    });
-    const sessionId = requirePlaybackSessionId(requireFirst(ipc.invokes).args);
-    launch.resolve({ _tag: "fallback-playing", sessionId });
-    await launch.promise;
-    await Promise.resolve();
-    expect(
-      ipc.invokes.filter(({ command }) => command === NATIVE_COMMANDS.stopMpvFallback),
-    ).toHaveLength(1);
   });
 
   it("reopens the same pinned session after the initial open returns a safe failure", async () => {
@@ -1387,7 +1592,18 @@ function invalidResponse(): ClientResult<never> {
   };
 }
 
-function audioTracks(selected: typeof ENGLISH_AUDIO_ID | typeof SPANISH_AUDIO_ID) {
+function requireNativeStream(
+  transport: InstalledPlaybackTransport,
+): NativeStreamPlaybackTransport {
+  if (transport._tag === "tauri-native-stream") {
+    return transport;
+  }
+  throw new Error("expected a native stream transport fixture");
+}
+
+function audioTracks(
+  selected: typeof ENGLISH_AUDIO_ID | typeof SPANISH_AUDIO_ID,
+) {
   return [
     {
       id: ENGLISH_AUDIO_ID,
@@ -1415,6 +1631,7 @@ function audioDescriptor(
     _tag: "tauri-native-stream" as const,
     sessionId,
     streamHandle,
+    presentation: "android-media3" as const,
     tracks: audioTracks(selected),
     selection,
     ...(preferenceStatus === undefined ? {} : { preferenceStatus }),

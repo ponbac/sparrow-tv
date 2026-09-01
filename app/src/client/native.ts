@@ -2,6 +2,9 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
 import {
   clientSchemas,
+  type AndroidPlaybackPresentation,
+  type AndroidPlaybackStatus,
+  type AndroidPlaybackViewport,
   type Capabilities,
   type CatalogStatus,
   type ChannelDetails,
@@ -17,8 +20,7 @@ import {
   type InstalledSparrowClient,
   type ListChannelsInput,
   type ListGroupsInput,
-  type MpvFallbackPlaying,
-  type MpvFallbackStopped,
+  type MpvPlaybackControl,
   type Page,
   type PageCursor,
   type PlaybackDescriptor,
@@ -37,6 +39,7 @@ import {
   type SparrowEvent,
   type StartPlaybackInput,
   type StopPlaybackInput,
+  type StartAndroidPlaybackPresentationInput,
 } from "./contracts";
 
 /** Fixed Tauri command names shared with the installed shell composition. */
@@ -62,8 +65,12 @@ export const NATIVE_COMMANDS = Object.freeze({
   suspendPlayback: "playback_suspend",
   setPlaybackActivity: "playback_activity",
   stopPlayback: "playback_stop",
-  startMpvFallback: "playback_mpv_start",
-  stopMpvFallback: "playback_mpv_stop",
+  startAndroidPlayback: "playback_android_start",
+  androidPlaybackStatus: "playback_android_status",
+  setAndroidPlaybackControls: "playback_android_controls",
+  setAndroidPlaybackViewport: "playback_android_viewport",
+  stopAndroidPlayback: "playback_android_stop",
+  controlMpv: "playback_mpv_control",
 } as const);
 
 /** Channel surface required by the ordered Tauri subscription adapter. */
@@ -104,6 +111,34 @@ const nativePlaybackIdentitySchema = z
     streamHandle: clientSchemas.nativeStreamHandle,
   })
   .passthrough();
+const linuxMpvPlaybackIdentitySchema = z
+  .object({
+    _tag: z.literal("linux-mpv"),
+    sessionId: clientSchemas.playbackSessionId,
+  })
+  .passthrough();
+const installedPlaybackIdentitySchema = z.union([
+  nativePlaybackIdentitySchema,
+  linuxMpvPlaybackIdentitySchema,
+]);
+const mpvPlaybackControlSchema: z.ZodType<MpvPlaybackControl> =
+  z.discriminatedUnion("_tag", [
+    z.strictObject({ _tag: z.literal("health-check") }),
+    z.strictObject({ _tag: z.literal("pause") }),
+    z.strictObject({ _tag: z.literal("resume") }),
+    z.strictObject({
+      _tag: z.literal("set-volume"),
+      percent: z.number().int().min(0).max(100),
+    }),
+    z.strictObject({
+      _tag: z.literal("set-muted"),
+      muted: z.boolean(),
+    }),
+    z.strictObject({
+      _tag: z.literal("set-fullscreen"),
+      fullscreen: z.boolean(),
+    }),
+  ]);
 const MAX_NATIVE_CHUNK_BYTES = 64 * 1024;
 const SOURCE_LOCATION_MAX_UTF8_BYTES = 16_384;
 const sourceTextEncoder = new TextEncoder();
@@ -367,12 +402,7 @@ class TauriSparrowClient implements InstalledSparrowClient {
           },
         }),
       input.signal,
-      () =>
-        stopNativePlayback(
-          this.#ipc,
-          input.sessionId,
-          input.streamHandle,
-        ),
+      () => stopNativePlayback(this.#ipc, input.sessionId, input.streamHandle),
     );
     switch (outcome._tag) {
       case "cancelled":
@@ -511,11 +541,10 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
   #lateCleanup: Promise<ClientResult<void>> | null = null;
   #suspendFlight: Promise<ClientResult<void>> | null = null;
   #stopFlight: Promise<ClientResult<void>> | null = null;
-  #mpvStartFlight: Promise<ClientResult<MpvFallbackPlaying>> | null = null;
-  #mpvStopFlight: Promise<ClientResult<MpvFallbackStopped>> | null = null;
-  #mpvPlaying: MpvFallbackPlaying | null = null;
-  #mpvStopped: MpvFallbackStopped | null = null;
-  #mpvGeneration = 0;
+  #androidPresentation: TauriAndroidPlaybackPresentation | null = null;
+  #androidStartSettlement: Promise<void> | null = null;
+  #transportTag: InstalledPlaybackTransport["_tag"] | null = null;
+  #mpvControlQueue: Promise<void> = Promise.resolve();
 
   constructor(
     ipc: NativeIpc,
@@ -627,6 +656,140 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
     return parseNativeChunk(outcome);
   }
 
+  async startAndroidPresentation(
+    input: StartAndroidPlaybackPresentationInput,
+  ): Promise<ClientResult<AndroidPlaybackPresentation>> {
+    if (this.#androidStartSettlement !== null) {
+      await this.#androidStartSettlement;
+    }
+    if (
+      !this.#started ||
+      this.#stopped ||
+      this.#transportTag !== "tauri-native-stream" ||
+      input.streamHandle !== this.#streamHandle ||
+      this.#androidPresentation !== null ||
+      !isAndroidPlaybackViewport(input.viewport) ||
+      !isUnitVolume(input.volume)
+    ) {
+      return invalidNativeResponse();
+    }
+    const commandInput = {
+      sessionId: this.#sessionId,
+      streamHandle: input.streamHandle,
+      viewport: input.viewport,
+      volume: input.volume,
+      muted: input.muted,
+    };
+    const invocation: { raw: Promise<unknown> | null } = { raw: null };
+    let cancelled = false;
+    let earlyCleanup = Promise.resolve();
+    const outcomeFlight = invokeWithCancellation(
+      () => {
+        invocation.raw = this.#ipc.invoke(NATIVE_COMMANDS.startAndroidPlayback, {
+          input: commandInput,
+        });
+        return invocation.raw;
+      },
+      input.signal,
+      () => {
+        cancelled = true;
+        earlyCleanup = requestNativeAndroidPlaybackStop(
+          this.#ipc,
+          this.#sessionId,
+          input.streamHandle,
+        );
+      },
+    );
+    const rawFlight = invocation.raw;
+    if (rawFlight === null) {
+      const result = parseNativeOutcome(await outcomeFlight, voidResponseSchema);
+      return result.ok ? invalidNativeResponse() : result;
+    }
+    const settlement = rawFlight.then(
+      async () => {
+        await earlyCleanup;
+        if (cancelled) {
+          // The abort cleanup may have reached Kotlin before start published
+          // an owner. A distinct post-resolution stop is therefore required.
+          await requestNativeAndroidPlaybackStop(
+            this.#ipc,
+            this.#sessionId,
+            input.streamHandle,
+          );
+        }
+      },
+      async () => {
+        await earlyCleanup;
+      },
+    );
+    const trackedSettlement = settlement.finally(() => {
+      if (this.#androidStartSettlement === trackedSettlement) {
+        this.#androidStartSettlement = null;
+      }
+    });
+    this.#androidStartSettlement = trackedSettlement;
+    const result = parseNativeOutcome(
+      await outcomeFlight,
+      voidResponseSchema,
+    );
+    if (
+      !result.ok ||
+      this.#stopped ||
+      input.streamHandle !== this.#streamHandle
+    ) {
+      if (result.ok) {
+        await requestNativeAndroidPlaybackStop(
+          this.#ipc,
+          this.#sessionId,
+          input.streamHandle,
+        );
+      }
+      return result.ok ? { ok: false, error: { _tag: "cancelled" } } : result;
+    }
+    const presentation = new TauriAndroidPlaybackPresentation(
+      this.#ipc,
+      this.#sessionId,
+      input.streamHandle,
+      input.viewport,
+      input.volume,
+      input.muted,
+    );
+    this.#androidPresentation = presentation;
+    return { ok: true, value: presentation };
+  }
+
+  controlMpv(
+    control: MpvPlaybackControl,
+    options: ClientRequestOptions = {},
+  ): Promise<ClientResult<void>> {
+    if (
+      !this.#started ||
+      this.#stopped ||
+      this.#transportTag !== "linux-mpv" ||
+      !isMpvPlaybackControl(control)
+    ) {
+      return Promise.resolve(invalidNativeResponse());
+    }
+    const operation = async (): Promise<ClientResult<void>> => {
+      if (this.#stopped || this.#transportTag !== "linux-mpv") {
+        return cancelledNativeRequest();
+      }
+      return requestNative(
+        this.#ipc,
+        NATIVE_COMMANDS.controlMpv,
+        { input: { sessionId: this.#sessionId, control } },
+        voidResponseSchema,
+        options.signal,
+      );
+    };
+    const flight = this.#mpvControlQueue.then(operation, operation);
+    this.#mpvControlQueue = flight.then(
+      () => undefined,
+      () => undefined,
+    );
+    return flight;
+  }
+
   suspend(options: ClientRequestOptions = {}): Promise<ClientResult<void>> {
     if (this.#stopped) {
       return Promise.resolve({ ok: true, value: undefined });
@@ -634,6 +797,7 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
     if (this.#suspendFlight !== null) {
       return this.#suspendFlight;
     }
+    this.#retireAndroidPresentation();
     const flight = requestNative(
       this.#ipc,
       NATIVE_COMMANDS.suspendPlayback,
@@ -675,6 +839,7 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
       return this.#stopFlight;
     }
     this.#stopped = true;
+    this.#retireAndroidPresentation();
     const streamHandle = this.#streamHandle;
     this.#stopFlight = requestNative(
       this.#ipc,
@@ -691,95 +856,6 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
     return this.#stopFlight;
   }
 
-  startMpvFallback(
-    options: ClientRequestOptions = {},
-  ): Promise<ClientResult<MpvFallbackPlaying>> {
-    if (!this.#started || !this.#stopped) {
-      return Promise.resolve({
-        ok: false,
-        error: {
-          _tag: "fallback-failed",
-          reason: "primary-active",
-          retryable: true,
-        },
-      });
-    }
-    if (this.#mpvPlaying !== null) {
-      return Promise.resolve({ ok: true, value: this.#mpvPlaying });
-    }
-    if (this.#mpvStartFlight !== null) {
-      return this.#mpvStartFlight;
-    }
-    const parser = clientSchemas.mpvFallbackPlaying.refine(
-      (result) => result.sessionId === this.#sessionId,
-    );
-    const generation = ++this.#mpvGeneration;
-    this.#mpvStopped = null;
-    const releaseLateStart = createNativeMpvStop(this.#ipc, this.#sessionId);
-    const flight = requestNative(
-      this.#ipc,
-      NATIVE_COMMANDS.startMpvFallback,
-      { input: { sessionId: this.#sessionId } },
-      parser,
-      options.signal,
-      releaseLateStart,
-      releaseLateStart,
-    );
-    this.#mpvStartFlight = flight;
-    void flight.then((result) => {
-      if (this.#mpvStartFlight === flight) {
-        this.#mpvStartFlight = null;
-      }
-      if (result.ok && generation === this.#mpvGeneration) {
-        this.#mpvPlaying = result.value;
-      }
-    });
-    return flight;
-  }
-
-  stopMpvFallback(
-    options: ClientRequestOptions = {},
-  ): Promise<ClientResult<MpvFallbackStopped>> {
-    if (!this.#started) {
-      return Promise.resolve({
-        ok: false,
-        error: {
-          _tag: "fallback-failed",
-          reason: "stale-session",
-          retryable: false,
-        },
-      });
-    }
-    if (this.#mpvStopFlight !== null) {
-      return this.#mpvStopFlight;
-    }
-    if (this.#mpvStopped !== null && this.#mpvStartFlight === null) {
-      return Promise.resolve({ ok: true, value: this.#mpvStopped });
-    }
-    this.#mpvGeneration += 1;
-    const parser = clientSchemas.mpvFallbackStopped.refine(
-      (result) => result.sessionId === this.#sessionId,
-    );
-    const flight = requestNative(
-      this.#ipc,
-      NATIVE_COMMANDS.stopMpvFallback,
-      { input: { sessionId: this.#sessionId } },
-      parser,
-      options.signal,
-    );
-    this.#mpvStopFlight = flight;
-    void flight.then((result) => {
-      if (this.#mpvStopFlight === flight) {
-        this.#mpvStopFlight = null;
-      }
-      if (result.ok) {
-        this.#mpvPlaying = null;
-        this.#mpvStopped = result.value;
-      }
-    });
-    return flight;
-  }
-
   async #open(
     command:
       | typeof NATIVE_COMMANDS.startPlayback
@@ -793,12 +869,16 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
     if (this.#stopped) {
       return { ok: false, error: { _tag: "cancelled" } };
     }
-    const parser = clientSchemas.nativePlaybackDescriptor.refine(
+    this.#retireAndroidPresentation();
+    const parser = clientSchemas.installedPlaybackDescriptor.refine(
       (descriptor) =>
         descriptor.sessionId === this.#sessionId &&
         (expectedStreamHandle === null ||
-          descriptor.streamHandle !== expectedStreamHandle) &&
-        (!requirePreferenceStatus || descriptor.preferenceStatus !== undefined),
+          (descriptor._tag === "tauri-native-stream" &&
+            descriptor.streamHandle !== expectedStreamHandle)) &&
+        (!requirePreferenceStatus ||
+          (descriptor._tag === "tauri-native-stream" &&
+            descriptor.preferenceStatus !== undefined)),
     );
     let rawFlight: Promise<unknown> | null = null;
     const outcome = await invokeWithCancellation(
@@ -813,21 +893,29 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
       signal,
       undefined,
       (value) => {
-        const lateIdentity = nativePlaybackIdentitySchema.safeParse(value);
+        const lateIdentity = installedPlaybackIdentitySchema.safeParse(value);
         if (
           lateIdentity.success &&
           lateIdentity.data.sessionId === this.#sessionId
         ) {
-          this.#streamHandle = lateIdentity.data.streamHandle;
+          this.#transportTag = lateIdentity.data._tag;
+          this.#streamHandle =
+            lateIdentity.data._tag === "tauri-native-stream"
+              ? lateIdentity.data.streamHandle
+              : null;
         }
         this.#lateCleanup = this.#stopped ? this.stop() : this.suspend();
       },
     );
     void rawFlight;
     if (outcome._tag === "resolved") {
-      const identity = nativePlaybackIdentitySchema.safeParse(outcome.value);
+      const identity = installedPlaybackIdentitySchema.safeParse(outcome.value);
       if (identity.success && identity.data.sessionId === this.#sessionId) {
-        this.#streamHandle = identity.data.streamHandle;
+        this.#transportTag = identity.data._tag;
+        this.#streamHandle =
+          identity.data._tag === "tauri-native-stream"
+            ? identity.data.streamHandle
+            : null;
       }
     }
     const result = parseNativeOutcome(outcome, parser);
@@ -841,18 +929,230 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
     if (!result.ok) {
       return result;
     }
+    this.#transportTag = result.value._tag;
+    if (result.value._tag === "linux-mpv") {
+      this.#streamHandle = null;
+      return { ok: true, value: { _tag: "linux-mpv" } };
+    }
     this.#streamHandle = result.value.streamHandle;
     return {
       ok: true,
       value: {
         _tag: "tauri-native-stream",
         streamHandle: result.value.streamHandle,
+        presentation: result.value.presentation,
         tracks: result.value.tracks,
         selection: result.value.selection,
         ...(result.value.preferenceStatus === undefined
           ? {}
           : { preferenceStatus: result.value.preferenceStatus }),
       },
+    };
+  }
+
+  #retireAndroidPresentation(): void {
+    this.#androidPresentation?.retire();
+    this.#androidPresentation = null;
+  }
+}
+
+/**
+ * Serializes commands for one exact Android Media3 presentation. Provider
+ * locations never enter this object; the two identifiers are opaque handles.
+ */
+class TauriAndroidPlaybackPresentation implements AndroidPlaybackPresentation {
+  readonly #ipc: NativeIpc;
+  readonly #sessionId: PlaybackSessionId;
+  readonly #streamHandle: NativeStreamHandle;
+  #controls: {
+    readonly volume: number;
+    readonly muted: boolean;
+    readonly paused: boolean;
+  };
+  #viewport: AndroidPlaybackViewport;
+  #queue: Promise<void> = Promise.resolve();
+  #generation = 0;
+  #retired = false;
+  #stopFlight: Promise<ClientResult<void>> | null = null;
+
+  constructor(
+    ipc: NativeIpc,
+    sessionId: PlaybackSessionId,
+    streamHandle: NativeStreamHandle,
+    viewport: AndroidPlaybackViewport,
+    volume: number,
+    muted: boolean,
+  ) {
+    this.#ipc = ipc;
+    this.#sessionId = sessionId;
+    this.#streamHandle = streamHandle;
+    this.#viewport = viewport;
+    this.#controls = { volume, muted, paused: false };
+  }
+
+  status(
+    options: ClientRequestOptions = {},
+  ): Promise<ClientResult<AndroidPlaybackStatus>> {
+    return this.#enqueueActive(() =>
+      requestNative(
+        this.#ipc,
+        NATIVE_COMMANDS.androidPlaybackStatus,
+        { input: this.#identityInput() },
+        clientSchemas.androidPlaybackStatus,
+        options.signal,
+      ),
+    );
+  }
+
+  pause(options: ClientRequestOptions = {}): Promise<ClientResult<void>> {
+    return this.#setControls(
+      { ...this.#controls, paused: true },
+      options.signal,
+    );
+  }
+
+  resume(options: ClientRequestOptions = {}): Promise<ClientResult<void>> {
+    return this.#setControls(
+      { ...this.#controls, paused: false },
+      options.signal,
+    );
+  }
+
+  setVolume(
+    volume: number,
+    options: ClientRequestOptions = {},
+  ): Promise<ClientResult<void>> {
+    if (!isUnitVolume(volume)) {
+      return Promise.resolve(invalidNativeResponse());
+    }
+    return this.#setControls({ ...this.#controls, volume }, options.signal);
+  }
+
+  setMuted(
+    muted: boolean,
+    options: ClientRequestOptions = {},
+  ): Promise<ClientResult<void>> {
+    return this.#setControls({ ...this.#controls, muted }, options.signal);
+  }
+
+  setViewport(
+    viewport: AndroidPlaybackViewport,
+    options: ClientRequestOptions = {},
+  ): Promise<ClientResult<void>> {
+    if (!isAndroidPlaybackViewport(viewport)) {
+      return Promise.resolve(invalidNativeResponse());
+    }
+    this.#viewport = viewport;
+    return this.#enqueueActive(() =>
+      requestNative(
+        this.#ipc,
+        NATIVE_COMMANDS.setAndroidPlaybackViewport,
+        {
+          input: {
+            ...this.#identityInput(),
+            viewport: this.#viewport,
+          },
+        },
+        voidResponseSchema,
+        options.signal,
+      ),
+    );
+  }
+
+  stop(options: ClientRequestOptions = {}): Promise<ClientResult<void>> {
+    if (this.#stopFlight !== null) {
+      return this.#stopFlight;
+    }
+    this.#retired = true;
+    this.#generation += 1;
+    const flight = this.#enqueue(() =>
+      requestNative(
+        this.#ipc,
+        NATIVE_COMMANDS.stopAndroidPlayback,
+        { input: this.#identityInput() },
+        voidResponseSchema,
+        options.signal,
+        () =>
+          stopNativeAndroidPlayback(
+            this.#ipc,
+            this.#sessionId,
+            this.#streamHandle,
+          ),
+      ),
+    );
+    this.#stopFlight = flight;
+    return flight;
+  }
+
+  /** Retires stale queued work when the owning Rust session performs teardown. */
+  retire(): void {
+    if (this.#retired) {
+      return;
+    }
+    this.#retired = true;
+    this.#generation += 1;
+  }
+
+  #setControls(
+    controls: {
+      readonly volume: number;
+      readonly muted: boolean;
+      readonly paused: boolean;
+    },
+    signal: AbortSignal | undefined,
+  ): Promise<ClientResult<void>> {
+    if (this.#retired) {
+      return Promise.resolve(cancelledNativeRequest());
+    }
+    this.#controls = controls;
+    return this.#enqueueActive(() =>
+      requestNative(
+        this.#ipc,
+        NATIVE_COMMANDS.setAndroidPlaybackControls,
+        {
+          input: {
+            ...this.#identityInput(),
+            ...this.#controls,
+          },
+        },
+        voidResponseSchema,
+        signal,
+      ),
+    );
+  }
+
+  #enqueueActive<Value>(
+    operation: () => Promise<ClientResult<Value>>,
+  ): Promise<ClientResult<Value>> {
+    if (this.#retired) {
+      return Promise.resolve(cancelledNativeRequest());
+    }
+    const generation = this.#generation;
+    return this.#enqueue(() =>
+      this.#retired || generation !== this.#generation
+        ? Promise.resolve(cancelledNativeRequest())
+        : operation(),
+    );
+  }
+
+  #enqueue<Value>(
+    operation: () => Promise<ClientResult<Value>>,
+  ): Promise<ClientResult<Value>> {
+    const flight = this.#queue.then(operation, operation);
+    this.#queue = flight.then(
+      () => undefined,
+      () => undefined,
+    );
+    return flight;
+  }
+
+  #identityInput(): {
+    readonly sessionId: PlaybackSessionId;
+    readonly streamHandle: NativeStreamHandle;
+  } {
+    return {
+      sessionId: this.#sessionId,
+      streamHandle: this.#streamHandle,
     };
   }
 }
@@ -1025,6 +1325,34 @@ function stopNativePlayback(
   }
 }
 
+function stopNativeAndroidPlayback(
+  ipc: NativeIpc,
+  sessionId: PlaybackSessionId,
+  streamHandle: NativeStreamHandle,
+): void {
+  void requestNativeAndroidPlaybackStop(ipc, sessionId, streamHandle);
+}
+
+function requestNativeAndroidPlaybackStop(
+  ipc: NativeIpc,
+  sessionId: PlaybackSessionId,
+  streamHandle: NativeStreamHandle,
+): Promise<void> {
+  try {
+    return ipc
+      .invoke(NATIVE_COMMANDS.stopAndroidPlayback, {
+        input: { sessionId, streamHandle },
+      })
+      .then(
+        () => undefined,
+        () => undefined,
+      );
+  } catch {
+    // The opaque presentation is already retired; cleanup remains best effort.
+    return Promise.resolve();
+  }
+}
+
 function createNativePlaybackStop(
   ipc: NativeIpc,
   sessionId: PlaybackSessionId,
@@ -1036,26 +1364,6 @@ function createNativePlaybackStop(
     }
     requested = true;
     stopNativePlayback(ipc, sessionId);
-  };
-}
-
-function createNativeMpvStop(
-  ipc: NativeIpc,
-  sessionId: PlaybackSessionId,
-): () => void {
-  let requested = false;
-  return () => {
-    if (requested) {
-      return;
-    }
-    requested = true;
-    try {
-      ipc
-        .invoke(NATIVE_COMMANDS.stopMpvFallback, { input: { sessionId } })
-        .catch(() => undefined);
-    } catch {
-      // Cancellation already returned; native cleanup remains best effort.
-    }
   };
 }
 
@@ -1101,6 +1409,37 @@ function invalidNativeResponse(): ClientResult<never> {
       message: "The installed app returned an invalid response.",
     },
   };
+}
+
+function cancelledNativeRequest(): ClientResult<never> {
+  return { ok: false, error: { _tag: "cancelled" } };
+}
+
+function isUnitVolume(value: number): boolean {
+  return Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function isMpvPlaybackControl(
+  value: unknown,
+): value is MpvPlaybackControl {
+  return mpvPlaybackControlSchema.safeParse(value).success;
+}
+
+function isAndroidPlaybackViewport(viewport: AndroidPlaybackViewport): boolean {
+  return (
+    Number.isSafeInteger(viewport.left) &&
+    viewport.left >= 0 &&
+    viewport.left <= 32_768 &&
+    Number.isSafeInteger(viewport.top) &&
+    viewport.top >= 0 &&
+    viewport.top <= 32_768 &&
+    Number.isSafeInteger(viewport.width) &&
+    viewport.width >= 1 &&
+    viewport.width <= 32_768 &&
+    Number.isSafeInteger(viewport.height) &&
+    viewport.height >= 1 &&
+    viewport.height <= 32_768
+  );
 }
 
 function createTauriIpc(): NativeIpc {

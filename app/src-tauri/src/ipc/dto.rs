@@ -7,7 +7,8 @@ use sparrow_core::{
 };
 
 use crate::{
-    playback::{MpvFallbackSession, PlaybackManagerError, StartedPlayback},
+    android_playback::{AndroidPlaybackPhase, AndroidPlaybackStatus},
+    playback::{InstalledPlaybackStart, PlaybackManagerError, StartedPlayback},
     selected_transport_stream::{AudioSelection, AudioTrack},
 };
 
@@ -24,32 +25,42 @@ impl CapabilitiesDto {
     pub(crate) const fn installed_catalog() -> Self {
         Self {
             source_configuration: "device-writable",
-            playback_transport: "tauri-native-stream",
+            playback_transport: "platform-native",
             audio_track_selection: true,
-            mpv_failover: cfg!(target_os = "linux"),
+            mpv_failover: false,
         }
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PlaybackDescriptorDto {
-    #[serde(rename = "_tag")]
-    tag: &'static str,
-    session_id: String,
-    stream_handle: String,
-    tracks: Vec<AudioTrack>,
-    selection: AudioSelection,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    preference_status: Option<crate::selected_transport_stream::PreferenceStatus>,
+#[serde(tag = "_tag", rename_all_fields = "camelCase")]
+pub(crate) enum PlaybackDescriptorDto {
+    #[serde(rename = "tauri-native-stream")]
+    NativeStream {
+        session_id: String,
+        stream_handle: String,
+        presentation: &'static str,
+        tracks: Vec<AudioTrack>,
+        selection: AudioSelection,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        preference_status: Option<crate::selected_transport_stream::PreferenceStatus>,
+    },
+    #[cfg(target_os = "linux")]
+    #[serde(rename = "linux-mpv")]
+    LinuxMpv { session_id: String },
 }
 
-impl From<StartedPlayback> for PlaybackDescriptorDto {
-    fn from(started: StartedPlayback) -> Self {
-        Self {
-            tag: "tauri-native-stream",
+impl PlaybackDescriptorDto {
+    fn native_stream(started: StartedPlayback) -> Self {
+        let presentation = if cfg!(target_os = "android") {
+            "android-media3"
+        } else {
+            "webview-mse"
+        };
+        Self::NativeStream {
             session_id: started.session_id().as_str().to_owned(),
             stream_handle: started.stream_handle().as_str().to_owned(),
+            presentation,
             tracks: started.tracks().to_vec(),
             selection: started.selection().clone(),
             preference_status: started.preference_status(),
@@ -57,36 +68,42 @@ impl From<StartedPlayback> for PlaybackDescriptorDto {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MpvFallbackPlayingDto {
-    #[serde(rename = "_tag")]
-    tag: &'static str,
-    session_id: String,
-}
-
-impl From<MpvFallbackSession> for MpvFallbackPlayingDto {
-    fn from(session: MpvFallbackSession) -> Self {
-        Self {
-            tag: "fallback-playing",
-            session_id: session.session_id().as_str().to_owned(),
+impl From<InstalledPlaybackStart> for PlaybackDescriptorDto {
+    fn from(started: InstalledPlaybackStart) -> Self {
+        match started {
+            InstalledPlaybackStart::NativeStream(started) => Self::native_stream(started),
+            #[cfg(target_os = "linux")]
+            InstalledPlaybackStart::LinuxMpv(started) => Self::LinuxMpv {
+                session_id: started.session_id().as_str().to_owned(),
+            },
         }
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct MpvFallbackStoppedDto {
-    #[serde(rename = "_tag")]
-    tag: &'static str,
-    session_id: String,
+pub(crate) struct AndroidPlaybackStatusDto {
+    state: &'static str,
+    decoded_frames: u64,
+    dropped_frames: u64,
+    buffered_duration_ms: u64,
+    silent: bool,
 }
 
-impl From<MpvFallbackSession> for MpvFallbackStoppedDto {
-    fn from(session: MpvFallbackSession) -> Self {
+impl From<AndroidPlaybackStatus> for AndroidPlaybackStatusDto {
+    fn from(status: AndroidPlaybackStatus) -> Self {
         Self {
-            tag: "fallback-stopped",
-            session_id: session.session_id().as_str().to_owned(),
+            state: match status.phase() {
+                AndroidPlaybackPhase::Starting => "starting",
+                AndroidPlaybackPhase::Playing => "playing",
+                AndroidPlaybackPhase::Paused => "paused",
+                AndroidPlaybackPhase::Failed => "failed",
+                AndroidPlaybackPhase::Stopped => "stopped",
+            },
+            decoded_frames: status.decoded_frames(),
+            dropped_frames: status.dropped_frames(),
+            buffered_duration_ms: status.buffered_duration_ms(),
+            silent: status.silent(),
         }
     }
 }
@@ -601,7 +618,7 @@ pub(crate) enum ClientErrorDto {
         reason: &'static str,
         retryable: bool,
     },
-    FallbackFailed {
+    MpvFailed {
         reason: &'static str,
         retryable: bool,
     },
@@ -631,7 +648,7 @@ impl From<PlaybackManagerError> for ClientErrorDto {
                 reason: error.reason(),
                 retryable: error.retryable(),
             },
-            PlaybackManagerError::Mpv(error) => Self::FallbackFailed {
+            PlaybackManagerError::Mpv(error) => Self::MpvFailed {
                 reason: error.reason(),
                 retryable: error.retryable(),
             },
@@ -763,19 +780,19 @@ mod tests {
                 .expect("capabilities serialize"),
             json!({
                 "sourceConfiguration": "device-writable",
-                "playbackTransport": "tauri-native-stream",
+                "playbackTransport": "platform-native",
                 "audioTrackSelection": true,
-                "mpvFailover": cfg!(target_os = "linux"),
+                "mpvFailover": false,
             })
         );
     }
 
     #[test]
     fn native_playback_descriptor_and_failures_match_the_closed_contract() {
-        let descriptor = PlaybackDescriptorDto {
-            tag: "tauri-native-stream",
+        let descriptor = PlaybackDescriptorDto::NativeStream {
             session_id: "play1_0123456789abcdef0123456789abcdef_a".to_owned(),
             stream_handle: "stream1_0123456789abcdef".to_owned(),
+            presentation: "android-media3",
             tracks: Vec::new(),
             selection: AudioSelection::None,
             preference_status: None,
@@ -786,6 +803,7 @@ mod tests {
                 "_tag": "tauri-native-stream",
                 "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
                 "streamHandle": "stream1_0123456789abcdef",
+                "presentation": "android-media3",
                 "tracks": [],
                 "selection": { "_tag": "none" }
             })
@@ -823,7 +841,7 @@ mod tests {
             (
                 PlaybackManagerError::Mpv(crate::playback::MpvFailure::NotInstalled),
                 json!({
-                    "_tag": "fallback-failed",
+                    "_tag": "mpv-failed",
                     "reason": "not-installed",
                     "retryable": false
                 }),

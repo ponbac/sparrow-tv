@@ -48,10 +48,23 @@ describe("personal release acceptance", () => {
       projectAcceptanceCandidate(MANIFEST),
     );
     expect(templates.linux.gates.map((gate) => gate.id)).toEqual(
-      LINUX_ACCEPTANCE_GATES,
+      [
+        "startup-render-version",
+        "browse-search-guide",
+        "catalog-first-configuration",
+        "catalog-offline-restart",
+        "catalog-stale-manual-refresh",
+        "primary-picture-audio",
+        "primary-controls-channel-changes",
+        "bounded-recovery-resource-release",
+        "primary-mpv-playback-cleanup",
+      ],
     );
     expect(templates.android.gates.map((gate) => gate.id)).toEqual(
       ANDROID_ACCEPTANCE_GATES,
+    );
+    expect(templates.android.gates.map((gate) => gate.id)).toContain(
+      "audio-track-selection-preference-fallback",
     );
     expect(
       verifyReleaseAcceptance(
@@ -155,6 +168,45 @@ describe("personal release acceptance", () => {
         {
           ...evidence,
           linux: { ...evidence.linux, gates: evidence.linux.gates.slice(1) },
+        },
+        MANIFEST,
+      ),
+    ).toEqual({
+      ok: false,
+      reason: "the Linux acceptance evidence does not pass every required gate",
+    });
+    expect(
+      verifyReleaseAcceptance(
+        {
+          ...evidence,
+          linux: {
+            ...evidence.linux,
+            gates: [
+              ...evidence.linux.gates.slice(0, -1),
+              {
+                id: "audio-track-selection-preference-fallback",
+                result: "passed",
+              },
+            ],
+          },
+        },
+        MANIFEST,
+      ),
+    ).toEqual({
+      ok: false,
+      reason: "the Linux acceptance evidence does not pass every required gate",
+    });
+    expect(
+      verifyReleaseAcceptance(
+        {
+          ...evidence,
+          linux: {
+            ...evidence.linux,
+            gates: [
+              ...evidence.linux.gates.slice(0, -1),
+              { id: "mpv-fallback-cleanup", result: "passed" },
+            ],
+          },
         },
         MANIFEST,
       ),

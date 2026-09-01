@@ -1,7 +1,7 @@
 import mpegts from "mpegts.js";
 import type {
   InstalledPlaybackSession,
-  InstalledPlaybackTransport,
+  NativeStreamPlaybackTransport,
 } from "../../client/contracts";
 
 /** Private sentinel consumed only by mpegts.js; it carries no provider data. */
@@ -42,7 +42,7 @@ export type NativePlaybackClient = Pick<
  */
 export function createNativeMpegtsLoader(
   client: NativePlaybackClient,
-  descriptor: InstalledPlaybackTransport,
+  descriptor: NativeStreamPlaybackTransport,
   runtime: NativeLoaderRuntime = mpegts,
 ): NativeLoaderConstructor {
   return class NativeMpegtsLoader extends runtime.BaseLoader {

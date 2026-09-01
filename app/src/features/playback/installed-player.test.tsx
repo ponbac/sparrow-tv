@@ -12,13 +12,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   clientSchemas,
   type InstalledPlaybackSession,
+  type InstalledPlaybackTransport,
 } from "../../client/contracts";
 import { InstalledPlayer, type InstalledPlayerProps } from "./installed-player";
 import type {
   InstalledLifecycleEvents,
   InstalledLifecycleSignal,
 } from "./installed-lifecycle";
-import type { NativePlaybackEngine } from "./native-mpegts-engine";
+import type { InstalledPlaybackEngine } from "./installed-playback-engine";
 
 afterEach(() => {
   cleanup();
@@ -34,6 +35,7 @@ const DESCRIPTOR = clientSchemas.nativePlaybackDescriptor.parse({
   _tag: "tauri-native-stream",
   sessionId: `play1_${"f".repeat(32)}_1`,
   streamHandle: `stream1_${"a".repeat(16)}`,
+  presentation: "webview-mse",
   tracks: [],
   selection: { _tag: "none" },
 });
@@ -41,6 +43,7 @@ const REOPENED_DESCRIPTOR = clientSchemas.nativePlaybackDescriptor.parse({
   _tag: "tauri-native-stream",
   sessionId: DESCRIPTOR.sessionId,
   streamHandle: `stream1_${"b".repeat(16)}`,
+  presentation: "webview-mse",
   tracks: [],
   selection: { _tag: "none" },
 });
@@ -68,6 +71,7 @@ const MULTI_AUDIO_DESCRIPTOR = clientSchemas.nativePlaybackDescriptor.parse({
   _tag: "tauri-native-stream",
   sessionId: DESCRIPTOR.sessionId,
   streamHandle: `stream1_${"c".repeat(16)}`,
+  presentation: "webview-mse",
   tracks: AUDIO_TRACKS,
   selection: {
     _tag: "selected",
@@ -79,6 +83,7 @@ const SPANISH_AUDIO_DESCRIPTOR = clientSchemas.nativePlaybackDescriptor.parse({
   _tag: "tauri-native-stream",
   sessionId: DESCRIPTOR.sessionId,
   streamHandle: `stream1_${"d".repeat(16)}`,
+  presentation: "webview-mse",
   tracks: AUDIO_TRACKS.map((track) => ({
     ...track,
     selected: track.id === SPANISH_AUDIO_ID,
@@ -90,18 +95,64 @@ const SPANISH_AUDIO_DESCRIPTOR = clientSchemas.nativePlaybackDescriptor.parse({
   },
   preferenceStatus: "saved",
 });
-const INSTALLED_CAPABILITIES = clientSchemas.installedCapabilities.parse({
-  sourceConfiguration: "device-writable",
-  playbackTransport: "tauri-native-stream",
-  audioTrackSelection: true,
-  mpvFailover: false,
-});
-const LINUX_CAPABILITIES = clientSchemas.installedCapabilities.parse({
-  ...INSTALLED_CAPABILITIES,
-  mpvFailover: true,
-});
+const LINUX_TRANSPORT = { _tag: "linux-mpv" } as const;
 
 describe("InstalledPlayer", () => {
+  it("brings a newly mounted player into the mobile viewport before playback starts", async () => {
+    const originalMatchMedia = Object.getOwnPropertyDescriptor(
+      window,
+      "matchMedia",
+    );
+    const originalScrollIntoView = Object.getOwnPropertyDescriptor(
+      HTMLVideoElement.prototype,
+      "scrollIntoView",
+    );
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: (query: string): MediaQueryList => ({
+        matches: query === "(max-width: 760px)",
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(() => true),
+      }),
+    });
+    Object.defineProperty(HTMLVideoElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    try {
+      const session = fixtureSession();
+      render(
+        <InstalledPlayer
+          channel={CHANNEL}
+          client={fixtureClient(() => session.value)}
+          engine={playingEngine().value}
+          onStop={vi.fn()}
+        />,
+      );
+
+      await waitFor(() => expect(session.start).toHaveBeenCalledTimes(1));
+      expect(scrollIntoView).toHaveBeenCalledWith({
+        behavior: "auto",
+        block: "center",
+        inline: "nearest",
+      });
+    } finally {
+      restoreProperty(window, "matchMedia", originalMatchMedia);
+      restoreProperty(
+        HTMLVideoElement.prototype,
+        "scrollIntoView",
+        originalScrollIntoView,
+      );
+    }
+  });
+
   it("owns pause, live-edge resume, controls, diagnostics, and confirmed stop", async () => {
     const session = fixtureSession();
     const client = fixtureClient(() => session.value);
@@ -139,6 +190,10 @@ describe("InstalledPlayer", () => {
     expect(await screen.findByText("ON AIR")).toBeVisible();
     expect(session.reopen).toHaveBeenCalledTimes(1);
 
+    expect(screen.getByRole("button", { name: "Mute" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
     await user.click(screen.getByRole("button", { name: "Mute" }));
     expect(screen.getByRole("button", { name: "Unmute" })).toHaveAttribute(
       "aria-pressed",
@@ -332,9 +387,13 @@ describe("InstalledPlayer", () => {
     expect(lifecycle.release).toHaveBeenCalledTimes(1);
   });
 
-  it("offers manual mpv failover only after the Linux primary is stopped", async () => {
-    const session = fixtureSession();
-    const client = fixtureClient(() => session.value, true);
+  it("presents Linux mpv as the primary engine with separate-window controls", async () => {
+    const session = fixtureSession({
+      start: LINUX_TRANSPORT,
+      reopen: LINUX_TRANSPORT,
+      restart: LINUX_TRANSPORT,
+    });
+    const client = fixtureClient(() => session.value);
     const onStop = vi.fn();
     const user = userEvent.setup();
     render(
@@ -347,73 +406,24 @@ describe("InstalledPlayer", () => {
     );
 
     expect(await screen.findByText("ON AIR")).toBeVisible();
-    await waitFor(() => expect(client.capabilities).toHaveBeenCalledTimes(1));
+    expect(screen.getByText("Live monitor · system mpv")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Mute" })).toBeVisible();
+    expect(screen.getByRole("slider", { name: "Volume" })).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Full screen" }),
+    ).toBeVisible();
     expect(
       screen.queryByRole("button", { name: "Open in mpv" }),
     ).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Stop primary" }));
-    expect(await screen.findByText("PRIMARY STOPPED")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Open in mpv" })).toBeVisible();
-    expect(session.stop).toHaveBeenCalledTimes(1);
-
-    await user.click(screen.getByRole("button", { name: "Open in mpv" }));
-    expect(await screen.findByText("MPV ON AIR")).toBeVisible();
-    expect(session.startMpvFallback).toHaveBeenCalledTimes(1);
-    expect(session.stop.mock.invocationCallOrder[0]).toBeLessThan(
-      session.startMpvFallback.mock.invocationCallOrder[0] ?? 0,
-    );
-    expect(
-      screen.queryByRole("button", { name: "Open in mpv" }),
-    ).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Mute" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Stop mpv" }));
     await waitFor(() => expect(onStop).toHaveBeenCalledTimes(1));
-    expect(session.stopMpvFallback).toHaveBeenCalledTimes(1);
+    expect(session.stop).toHaveBeenCalledTimes(1);
   });
 
-  it("never launches mpv automatically and renders a typed launch failure", async () => {
+  it("keeps a terminal primary failure on the restart-only path", async () => {
     const session = fixtureSession();
-    session.startMpvFallback.mockResolvedValue({
-      ok: false,
-      error: {
-        _tag: "fallback-failed",
-        reason: "not-installed",
-        retryable: false,
-      },
-    });
-    const engine: NativePlaybackEngine = {
-      start: ({ onFailure }) => {
-        onFailure("media-unsupported", false);
-        return { stop: () => undefined };
-      },
-    };
-    render(
-      <InstalledPlayer
-        channel={CHANNEL}
-        client={fixtureClient(() => session.value, true)}
-        engine={engine}
-        onStop={vi.fn()}
-      />,
-    );
-
-    expect(await screen.findByText("FORMAT MISSED")).toBeVisible();
-    const action = await screen.findByRole("button", { name: "Open in mpv" });
-    expect(session.startMpvFallback).not.toHaveBeenCalled();
-
-    await userEvent.setup().click(action);
-    expect(await screen.findByText("MPV MISSING")).toBeVisible();
-    expect(session.startMpvFallback).toHaveBeenCalledTimes(1);
-    expect(session.stopMpvFallback).not.toHaveBeenCalled();
-    expect(
-      screen.queryByRole("button", { name: "Open in mpv" }),
-    ).not.toBeInTheDocument();
-  });
-
-  it("keeps the mpv action absent when the installed capability is disabled", async () => {
-    const session = fixtureSession();
-    const engine: NativePlaybackEngine = {
+    const engine: InstalledPlaybackEngine = {
       start: ({ onFailure }) => {
         onFailure("media-unsupported", false);
         return { stop: () => undefined };
@@ -432,9 +442,46 @@ describe("InstalledPlayer", () => {
     expect(
       screen.queryByRole("button", { name: "Open in mpv" }),
     ).not.toBeInTheDocument();
-    expect(session.startMpvFallback).not.toHaveBeenCalled();
+  });
+
+  it("gives actionable copy when the required Linux system player is missing", async () => {
+    const session = fixtureSession();
+    session.start.mockResolvedValueOnce({
+      ok: false,
+      error: {
+        _tag: "mpv-failed",
+        reason: "not-installed",
+        retryable: false,
+      },
+    });
+    render(
+      <InstalledPlayer
+        channel={CHANNEL}
+        client={fixtureClient(() => session.value)}
+        engine={playingEngine().value}
+        onStop={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("MPV MISSING")).toBeVisible();
+    expect(
+      screen.getByText("System mpv is required for Linux playback"),
+    ).toBeVisible();
+    expect(screen.getByText("Install mpv, then restart playback.")).toBeVisible();
   });
 });
+
+function restoreProperty(
+  target: object,
+  property: string,
+  descriptor: PropertyDescriptor | undefined,
+): void {
+  if (descriptor === undefined) {
+    Reflect.deleteProperty(target, property);
+  } else {
+    Object.defineProperty(target, property, descriptor);
+  }
+}
 
 function lifecycleFixture(): {
   readonly value: InstalledLifecycleEvents;
@@ -462,35 +509,30 @@ function lifecycleFixture(): {
 
 function fixtureClient(
   create: () => InstalledPlaybackSession,
-  mpvFailover = false,
 ): InstalledPlayerProps["client"] & {
   readonly createPlaybackSession: ReturnType<typeof vi.fn>;
-  readonly capabilities: ReturnType<typeof vi.fn>;
 } {
   return {
-    capabilities: vi.fn(async () =>
-      success(mpvFailover ? LINUX_CAPABILITIES : INSTALLED_CAPABILITIES),
-    ),
     createPlaybackSession: vi.fn(create),
   };
 }
 
 function fixtureSession(
   descriptors: {
-    readonly start?: typeof DESCRIPTOR;
-    readonly reopen?: typeof DESCRIPTOR;
-    readonly restart?: typeof DESCRIPTOR;
+    readonly start?: InstalledPlaybackTransport;
+    readonly reopen?: InstalledPlaybackTransport;
+    readonly restart?: InstalledPlaybackTransport;
   } = {},
 ): {
   readonly value: InstalledPlaybackSession;
   readonly start: ReturnType<typeof vi.fn>;
   readonly reopen: ReturnType<typeof vi.fn>;
   readonly restart: ReturnType<typeof vi.fn>;
+  readonly startAndroidPresentation: ReturnType<typeof vi.fn>;
+  readonly controlMpv: ReturnType<typeof vi.fn>;
   readonly suspend: ReturnType<typeof vi.fn>;
   readonly setActivity: ReturnType<typeof vi.fn>;
   readonly stop: ReturnType<typeof vi.fn>;
-  readonly startMpvFallback: ReturnType<typeof vi.fn>;
-  readonly stopMpvFallback: ReturnType<typeof vi.fn>;
 } {
   const start = vi.fn(async () => success(descriptors.start ?? DESCRIPTOR));
   const reopen = vi.fn(async () =>
@@ -499,40 +541,38 @@ function fixtureSession(
   const restart = vi.fn(async () =>
     success(descriptors.restart ?? REOPENED_DESCRIPTOR),
   );
+  const startAndroidPresentation = vi.fn(async () =>
+    success(androidPresentationFixture()),
+  );
+  const controlMpv = vi.fn(async () => success(undefined));
   const suspend = vi.fn(async () => success(undefined));
   const setActivity = vi.fn(async () => success(undefined));
   const stop = vi.fn(async () => success(undefined));
-  const startMpvFallback = vi.fn(async () =>
-    success({ _tag: "fallback-playing" as const, sessionId: DESCRIPTOR.sessionId }),
-  );
-  const stopMpvFallback = vi.fn(async () =>
-    success({ _tag: "fallback-stopped" as const, sessionId: DESCRIPTOR.sessionId }),
-  );
   return {
     value: {
       start,
       reopen,
       restart,
       read: vi.fn(async () => success(new ArrayBuffer(0))),
+      startAndroidPresentation,
+      controlMpv,
       suspend,
       setActivity,
       stop,
-      startMpvFallback,
-      stopMpvFallback,
     },
     start,
     reopen,
     restart,
+    startAndroidPresentation,
+    controlMpv,
     suspend,
     setActivity,
     stop,
-    startMpvFallback,
-    stopMpvFallback,
   };
 }
 
 function playingEngine(): {
-  readonly value: NativePlaybackEngine;
+  readonly value: InstalledPlaybackEngine;
   readonly stops: number;
 } {
   let stops = 0;
@@ -554,6 +594,25 @@ function playingEngine(): {
     get stops() {
       return stops;
     },
+  };
+}
+
+function androidPresentationFixture() {
+  return {
+    status: async () =>
+      success({
+        state: "stopped" as const,
+        decodedFrames: 0,
+        droppedFrames: 0,
+        bufferedDurationMs: 0,
+        silent: true,
+      }),
+    pause: async () => success(undefined),
+    resume: async () => success(undefined),
+    setVolume: async () => success(undefined),
+    setMuted: async () => success(undefined),
+    setViewport: async () => success(undefined),
+    stop: async () => success(undefined),
   };
 }
 

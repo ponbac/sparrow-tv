@@ -14,7 +14,7 @@ use crate::{
     },
     identity,
     m3u::ParsedChannel,
-    xmltv::{ParsedGuide, ParsedProgramme},
+    xmltv::ParsedGuide,
 };
 
 const CURSOR_QUERY_DOMAIN: &[u8] = b"sparrow-page-query-v1\0";
@@ -28,12 +28,13 @@ const SEARCH_CANCELLATION_CHECKPOINT_BYTES: usize = 4 * 1024;
 
 pub(crate) struct ChannelCatalog {
     generation: CatalogGeneration,
+    source_channels: Arc<Vec<ParsedChannel>>,
+    source_guide: Option<Arc<ParsedGuide>>,
     groups: Arc<[ChannelGroupView]>,
-    summaries: Arc<[ChannelSummary]>,
-    programmes: Arc<[ProgrammeSummary]>,
-    records: Vec<ChannelRecord>,
-    channel_search: Box<[SearchDocument]>,
-    programme_search: Box<[SearchDocument]>,
+    channels: Box<[CatalogChannel]>,
+    programmes: Box<[CatalogProgramme]>,
+    channel_search: SearchIndex,
+    programme_search: SearchIndex,
     group_ranges: HashMap<Arc<str>, Range<usize>>,
     schedule_ranges: HashMap<ChannelId, Range<usize>>,
     by_id: HashMap<ChannelId, usize>,
@@ -42,63 +43,52 @@ pub(crate) struct ChannelCatalog {
 impl ChannelCatalog {
     pub(crate) fn from_parsed(
         configuration: &SourceConfiguration,
-        parsed: &[ParsedChannel],
-        guide: Option<&ParsedGuide>,
+        parsed: Arc<Vec<ParsedChannel>>,
+        guide: Option<Arc<ParsedGuide>>,
         generation: CatalogGeneration,
     ) -> Self {
         let mut occurrences = HashMap::<[u8; 32], u32>::new();
         let mut pending = Vec::with_capacity(parsed.len());
 
-        for channel in parsed {
+        for (source_index, channel) in parsed.iter().enumerate() {
             let seed = identity::seed(&channel.tvg_id, &channel.name, &channel.group);
             let occurrence = occurrences.entry(seed).or_default();
             let id = identity::channel_id(&configuration.fingerprint, &seed, *occurrence);
             *occurrence = occurrence.saturating_add(1);
 
-            let name = Arc::clone(&channel.name);
-            let group = Arc::clone(&channel.group);
             pending.push(PendingChannel {
-                group_order: identity::normalize_identity_field(&group),
-                name_order: identity::normalize_identity_field(&name),
+                source_index,
+                group_order: identity::normalize_identity_field(&channel.group),
+                name_order: identity::normalize_identity_field(&channel.name),
                 tvg_id: Arc::clone(&channel.tvg_id),
                 id,
-                name,
-                group,
-                playback: SecretPlaybackLocation::new(Arc::clone(&channel.playback)),
             });
         }
 
-        pending.sort_unstable_by(compare_channels);
+        pending.sort_unstable_by(|left, right| compare_channels(left, right, &parsed));
 
-        let (programmes, schedule_ranges) = build_programmes(&pending, guide);
+        let (programmes, schedule_ranges) = build_programmes(&pending, guide.as_deref());
 
-        let mut summaries = Vec::with_capacity(pending.len());
-        let mut records = Vec::with_capacity(pending.len());
+        let mut channels = Vec::with_capacity(pending.len());
         let mut by_id = HashMap::with_capacity(pending.len());
-        for channel in pending {
-            let summary = ChannelSummary::new(
-                channel.id.clone(),
-                Arc::clone(&channel.name),
-                Arc::clone(&channel.group),
-            );
-            let details = ChannelDetails::new(channel.id.clone(), channel.name, channel.group);
-            let index = records.len();
-            let previous = by_id.insert(channel.id, index);
+        for channel in &pending {
+            let index = channels.len();
+            let previous = by_id.insert(channel.id.clone(), index);
             debug_assert!(previous.is_none());
-            summaries.push(summary);
-            records.push(ChannelRecord {
-                details,
-                playback: channel.playback,
+            channels.push(CatalogChannel {
+                id: channel.id.clone(),
+                source_index: channel.source_index,
             });
         }
 
         let mut groups = Vec::new();
         let mut group_ranges = HashMap::new();
         let mut group_start = 0;
-        while group_start < summaries.len() {
-            let group_name: Arc<str> = Arc::from(summaries[group_start].group());
+        while group_start < channels.len() {
+            let group_name = Arc::clone(&parsed[channels[group_start].source_index].group);
             let mut group_end = group_start + 1;
-            while group_end < summaries.len() && summaries[group_end].group() == group_name.as_ref()
+            while group_end < channels.len()
+                && parsed[channels[group_end].source_index].group == group_name
             {
                 group_end += 1;
             }
@@ -113,21 +103,50 @@ impl ChannelCatalog {
             group_start = group_end;
         }
 
-        let channel_search = summaries
-            .iter()
-            .map(|channel| SearchDocument::new(channel.name(), Some(channel.group())))
-            .collect();
-        let programme_search = programmes
-            .iter()
-            .map(|programme| SearchDocument::new(programme.title(), programme.description()))
-            .collect();
+        let mut channel_search = SearchIndexBuilder::with_capacity(
+            channels.len(),
+            channels.iter().fold(0, |bytes, channel| {
+                let source = &parsed[channel.source_index];
+                bytes.saturating_add(source.name.len() + source.group.len())
+            }),
+        );
+        for channel in &channels {
+            let source = &parsed[channel.source_index];
+            channel_search.push(&source.name, Some(&source.group));
+        }
+        let channel_search = channel_search.finish();
+        let mut programme_search = SearchIndexBuilder::with_capacity(
+            programmes.len(),
+            programmes.iter().fold(0, |bytes, programme| {
+                let source = &guide
+                    .as_ref()
+                    .expect("catalogued Programmes have a parsed EPG Source")
+                    .programmes[programme.source_index];
+                bytes.saturating_add(
+                    source.title.len()
+                        + source
+                            .description
+                            .as_ref()
+                            .map_or(0, |description| description.len()),
+                )
+            }),
+        );
+        for programme in &programmes {
+            let source = &guide
+                .as_ref()
+                .expect("catalogued Programmes have a parsed EPG Source")
+                .programmes[programme.source_index];
+            programme_search.push(&source.title, source.description.as_deref());
+        }
+        let programme_search = programme_search.finish();
 
         Self {
             generation,
+            source_channels: parsed,
+            source_guide: guide,
             groups: Arc::from(groups),
-            summaries: Arc::from(summaries),
-            programmes,
-            records,
+            channels: channels.into_boxed_slice(),
+            programmes: programmes.into_boxed_slice(),
             channel_search,
             programme_search,
             group_ranges,
@@ -159,7 +178,7 @@ impl ChannelCatalog {
     ) -> Result<Page<ChannelSummary>, CoreError> {
         let (collection, query_hash) = match query.group() {
             None => (
-                0..self.summaries.len(),
+                0..self.channels.len(),
                 query_hash(ALL_CHANNELS_QUERY_TAG, None),
             ),
             Some(group) => (
@@ -167,19 +186,20 @@ impl ChannelCatalog {
                 query_hash(GROUP_CHANNELS_QUERY_TAG, Some(group)),
             ),
         };
-        Page::from_request(
+        Page::from_projection(
             self.generation,
-            Arc::clone(&self.summaries),
+            &self.channels,
             collection,
             query.page(),
             query_hash,
+            |channel| self.channel_summary(channel),
         )
     }
 
     pub(crate) fn channel(&self, id: &ChannelId) -> Result<ChannelDetails, CoreError> {
         self.by_id
             .get(id)
-            .map(|index| self.records[*index].details.clone())
+            .map(|index| self.channel_details(&self.channels[*index]))
             .ok_or_else(|| CoreError::ChannelNotFound { id: id.clone() })
     }
 
@@ -189,7 +209,12 @@ impl ChannelCatalog {
     ) -> Result<ResolvedPlaybackSource, CoreError> {
         self.by_id
             .get(id)
-            .map(|index| ResolvedPlaybackSource::new(self.records[*index].playback.clone()))
+            .map(|index| {
+                let source = self.source_channel(&self.channels[*index]);
+                ResolvedPlaybackSource::new(SecretPlaybackLocation::new(Arc::clone(
+                    &source.playback,
+                )))
+            })
             .ok_or_else(|| CoreError::ChannelNotFound { id: id.clone() })
     }
 
@@ -207,12 +232,13 @@ impl ChannelCatalog {
             .get(query.channel_id())
             .cloned()
             .unwrap_or(0..0);
-        Page::from_request(
+        Page::from_projection(
             self.generation,
-            Arc::clone(&self.programmes),
+            &self.programmes,
             collection,
             query.page(),
             query_hash(SCHEDULE_QUERY_TAG, Some(query.channel_id().as_str())),
+            |programme| self.programme_summary(programme),
         )
     }
 
@@ -257,12 +283,13 @@ impl ChannelCatalog {
         // shallow-clones at most PageLimit read models, whose strings remain
         // shared with the immutable catalog through Arc.
         let matches = ranked_indices(&self.channel_search, term, is_cancelled)?;
-        Page::from_selection(
+        Page::from_selection_projection(
             self.generation,
-            &self.summaries,
+            &self.channels,
             &matches,
             page,
             query_hash(CHANNEL_SEARCH_QUERY_TAG, Some(term.as_str())),
+            |channel| self.channel_summary(channel),
         )
     }
 
@@ -281,37 +308,135 @@ impl ChannelCatalog {
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<Page<ProgrammeSummary>, CoreError> {
         let matches = ranked_indices(&self.programme_search, term, is_cancelled)?;
-        Page::from_selection(
+        Page::from_selection_projection(
             self.generation,
             &self.programmes,
             &matches,
             page,
             query_hash(PROGRAMME_SEARCH_QUERY_TAG, Some(term.as_str())),
+            |programme| self.programme_summary(programme),
+        )
+    }
+
+    fn source_channel(&self, channel: &CatalogChannel) -> &ParsedChannel {
+        &self.source_channels[channel.source_index]
+    }
+
+    fn channel_summary(&self, channel: &CatalogChannel) -> ChannelSummary {
+        let source = self.source_channel(channel);
+        ChannelSummary::new(
+            channel.id.clone(),
+            Arc::clone(&source.name),
+            Arc::clone(&source.group),
+        )
+    }
+
+    fn channel_details(&self, channel: &CatalogChannel) -> ChannelDetails {
+        let source = self.source_channel(channel);
+        ChannelDetails::new(
+            channel.id.clone(),
+            Arc::clone(&source.name),
+            Arc::clone(&source.group),
+        )
+    }
+
+    fn programme_summary(&self, programme: &CatalogProgramme) -> ProgrammeSummary {
+        let source = &self
+            .source_guide
+            .as_ref()
+            .expect("catalogued Programmes have a parsed EPG Source")
+            .programmes[programme.source_index];
+        ProgrammeSummary::new(
+            programme.channel_id.clone(),
+            Arc::clone(&source.title),
+            source.description.as_ref().map(Arc::clone),
+            source.starts_at,
+            source.ends_at,
         )
     }
 }
 
+struct SearchIndex {
+    // Normalized fields share one allocation; each document retains only offsets
+    // instead of one or two independently allocated Strings.
+    arena: String,
+    documents: Box<[SearchDocument]>,
+}
+
+impl SearchIndex {
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.documents.len()
+    }
+}
+
+struct SearchIndexBuilder {
+    arena: String,
+    documents: Vec<SearchDocument>,
+}
+
+impl SearchIndexBuilder {
+    fn with_capacity(document_capacity: usize, byte_capacity: usize) -> Self {
+        Self {
+            arena: String::with_capacity(byte_capacity),
+            documents: Vec::with_capacity(document_capacity),
+        }
+    }
+
+    fn push(&mut self, primary: &str, secondary: Option<&str>) {
+        let primary = self.push_field(primary);
+        let secondary = secondary.map(|value| self.push_field(value));
+        self.documents.push(SearchDocument::new(primary, secondary));
+    }
+
+    fn push_field(&mut self, value: &str) -> SearchField {
+        let normalized = normalize_search_text(value);
+        let start = self.arena.len();
+        self.arena.push_str(&normalized);
+        let end = self.arena.len();
+        SearchField { start, end }
+    }
+
+    fn finish(self) -> SearchIndex {
+        SearchIndex {
+            arena: self.arena,
+            documents: self.documents.into_boxed_slice(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SearchField {
+    start: usize,
+    end: usize,
+}
+
 struct SearchDocument {
-    primary: String,
-    secondary: Option<String>,
+    primary: SearchField,
+    secondary_start: usize,
+    secondary_end: usize,
 }
 
 impl SearchDocument {
-    fn new(primary: &str, secondary: Option<&str>) -> Self {
+    fn new(primary: SearchField, secondary: Option<SearchField>) -> Self {
+        let (secondary_start, secondary_end) =
+            secondary.map_or((usize::MAX, usize::MAX), |field| (field.start, field.end));
         Self {
-            primary: normalize_search_text(primary),
-            secondary: secondary.map(normalize_search_text),
+            primary,
+            secondary_start,
+            secondary_end,
         }
     }
 
     fn rank(
         &self,
+        arena: &str,
         term: &SearchTerm,
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<Option<SearchRank>, CoreError> {
         let mut best: Option<SearchRank> = None;
-        for (field_index, field) in std::iter::once(self.primary.as_str())
-            .chain(self.secondary.as_deref())
+        for (field_index, field) in std::iter::once(self.primary.get(arena))
+            .chain(self.secondary().map(|field| field.get(arena)))
             .enumerate()
         {
             let Some(category) = field_rank(field, term.as_str(), is_cancelled)? else {
@@ -324,6 +449,19 @@ impl SearchDocument {
             best = Some(best.map_or(candidate, |current| current.min(candidate)));
         }
         Ok(best)
+    }
+
+    fn secondary(&self) -> Option<SearchField> {
+        (self.secondary_start != usize::MAX).then_some(SearchField {
+            start: self.secondary_start,
+            end: self.secondary_end,
+        })
+    }
+}
+
+impl SearchField {
+    fn get(self, arena: &str) -> &str {
+        &arena[self.start..self.end]
     }
 }
 
@@ -342,7 +480,7 @@ enum MatchCategory {
 }
 
 fn ranked_indices(
-    documents: &[SearchDocument],
+    index: &SearchIndex,
     term: &SearchTerm,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<Vec<usize>, CoreError> {
@@ -353,11 +491,11 @@ fn ranked_indices(
     // as sorting `(SearchRank, catalog index)` while giving cancellation a
     // checkpoint for every document and every emitted match.
     let mut buckets: [Vec<usize>; RANK_BUCKETS] = std::array::from_fn(|_| Vec::new());
-    for (item_index, document) in documents.iter().enumerate() {
+    for (item_index, document) in index.documents.iter().enumerate() {
         if is_cancelled() {
             return Err(CoreError::Cancelled);
         }
-        if let Some(rank) = document.rank(term, is_cancelled)? {
+        if let Some(rank) = document.rank(&index.arena, term, is_cancelled)? {
             buckets[rank.bucket_index()].push(item_index);
         }
     }
@@ -498,21 +636,30 @@ fn contains_substring(
 }
 
 struct PendingChannel {
+    source_index: usize,
     group_order: String,
     name_order: String,
     tvg_id: Arc<str>,
     id: ChannelId,
-    name: Arc<str>,
-    group: Arc<str>,
-    playback: SecretPlaybackLocation,
 }
 
-fn compare_channels(left: &PendingChannel, right: &PendingChannel) -> Ordering {
+struct CatalogChannel {
+    id: ChannelId,
+    source_index: usize,
+}
+
+fn compare_channels(
+    left: &PendingChannel,
+    right: &PendingChannel,
+    parsed: &[ParsedChannel],
+) -> Ordering {
+    let left_source = &parsed[left.source_index];
+    let right_source = &parsed[right.source_index];
     left.group_order
         .cmp(&right.group_order)
-        .then_with(|| left.group.cmp(&right.group))
+        .then_with(|| left_source.group.cmp(&right_source.group))
         .then_with(|| left.name_order.cmp(&right.name_order))
-        .then_with(|| left.name.cmp(&right.name))
+        .then_with(|| left_source.name.cmp(&right_source.name))
         .then_with(|| left.id.as_str().cmp(right.id.as_str()))
 }
 
@@ -530,9 +677,9 @@ fn query_hash(tag: u8, discriminator: Option<&str>) -> CursorQueryHash {
 fn build_programmes(
     channels: &[PendingChannel],
     guide: Option<&ParsedGuide>,
-) -> (Arc<[ProgrammeSummary]>, HashMap<ChannelId, Range<usize>>) {
+) -> (Vec<CatalogProgramme>, HashMap<ChannelId, Range<usize>>) {
     let Some(guide) = guide else {
-        return (Arc::from([]), HashMap::new());
+        return (Vec::new(), HashMap::new());
     };
     let mut guide_ids = HashSet::with_capacity(guide.channels.len());
     let mut guide_names = HashMap::<String, Option<Arc<str>>>::new();
@@ -580,30 +727,26 @@ fn build_programmes(
     }
 
     let mut pending = Vec::new();
-    for (source_ordinal, programme) in guide.programmes.iter().enumerate() {
+    for (source_index, programme) in guide.programmes.iter().enumerate() {
         let Some(channel_ids) = matched_channels.get(&programme.guide_channel_id) else {
             continue;
         };
         for channel_id in channel_ids {
-            pending.push(PendingProgrammeSummary::new(
-                channel_id.clone(),
-                programme,
-                source_ordinal,
-            ));
+            pending.push(CatalogProgramme {
+                channel_id: channel_id.clone(),
+                source_index,
+            });
         }
     }
-    pending.sort_unstable_by(compare_programmes);
+    pending.sort_unstable_by(|left, right| compare_programmes(left, right, guide));
 
-    let programmes = pending
-        .into_iter()
-        .map(PendingProgrammeSummary::into_summary)
-        .collect::<Vec<_>>();
+    let programmes = pending;
     let mut ranges = HashMap::new();
     let mut start = 0;
     while start < programmes.len() {
-        let channel_id = programmes[start].channel_id().clone();
+        let channel_id = programmes[start].channel_id.clone();
         let mut end = start + 1;
-        while end < programmes.len() && programmes[end].channel_id() == &channel_id {
+        while end < programmes.len() && programmes[end].channel_id == channel_id {
             end += 1;
         }
         let previous = ranges.insert(channel_id, start..end);
@@ -611,55 +754,29 @@ fn build_programmes(
         start = end;
     }
 
-    (Arc::from(programmes), ranges)
+    (programmes, ranges)
 }
 
-struct PendingProgrammeSummary {
+struct CatalogProgramme {
     channel_id: ChannelId,
-    title: Arc<str>,
-    description: Option<Arc<str>>,
-    starts_at: chrono::DateTime<chrono::Utc>,
-    ends_at: chrono::DateTime<chrono::Utc>,
-    source_ordinal: usize,
+    source_index: usize,
 }
 
-impl PendingProgrammeSummary {
-    fn new(channel_id: ChannelId, programme: &ParsedProgramme, source_ordinal: usize) -> Self {
-        Self {
-            channel_id,
-            title: Arc::clone(&programme.title),
-            description: programme.description.as_ref().map(Arc::clone),
-            starts_at: programme.starts_at,
-            ends_at: programme.ends_at,
-            source_ordinal,
-        }
-    }
-
-    fn into_summary(self) -> ProgrammeSummary {
-        ProgrammeSummary::new(
-            self.channel_id,
-            self.title,
-            self.description,
-            self.starts_at,
-            self.ends_at,
-        )
-    }
-}
-
-fn compare_programmes(left: &PendingProgrammeSummary, right: &PendingProgrammeSummary) -> Ordering {
+fn compare_programmes(
+    left: &CatalogProgramme,
+    right: &CatalogProgramme,
+    guide: &ParsedGuide,
+) -> Ordering {
+    let left_source = &guide.programmes[left.source_index];
+    let right_source = &guide.programmes[right.source_index];
     left.channel_id
         .as_str()
         .cmp(right.channel_id.as_str())
-        .then_with(|| left.starts_at.cmp(&right.starts_at))
-        .then_with(|| left.ends_at.cmp(&right.ends_at))
-        .then_with(|| left.title.cmp(&right.title))
-        .then_with(|| left.description.cmp(&right.description))
-        .then_with(|| left.source_ordinal.cmp(&right.source_ordinal))
-}
-
-struct ChannelRecord {
-    details: ChannelDetails,
-    playback: SecretPlaybackLocation,
+        .then_with(|| left_source.starts_at.cmp(&right_source.starts_at))
+        .then_with(|| left_source.ends_at.cmp(&right_source.ends_at))
+        .then_with(|| left_source.title.cmp(&right_source.title))
+        .then_with(|| left_source.description.cmp(&right_source.description))
+        .then_with(|| left.source_index.cmp(&right.source_index))
 }
 
 #[cfg(test)]
@@ -667,6 +784,7 @@ mod tests {
     use std::{
         cell::Cell,
         collections::{BTreeMap, HashSet},
+        mem::size_of,
         sync::Arc,
     };
 
@@ -697,9 +815,9 @@ mod tests {
                 generation(1),
             );
             let expected = catalog
-                .summaries
+                .channels
                 .iter()
-                .map(|channel| channel.id().as_str().to_owned())
+                .map(|channel| channel.id.as_str().to_owned())
                 .collect::<Vec<_>>();
             let mut request = PageRequest::first(PageLimit::new(limit).expect("generated limit is valid"));
             let mut observed = Vec::new();
@@ -751,9 +869,9 @@ mod tests {
                 generation(1),
             );
             let expected = catalog
-                .summaries
+                .channels
                 .iter()
-                .map(|channel| channel.id().as_str().to_owned())
+                .map(|channel| channel.id.as_str().to_owned())
                 .collect::<Vec<_>>();
             let term = SearchTerm::parse("channel").expect("fixture term is valid");
             let programme_page = PageRequest::first(
@@ -823,14 +941,14 @@ mod tests {
                 generation(2),
             );
             let forward_ids = forward
-                .summaries
+                .channels
                 .iter()
-                .map(|channel| channel.id().as_str().to_owned())
+                .map(|channel| channel.id.as_str().to_owned())
                 .collect::<HashSet<_>>();
             let reversed_ids = reversed
-                .summaries
+                .channels
                 .iter()
-                .map(|channel| channel.id().as_str().to_owned())
+                .map(|channel| channel.id.as_str().to_owned())
                 .collect::<HashSet<_>>();
 
             prop_assert_eq!(forward_ids.len(), duplicate_count);
@@ -912,12 +1030,25 @@ mod tests {
     }
 
     #[test]
+    fn search_fields_share_one_arena_instead_of_retaining_per_document_strings() {
+        let index = search_index(&[("Alpha", Some("One")), ("Beta", None)]);
+
+        assert_eq!(index.arena, "alphaonebeta");
+        assert_eq!(index.documents.len(), 2);
+        assert_eq!(size_of::<super::SearchDocument>(), size_of::<usize>() * 4);
+        assert_eq!(index.documents[0].primary.get(&index.arena), "alpha");
+        assert_eq!(
+            index.documents[0]
+                .secondary()
+                .map(|field| field.get(&index.arena)),
+            Some("one")
+        );
+        assert!(index.documents[1].secondary().is_none());
+    }
+
+    #[test]
     fn search_observes_cancellation_while_emitting_ranked_matches() {
-        let documents = [
-            super::SearchDocument::new("News", None),
-            super::SearchDocument::new("News", None),
-            super::SearchDocument::new("News", None),
-        ];
+        let documents = search_index(&[("News", None), ("News", None), ("News", None)]);
         let term = SearchTerm::parse("news").expect("fixture term is valid");
         let checkpoints = Cell::new(0_usize);
 
@@ -934,7 +1065,7 @@ mod tests {
     #[test]
     fn search_observes_cancellation_inside_one_pathological_field() {
         let oversized_field = "x".repeat(super::SEARCH_CANCELLATION_CHECKPOINT_BYTES * 3);
-        let documents = [super::SearchDocument::new(&oversized_field, None)];
+        let documents = search_index(&[(&oversized_field, None)]);
         let term = SearchTerm::parse("needle").expect("fixture term is valid");
         let checkpoints = Cell::new(0_u8);
 
@@ -964,7 +1095,23 @@ mod tests {
     }
 
     fn catalog(parsed: Vec<ParsedChannel>, generation: CatalogGeneration) -> ChannelCatalog {
-        ChannelCatalog::from_parsed(&configuration(), &parsed, None, generation)
+        ChannelCatalog::from_parsed(&configuration(), Arc::new(parsed), None, generation)
+    }
+
+    fn search_index(fields: &[(&str, Option<&str>)]) -> super::SearchIndex {
+        let mut index = super::SearchIndexBuilder::with_capacity(
+            fields.len(),
+            fields
+                .iter()
+                .map(|(primary, secondary)| {
+                    primary.len() + secondary.map_or(0, |value| value.len())
+                })
+                .sum(),
+        );
+        for (primary, secondary) in fields {
+            index.push(primary, *secondary);
+        }
+        index.finish()
     }
 
     fn generation(discriminator: u8) -> CatalogGeneration {
@@ -1023,9 +1170,14 @@ mod tests {
 
     fn ids_by_name(catalog: &ChannelCatalog) -> BTreeMap<String, String> {
         catalog
-            .summaries
+            .channels
             .iter()
-            .map(|channel| (channel.name().to_owned(), channel.id().as_str().to_owned()))
+            .map(|channel| {
+                (
+                    catalog.source_channel(channel).name.to_string(),
+                    channel.id.as_str().to_owned(),
+                )
+            })
             .collect()
     }
 }

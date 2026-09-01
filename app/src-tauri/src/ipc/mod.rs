@@ -11,15 +11,17 @@ use crate::runtime::{InstalledRuntime, InstalledRuntimeSlot};
 
 use self::{
     dto::{
-        CapabilitiesDto, CatalogStatusDto, ChannelDetailsDto, ChannelGroupDto, ChannelSummaryDto,
-        ClientErrorDto, CoreEventDto, MpvFallbackPlayingDto, MpvFallbackStoppedDto, PageDto,
+        AndroidPlaybackStatusDto, CapabilitiesDto, CatalogStatusDto, ChannelDetailsDto,
+        ChannelGroupDto, ChannelSummaryDto, ClientErrorDto, CoreEventDto, PageDto,
         PlaybackDescriptorDto, ProgrammeDto, RefreshReportDto, SearchResultsDto,
     },
     input::{
-        ChannelInput, ListChannelsInput, ListGroupsInput, PlaybackActivityInput, PlaybackMpvInput,
-        PlaybackReadInput, PlaybackReopenInput, PlaybackRestartInput, PlaybackStartInput,
-        PlaybackStopInput, PlaybackSuspendInput, ScheduleInput, SearchCancellationInput,
-        SearchInput, SearchPageInput, SourceConfigurationInputDto,
+        ChannelInput, ListChannelsInput, ListGroupsInput, PlaybackActivityInput,
+        PlaybackAndroidControlsInput, PlaybackAndroidIdentityInput, PlaybackAndroidStartInput,
+        PlaybackAndroidViewportCommandInput, PlaybackMpvControlInput, PlaybackReadInput,
+        PlaybackReopenInput, PlaybackRestartInput, PlaybackStartInput, PlaybackStopInput,
+        PlaybackSuspendInput, ScheduleInput, SearchCancellationInput, SearchInput, SearchPageInput,
+        SourceConfigurationInputDto,
     },
 };
 
@@ -271,6 +273,107 @@ pub(crate) async fn read_playback(
 }
 
 #[tauri::command]
+pub(crate) async fn playback_android_start(
+    slot: State<'_, InstalledRuntimeSlot>,
+    input: PlaybackAndroidStartInput,
+) -> Result<(), ClientErrorDto> {
+    let runtime = slot.wait().await;
+    start_android_playback(runtime.as_ref(), input).await
+}
+
+pub(crate) async fn start_android_playback(
+    state: &InstalledRuntime,
+    input: PlaybackAndroidStartInput,
+) -> Result<(), ClientErrorDto> {
+    let (identity, viewport, controls) = input.into_playback()?;
+    state
+        .start_android_playback(identity, viewport, controls)
+        .await
+        .map_err(ClientErrorDto::from)
+}
+
+#[tauri::command]
+pub(crate) async fn playback_android_status(
+    slot: State<'_, InstalledRuntimeSlot>,
+    input: PlaybackAndroidIdentityInput,
+) -> Result<AndroidPlaybackStatusDto, ClientErrorDto> {
+    let runtime = slot.wait().await;
+    android_playback_status(runtime.as_ref(), input).await
+}
+
+pub(crate) async fn android_playback_status(
+    state: &InstalledRuntime,
+    input: PlaybackAndroidIdentityInput,
+) -> Result<AndroidPlaybackStatusDto, ClientErrorDto> {
+    let identity = input.into_playback()?;
+    state
+        .android_playback_status(identity)
+        .await
+        .map(AndroidPlaybackStatusDto::from)
+        .map_err(ClientErrorDto::from)
+}
+
+#[tauri::command]
+pub(crate) async fn playback_android_controls(
+    slot: State<'_, InstalledRuntimeSlot>,
+    input: PlaybackAndroidControlsInput,
+) -> Result<(), ClientErrorDto> {
+    let runtime = slot.wait().await;
+    set_android_playback_controls(runtime.as_ref(), input).await
+}
+
+pub(crate) async fn set_android_playback_controls(
+    state: &InstalledRuntime,
+    input: PlaybackAndroidControlsInput,
+) -> Result<(), ClientErrorDto> {
+    let (identity, controls) = input.into_playback()?;
+    state
+        .set_android_playback_controls(identity, controls)
+        .await
+        .map_err(ClientErrorDto::from)
+}
+
+#[tauri::command]
+pub(crate) async fn playback_android_viewport(
+    slot: State<'_, InstalledRuntimeSlot>,
+    input: PlaybackAndroidViewportCommandInput,
+) -> Result<(), ClientErrorDto> {
+    let runtime = slot.wait().await;
+    set_android_playback_viewport(runtime.as_ref(), input).await
+}
+
+pub(crate) async fn set_android_playback_viewport(
+    state: &InstalledRuntime,
+    input: PlaybackAndroidViewportCommandInput,
+) -> Result<(), ClientErrorDto> {
+    let (identity, viewport) = input.into_playback()?;
+    state
+        .set_android_playback_viewport(identity, viewport)
+        .await
+        .map_err(ClientErrorDto::from)
+}
+
+#[tauri::command]
+pub(crate) async fn playback_android_stop(
+    slot: State<'_, InstalledRuntimeSlot>,
+    input: PlaybackAndroidIdentityInput,
+) -> Result<(), ClientErrorDto> {
+    let runtime = slot.wait().await;
+    stop_android_playback(runtime.as_ref(), input).await
+}
+
+pub(crate) async fn stop_android_playback(
+    state: &InstalledRuntime,
+    input: PlaybackAndroidIdentityInput,
+) -> Result<(), ClientErrorDto> {
+    let identity = input.into_playback()?;
+    state
+        .stop_android_playback(identity)
+        .await
+        .map_err(ClientErrorDto::from)
+}
+
+#[tauri::command]
 pub(crate) async fn playback_suspend(
     slot: State<'_, InstalledRuntimeSlot>,
     input: PlaybackSuspendInput,
@@ -371,42 +474,22 @@ pub(crate) async fn stop_playback(
 }
 
 #[tauri::command]
-pub(crate) async fn playback_mpv_start(
+pub(crate) async fn playback_mpv_control(
     slot: State<'_, InstalledRuntimeSlot>,
-    input: PlaybackMpvInput,
-) -> Result<MpvFallbackPlayingDto, ClientErrorDto> {
+    input: PlaybackMpvControlInput,
+) -> Result<(), ClientErrorDto> {
     let runtime = slot.wait().await;
-    start_mpv(runtime.as_ref(), input).await
+    control_mpv(runtime.as_ref(), input).await
 }
 
-pub(crate) async fn start_mpv(
+pub(crate) async fn control_mpv(
     state: &InstalledRuntime,
-    input: PlaybackMpvInput,
-) -> Result<MpvFallbackPlayingDto, ClientErrorDto> {
+    input: PlaybackMpvControlInput,
+) -> Result<(), ClientErrorDto> {
+    let (session_id, control) = input.into_playback()?;
     state
-        .start_mpv(input.into_session_id()?)
+        .control_mpv(session_id, control)
         .await
-        .map(MpvFallbackPlayingDto::from)
-        .map_err(ClientErrorDto::from)
-}
-
-#[tauri::command]
-pub(crate) async fn playback_mpv_stop(
-    slot: State<'_, InstalledRuntimeSlot>,
-    input: PlaybackMpvInput,
-) -> Result<MpvFallbackStoppedDto, ClientErrorDto> {
-    let runtime = slot.wait().await;
-    stop_mpv(runtime.as_ref(), input).await
-}
-
-pub(crate) async fn stop_mpv(
-    state: &InstalledRuntime,
-    input: PlaybackMpvInput,
-) -> Result<MpvFallbackStoppedDto, ClientErrorDto> {
-    state
-        .stop_mpv(input.into_session_id()?)
-        .await
-        .map(MpvFallbackStoppedDto::from)
         .map_err(ClientErrorDto::from)
 }
 

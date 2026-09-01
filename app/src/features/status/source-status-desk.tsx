@@ -499,7 +499,7 @@ function refreshErrorCopy(error: ClientError): {
     case "not-found":
     case "stale-cursor":
     case "playback-failed":
-    case "fallback-failed":
+    case "mpv-failed":
       return {
         title: "Refresh returned an unexpected result",
         detail: "No private source detail was retained in the browser. Check Sparrow again.",
