@@ -21,6 +21,9 @@ describe("installed app repaint contract", () => {
     expect(guideStyles).toBeDefined();
     expect(cinemaStyles).toBeDefined();
 
+    expect(declaration(indexStyles!, ":root", "--guide-gutter")).toBe(
+      "min(20rem, 38%)",
+    );
     expect(declaration(indexStyles!, "html", "font-size")).toBe(
       "clamp(100%, 0.75vw, 150%)",
     );

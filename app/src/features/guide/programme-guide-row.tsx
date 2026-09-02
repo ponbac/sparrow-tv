@@ -1,3 +1,4 @@
+import { Tooltip } from "@base-ui/react/tooltip";
 import { memo } from "react";
 import type {
   ChannelSummary,
@@ -23,6 +24,7 @@ export const ProgrammeGuideRow = memo(function ProgrammeGuideRow({
   selected,
   selectedProgramme,
   playing,
+  channelNameTooltip,
   onPreparePlayback,
   onTune,
 }: {
@@ -33,6 +35,7 @@ export const ProgrammeGuideRow = memo(function ProgrammeGuideRow({
   readonly selected: boolean;
   readonly selectedProgramme: ProgrammeSlot | null;
   readonly playing: boolean;
+  readonly channelNameTooltip: Tooltip.Handle<string>;
   readonly onPreparePlayback: () => void;
   readonly onTune: (
     channel: ChannelSummary,
@@ -45,9 +48,11 @@ export const ProgrammeGuideRow = memo(function ProgrammeGuideRow({
       data-playing={playing}
       data-selected={selected}
     >
-      <button
+      <Tooltip.Trigger
         className="programme-guide__channel"
         data-acceptance-channel
+        handle={channelNameTooltip}
+        payload={row.channel.name}
         type="button"
         aria-label={`Tune ${row.channel.name}`}
         aria-pressed={playing}
@@ -59,7 +64,7 @@ export const ProgrammeGuideRow = memo(function ProgrammeGuideRow({
           {String(rowIndex + 1).padStart(2, "0")}
         </span>
         <strong>{row.channel.name}</strong>
-      </button>
+      </Tooltip.Trigger>
       <div className="programme-guide__track">
         {row.programmes.map((programme, programmeIndex) => {
           const layout = programmeLayout(programme, window, now);
