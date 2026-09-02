@@ -303,6 +303,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
             <BoardSearch
               client={client}
               generation={authoritativeGeneration}
+              excludedGroups={groupExclusions.excluded}
               onGenerationMismatch={synchronization.retryStatus}
               onPreparePlayback={preparePlayback}
               onTune={tune}

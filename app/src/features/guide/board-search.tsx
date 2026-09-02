@@ -14,15 +14,25 @@ import {
   generationBoundResult,
 } from "../../client/query-result";
 import { useDebounce } from "../../hooks/useDebounce";
+import { BoardSearchDesk } from "./board-search-desk";
+import {
+  visibleSearchChannels,
+  visibleSearchProgrammes,
+} from "./board-search-scope";
+import {
+  canonicalSearchTerm,
+  MAX_SEARCH_TERM_BYTES,
+  SEARCH_DEBOUNCE_MS,
+  searchTermFits,
+} from "./board-search-term";
 import { clockLabel } from "./guide-window";
 import "./board-search.css";
 
-const MAX_SEARCH_TERM_BYTES = 256;
 const SEARCH_RESULT_LIMIT = 8;
-const SEARCH_DEBOUNCE_MS = 90;
-const textEncoder = new TextEncoder();
+const SEARCH_FETCH_LIMIT = 40;
 
 type SearchChoice =
+  | { readonly _tag: "desk" }
   | { readonly _tag: "channel"; readonly channel: ChannelSummary }
   | { readonly _tag: "programme"; readonly programme: ProgrammeSearchHit };
 
@@ -32,13 +42,15 @@ type SearchPresentation =
   | "loading"
   | "generation-mismatch"
   | "error"
+  | "hidden"
   | "empty"
   | "ready";
 
 /** Inputs for the asynchronous Channel and Programme board search. */
 export interface BoardSearchProps {
-  readonly client: Pick<SparrowClient, "search">;
+  readonly client: Pick<SparrowClient, "search" | "searchChannels">;
   readonly generation: CatalogGeneration | null;
+  readonly excludedGroups: ReadonlySet<string>;
   readonly onGenerationMismatch: () => void;
   readonly onPreparePlayback: () => void;
   readonly onTune: (
@@ -51,6 +63,7 @@ export interface BoardSearchProps {
 export function BoardSearch({
   client,
   generation,
+  excludedGroups,
   onGenerationMismatch,
   onPreparePlayback,
   onTune,
@@ -58,6 +71,7 @@ export function BoardSearch({
   const queryClient = useQueryClient();
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
+  const [deskOpen, setDeskOpen] = useState(false);
   const requestTerm = canonicalSearchTerm(query);
   const debouncedQuery = useDebounce(requestTerm, SEARCH_DEBOUNCE_MS);
   const cachedResult = queryClient.getQueryData([
@@ -66,18 +80,26 @@ export function BoardSearch({
     "board",
     requestTerm,
     generation,
+    SEARCH_FETCH_LIMIT,
   ]);
   const searchTerm = cachedResult === undefined ? debouncedQuery : requestTerm;
   const requestValid = searchTermFits(query.trim());
   const queryValid = searchTermFits(searchTerm);
   const searchQuery = useQuery({
-    queryKey: ["catalog", "search", "board", searchTerm, generation],
+    queryKey: [
+      "catalog",
+      "search",
+      "board",
+      searchTerm,
+      generation,
+      SEARCH_FETCH_LIMIT,
+    ],
     queryFn: ({ signal }) =>
       generationBoundResult(
         client.search({
           term: searchTerm,
-          channelLimit: SEARCH_RESULT_LIMIT,
-          programmeLimit: SEARCH_RESULT_LIMIT,
+          channelLimit: SEARCH_FETCH_LIMIT,
+          programmeLimit: SEARCH_FETCH_LIMIT,
           signal,
         }),
         generation,
@@ -91,22 +113,50 @@ export function BoardSearch({
     staleTime: Number.POSITIVE_INFINITY,
   });
   const result = searchQuery.data?.ok === true ? searchQuery.data.value : null;
-  const choices = useMemo<readonly SearchChoice[]>(
+  const visibleChannels = useMemo(
     () =>
       result === null
         ? []
-        : [
-            ...result.channels.items.map((channel): SearchChoice => ({
-              _tag: "channel",
-              channel,
-            })),
-            ...result.programmes.items.map((programme): SearchChoice => ({
-              _tag: "programme",
-              programme,
-            })),
-          ],
-    [result],
+        : visibleSearchChannels(result.channels.items, excludedGroups, false),
+    [excludedGroups, result],
   );
+  const visibleProgrammes = useMemo(
+    () =>
+      result === null
+        ? []
+        : visibleSearchProgrammes(
+            result.programmes.items,
+            excludedGroups,
+            false,
+          ),
+    [excludedGroups, result],
+  );
+  const hiddenCount =
+    result === null
+      ? 0
+      : result.channels.items.length -
+        visibleChannels.length +
+        (result.programmes.items.length - visibleProgrammes.length);
+  const choices = useMemo<readonly SearchChoice[]>(() => {
+    const hits: SearchChoice[] = [
+      ...visibleChannels.slice(0, SEARCH_RESULT_LIMIT).map(
+        (channel): SearchChoice => ({
+          _tag: "channel",
+          channel,
+        }),
+      ),
+      ...visibleProgrammes.slice(0, SEARCH_RESULT_LIMIT).map(
+        (programme): SearchChoice => ({
+          _tag: "programme",
+          programme,
+        }),
+      ),
+    ];
+    if (requestTerm.length === 0 || !requestValid) {
+      return hits;
+    }
+    return [{ _tag: "desk" }, ...hits];
+  }, [requestTerm.length, requestValid, visibleChannels, visibleProgrammes]);
   const error = clientErrorFromQuery(searchQuery.error);
   const generationMismatch = error?._tag === "stale-cursor";
   const presentation = searchPresentation({
@@ -117,17 +167,27 @@ export function BoardSearch({
     hasResult: result !== null,
     generationMismatch,
     failed: error !== null,
-    hasChoices: choices.length > 0,
+    hasChoices: visibleChannels.length + visibleProgrammes.length > 0,
+    hasHidden: hiddenCount > 0,
   });
 
   const clear = () => {
     setQuery("");
     setOpen(false);
+    setDeskOpen(false);
+  };
+  const openDesk = () => {
+    setOpen(false);
+    setDeskOpen(true);
   };
   const prepareChoice = () => {
     onPreparePlayback();
   };
   const choose = (choice: SearchChoice) => {
+    if (choice._tag === "desk") {
+      openDesk();
+      return;
+    }
     onPreparePlayback();
     if (choice._tag === "channel") {
       onTune(choice.channel, null);
@@ -140,92 +200,132 @@ export function BoardSearch({
   };
 
   return (
-    <Autocomplete.Root
-      items={choices}
-      mode="none"
-      value={query}
-      open={open && requestTerm.length > 0}
-      onValueChange={(value, details) => {
-        if (details.reason === "item-press") {
-          return;
-        }
-        setQuery(value);
-        setOpen(value.trim().length > 0);
-      }}
-      onOpenChange={setOpen}
-      itemToStringValue={choiceLabel}
-      autoHighlight="always"
-      openOnInputClick
-      modal={false}
-    >
-      <Autocomplete.InputGroup className="board-search" data-acceptance-search>
-        <Search aria-hidden="true" />
-        <Autocomplete.Input
-          aria-label="Search Channels and Programmes"
-          placeholder="Search the board"
-          autoComplete="off"
-          spellCheck={false}
-        />
-        <Autocomplete.Clear aria-label="Clear search">
-          <X aria-hidden="true" />
-        </Autocomplete.Clear>
-      </Autocomplete.InputGroup>
+    <>
+      <Autocomplete.Root
+        items={choices}
+        mode="none"
+        value={query}
+        open={open && requestTerm.length > 0 && !deskOpen}
+        onValueChange={(value, details) => {
+          if (details.reason === "item-press") {
+            return;
+          }
+          setQuery(value);
+          setOpen(value.trim().length > 0);
+        }}
+        onOpenChange={setOpen}
+        itemToStringValue={choiceLabel}
+        autoHighlight="always"
+        openOnInputClick
+        modal={false}
+      >
+        <Autocomplete.InputGroup className="board-search" data-acceptance-search>
+          <Search aria-hidden="true" />
+          <Autocomplete.Input
+            aria-label="Search Channels and Programmes"
+            placeholder="Search the board"
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <Autocomplete.Clear aria-label="Clear search">
+            <X aria-hidden="true" />
+          </Autocomplete.Clear>
+        </Autocomplete.InputGroup>
 
-      <Autocomplete.Portal>
-        <Autocomplete.Positioner
-          className="board-search__positioner"
-          align="start"
-          sideOffset={7}
-        >
-          <Autocomplete.Popup className="board-search__popup">
-            {presentation === "invalid" ? (
-              <p className="board-search__state" role="alert">
-                Keep the search within {MAX_SEARCH_TERM_BYTES} UTF-8 bytes.
-              </p>
-            ) : presentation === "unavailable" ? (
-              <p className="board-search__state" role="status">
-                Search opens after a catalog is ready.
-              </p>
-            ) : presentation === "loading" ? (
-              <p className="board-search__state">Scanning the catalog…</p>
-            ) : presentation === "generation-mismatch" ? (
-              <div className="board-search__state" role="alert">
-                The catalog changed while searching.
-                <button type="button" onClick={onGenerationMismatch}>
-                  Rescan
-                </button>
-              </div>
-            ) : presentation === "error" ? (
-              <p className="board-search__state" role="alert">
-                Search is temporarily unavailable.
-              </p>
-            ) : presentation === "empty" ? (
-              <p className="board-search__state">No matching signals.</p>
-            ) : (
-              <Autocomplete.List className="board-search__results">
-                {choices.map((choice, index) => (
-                  <Autocomplete.Item
-                    className="board-search__result"
-                    key={choiceKey(choice, index)}
-                    index={index}
-                    value={choice}
-                    onMouseEnter={prepareChoice}
-                    onFocus={prepareChoice}
-                    onClick={() => choose(choice)}
-                  >
-                    <span>
-                      {choice._tag === "channel" ? "Channel" : "Programme"}
-                    </span>
-                    <strong>{choiceLabel(choice)}</strong>
-                    <small>{choiceDetail(choice)}</small>
-                  </Autocomplete.Item>
-                ))}
-              </Autocomplete.List>
-            )}
-          </Autocomplete.Popup>
-        </Autocomplete.Positioner>
-      </Autocomplete.Portal>
-    </Autocomplete.Root>
+        <Autocomplete.Portal>
+          <Autocomplete.Positioner
+            className="board-search__positioner"
+            align="start"
+            sideOffset={7}
+          >
+            <Autocomplete.Popup className="board-search__popup">
+              {presentation === "invalid" ? (
+                <p className="board-search__state" role="alert">
+                  Keep the search within {MAX_SEARCH_TERM_BYTES} UTF-8 bytes.
+                </p>
+              ) : presentation === "unavailable" ? (
+                <p className="board-search__state" role="status">
+                  Search opens after a catalog is ready.
+                </p>
+              ) : (
+                <>
+                  <Autocomplete.List className="board-search__results">
+                    {choices.map((choice, index) =>
+                      choice._tag === "desk" ? (
+                        <Autocomplete.Item
+                          className="board-search__result board-search__result--desk"
+                          key="desk"
+                          index={index}
+                          value={choice}
+                          onClick={() => choose(choice)}
+                        >
+                          <span>Search</span>
+                          <strong>Open full Channel search</strong>
+                          <small>Full list</small>
+                        </Autocomplete.Item>
+                      ) : (
+                        <Autocomplete.Item
+                          className="board-search__result"
+                          key={choiceKey(choice, index)}
+                          index={index}
+                          value={choice}
+                          onMouseEnter={prepareChoice}
+                          onFocus={prepareChoice}
+                          onClick={() => choose(choice)}
+                        >
+                          <span>
+                            {choice._tag === "channel"
+                              ? "Channel"
+                              : "Programme"}
+                          </span>
+                          <strong>{choiceLabel(choice)}</strong>
+                          <small>{choiceDetail(choice)}</small>
+                        </Autocomplete.Item>
+                      ),
+                    )}
+                  </Autocomplete.List>
+                  {presentation === "loading" ? (
+                    <p className="board-search__state">Scanning the catalog…</p>
+                  ) : presentation === "generation-mismatch" ? (
+                    <div className="board-search__state" role="alert">
+                      The catalog changed while searching.
+                      <button type="button" onClick={onGenerationMismatch}>
+                        Rescan
+                      </button>
+                    </div>
+                  ) : presentation === "error" ? (
+                    <p className="board-search__state" role="alert">
+                      Search is temporarily unavailable.
+                    </p>
+                  ) : presentation === "hidden" ? (
+                    <p className="board-search__state">
+                      Matching signals are in excluded groups.
+                    </p>
+                  ) : presentation === "empty" ? (
+                    <p className="board-search__state">No matching signals.</p>
+                  ) : null}
+                </>
+              )}
+            </Autocomplete.Popup>
+          </Autocomplete.Positioner>
+        </Autocomplete.Portal>
+      </Autocomplete.Root>
+      <BoardSearchDesk
+        client={client}
+        generation={generation}
+        term={query}
+        excludedGroups={excludedGroups}
+        open={deskOpen}
+        onOpenChange={setDeskOpen}
+        onTermChange={setQuery}
+        onGenerationMismatch={onGenerationMismatch}
+        onPreparePlayback={onPreparePlayback}
+        onTune={(channel, programme) => {
+          onTune(channel, programme);
+          clear();
+        }}
+      />
+    </>
   );
 }
 
@@ -238,6 +338,7 @@ function searchPresentation({
   generationMismatch,
   failed,
   hasChoices,
+  hasHidden,
 }: {
   readonly requestValid: boolean;
   readonly generationAvailable: boolean;
@@ -247,6 +348,7 @@ function searchPresentation({
   readonly generationMismatch: boolean;
   readonly failed: boolean;
   readonly hasChoices: boolean;
+  readonly hasHidden: boolean;
 }): SearchPresentation {
   if (!requestValid) {
     return "invalid";
@@ -263,34 +365,34 @@ function searchPresentation({
   if (failed) {
     return "error";
   }
-  return hasChoices ? "ready" : "empty";
-}
-
-function searchTermFits(value: string): boolean {
-  const canonical = canonicalSearchTerm(value);
-  return (
-    textEncoder.encode(value).byteLength <= MAX_SEARCH_TERM_BYTES &&
-    textEncoder.encode(canonical).byteLength <= MAX_SEARCH_TERM_BYTES
-  );
-}
-
-function canonicalSearchTerm(value: string): string {
-  return value.normalize("NFKC").toLowerCase().trim().replace(/\s+/gu, " ");
+  if (hasChoices) {
+    return "ready";
+  }
+  return hasHidden ? "hidden" : "empty";
 }
 
 function choiceKey(choice: SearchChoice, occurrence: number): string {
+  if (choice._tag === "desk") {
+    return "desk";
+  }
   return choice._tag === "channel"
     ? `channel:${choice.channel.id}:${occurrence}`
     : `programme:${choice.programme.channel.id}:${choice.programme.startsAt}:${choice.programme.endsAt}:${choice.programme.title}:${occurrence}`;
 }
 
 function choiceLabel(choice: SearchChoice): string {
+  if (choice._tag === "desk") {
+    return "Open full Channel search";
+  }
   return choice._tag === "channel"
     ? choice.channel.name
     : choice.programme.title;
 }
 
 function choiceDetail(choice: SearchChoice): string {
+  if (choice._tag === "desk") {
+    return "Full list";
+  }
   if (choice._tag === "channel") {
     return choice.channel.group === "" ? "Ungrouped" : choice.channel.group;
   }
