@@ -43,7 +43,7 @@ const PUBLIC_IPV6 = "2606:4700:4700::1111";
 
 const READINESS_EXPRESSION = `(() => {
   const allowedStates = new Set(["fresh", "stale", "refreshing", "failed"]);
-  const rawState = document.querySelector(".status-readout")?.getAttribute("data-state") ?? "unknown";
+  const rawState = document.querySelector("[data-acceptance-status]")?.getAttribute("data-state") ?? "unknown";
   const routineUrlCount = Array.from(document.querySelectorAll("[href], [src], input, textarea"))
     .filter((node) => {
       const liveValue = node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement
@@ -54,21 +54,21 @@ const READINESS_EXPRESSION = `(() => {
     }).length;
   return {
     nativeBridge: typeof window.__TAURI_INTERNALS__?.invoke === "function",
-    catalogShell: document.querySelector(".catalog-shell") !== null,
-    loading: document.querySelector(".catalog-loading") !== null,
-    channelCount: document.querySelectorAll(".channel-card").length,
-    groupButtonCount: document.querySelectorAll(".group-button").length,
-    searchVisible: document.querySelector(".search-console") !== null,
-    retainedCatalog: document.querySelector(".retained-banner") !== null,
+    catalogShell: document.querySelector("[data-acceptance-catalog-shell]") !== null,
+    loading: document.querySelector("[data-acceptance-catalog-loading]") !== null,
+    channelCount: document.querySelectorAll("[data-acceptance-channel]").length,
+    groupButtonCount: document.querySelectorAll("[data-acceptance-group]").length,
+    searchVisible: document.querySelector("[data-acceptance-search]") !== null,
+    retainedCatalog: document.querySelector("[data-acceptance-retained]") !== null,
     alertCount: document.querySelectorAll('[role="alert"]').length,
     routineUrlCount,
     statusState: allowedStates.has(rawState) ? rawState : "unknown",
-    browseReady: document.querySelector(".inspector-details") !== null,
+    browseReady: document.querySelector('[data-acceptance-channel][aria-pressed="true"]') !== null,
   };
 })()`;
 
 const SELECT_FIRST_CHANNEL_EXPRESSION = `(() => {
-  const first = document.querySelector(".channel-card");
+  const first = document.querySelector("[data-acceptance-channel]");
   if (!(first instanceof HTMLButtonElement)) return false;
   first.click();
   return true;
@@ -395,7 +395,7 @@ async function runStagedAcceptance(serial: string, staged: StagedApk) {
       startupLimitMs: 3_000,
       vmHwmLimitKiB: 524_288,
       requiredBaselineRuns: 3,
-      requiredFirstPageChannels: 24,
+      requiredFirstPageChannels: 40,
       representativeMinimumBytes: { m3u: MIN_M3U_BYTES, epg: MIN_EPG_BYTES },
     },
     tools: {

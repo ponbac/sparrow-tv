@@ -3617,6 +3617,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sparrow-bounded-blocking"
+version = "0.0.0"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
+name = "sparrow-client-contract"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "sparrow-core",
+]
+
+[[package]]
 name = "sparrow-core"
 version = "0.0.0"
 dependencies = [
@@ -3651,6 +3667,8 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "sparrow-bounded-blocking",
+ "sparrow-client-contract",
  "sparrow-core",
  "sparrow-snapshot-store",
  "sparrow-source-http",
@@ -3676,6 +3694,8 @@ dependencies = [
  "http-body-util",
  "serde",
  "serde_json",
+ "sparrow-bounded-blocking",
+ "sparrow-client-contract",
  "sparrow-core",
  "sparrow-source-http",
  "subtle",

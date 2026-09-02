@@ -75,11 +75,44 @@ const SCHEDULE_PAGE = clientSchemas.schedulePage.parse({
 });
 
 const PROGRAMME = requireFirst(SCHEDULE_PAGE.items);
+const GUIDE_START = clientSchemas.isoInstant.parse("2026-08-30T18:00:00Z");
+const GUIDE_END = clientSchemas.isoInstant.parse("2026-08-30T21:00:00Z");
+const GUIDE_WINDOW_PAYLOAD = {
+  generation: 7,
+  items: [
+    {
+      channel: CHANNEL,
+      programmes: [
+        {
+          title: "Evening Report",
+          titleTruncated: false,
+          startsAt: "2026-08-30T19:00:00Z",
+          endsAt: "2026-08-30T20:00:00Z",
+        },
+      ],
+      programmesTruncated: false,
+    },
+  ],
+  next: null,
+} as const;
+const GUIDE_WINDOW = clientSchemas.guideWindow.parse(GUIDE_WINDOW_PAYLOAD);
 
 const SEARCH_RESULTS = clientSchemas.searchResults.parse({
   generation: 7,
   channels: CHANNELS_PAGE,
-  programmes: SCHEDULE_PAGE,
+  programmes: {
+    generation: 7,
+    items: [
+      {
+        channel: CHANNEL,
+        title: PROGRAMME.title,
+        titleTruncated: false,
+        startsAt: PROGRAMME.startsAt,
+        endsAt: PROGRAMME.endsAt,
+      },
+    ],
+    next: null,
+  },
 });
 
 const REFRESH_REPORT = clientSchemas.refreshReport.parse({
@@ -141,8 +174,10 @@ describe("installed Tauri Sparrow client", () => {
                 : command === NATIVE_COMMANDS.channels
                   ? CHANNELS_PAGE
                   : command === NATIVE_COMMANDS.channel
-                    ? CHANNEL
-                    : command === NATIVE_COMMANDS.schedule
+                  ? CHANNEL
+                  : command === NATIVE_COMMANDS.guideWindow
+                    ? GUIDE_WINDOW_PAYLOAD
+                  : command === NATIVE_COMMANDS.schedule
                       ? SCHEDULE_PAGE
                       : command === NATIVE_COMMANDS.search
                         ? SEARCH_RESULTS
@@ -174,10 +209,20 @@ describe("installed Tauri Sparrow client", () => {
     await expect(
       client.listChannels({ limit: 24, group: "News" }),
     ).resolves.toEqual({ ok: true, value: CHANNELS_PAGE });
-    await expect(client.channel({ id: CHANNEL.id })).resolves.toEqual({
-      ok: true,
-      value: CHANNEL,
-    });
+    await expect(
+      client.channel({
+        id: CHANNEL.id,
+      }),
+    ).resolves.toEqual({ ok: true, value: CHANNEL });
+    await expect(
+      client.guideWindow({
+        startsAt: GUIDE_START,
+        endsAt: GUIDE_END,
+        channelLimit: 1,
+        group: "News",
+        previousCursors: [],
+      }),
+    ).resolves.toEqual({ ok: true, value: GUIDE_WINDOW });
     await expect(
       client.schedule({
         id: CHANNEL.id,
@@ -225,6 +270,17 @@ describe("installed Tauri Sparrow client", () => {
       {
         command: NATIVE_COMMANDS.channel,
         args: { input: { id: CHANNEL.id } },
+      },
+      {
+        command: NATIVE_COMMANDS.guideWindow,
+        args: {
+          input: {
+            startsAt: GUIDE_START,
+            endsAt: GUIDE_END,
+            channelLimit: 1,
+            group: "News",
+          },
+        },
       },
       {
         command: NATIVE_COMMANDS.schedule,

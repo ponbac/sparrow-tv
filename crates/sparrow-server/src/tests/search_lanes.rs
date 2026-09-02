@@ -17,10 +17,27 @@ async fn lane_search_endpoints_project_independent_pages_and_compatible_cursors(
     .await;
 
     assert_eq!(channels, combined["channels"]);
-    assert_eq!(programmes, combined["programmes"]);
     assert_eq!(channels["items"].as_array().unwrap().len(), 1);
     assert_eq!(programmes["items"].as_array().unwrap().len(), 1);
     assert_eq!(programmes["items"][0]["title"], "Fallback Programme");
+    assert_eq!(
+        programmes["generation"],
+        combined["programmes"]["generation"]
+    );
+    assert_eq!(programmes["next"], combined["programmes"]["next"]);
+    assert_eq!(
+        programmes["items"][0]["channelId"],
+        combined["programmes"]["items"][0]["channel"]["id"]
+    );
+    assert_eq!(
+        programmes["items"][0]["title"],
+        combined["programmes"]["items"][0]["title"]
+    );
+    assert!(
+        combined["programmes"]["items"][0]
+            .get("description")
+            .is_none()
+    );
 
     let cursor = channels["next"]
         .as_str()
@@ -35,7 +52,7 @@ async fn lane_search_endpoints_project_independent_pages_and_compatible_cursors(
     assert_eq!(continuation["next"], Value::Null);
     assert_eq!(continuation["generation"], channels["generation"]);
 
-    for body in [channels, programmes, continuation] {
+    for body in [channels, programmes, combined, continuation] {
         let encoded = body.to_string();
         for canary in [
             CONFIGURATION_CANARY,

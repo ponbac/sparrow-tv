@@ -14,11 +14,11 @@ use crate::{
     catalog::ChannelCatalog,
     domain::{
         CatalogStatus, ChannelDetails, ChannelGroupView, ChannelId, ChannelQuery, ChannelSummary,
-        CoreError, CoreEvent, LifecycleSignal, Page, PageRequest, ProgrammeSummary, RefreshOutcome,
-        RefreshReport, RefreshTrigger, ResolvedPlaybackSource, SafeFailure, ScheduleQuery,
-        SearchRequest, SearchResults, SearchTerm, SnapshotOperation, SnapshotRecoveryDiagnostic,
-        SnapshotRecoveryReason, SourceAccessError, SourceConfiguration, SourceConfigurationInput,
-        SourceKind, SourceState,
+        CoreError, CoreEvent, GuideWindowChannel, GuideWindowQuery, LifecycleSignal, Page,
+        PageRequest, ProgrammeSummary, RefreshOutcome, RefreshReport, RefreshTrigger,
+        ResolvedPlaybackSource, SafeFailure, ScheduleQuery, SearchRequest, SearchResults,
+        SearchTerm, SnapshotOperation, SnapshotRecoveryDiagnostic, SnapshotRecoveryReason,
+        SourceAccessError, SourceConfiguration, SourceConfigurationInput, SourceKind, SourceState,
     },
     m3u,
     ports::{
@@ -208,6 +208,14 @@ impl SparrowCore {
     /// Returns a deterministic bounded Programme page for one Channel.
     pub fn schedule(&self, query: ScheduleQuery) -> Result<Page<ProgrammeSummary>, CoreError> {
         self.query_catalog(|catalog| catalog.schedule(&query))
+    }
+
+    /// Returns one bounded Channel page with Programmes overlapping a UTC window.
+    pub fn guide_window(
+        &self,
+        query: GuideWindowQuery,
+    ) -> Result<Page<GuideWindowChannel>, CoreError> {
+        self.query_catalog(|catalog| catalog.guide_window(&query))
     }
 
     /// Searches Channels and Programmes without reparsing the active Sources.

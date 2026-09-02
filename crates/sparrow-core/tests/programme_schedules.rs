@@ -5,9 +5,10 @@ use std::collections::BTreeMap;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use sparrow_core::{
-    ChannelId, ChannelQuery, CoreError, EpgFailureKind, InputField, InputReason, PageCursor,
-    PageLimit, PageRequest, SafeFailure, ScheduleQuery, SourceAccessError,
-    SourceConfigurationInput, SourceKind, SourceState, SparrowCore,
+    ChannelGroupFilter, ChannelId, ChannelQuery, CoreError, EpgFailureKind, GuideProgramme,
+    GuideWindowQuery, InputField, InputReason, PageCursor, PageLimit, PageRequest, SafeFailure,
+    ScheduleQuery, SourceAccessError, SourceConfigurationInput, SourceKind, SourceState,
+    SparrowCore,
 };
 use support::{MemorySnapshotStore, ScriptedSource, adapters};
 
@@ -16,6 +17,301 @@ const GUIDE: &[u8] = include_bytes!("fixtures/programme_schedules.xml");
 const MALFORMED_GUIDE: &[u8] = include_bytes!("fixtures/malformed_programme_schedules.xml");
 const MALFORMED_DOCUMENT: &[u8] = include_bytes!("fixtures/malformed_programme_document.xml");
 const RECORD_QUIRKS: &[u8] = include_bytes!("fixtures/programme_record_quirks.xml");
+
+#[tokio::test]
+async fn guide_window_returns_one_channel_page_with_only_overlapping_programmes() {
+    let (core, _, _) = core_with_guide(GUIDE).await;
+    let channels = channel_ids_by_normalized_name(&core);
+    let exact = one(&channels, "misleading name");
+
+    let page = core
+        .guide_window(
+            GuideWindowQuery::new(
+                utc("2026-08-29T07:30:00Z"),
+                utc("2026-08-29T10:30:00Z"),
+                first_channels(),
+            )
+            .expect("the three-hour guide window is valid"),
+        )
+        .expect("the guide window is queryable");
+    let row = page
+        .items()
+        .iter()
+        .find(|row| row.channel().id() == exact)
+        .expect("the exact fixture Channel is in the guide page");
+    let titles = row
+        .programmes()
+        .iter()
+        .map(|programme| programme.title())
+        .collect::<Vec<_>>();
+
+    assert_eq!(titles, ["Earlier & First", "Later Programme"]);
+    assert!(page.items().iter().all(|row| {
+        row.programmes().iter().all(|programme| {
+            programme.starts_at() < utc("2026-08-29T10:30:00Z")
+                && programme.ends_at() > utc("2026-08-29T07:30:00Z")
+        })
+    }));
+
+    let touching = core
+        .guide_window(
+            GuideWindowQuery::new(
+                utc("2026-08-29T08:00:00Z"),
+                utc("2026-08-29T10:00:00Z"),
+                first_channels(),
+            )
+            .expect("the boundary window is valid"),
+        )
+        .expect("the boundary window is queryable");
+    let touching_row = touching
+        .items()
+        .iter()
+        .find(|row| row.channel().id() == exact)
+        .expect("the exact fixture Channel remains in the guide page");
+    assert!(
+        touching_row.programmes().is_empty(),
+        "half-open windows exclude Programmes that only touch either boundary"
+    );
+}
+
+#[tokio::test]
+async fn guide_window_keeps_a_long_running_overlap_behind_expired_history() {
+    let guide = br#"<tv>
+        <channel id="exact.id"><display-name>Exact</display-name></channel>
+        <programme start="20260829070000 +0000" stop="20260829120000 +0000" channel="exact.id"><title>Long Running</title></programme>
+        <programme start="20260829080000 +0000" stop="20260829083000 +0000" channel="exact.id"><title>Expired One</title></programme>
+        <programme start="20260829090000 +0000" stop="20260829093000 +0000" channel="exact.id"><title>Expired Two</title></programme>
+        <programme start="20260829103000 +0000" stop="20260829110000 +0000" channel="exact.id"><title>Future</title></programme>
+    </tv>"#;
+    let (core, _, _) = core_with_guide(guide).await;
+    let channels = channel_ids_by_normalized_name(&core);
+    let exact = one(&channels, "misleading name");
+
+    let page = core
+        .guide_window(
+            GuideWindowQuery::new(
+                utc("2026-08-29T10:00:00Z"),
+                utc("2026-08-29T10:15:00Z"),
+                first_channels(),
+            )
+            .expect("the nested-overlap window is valid"),
+        )
+        .expect("the nested-overlap guide window is queryable");
+    let row = page
+        .items()
+        .iter()
+        .find(|row| row.channel().id() == exact)
+        .expect("the exact fixture Channel is in the guide page");
+    let titles = row
+        .programmes()
+        .iter()
+        .map(|programme| programme.title())
+        .collect::<Vec<_>>();
+
+    assert_eq!(titles, ["Long Running"]);
+    assert!(!row.programmes_truncated());
+}
+
+#[tokio::test]
+async fn guide_window_pagination_is_scoped_to_the_exact_time_window() {
+    let (core, _, _) = core_with_guide(GUIDE).await;
+    let first = core
+        .guide_window(
+            GuideWindowQuery::new(
+                utc("2026-08-29T07:00:00Z"),
+                utc("2026-08-29T12:00:00Z"),
+                ChannelQuery::all(PageRequest::first(limit(1))),
+            )
+            .expect("the first guide window is valid"),
+        )
+        .expect("the first guide window is queryable");
+    let cursor = round_trip(first.next().expect("the Channel page continues"));
+
+    assert!(matches!(
+        core.guide_window(
+            GuideWindowQuery::new(
+                utc("2026-08-29T07:00:01Z"),
+                utc("2026-08-29T12:00:00Z"),
+                ChannelQuery::all(PageRequest::after(cursor, limit(1))),
+            )
+            .expect("the shifted guide window is valid"),
+        ),
+        Err(CoreError::InvalidInput {
+            field: InputField::PageCursor,
+            reason: InputReason::CursorQueryMismatch,
+        })
+    ));
+
+    let first = core
+        .guide_window(
+            GuideWindowQuery::new(
+                utc("2026-08-29T07:00:00Z"),
+                utc("2026-08-29T12:00:00Z"),
+                ChannelQuery::all(PageRequest::first(limit(1))),
+            )
+            .expect("the ungrouped query is valid"),
+        )
+        .expect("the ungrouped query is available");
+    let cursor = round_trip(first.next().expect("the ungrouped page continues"));
+    let news = ChannelGroupFilter::parse("News").expect("the fixture group is valid");
+    assert!(matches!(
+        core.guide_window(
+            GuideWindowQuery::new(
+                utc("2026-08-29T07:00:00Z"),
+                utc("2026-08-29T12:00:00Z"),
+                ChannelQuery::in_group(news, PageRequest::after(cursor, limit(1))),
+            )
+            .expect("the grouped query is valid"),
+        ),
+        Err(CoreError::InvalidInput {
+            field: InputField::PageCursor,
+            reason: InputReason::CursorQueryMismatch,
+        })
+    ));
+
+    let unknown = ChannelGroupFilter::parse("Unknown").expect("the unknown group filter is valid");
+    let empty = core
+        .guide_window(
+            GuideWindowQuery::new(
+                utc("2026-08-29T07:00:00Z"),
+                utc("2026-08-29T12:00:00Z"),
+                ChannelQuery::in_group(unknown, PageRequest::first(limit(10))),
+            )
+            .expect("the unknown-group query is valid"),
+        )
+        .expect("unknown groups produce an empty guide page");
+    assert!(empty.items().is_empty());
+    assert!(empty.next().is_none());
+}
+
+#[tokio::test]
+async fn guide_window_reports_when_overlapping_programmes_reach_the_row_cap() {
+    let records = (0..=sparrow_core::GuideWindowChannel::MAX_PROGRAMMES)
+        .map(|index| {
+            format!(
+                r#"<programme start="20260829070000 +0000" stop="20260829120000 +0000" channel="exact.id"><title>Programme {index}</title></programme>"#
+            )
+        })
+        .collect::<String>();
+    let guide = format!(
+        r#"<tv><channel id="exact.id"><display-name>Exact</display-name></channel>{records}</tv>"#
+    );
+    let (core, _, _) = core_with_guide(guide.as_bytes()).await;
+    let channels = channel_ids_by_normalized_name(&core);
+    let exact = one(&channels, "misleading name");
+    let page = core
+        .guide_window(
+            GuideWindowQuery::new(
+                utc("2026-08-29T08:00:00Z"),
+                utc("2026-08-29T09:00:00Z"),
+                first_channels(),
+            )
+            .expect("the cap fixture window is valid"),
+        )
+        .expect("the cap fixture window is queryable");
+    let row = page
+        .items()
+        .iter()
+        .find(|row| row.channel().id() == exact)
+        .expect("the exact fixture Channel is in the guide page");
+
+    assert_eq!(
+        row.programmes().len(),
+        sparrow_core::GuideWindowChannel::MAX_PROGRAMMES
+    );
+    assert!(row.programmes_truncated());
+}
+
+#[tokio::test]
+async fn guide_window_bounds_titles_and_omits_full_schedule_descriptions() {
+    let title = "é".repeat(GuideProgramme::MAX_TITLE_BYTES);
+    let description = "private-detail".repeat(1_024);
+    let guide = format!(
+        r#"<tv><channel id="exact.id"><display-name>Exact</display-name></channel><programme start="20260829070000 +0000" stop="20260829120000 +0000" channel="exact.id"><title>{title}</title><desc>{description}</desc></programme></tv>"#
+    );
+    let (core, _, _) = core_with_guide(guide.as_bytes()).await;
+    let channels = channel_ids_by_normalized_name(&core);
+    let exact = one(&channels, "misleading name");
+    let page = core
+        .guide_window(
+            GuideWindowQuery::new(
+                utc("2026-08-29T08:00:00Z"),
+                utc("2026-08-29T09:00:00Z"),
+                first_channels(),
+            )
+            .expect("the bounded-title window is valid"),
+        )
+        .expect("the bounded-title window is queryable");
+    let programme = page
+        .items()
+        .iter()
+        .find(|row| row.channel().id() == exact)
+        .and_then(|row| row.programmes().first())
+        .expect("the exact fixture Programme is in the guide window");
+
+    assert_eq!(programme.title().len(), GuideProgramme::MAX_TITLE_BYTES);
+    assert_eq!(
+        programme.title().chars().count(),
+        GuideProgramme::MAX_TITLE_BYTES / 2
+    );
+    assert!(programme.title_truncated());
+
+    let schedule_page = core
+        .schedule(schedule(exact.clone(), PageRequest::first(limit(1))))
+        .expect("the ordinary schedule remains queryable");
+    assert_eq!(schedule_page.items()[0].title(), title);
+    assert_eq!(
+        schedule_page.items()[0].description(),
+        Some(description.as_str())
+    );
+}
+
+#[test]
+fn guide_windows_must_be_positive_and_no_longer_than_one_day() {
+    for ends_at in [utc("2026-08-29T07:00:00Z"), utc("2026-08-30T07:00:01Z")] {
+        assert!(matches!(
+            GuideWindowQuery::new(utc("2026-08-29T07:00:00Z"), ends_at, first_channels(),),
+            Err(CoreError::InvalidInput {
+                field: InputField::GuideWindowEndsAt,
+                reason: InputReason::OutOfRange,
+            })
+        ));
+    }
+}
+
+#[test]
+fn guide_window_transport_instants_share_one_bounded_core_parser() {
+    let parsed = GuideWindowQuery::parse(
+        "2026-08-29T09:00:00+02:00".to_owned(),
+        "2026-08-29T10:00:00+02:00".to_owned(),
+        first_channels(),
+    )
+    .expect("RFC 3339 offsets normalize at the core boundary");
+    assert_eq!(parsed.starts_at(), utc("2026-08-29T07:00:00Z"));
+    assert_eq!(parsed.ends_at(), utc("2026-08-29T08:00:00Z"));
+
+    for (starts_at, ends_at, field, reason) in [
+        (
+            "not-an-instant".to_owned(),
+            "2026-08-29T08:00:00Z".to_owned(),
+            InputField::GuideWindowStartsAt,
+            InputReason::InvalidFormat,
+        ),
+        (
+            "2026-08-29T07:00:00Z".to_owned(),
+            "x".repeat(GuideWindowQuery::MAX_INSTANT_BYTES + 1),
+            InputField::GuideWindowEndsAt,
+            InputReason::TooLong {
+                max_bytes: GuideWindowQuery::MAX_INSTANT_BYTES,
+            },
+        ),
+    ] {
+        assert_eq!(
+            GuideWindowQuery::parse(starts_at, ends_at, first_channels()),
+            Err(CoreError::InvalidInput { field, reason })
+        );
+    }
+}
 
 #[tokio::test]
 async fn exact_and_unique_name_matches_yield_ordered_bounded_utc_schedules() {
@@ -136,6 +432,19 @@ async fn schedule_cursors_are_scoped_to_channel_and_epg_content_generation() {
         .expect("the first guide has another Programme")
         .clone();
     let fallback = one(&first_channels, "fallback one").clone();
+    let guide_cursor = first
+        .guide_window(
+            GuideWindowQuery::new(
+                utc("2026-08-29T07:00:00Z"),
+                utc("2026-08-29T12:00:00Z"),
+                ChannelQuery::all(PageRequest::first(limit(1))),
+            )
+            .expect("the first guide window is valid"),
+        )
+        .expect("the first guide window is queryable")
+        .next()
+        .expect("the first guide Channel page continues")
+        .clone();
 
     assert!(matches!(
         first.schedule(schedule(
@@ -168,6 +477,20 @@ async fn schedule_cursors_are_scoped_to_channel_and_epg_content_generation() {
         )),
         Err(CoreError::StaleCursor { current }) if current == changed_generation
     ));
+    assert!(matches!(
+        changed.guide_window(
+            GuideWindowQuery::new(
+                utc("2026-08-29T07:00:00Z"),
+                utc("2026-08-29T12:00:00Z"),
+                ChannelQuery::all(PageRequest::after(
+                    round_trip(&guide_cursor),
+                    limit(1),
+                )),
+            )
+            .expect("the changed guide window is valid"),
+        ),
+        Err(CoreError::StaleCursor { current }) if current == changed_generation
+    ));
 }
 
 #[tokio::test]
@@ -191,6 +514,23 @@ async fn missing_or_failed_epg_keeps_the_channel_catalog_usable() {
         .clone();
     assert_eq!(no_guide.status().epg(), None);
     assert_schedule_empty(&no_guide, &no_guide_channel);
+    let channel_only_guide = no_guide
+        .guide_window(
+            GuideWindowQuery::new(
+                utc("2026-08-29T07:00:00Z"),
+                utc("2026-08-29T12:00:00Z"),
+                first_channels(),
+            )
+            .expect("the channel-only guide window is valid"),
+        )
+        .expect("the channel-only guide remains queryable");
+    assert!(!channel_only_guide.items().is_empty());
+    assert!(
+        channel_only_guide
+            .items()
+            .iter()
+            .all(|row| row.programmes().is_empty() && !row.programmes_truncated())
+    );
 
     let failed_source = ScriptedSource::from_bytes(CHANNELS);
     let failed_snapshots = MemorySnapshotStore::default();

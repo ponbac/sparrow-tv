@@ -1,4 +1,3 @@
-mod bounded_blocking;
 mod browse;
 mod dto;
 mod error;
@@ -15,13 +14,12 @@ use axum::{
     response::Response,
     routing::{get, post},
 };
+use sparrow_bounded_blocking::BoundedBlocking;
 use sparrow_core::{
     ChannelSummary, Page, PageRequest, ProgrammeSummary, SearchRequest, SearchResults, SearchTerm,
     SparrowCore,
 };
 use sparrow_source_http::HttpPlaybackAccess;
-
-use self::bounded_blocking::BoundedBlocking;
 
 pub(crate) use dto::{CapabilitiesDto, CatalogStatusDto};
 pub(crate) use error::{ApiError, ErrorEnvelope};
@@ -102,6 +100,7 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/channels", get(browse::channels))
         .route("/channels/{channel_id}", get(browse::channel))
         .route("/channels/{channel_id}/schedule", get(programmes::schedule))
+        .route("/guide", get(programmes::guide_window))
         .route("/play/{channel_id}", get(playback::play))
         .route("/search", get(programmes::search))
         .route("/search/channels", get(programmes::search_channels))

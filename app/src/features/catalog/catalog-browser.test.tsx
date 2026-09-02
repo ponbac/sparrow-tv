@@ -2,17 +2,19 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
   cleanup,
+  fireEvent,
   render,
   screen,
   waitFor,
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { StrictMode } from "react";
-import { afterEach, describe, expect, it } from "vitest";
+import { type ReactElement } from "react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   clientSchemas,
   type Capabilities,
+  type CatalogGeneration,
   type CatalogStatus,
   type ChannelDetails,
   type ChannelGroup,
@@ -21,43 +23,39 @@ import {
   type ClientError,
   type ClientRequestOptions,
   type ClientResult,
-  type CreatePlaybackSessionInput,
+  type GuideProgramme,
+  type GuideWindow,
+  type GuideWindowChannel,
+  type GuideWindowInput,
   type InstalledPlaybackSession,
+  type InstalledPlaybackTransport,
   type InstalledSparrowClient,
   type ListChannelsInput,
   type ListGroupsInput,
   type Page,
   type PlaybackDescriptor,
   type ProgrammeSummary,
-  type ReadPlaybackInput,
   type RefreshReport,
   type ScheduleInput,
   type SearchInput,
-  type SearchPageInput,
   type SearchResults,
-  type SparrowClient,
+  type SourceConfigurationInput,
   type SparrowEvent,
   type StartPlaybackInput,
-  type StopPlaybackInput,
-  type SourceConfigurationInput,
 } from "../../client/contracts";
-import { CatalogBrowser } from "./catalog-browser";
-import type { HostedPlaybackEngine } from "../playback/mpegts-engine";
 import type { InstalledPlaybackEngine } from "../playback/installed-playback-engine";
+import type { HostedPlaybackEngine } from "../playback/mpegts-engine";
+import { CatalogBrowser } from "./catalog-browser";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
-const CAPABILITIES = clientSchemas.capabilities.parse({
+const HOSTED_CAPABILITIES = clientSchemas.capabilities.parse({
   sourceConfiguration: "deployment-readonly",
   playbackTransport: "same-origin-http",
   audioTrackSelection: false,
-  mpvFailover: false,
-});
-
-const INSTALLED_CAPABILITIES = clientSchemas.capabilities.parse({
-  sourceConfiguration: "device-writable",
-  playbackTransport: "platform-native",
-  audioTrackSelection: true,
   mpvFailover: false,
 });
 
@@ -68,81 +66,6 @@ const FRESH_STATUS = clientSchemas.status.parse({
   epg: { _tag: "fresh", validatedAt: "2026-08-30T10:00:01Z" },
 });
 
-const NEXT_GENERATION_STATUS = clientSchemas.status.parse({
-  generation: 8,
-  configuration: { configured: true, epgConfigured: true },
-  m3u: { _tag: "fresh", validatedAt: "2026-08-30T11:00:00Z" },
-  epg: { _tag: "fresh", validatedAt: "2026-08-30T11:00:01Z" },
-});
-
-const DEFAULT_REFRESH_REPORT = clientSchemas.refreshReport.parse({
-  trigger: "manual",
-  m3u: {
-    _tag: "not-modified",
-    validatedAt: "2026-08-30T10:00:00Z",
-  },
-  epg: {
-    _tag: "not-modified",
-    validatedAt: "2026-08-30T10:00:01Z",
-  },
-  status: FRESH_STATUS,
-});
-
-const RETAINED_EPG_FAILURE_STATUS = clientSchemas.status.parse({
-  generation: 7,
-  configuration: { configured: true, epgConfigured: true },
-  m3u: { _tag: "fresh", validatedAt: "2026-08-30T10:00:00Z" },
-  epg: {
-    _tag: "failed",
-    validatedAt: "2026-08-30T10:00:01Z",
-    failure: {
-      _tag: "invalid-epg-format",
-      source: "epg",
-      reason: "malformed-xml",
-    },
-    nextAttemptAt: "2026-08-30T10:10:00Z",
-  },
-});
-
-const EPG_FAILURE_REFRESH_REPORT = clientSchemas.refreshReport.parse({
-  trigger: "manual",
-  m3u: {
-    _tag: "not-modified",
-    validatedAt: "2026-08-30T10:00:00Z",
-  },
-  epg: {
-    _tag: "failed",
-    failure: {
-      _tag: "invalid-epg-format",
-      source: "epg",
-      reason: "malformed-xml",
-    },
-    nextAttemptAt: "2026-08-30T10:10:00Z",
-  },
-  status: RETAINED_EPG_FAILURE_STATUS,
-});
-
-const STALE_STATUS = clientSchemas.status.parse({
-  generation: 7,
-  configuration: { configured: true, epgConfigured: true },
-  m3u: {
-    _tag: "stale",
-    validatedAt: "2026-08-30T04:00:00Z",
-    nextAttemptAt: "2026-08-30T10:01:00Z",
-  },
-  epg: { _tag: "fresh", validatedAt: "2026-08-30T10:00:01Z" },
-});
-
-const UNAVAILABLE_STATUS = clientSchemas.status.parse({
-  generation: null,
-  configuration: { configured: true, epgConfigured: false },
-  m3u: {
-    _tag: "unavailable",
-    failure: { _tag: "source-read", source: "m3u", reason: "interrupted" },
-  },
-  epg: null,
-});
-
 const NOT_CONFIGURED_STATUS = clientSchemas.status.parse({
   generation: null,
   configuration: { configured: false, epgConfigured: false },
@@ -150,108 +73,62 @@ const NOT_CONFIGURED_STATUS = clientSchemas.status.parse({
   epg: null,
 });
 
-const CONFIGURED_WITHOUT_SNAPSHOT_STATUS = clientSchemas.status.parse({
+const CONFIGURED_WITHOUT_GENERATION_STATUS = clientSchemas.status.parse({
   generation: null,
   configuration: { configured: true, epgConfigured: false },
   m3u: { _tag: "unavailable", failure: null },
   epg: null,
 });
 
-const NO_EPG_STATUS = clientSchemas.status.parse({
+const RETAINED_STATUS = clientSchemas.status.parse({
   generation: 7,
-  configuration: { configured: true, epgConfigured: false },
-  m3u: { _tag: "fresh", validatedAt: "2026-08-30T10:00:00Z" },
-  epg: null,
+  configuration: { configured: true, epgConfigured: true },
+  m3u: {
+    _tag: "stale",
+    validatedAt: "2026-08-30T10:00:00Z",
+    nextAttemptAt: "2026-08-30T10:10:00Z",
+  },
+  epg: { _tag: "fresh", validatedAt: "2026-08-30T10:00:01Z" },
+});
+
+const DEFAULT_REFRESH_REPORT = clientSchemas.refreshReport.parse({
+  trigger: "manual",
+  m3u: { _tag: "not-modified", validatedAt: "2026-08-30T10:00:00Z" },
+  epg: { _tag: "not-modified", validatedAt: "2026-08-30T10:00:01Z" },
+  status: FRESH_STATUS,
 });
 
 const GROUPS_PAGE = clientSchemas.groupsPage.parse({
   generation: 7,
   items: [
-    { name: "News & Current", channelCount: 1 },
+    { name: "News", channelCount: 1 },
     { name: "Cinema", channelCount: 1 },
-    { name: "", channelCount: 1 },
   ],
   next: null,
 });
 
-const CHANNELS_PAGE = clientSchemas.channelsPage.parse({
+const CONTINUING_GROUPS_PAGE = clientSchemas.groupsPageFor({}).parse({
   generation: 7,
-  items: [
-    { id: "world-news", name: "World News", group: "News & Current" },
-    { id: "cinema-one", name: "Cinema One", group: "Cinema" },
-    { id: "free-channel", name: "Free Channel", group: "" },
-  ],
-  next: null,
+  items: Array.from({ length: 100 }, (_, index) => ({
+    name: `Group ${index + 1}`,
+    channelCount: 1,
+  })),
+  next: "groups-next",
 });
 
-const NEWS_CHANNELS_PAGE = clientSchemas.channelsPage.parse({
-  generation: 7,
-  items: [
-    { id: "world-news", name: "World News", group: "News & Current" },
-  ],
-  next: null,
-});
-
-const UNGROUPED_CHANNELS_PAGE = clientSchemas.channelsPage.parse({
-  generation: 7,
-  items: [{ id: "free-channel", name: "Free Channel", group: "" }],
-  next: null,
-});
-
-const CHANNEL_DETAILS = clientSchemas.channel.parse({
+const WORLD_NEWS = clientSchemas.channel.parse({
   id: "world-news",
   name: "World News",
-  group: "News & Current",
+  group: "News",
 });
 
-const NEXT_GENERATION_CHANNEL_DETAILS = clientSchemas.channel.parse({
-  id: "world-news",
-  name: "World News Reloaded",
-  group: "News & Current",
+const CINEMA_ONE = clientSchemas.channel.parse({
+  id: "cinema-one",
+  name: "Cinema One",
+  group: "Cinema",
 });
 
-const EMPTY_GROUPS_PAGE = clientSchemas.groupsPage.parse({
-  generation: 7,
-  items: [],
-  next: null,
-});
-
-const EMPTY_CHANNELS_PAGE = clientSchemas.channelsPage.parse({
-  generation: 7,
-  items: [],
-  next: null,
-});
-
-const FIRST_CHANNELS_PAGE = clientSchemas.channelsPage.parse({
-  generation: 7,
-  items: [{ id: "first-channel", name: "First Channel", group: "News" }],
-  next: "channels-page-two",
-});
-
-const SECOND_CHANNELS_PAGE = clientSchemas.channelsPage.parse({
-  generation: 7,
-  items: [{ id: "second-channel", name: "Second Channel", group: "News" }],
-  next: null,
-});
-
-const SECOND_CONTINUING_CHANNELS_PAGE = clientSchemas.channelsPage.parse({
-  ...SECOND_CHANNELS_PAGE,
-  next: "channels-page-three",
-});
-
-const NEXT_GENERATION_FIRST_CHANNELS_PAGE = clientSchemas.channelsPage.parse({
-  generation: 8,
-  items: [{ id: "replacement", name: "Replacement Channel", group: "News" }],
-  next: FIRST_CHANNELS_PAGE.next,
-});
-
-const NEXT_GENERATION_CHANNELS_PAGE = clientSchemas.channelsPage.parse({
-  generation: 8,
-  items: [{ id: "replacement", name: "Replacement Channel", group: "News" }],
-  next: null,
-});
-
-const EMPTY_SCHEDULE_PAGE = clientSchemas.schedulePage.parse({
+const EMPTY_SCHEDULE = clientSchemas.schedulePage.parse({
   generation: 7,
   items: [],
   next: null,
@@ -259,124 +136,55 @@ const EMPTY_SCHEDULE_PAGE = clientSchemas.schedulePage.parse({
 
 const EMPTY_SEARCH_RESULTS = clientSchemas.searchResults.parse({
   generation: 7,
-  channels: EMPTY_CHANNELS_PAGE,
-  programmes: EMPTY_SCHEDULE_PAGE,
-});
-
-const PROGRAMME = clientSchemas.schedulePage.parse({
-  generation: 7,
-  items: [
-    {
-      channelId: "world-news",
-      title: "Evening Report",
-      description: "A safe fixture rundown.",
-      startsAt: "2026-08-30T19:00:00Z",
-      endsAt: "2026-08-30T20:00:00Z",
-    },
-  ],
-  next: null,
-});
-
-const SEARCH_RESULTS = clientSchemas.searchResults.parse({
-  generation: 7,
-  channels: NEWS_CHANNELS_PAGE,
-  programmes: PROGRAMME,
-});
-
-const NEXT_PROGRAMME = clientSchemas.schedulePage.parse({
-  generation: 8,
-  items: [
-    {
-      channelId: "world-news",
-      title: "Late Bulletin",
-      description: null,
-      startsAt: "2026-08-30T20:00:00Z",
-      endsAt: "2026-08-30T21:00:00Z",
-    },
-  ],
-  next: null,
-});
-
-const NEXT_SEARCH_RESULTS = clientSchemas.searchResults.parse({
-  generation: 8,
-  channels: {
-    generation: 8,
-    items: [NEXT_GENERATION_CHANNEL_DETAILS],
-    next: null,
-  },
-  programmes: NEXT_PROGRAMME,
+  channels: { generation: 7, items: [], next: null },
+  programmes: { generation: 7, items: [], next: null },
 });
 
 interface FakeBehavior {
-  readonly capabilities?: (
-    options: ClientRequestOptions | undefined,
-  ) => Promise<ClientResult<Capabilities>>;
   readonly status?: (
     options: ClientRequestOptions | undefined,
   ) => Promise<ClientResult<CatalogStatus>>;
-  readonly refresh?: (
-    options: ClientRequestOptions | undefined,
-  ) => Promise<ClientResult<RefreshReport>>;
   readonly groups?: (
     input: ListGroupsInput,
   ) => Promise<ClientResult<Page<ChannelGroup>>>;
-  readonly channels?: (
-    input: ListChannelsInput,
-  ) => Promise<ClientResult<Page<ChannelSummary>>>;
-  readonly channel?: (
-    input: ChannelInput,
-  ) => Promise<ClientResult<ChannelDetails>>;
-  readonly schedule?: (
-    input: ScheduleInput,
-  ) => Promise<ClientResult<Page<ProgrammeSummary>>>;
+  readonly guide?: (
+    input: GuideWindowInput,
+  ) => Promise<ClientResult<GuideWindow>>;
   readonly search?: (
     input: SearchInput,
   ) => Promise<ClientResult<SearchResults>>;
+  readonly replaceConfiguration?: (
+    input: SourceConfigurationInput,
+  ) => Promise<ClientResult<CatalogStatus>>;
 }
 
 class FakeSparrowClient implements InstalledSparrowClient {
-  readonly capabilityInputs: (ClientRequestOptions | undefined)[] = [];
   readonly statusInputs: (ClientRequestOptions | undefined)[] = [];
   readonly groupInputs: ListGroupsInput[] = [];
+  readonly guideInputs: GuideWindowInput[] = [];
   readonly channelListInputs: ListChannelsInput[] = [];
   readonly channelInputs: ChannelInput[] = [];
   readonly scheduleInputs: ScheduleInput[] = [];
   readonly searchInputs: SearchInput[] = [];
-  readonly channelSearchInputs: SearchPageInput[] = [];
-  readonly programmeSearchInputs: SearchPageInput[] = [];
   readonly playbackInputs: StartPlaybackInput[] = [];
-  readonly playbackReadInputs: ReadPlaybackInput[] = [];
-  readonly playbackStopInputs: StopPlaybackInput[] = [];
-  playbackTransport: "hosted" | "installed" = "hosted";
-  readonly refreshInputs: (ClientRequestOptions | undefined)[] = [];
+  readonly configurationInputs: SourceConfigurationInput[] = [];
   readonly eventListeners = new Set<(event: SparrowEvent) => void>();
 
   constructor(private readonly behavior: FakeBehavior = {}) {}
 
-  capabilities(
-    options?: ClientRequestOptions,
-  ): Promise<ClientResult<Capabilities>> {
-    this.capabilityInputs.push(options);
-    return (
-      this.behavior.capabilities?.(options) ?? Promise.resolve(success(CAPABILITIES))
-    );
+  capabilities(): Promise<ClientResult<Capabilities>> {
+    return Promise.resolve(success(HOSTED_CAPABILITIES));
   }
 
-  status(
-    options?: ClientRequestOptions,
-  ): Promise<ClientResult<CatalogStatus>> {
+  status(options?: ClientRequestOptions): Promise<ClientResult<CatalogStatus>> {
     this.statusInputs.push(options);
-    return this.behavior.status?.(options) ?? Promise.resolve(success(FRESH_STATUS));
+    return (
+      this.behavior.status?.(options) ?? Promise.resolve(success(FRESH_STATUS))
+    );
   }
 
-  refresh(
-    options?: ClientRequestOptions,
-  ): Promise<ClientResult<RefreshReport>> {
-    this.refreshInputs.push(options);
-    return (
-      this.behavior.refresh?.(options) ??
-      Promise.resolve(success(DEFAULT_REFRESH_REPORT))
-    );
+  refresh(): Promise<ClientResult<RefreshReport>> {
+    return Promise.resolve(success(DEFAULT_REFRESH_REPORT));
   }
 
   subscribe(listener: (event: SparrowEvent) => void): () => void {
@@ -394,52 +202,58 @@ class FakeSparrowClient implements InstalledSparrowClient {
     input: ListGroupsInput,
   ): Promise<ClientResult<Page<ChannelGroup>>> {
     this.groupInputs.push(input);
-    return this.behavior.groups?.(input) ?? Promise.resolve(success(GROUPS_PAGE));
+    return (
+      this.behavior.groups?.(input) ?? Promise.resolve(success(GROUPS_PAGE))
+    );
   }
 
   listChannels(
     input: ListChannelsInput,
   ): Promise<ClientResult<Page<ChannelSummary>>> {
     this.channelListInputs.push(input);
+    return Promise.resolve(
+      success({ generation: 7 as CatalogGeneration, items: [], next: null }),
+    );
+  }
+
+  guideWindow(input: GuideWindowInput): Promise<ClientResult<GuideWindow>> {
+    this.guideInputs.push(input);
     return (
-      this.behavior.channels?.(input) ?? Promise.resolve(success(CHANNELS_PAGE))
+      this.behavior.guide?.(input) ??
+      Promise.resolve(success(defaultGuidePage(input)))
     );
   }
 
   channel(input: ChannelInput): Promise<ClientResult<ChannelDetails>> {
     this.channelInputs.push(input);
-    return (
-      this.behavior.channel?.(input) ?? Promise.resolve(success(CHANNEL_DETAILS))
+    return Promise.resolve(
+      success(input.id === CINEMA_ONE.id ? CINEMA_ONE : WORLD_NEWS),
     );
   }
 
-  schedule(input: ScheduleInput): Promise<ClientResult<Page<ProgrammeSummary>>> {
+  schedule(
+    input: ScheduleInput,
+  ): Promise<ClientResult<Page<ProgrammeSummary>>> {
     this.scheduleInputs.push(input);
-    return (
-      this.behavior.schedule?.(input) ??
-      Promise.resolve(success(EMPTY_SCHEDULE_PAGE))
-    );
+    return Promise.resolve(success(EMPTY_SCHEDULE));
   }
 
   search(input: SearchInput): Promise<ClientResult<SearchResults>> {
     this.searchInputs.push(input);
     return (
-      this.behavior.search?.(input) ?? Promise.resolve(success(EMPTY_SEARCH_RESULTS))
+      this.behavior.search?.(input) ??
+      Promise.resolve(success(EMPTY_SEARCH_RESULTS))
     );
   }
 
-  searchChannels(
-    input: SearchPageInput,
-  ): Promise<ClientResult<Page<ChannelSummary>>> {
-    this.channelSearchInputs.push(input);
-    return Promise.resolve(success(EMPTY_CHANNELS_PAGE));
+  searchChannels(): Promise<ClientResult<Page<ChannelSummary>>> {
+    return Promise.resolve(
+      success({ generation: 7 as CatalogGeneration, items: [], next: null }),
+    );
   }
 
-  searchProgrammes(
-    input: SearchPageInput,
-  ): Promise<ClientResult<Page<ProgrammeSummary>>> {
-    this.programmeSearchInputs.push(input);
-    return Promise.resolve(success(EMPTY_SCHEDULE_PAGE));
+  searchProgrammes(): Promise<ClientResult<Page<ProgrammeSummary>>> {
+    return Promise.resolve(success(EMPTY_SCHEDULE));
   }
 
   startPlayback(
@@ -448,44 +262,45 @@ class FakeSparrowClient implements InstalledSparrowClient {
     this.playbackInputs.push(input);
     return Promise.resolve(
       success(
-        this.playbackTransport === "installed"
-          ? clientSchemas.nativePlaybackDescriptor.parse({
-              _tag: "tauri-native-stream",
-              sessionId: `play1_${"a".repeat(32)}_1`,
-              streamHandle: `stream1_${"b".repeat(16)}`,
-              presentation: "webview-mse",
-              tracks: [],
-              selection: { _tag: "none" },
-            })
-          : clientSchemas.hostedPlaybackDescriptor.parse({
-              _tag: "same-origin-http",
-              endpoint: `/api/v1/play/${encodeURIComponent(input.id)}`,
-            }),
+        clientSchemas.hostedPlaybackDescriptor.parse({
+          _tag: "same-origin-http",
+          endpoint: `/api/v1/play/${encodeURIComponent(input.id)}`,
+        }),
       ),
     );
   }
 
-  createPlaybackSession(
-    input: CreatePlaybackSessionInput,
-  ): InstalledPlaybackSession {
-    const descriptor = clientSchemas.nativePlaybackDescriptor.parse({
+  replaceSourceConfiguration(
+    input: SourceConfigurationInput,
+  ): Promise<ClientResult<CatalogStatus>> {
+    this.configurationInputs.push(input);
+    return (
+      this.behavior.replaceConfiguration?.(input) ??
+      Promise.resolve(success(FRESH_STATUS))
+    );
+  }
+
+  createPlaybackSession(): InstalledPlaybackSession {
+    const transport: InstalledPlaybackTransport = {
       _tag: "tauri-native-stream",
-      sessionId: `play1_${"a".repeat(32)}_1`,
-      streamHandle: `stream1_${"b".repeat(16)}`,
+      streamHandle: clientSchemas.nativeStreamHandle.parse(
+        `stream1_${"b".repeat(16)}`,
+      ),
       presentation: "webview-mse",
       tracks: [],
       selection: { _tag: "none" },
-    });
+    };
     return {
-      start: async (options) => {
-        this.playbackInputs.push({ id: input.id, ...options });
-        return success(descriptor);
-      },
-      reopen: async () => success(descriptor),
-      restart: async () => success(descriptor),
+      start: async () => success(transport),
+      reopen: async () => success(transport),
+      restart: async () => success(transport),
       read: async () => success(new ArrayBuffer(0)),
       startAndroidPresentation: async () =>
-        success(androidPresentationFixture()),
+        failure({
+          _tag: "transport",
+          retryable: false,
+          message: "not used in this test",
+        }),
       controlMpv: async () => success(undefined),
       suspend: async () => success(undefined),
       setActivity: async () => success(undefined),
@@ -493,899 +308,787 @@ class FakeSparrowClient implements InstalledSparrowClient {
     };
   }
 
-  readPlayback(
-    input: ReadPlaybackInput,
-  ): Promise<ClientResult<ArrayBuffer>> {
-    this.playbackReadInputs.push(input);
+  readPlayback(): Promise<ClientResult<ArrayBuffer>> {
     return Promise.resolve(success(new ArrayBuffer(0)));
   }
 
-  stopPlayback(input: StopPlaybackInput): Promise<ClientResult<void>> {
-    this.playbackStopInputs.push(input);
+  stopPlayback(): Promise<ClientResult<void>> {
     return Promise.resolve(success(undefined));
-  }
-
-  replaceSourceConfiguration(
-    input: SourceConfigurationInput,
-  ): Promise<ClientResult<CatalogStatus>> {
-    void input;
-    return Promise.resolve(success(FRESH_STATUS));
   }
 }
 
-describe("CatalogBrowser", () => {
-  it("renders one deterministic loading state until the initial catalog reads settle", async () => {
-    const capabilities = deferred<ClientResult<Capabilities>>();
+describe("CatalogBrowser Split Stage", () => {
+  it("shows the one initial status loader before mounting the Split Stage", async () => {
     const status = deferred<ClientResult<CatalogStatus>>();
-    const groups = deferred<ClientResult<Page<ChannelGroup>>>();
-    const channels = deferred<ClientResult<Page<ChannelSummary>>>();
-    const client = new FakeSparrowClient({
-      capabilities: () => capabilities.promise,
-      status: () => status.promise,
-      groups: () => groups.promise,
-      channels: () => channels.promise,
-    });
+    const client = new FakeSparrowClient({ status: () => status.promise });
 
-    renderBrowser(client);
+    renderHostedBrowser(client);
 
     expect(
       screen.getByRole("heading", { name: "Tuning catalog" }),
     ).toBeVisible();
-    expect(
-      screen.queryByRole("heading", { name: "All frequencies" }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Programme guide")).not.toBeInTheDocument();
 
     await act(async () => {
-      capabilities.resolve(success(CAPABILITIES));
       status.resolve(success(FRESH_STATUS));
-      groups.resolve(success(GROUPS_PAGE));
-      channels.resolve(success(CHANNELS_PAGE));
-      await Promise.all([
-        capabilities.promise,
-        status.promise,
-        groups.promise,
-        channels.promise,
-      ]);
+      await status.promise;
     });
 
-    expect(
-      await screen.findByRole("heading", { name: "All frequencies" }),
-    ).toBeVisible();
+    expect(await screen.findByLabelText("Programme guide")).toBeVisible();
     expect(
       screen.queryByRole("heading", { name: "Tuning catalog" }),
     ).not.toBeInTheDocument();
   });
 
-  it("selects an exact source group and resolves the chosen Channel details", async () => {
+  it("replaces a parallel bootstrap guide from an older generation", async () => {
+    const status = deferred<ClientResult<CatalogStatus>>();
+    let guideRequest = 0;
     const client = new FakeSparrowClient({
-      channels: (input) =>
-        Promise.resolve(
-          success(
-            input.group === "News & Current"
-              ? NEWS_CHANNELS_PAGE
-              : CHANNELS_PAGE,
-          ),
-        ),
-    });
-    const user = userEvent.setup();
-    renderBrowser(client);
-
-    await screen.findByLabelText("3 channels loaded");
-    const groupRail = screen.getByRole("navigation", {
-      name: "Channel groups",
-    });
-    await user.click(
-      within(groupRail).getByRole("button", { name: /News & Current/ }),
-    );
-
-    expect(
-      await screen.findByRole("heading", { name: "News & Current" }),
-    ).toBeVisible();
-    expect(await screen.findByLabelText("1 channels loaded")).toBeVisible();
-    const groupRequest = requireMatch(
-      client.channelListInputs,
-      (input) => input.group === "News & Current",
-      "expected the selected source group to be queried",
-    );
-    expect(groupRequest.group).toBe("News & Current");
-
-    await user.click(screen.getByRole("button", { name: /World News/ }));
-
-    expect(
-      await screen.findByRole("heading", { level: 3, name: "World News" }),
-    ).toBeVisible();
-    expect(screen.getByText("Catalog locked")).toBeVisible();
-    expect(screen.getByLabelText("Selected channel")).toHaveAttribute(
-      "aria-live",
-      "polite",
-    );
-    expect(screen.getByLabelText("Selected channel")).toHaveAttribute(
-      "aria-atomic",
-      "true",
-    );
-    const detailRequest = requireFirst(
-      client.channelInputs,
-      "expected a Channel detail request",
-    );
-    expect(detailRequest.id).toBe(CHANNEL_DETAILS.id);
-    expect(await screen.findByText("ON AIR")).toBeVisible();
-    const playbackRequest = requireFirst(
-      client.playbackInputs,
-      "expected a hosted playback descriptor request",
-    );
-    expect(playbackRequest.id).toBe(CHANNEL_DETAILS.id);
-  });
-
-  it("keeps every native browse command off until a local catalog exists", async () => {
-    const client = new FakeSparrowClient({
-      capabilities: () => Promise.resolve(success(INSTALLED_CAPABILITIES)),
-      status: () => Promise.resolve(success(NOT_CONFIGURED_STATUS)),
-    });
-
-    renderInstalledBrowser(client);
-
-    expect(
-      await screen.findByRole("heading", { name: "Receiver not configured" }),
-    ).toBeVisible();
-    expect(
-      screen.getByRole("heading", { name: "Tune this receiver" }),
-    ).toBeVisible();
-    expect(screen.getByText("LOCAL IPC")).toBeVisible();
-    expect(client.groupInputs).toHaveLength(0);
-    expect(client.channelListInputs).toHaveLength(0);
-    expect(client.searchInputs).toHaveLength(0);
-    expect(client.scheduleInputs).toHaveLength(0);
-    expect(client.playbackInputs).toHaveLength(0);
-    expect(screen.queryByRole("search")).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Refresh sources" }),
-    ).toBeDisabled();
-  });
-
-  it("starts native playback when a local Channel is selected", async () => {
-    const client = new FakeSparrowClient({
-      capabilities: () => Promise.resolve(success(INSTALLED_CAPABILITIES)),
-    });
-    const user = userEvent.setup();
-    renderInstalledBrowser(client);
-
-    await user.click(await screen.findByRole("button", { name: /World News/ }));
-
-    const inspector = screen.getByRole("complementary", {
-      name: "Selected channel",
-    });
-    expect(
-      await within(inspector).findByRole("heading", { name: "World News" }),
-    ).toBeVisible();
-    expect(client.channelInputs).toHaveLength(1);
-    expect(client.scheduleInputs).toHaveLength(1);
-    expect(await screen.findByText("ON AIR")).toBeVisible();
-    expect(client.playbackInputs).toHaveLength(1);
-    expect(
-      within(inspector).getByText(/Playback stays inside the native receiver/),
-    ).toBeVisible();
-    expect(screen.getByRole("search")).toBeVisible();
-    expect(
-      screen.getByRole("complementary", { name: "Programme schedule" }),
-    ).toBeVisible();
-  });
-
-  it("begins local browse only after configuration returns a valid catalog", async () => {
-    const client = new FakeSparrowClient({
-      capabilities: () => Promise.resolve(success(INSTALLED_CAPABILITIES)),
-      status: () => Promise.resolve(success(NOT_CONFIGURED_STATUS)),
-    });
-    const user = userEvent.setup();
-    renderInstalledBrowser(client);
-    expect(
-      await screen.findByRole("heading", { name: "Receiver not configured" }),
-    ).toBeVisible();
-    expect(client.groupInputs).toHaveLength(0);
-    expect(client.channelListInputs).toHaveLength(0);
-
-    await user.type(
-      screen.getByLabelText("Required / Channel source"),
-      "https://provider.invalid/list.m3u",
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Build local catalog" }),
-    );
-
-    expect(await screen.findByText("World News")).toBeVisible();
-    expect(client.groupInputs).toHaveLength(1);
-    expect(client.channelListInputs).toHaveLength(1);
-    expect(client.playbackInputs).toHaveLength(0);
-    expect(screen.getByRole("search")).toBeVisible();
-    expect(
-      screen.getByRole("button", { name: "Refresh sources" }),
-    ).toBeEnabled();
-  });
-
-  it("refreshes installed sources and reconciles the returned generation", async () => {
-    const client = new FakeSparrowClient({
-      capabilities: () => Promise.resolve(success(INSTALLED_CAPABILITIES)),
-    });
-    const user = userEvent.setup();
-    renderInstalledBrowser(client);
-
-    await user.click(
-      await screen.findByRole("button", { name: "Refresh sources" }),
-    );
-
-    expect(client.refreshInputs).toHaveLength(1);
-    expect(await screen.findByText("Manual refresh complete")).toBeVisible();
-    expect(screen.getByText(/Channel source: validated \/ unchanged/)).toBeVisible();
-  });
-
-  it("keeps installed browse and search available when only Guide refresh fails", async () => {
-    const client = new FakeSparrowClient({
-      capabilities: () => Promise.resolve(success(INSTALLED_CAPABILITIES)),
-      refresh: () => Promise.resolve(success(EPG_FAILURE_REFRESH_REPORT)),
-    });
-    const user = userEvent.setup();
-    renderInstalledBrowser(client);
-
-    await user.click(
-      await screen.findByRole("button", { name: "Refresh sources" }),
-    );
-
-    const refreshFailure = await screen.findByRole("alert");
-    expect(
-      within(refreshFailure).getByText("Guide source refresh failed"),
-    ).toBeVisible();
-    expect(
-      within(refreshFailure).getByText(/Browsing and playback stay available/),
-    ).toBeVisible();
-    expect(screen.getByRole("search")).toBeVisible();
-    expect(screen.getByRole("button", { name: /World News/ })).toBeVisible();
-    expect(client.refreshInputs).toHaveLength(1);
-  });
-
-  it("keeps installed Channel search clear and useful without an EPG source", async () => {
-    const client = new FakeSparrowClient({
-      capabilities: () => Promise.resolve(success(INSTALLED_CAPABILITIES)),
-      status: () => Promise.resolve(success(NO_EPG_STATUS)),
-      search: () =>
-        Promise.resolve(
-          success(
-            clientSchemas.searchResults.parse({
-              generation: 7,
-              channels: NEWS_CHANNELS_PAGE,
-              programmes: EMPTY_SCHEDULE_PAGE,
-            }),
-          ),
-        ),
-    });
-    const user = userEvent.setup();
-    renderInstalledBrowser(client);
-
-    expect(await screen.findByText("GUIDE ABSENT")).toBeVisible();
-    expect(
-      screen.getByText(
-        "This device has no Guide source. Channel browse, search, and playback remain available.",
-      ),
-    ).toBeVisible();
-    await user.type(
-      screen.getByRole("searchbox", { name: "Channel or Programme" }),
-      "news",
-    );
-    await user.click(screen.getByRole("button", { name: "Scan index" }));
-
-    const searchResults = await screen.findByRole("group", {
-      name: "Search results for news",
-    });
-    expect(within(searchResults).getByText("World News")).toBeVisible();
-    expect(
-      screen.getByText(/Programme search is unavailable because no EPG Source is configured/),
-    ).toBeVisible();
-    expect(client.searchInputs).toHaveLength(1);
-  });
-
-  it("labels an offline installed snapshot stale while keeping local queries available", async () => {
-    const client = new FakeSparrowClient({
-      capabilities: () => Promise.resolve(success(INSTALLED_CAPABILITIES)),
-      status: () => Promise.resolve(success(STALE_STATUS)),
-    });
-    renderInstalledBrowser(client);
-
-    expect(await screen.findByText("World News")).toBeVisible();
-    expect(screen.getByText("RECORDED / STALE")).toBeVisible();
-    expect(screen.getByText("RECORDED SIGNAL")).toBeVisible();
-    expect(screen.getByRole("search")).toBeVisible();
-    expect(
-      screen.getByRole("button", { name: "Refresh sources" }),
-    ).toBeEnabled();
-  });
-
-  it("invalidates installed search and schedule reads when the catalog generation changes", async () => {
-    let currentStatus = FRESH_STATUS;
-    const client = new FakeSparrowClient({
-      capabilities: () => Promise.resolve(success(INSTALLED_CAPABILITIES)),
-      status: () => Promise.resolve(success(currentStatus)),
-      channel: () =>
-        Promise.resolve(
-          success(
-            currentStatus.generation === NEXT_GENERATION_STATUS.generation
-              ? NEXT_GENERATION_CHANNEL_DETAILS
-              : CHANNEL_DETAILS,
-          ),
-        ),
-      search: () =>
-        Promise.resolve(
-          success(
-            currentStatus.generation === NEXT_GENERATION_STATUS.generation
-              ? NEXT_SEARCH_RESULTS
-              : SEARCH_RESULTS,
-          ),
-        ),
-      schedule: () =>
-        Promise.resolve(
-          success(
-            currentStatus.generation === NEXT_GENERATION_STATUS.generation
-              ? NEXT_PROGRAMME
-              : PROGRAMME,
-          ),
-        ),
-    });
-    const user = userEvent.setup();
-    renderInstalledBrowser(client);
-
-    await user.type(
-      await screen.findByRole("searchbox", { name: "Channel or Programme" }),
-      "news",
-    );
-    await user.click(screen.getByRole("button", { name: "Scan index" }));
-    const browseChannel = requireMatch(
-      screen.getAllByRole("button", { name: /World News/ }),
-      (button) => button.hasAttribute("aria-pressed"),
-      "expected the installed browse Channel",
-    );
-    await user.click(browseChannel);
-    const schedule = screen.getByRole("complementary", {
-      name: "Programme schedule",
-    });
-    expect(await within(schedule).findByText("Evening Report")).toBeVisible();
-
-    currentStatus = NEXT_GENERATION_STATUS;
-    await act(async () => {
-      client.emit(
-        clientSchemas.sparrowEvent.parse({
-          _tag: "catalog-status-changed",
-          occurredAt: "2026-08-30T11:00:02Z",
-          status: NEXT_GENERATION_STATUS,
-        }),
-      );
-    });
-
-    const searchResults = await screen.findByRole("group", {
-      name: "Search results for news",
-    });
-    expect(
-      await within(searchResults).findByText("World News Reloaded"),
-    ).toBeVisible();
-    expect(await within(schedule).findByText("Late Bulletin")).toBeVisible();
-    await waitFor(() => expect(client.searchInputs).toHaveLength(2));
-    await waitFor(() => expect(client.scheduleInputs).toHaveLength(2));
-  });
-
-  it("drops retained installed search and schedule data when source configuration changes", async () => {
-    const client = new FakeSparrowClient({
-      capabilities: () => Promise.resolve(success(INSTALLED_CAPABILITIES)),
-      search: () => Promise.resolve(success(SEARCH_RESULTS)),
-      schedule: () => Promise.resolve(success(PROGRAMME)),
-    });
-    const user = userEvent.setup();
-    renderInstalledBrowser(client, {
-      replaceSourceConfiguration: () =>
-        Promise.resolve(success(CONFIGURED_WITHOUT_SNAPSHOT_STATUS)),
-    });
-
-    await user.type(
-      await screen.findByRole("searchbox", { name: "Channel or Programme" }),
-      "report",
-    );
-    await user.click(screen.getByRole("button", { name: "Scan index" }));
-    expect(await screen.findByText("Evening Report")).toBeVisible();
-    const browseChannel = requireMatch(
-      screen.getAllByRole("button", { name: /World News/ }),
-      (button) => button.hasAttribute("aria-pressed"),
-      "expected the browse Channel card",
-    );
-    await user.click(browseChannel);
-    const schedule = screen.getByRole("complementary", {
-      name: "Programme schedule",
-    });
-    expect(await within(schedule).findByText("Evening Report")).toBeVisible();
-
-    await user.type(
-      screen.getByLabelText("Required / Channel source"),
-      "https://replacement.invalid/list.m3u",
-    );
-    await user.click(screen.getByRole("button", { name: "Replace sources" }));
-
-    expect(
-      await screen.findByRole("heading", { name: "Waiting for a valid snapshot" }),
-    ).toBeVisible();
-    expect(screen.queryByRole("search")).not.toBeInTheDocument();
-    expect(screen.queryByText("Evening Report")).not.toBeInTheDocument();
-    expect(screen.queryByText("World News")).not.toBeInTheDocument();
-  });
-
-  it("distinguishes an omitted all-groups filter from the empty Ungrouped name", async () => {
-    const client = new FakeSparrowClient({
-      channels: (input) =>
-        Promise.resolve(
-          success(
-            input.group === "" ? UNGROUPED_CHANNELS_PAGE : CHANNELS_PAGE,
-          ),
-        ),
-    });
-    const user = userEvent.setup();
-    renderBrowser(client);
-
-    await screen.findByLabelText("3 channels loaded");
-    const initialRequest = requireFirst(
-      client.channelListInputs,
-      "expected the initial all-groups request",
-    );
-    expect("group" in initialRequest).toBe(false);
-
-    const groupRail = screen.getByRole("navigation", {
-      name: "Channel groups",
-    });
-    await user.click(
-      within(groupRail).getByRole("button", { name: /Ungrouped/ }),
-    );
-
-    expect(
-      await screen.findByRole("heading", { name: "Ungrouped" }),
-    ).toBeVisible();
-    expect(await screen.findByText("Free Channel")).toBeVisible();
-    const ungroupedRequest = requireMatch(
-      client.channelListInputs,
-      (input) => input.group === "",
-      "expected an explicit empty group filter",
-    );
-    expect(ungroupedRequest.group).toBe("");
-  });
-
-  it("retries failed selected Channel details without restarting its schedule", async () => {
-    let detailAttempts = 0;
-    const client = new FakeSparrowClient({
-      channel: () => {
-        detailAttempts += 1;
-        return Promise.resolve(
-          detailAttempts === 1
-            ? failure({ _tag: "not-found", resource: "channel" })
-            : success(CHANNEL_DETAILS),
+      status: () => status.promise,
+      guide: async (input) => {
+        guideRequest += 1;
+        return success(
+          guidePage(input, {
+            generation: guideRequest === 1 ? 8 : 7,
+            rows: [
+              guideRow(
+                guideRequest === 1 ? CINEMA_ONE : WORLD_NEWS,
+                input,
+                guideRequest === 1 ? "Stale Feature" : "Live Bulletin",
+              ),
+            ],
+          }),
         );
       },
     });
-    const user = userEvent.setup();
-    renderBrowser(client);
+    renderHostedBrowser(client);
 
-    await user.click(await screen.findByRole("button", { name: /World News/ }));
-    const schedule = screen.getByRole("complementary", {
-      name: "Programme schedule",
+    await waitFor(() => expect(client.guideInputs).toHaveLength(1));
+    await act(async () => {
+      status.resolve(success(FRESH_STATUS));
+      await status.promise;
     });
+
+    await waitFor(() => expect(client.guideInputs).toHaveLength(2));
     expect(
-      await within(schedule).findByText("That Channel left the catalog"),
+      await screen.findByRole("button", { name: "Tune World News" }),
     ).toBeVisible();
-
-    await user.click(within(schedule).getByRole("button", { name: "Try again" }));
-
-    expect(await within(schedule).findByText("World News")).toBeVisible();
-    expect(client.channelInputs).toHaveLength(2);
-    expect(client.scheduleInputs).toHaveLength(1);
+    expect(screen.queryByText("Stale Feature")).not.toBeInTheDocument();
   });
 
-  it("refetches selected Channel details for a newly published generation", async () => {
-    let currentGeneration = 7;
+  it("promotes matching bootstrap pages without repeating their requests", async () => {
+    const status = deferred<ClientResult<CatalogStatus>>();
+    const client = new FakeSparrowClient({ status: () => status.promise });
+    renderHostedBrowser(client);
+
+    await waitFor(() => {
+      expect(client.groupInputs).toHaveLength(1);
+      expect(client.guideInputs).toHaveLength(1);
+    });
+    await act(async () => Promise.resolve());
+
+    await act(async () => {
+      status.resolve(success(FRESH_STATUS));
+      await status.promise;
+    });
+
+    expect(
+      await screen.findByRole("button", { name: "Tune World News" }),
+    ).toBeVisible();
+    expect(client.groupInputs).toHaveLength(1);
+    expect(client.guideInputs).toHaveLength(1);
+  });
+
+  it("keeps faster status from replacing pending bootstrap requests", async () => {
+    const groups = deferred<ClientResult<Page<ChannelGroup>>>();
+    const guide = deferred<ClientResult<GuideWindow>>();
     const client = new FakeSparrowClient({
-      channel: () =>
-        Promise.resolve(
-          success(
-            currentGeneration === 7
-              ? CHANNEL_DETAILS
-              : NEXT_GENERATION_CHANNEL_DETAILS,
-          ),
+      groups: () => groups.promise,
+      guide: () => guide.promise,
+    });
+    renderHostedBrowser(client);
+
+    await waitFor(() => {
+      expect(client.statusInputs).toHaveLength(1);
+      expect(client.groupInputs).toHaveLength(1);
+      expect(client.guideInputs).toHaveLength(1);
+    });
+    await act(async () => Promise.resolve());
+    expect(client.groupInputs).toHaveLength(1);
+    expect(client.guideInputs).toHaveLength(1);
+
+    const guideInput = requireFirst(
+      client.guideInputs,
+      "expected the pending bootstrap guide request",
+    );
+    await act(async () => {
+      groups.resolve(success(GROUPS_PAGE));
+      guide.resolve(success(defaultGuidePage(guideInput)));
+      await Promise.all([groups.promise, guide.promise]);
+    });
+
+    expect(
+      await screen.findByRole("button", { name: "Tune World News" }),
+    ).toBeVisible();
+    expect(client.groupInputs).toHaveLength(1);
+    expect(client.guideInputs).toHaveLength(1);
+  });
+
+  it("opens a published generation without an old-closure refetch or manual retry", async () => {
+    let generation = 7;
+    const client = new FakeSparrowClient({
+      status: async () =>
+        success(
+          clientSchemas.status.parse({
+            ...FRESH_STATUS,
+            generation,
+          }),
+        ),
+      groups: async (input) =>
+        success(
+          clientSchemas.groupsPageFor(input).parse({
+            generation,
+            items: [
+              {
+                name: generation === 7 ? "News" : "Cinema",
+                channelCount: 1,
+              },
+            ],
+            next: null,
+          }),
+        ),
+      guide: async (input) =>
+        success(
+          guidePage(input, {
+            generation,
+            rows: [
+              guideRow(
+                generation === 7 ? WORLD_NEWS : CINEMA_ONE,
+                input,
+                generation === 7 ? "Live Bulletin" : "Published Feature",
+              ),
+            ],
+          }),
         ),
     });
-    const user = userEvent.setup();
-    renderBrowser(client);
+    renderHostedBrowser(client);
 
-    await user.click(await screen.findByRole("button", { name: /World News/ }));
-    const schedule = screen.getByRole("complementary", {
-      name: "Programme schedule",
-    });
-    expect(await within(schedule).findByText("World News")).toBeVisible();
+    expect(
+      await screen.findByRole("button", { name: "Tune World News" }),
+    ).toBeVisible();
+    const initialGuideRequests = client.guideInputs.length;
+    const initialGroupRequests = client.groupInputs.length;
+    generation = 8;
 
-    currentGeneration = 8;
-    await act(async () => {
+    act(() => {
       client.emit(
         clientSchemas.sparrowEvent.parse({
-          _tag: "catalog-status-changed",
-          occurredAt: "2026-08-30T11:00:02Z",
-          status: NEXT_GENERATION_STATUS,
+          _tag: "catalog-published",
+          occurredAt: "2026-09-01T20:00:00Z",
+          generation,
         }),
       );
     });
 
     expect(
-      await within(schedule).findByText("World News Reloaded"),
+      await screen.findByRole("button", { name: "Tune Cinema One" }),
     ).toBeVisible();
-    expect(client.channelInputs).toHaveLength(2);
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Published Feature" }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Tune World News" }),
+    ).not.toBeInTheDocument();
+    expect(client.guideInputs).toHaveLength(initialGuideRequests + 1);
+    expect(client.groupInputs).toHaveLength(initialGroupRequests + 1);
+    expect(
+      screen.queryByText(
+        "Guide refresh failed; the visible window is retained.",
+      ),
+    ).not.toBeInTheDocument();
   });
 
-  it("retains earlier Channels while a requested page is loading and appends it", async () => {
-    const nextPage = deferred<ClientResult<Page<ChannelSummary>>>();
+  it("reconciles status before retrying a missed guide generation", async () => {
+    let statusGeneration = 7;
+    const publishedGeneration = 8;
     const client = new FakeSparrowClient({
-      channels: (input) =>
-        input.cursor === FIRST_CHANNELS_PAGE.next
-          ? nextPage.promise
-          : Promise.resolve(success(FIRST_CHANNELS_PAGE)),
+      status: async () =>
+        success(
+          clientSchemas.status.parse({
+            ...FRESH_STATUS,
+            generation: statusGeneration,
+          }),
+        ),
+      groups: async (input) =>
+        success(
+          clientSchemas.groupsPageFor(input).parse({
+            generation: publishedGeneration,
+            items: [{ name: "News", channelCount: 1 }],
+            next: null,
+          }),
+        ),
+      guide: async (input) =>
+        success(
+          guidePage(input, {
+            generation: publishedGeneration,
+            rows: [guideRow(WORLD_NEWS, input, "Published Bulletin")],
+          }),
+        ),
+    });
+    renderInstalledBrowser(client);
+
+    expect(
+      await screen.findByRole("button", { name: "Try again" }),
+    ).toBeVisible();
+    expect(client.statusInputs).toHaveLength(1);
+    expect(client.groupInputs).toHaveLength(1);
+    expect(client.guideInputs).toHaveLength(1);
+    statusGeneration = publishedGeneration;
+
+    await userEvent
+      .setup()
+      .click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(
+      await screen.findByRole("button", { name: "Tune World News" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Published Bulletin" }),
+    ).toBeVisible();
+    expect(client.statusInputs).toHaveLength(2);
+    expect(client.groupInputs).toHaveLength(2);
+    expect(client.guideInputs).toHaveLength(2);
+  });
+
+  it("reconciles status before repeating a mismatched board search", async () => {
+    let statusGeneration = 7;
+    const publishedGeneration = 8;
+    const client = new FakeSparrowClient({
+      status: async () =>
+        success(
+          clientSchemas.status.parse({
+            ...FRESH_STATUS,
+            generation: statusGeneration,
+          }),
+        ),
+      groups: async (input) =>
+        success(
+          clientSchemas.groupsPageFor(input).parse({
+            generation: statusGeneration,
+            items: [{ name: "News", channelCount: 1 }],
+            next: null,
+          }),
+        ),
+      guide: async (input) =>
+        success(
+          guidePage(input, {
+            generation: statusGeneration,
+            rows: [guideRow(WORLD_NEWS, input, "Live Bulletin")],
+          }),
+        ),
+      search: async () =>
+        success(
+          clientSchemas.searchResults.parse({
+            generation: publishedGeneration,
+            channels: {
+              generation: publishedGeneration,
+              items: [WORLD_NEWS],
+              next: null,
+            },
+            programmes: {
+              generation: publishedGeneration,
+              items: [],
+              next: null,
+            },
+          }),
+        ),
+    });
+    renderInstalledBrowser(client);
+    const user = userEvent.setup();
+
+    await user.type(
+      await screen.findByRole("combobox", {
+        name: "Search Channels and Programmes",
+      }),
+      "world",
+    );
+    expect(
+      await screen.findByText("The catalog changed while searching."),
+    ).toBeVisible();
+    expect(client.searchInputs).toHaveLength(1);
+    statusGeneration = publishedGeneration;
+
+    await user.click(screen.getByRole("button", { name: "Rescan" }));
+
+    expect(
+      await screen.findByRole("option", { name: /World News/ }),
+    ).toBeVisible();
+    expect(client.statusInputs).toHaveLength(2);
+    expect(client.searchInputs).toHaveLength(2);
+  });
+
+  it("builds rows and Programme cells from one bounded guide-window read", async () => {
+    const client = new FakeSparrowClient();
+
+    renderHostedBrowser(client);
+
+    const guide = await screen.findByLabelText("Programme guide");
+    expect(
+      within(guide).getByRole("button", { name: "Tune World News" }),
+    ).toBeVisible();
+    expect(
+      within(guide).getByRole("button", { name: /Live Bulletin,/ }),
+    ).toBeVisible();
+    expect(
+      within(guide).getByRole("button", { name: /Future Bulletin,/ }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Live Bulletin" }),
+    ).toBeVisible();
+
+    const input = requireFirst(
+      client.guideInputs,
+      "expected a guide-window request",
+    );
+    expect(input.channelLimit).toBe(40);
+    expect("group" in input).toBe(false);
+    expect(Date.parse(input.endsAt) - Date.parse(input.startsAt)).toBe(
+      3 * 60 * 60 * 1_000,
+    );
+    expect(client.channelListInputs).toHaveLength(0);
+    expect(client.scheduleInputs).toHaveLength(0);
+  });
+
+  it("filters guide rows without unmounting or restarting active playback", async () => {
+    const client = new FakeSparrowClient({
+      guide: async (input) =>
+        success(
+          guidePage(input, {
+            rows:
+              input.group === "Cinema"
+                ? [guideRow(CINEMA_ONE, input, "Feature Presentation")]
+                : [guideRow(WORLD_NEWS, input, "Live Bulletin")],
+          }),
+        ),
     });
     const user = userEvent.setup();
-    renderBrowser(client);
+    renderHostedBrowser(client);
 
-    expect(await screen.findByText("First Channel")).toBeVisible();
     await user.click(
-      screen.getByRole("button", { name: "Receive next 24 channels" }),
+      await screen.findByRole("button", { name: "Tune World News" }),
+    );
+    await waitFor(() => expect(client.playbackInputs).toHaveLength(1));
+    expect(client.playbackInputs[0]?.id).toBe(WORLD_NEWS.id);
+
+    await user.click(screen.getByRole("radio", { name: /Cinema/ }));
+
+    expect(
+      await screen.findByRole("button", { name: "Tune Cinema One" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("heading", { level: 2, name: "World News" }),
+    ).toBeVisible();
+    expect(client.playbackInputs).toHaveLength(1);
+    expect(
+      requireMatch(
+        client.guideInputs,
+        (input) => input.group === "Cinema",
+        "expected the selected group to reach guideWindow",
+      ).group,
+    ).toBe("Cinema");
+  });
+
+  it("keeps playback mounted when the clock opens the next guide window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-01T20:29:45.000Z"));
+    const client = new FakeSparrowClient();
+    renderHostedBrowser(client);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Tune World News" }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(client.playbackInputs).toHaveLength(1);
+    const firstWindow = requireFirst(
+      client.guideInputs,
+      "expected the initial guide window",
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+
+    expect(client.guideInputs.length).toBeGreaterThan(1);
+    expect(client.guideInputs.at(-1)?.startsAt).not.toBe(firstWindow.startsAt);
+    expect(client.playbackInputs).toHaveLength(1);
+    expect(
+      screen.getByRole("heading", { level: 2, name: "World News" }),
+    ).toBeVisible();
+  });
+
+  it("keeps an explicitly selected future Programme aligned with its playing Channel", async () => {
+    const client = new FakeSparrowClient();
+    const user = userEvent.setup();
+    renderHostedBrowser(client);
+
+    await user.click(
+      await screen.findByRole("button", { name: /Future Bulletin,/ }),
     );
 
     expect(
-      await screen.findByRole("button", { name: /Receiving next block/ }),
-    ).toBeDisabled();
-    expect(screen.getByText("First Channel")).toBeVisible();
-
-    await act(async () => {
-      nextPage.resolve(success(SECOND_CHANNELS_PAGE));
-      await nextPage.promise;
-    });
-
-    expect(await screen.findByText("Second Channel")).toBeVisible();
-    expect(screen.getByText("First Channel")).toBeVisible();
-    expect(screen.getByLabelText("2 channels loaded")).toBeVisible();
-  });
-
-  it("renders an explicit empty catalog without inventing source groups", async () => {
-    const client = new FakeSparrowClient({
-      groups: () => Promise.resolve(success(EMPTY_GROUPS_PAGE)),
-      channels: () => Promise.resolve(success(EMPTY_CHANNELS_PAGE)),
-    });
-    renderBrowser(client);
-
-    expect(
-      await screen.findByRole("heading", { name: "All frequencies" }),
+      await screen.findByRole("heading", { level: 1, name: "Future Bulletin" }),
     ).toBeVisible();
-    expect(screen.getByText("No source-defined groups.")).toBeVisible();
+    expect(screen.getByText("Schedule")).toBeVisible();
     expect(
-      screen.getByRole("heading", {
-        level: 3,
-        name: "No Channels on this frequency",
-      }),
+      screen.getByRole("heading", { level: 2, name: "World News" }),
     ).toBeVisible();
-    expect(
-      screen.getByText("The current catalog contains no browseable Channels."),
-    ).toBeVisible();
+    expect(client.playbackInputs).toHaveLength(1);
+    expect(client.playbackInputs[0]?.id).toBe(WORLD_NEWS.id);
   });
 
   it.each([
     {
-      name: "authentication-required",
-      title: "Access credential required",
-      behavior: {
-        capabilities: () =>
-          Promise.resolve(
-            failure({
-              _tag: "authentication-required",
-            }),
-          ),
-      },
+      name: "unconfigured",
+      status: NOT_CONFIGURED_STATUS,
+      title: "Patch a feed to this receiver",
+      detail: "Open Feeds to configure the installed catalog before browsing.",
     },
     {
-      name: "catalog-unavailable",
-      title: "The Channel Catalog is unavailable",
-      behavior: {
-        channels: () =>
-          Promise.resolve(
-            failure({
-              _tag: "catalog-unavailable",
-              status: UNAVAILABLE_STATUS,
-            }),
-          ),
-      },
+      name: "configured without a generation",
+      status: CONFIGURED_WITHOUT_GENERATION_STATUS,
+      title: "Waiting for the first catalog",
+      detail:
+        "The configured feeds have not published a validated snapshot yet.",
     },
-  ])("renders the typed $name recovery state", async ({ behavior, title }) => {
-    renderBrowser(new FakeSparrowClient(behavior));
+  ])(
+    "keeps installed browse off when $name",
+    async ({ status, title, detail }) => {
+      const client = new FakeSparrowClient({
+        status: async () => success(status),
+      });
 
-    const alert = await screen.findByRole("alert");
-    expect(within(alert).getByRole("heading", { name: title })).toBeVisible();
-    expect(
-      within(alert).getByRole("button", { name: "Check again" }),
-    ).toBeEnabled();
-  });
+      renderInstalledBrowser(client);
 
-  it("retries a cached capability failure when the user checks again", async () => {
-    const attempts = { count: 0 };
+      expect(await screen.findByText(title)).toBeVisible();
+      expect(screen.getByText(detail)).toBeVisible();
+      expect(client.groupInputs).toHaveLength(0);
+      expect(client.guideInputs).toHaveLength(0);
+      expect(client.channelListInputs).toHaveLength(0);
+      expect(client.scheduleInputs).toHaveLength(0);
+    },
+  );
+
+  it("applies private installed configuration, clears its fields, and begins browsing", async () => {
     const client = new FakeSparrowClient({
-      capabilities: () => {
-        attempts.count += 1;
-        return Promise.resolve(
-          attempts.count === 1
-            ? failure({ _tag: "authentication-required" })
-            : success(CAPABILITIES),
-        );
-      },
+      status: async () => success(NOT_CONFIGURED_STATUS),
     });
     const user = userEvent.setup();
-    renderBrowser(client);
+    renderInstalledBrowser(client);
 
-    const alert = await screen.findByRole("alert");
-    await user.click(within(alert).getByRole("button", { name: "Check again" }));
+    await screen.findByText("Patch a feed to this receiver");
+    await user.click(screen.getByRole("button", { name: "Feeds" }));
+    const m3u = await screen.findByLabelText("Required / Channel source");
+    const epg = screen.getByLabelText("Optional / Guide source");
+    const privateM3u = "https://viewer:secret@provider.invalid/list.m3u";
+    const privateEpg = "https://viewer:secret@provider.invalid/guide.xml";
 
-    await waitFor(() => expect(client.capabilityInputs).toHaveLength(2));
-    expect(await screen.findByText("SAME ORIGIN")).toBeVisible();
-  });
-
-  it("reports a stale cursor while retaining the already loaded Channel page", async () => {
-    const client = new FakeSparrowClient({
-      channels: (input) =>
-        Promise.resolve(
-          input.cursor === FIRST_CHANNELS_PAGE.next
-            ? failure({
-                _tag: "stale-cursor",
-                current: SECOND_CHANNELS_PAGE.generation,
-              })
-            : success(FIRST_CHANNELS_PAGE),
-        ),
-    });
-    const user = userEvent.setup();
-    renderBrowser(client);
-
-    expect(await screen.findByText("First Channel")).toBeVisible();
+    expect(m3u).toHaveAttribute("autocomplete", "off");
+    await user.type(m3u, privateM3u);
+    await user.type(epg, privateEpg);
     await user.click(
-      screen.getByRole("button", { name: "Receive next 24 channels" }),
+      screen.getByRole("button", { name: "Build local catalog" }),
     );
 
     expect(
-      await screen.findByRole("heading", {
-        name: "A newer catalog is on air",
-      }),
-    ).toBeVisible();
-    expect(screen.getByText("First Channel")).toBeVisible();
-    expect(
-      screen.getByText(/Reload to continue from its first page/),
-    ).toBeVisible();
-  });
-
-  it("retains every loaded Channel page when a publication refetch later fails", async () => {
-    let published = false;
-    let currentStatus = FRESH_STATUS;
-    const client = new FakeSparrowClient({
-      status: () => Promise.resolve(success(currentStatus)),
-      channels: (input) => {
-        if (!published) {
-          return Promise.resolve(
-            success(
-              input.cursor === FIRST_CHANNELS_PAGE.next
-                ? SECOND_CONTINUING_CHANNELS_PAGE
-                : FIRST_CHANNELS_PAGE,
-            ),
-          );
-        }
-        return Promise.resolve(
-          input.cursor === FIRST_CHANNELS_PAGE.next
-            ? failure({
-                _tag: "transport",
-                retryable: true,
-                message: "A safe catalog refetch failed.",
-              })
-            : success(NEXT_GENERATION_FIRST_CHANNELS_PAGE),
-        );
-      },
-    });
-    const user = userEvent.setup();
-    renderBrowser(client);
-
-    await user.click(
-      await screen.findByRole("button", {
-        name: "Receive next 24 channels",
-      }),
-    );
-    expect(await screen.findByText("Second Channel")).toBeVisible();
-
-    published = true;
-    currentStatus = NEXT_GENERATION_STATUS;
-    await act(async () => {
-      client.emit(
-        clientSchemas.sparrowEvent.parse({
-          _tag: "catalog-published",
-          occurredAt: "2026-08-30T11:00:02Z",
-          generation: 8,
-        }),
-      );
-    });
-
-    expect(
-      await screen.findByRole("heading", {
-        name: "The hosted desk did not answer",
-      }),
-    ).toBeVisible();
-    expect(screen.getByText("First Channel")).toBeVisible();
-    expect(screen.getByText("Second Channel")).toBeVisible();
-    expect(screen.queryByText("Replacement Channel")).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Updating catalog generation…" }),
-    ).toBeDisabled();
-    const retainedBanner = screen.getByText("RECORDED SIGNAL").closest("aside");
-    expect(retainedBanner).not.toBeNull();
-    if (retainedBanner === null) {
-      throw new Error("expected a retained catalog banner");
-    }
-    expect(within(retainedBanner).getByText(/generation 7/)).toBeVisible();
-    expect(within(retainedBanner).getByText(/generation is 8/)).toBeVisible();
-    expect(
-      client.channelListInputs.filter(
-        (input) => input.cursor === FIRST_CHANNELS_PAGE.next,
+      await screen.findByText(
+        "Configuration saved. Safe catalog status will update as the local build completes.",
       ),
-    ).toHaveLength(2);
-  });
-
-  it("rechecks status after a failed manual refresh flight", async () => {
-    const refresh = deferred<ClientResult<RefreshReport>>();
-    let currentStatus = FRESH_STATUS;
-    const client = new FakeSparrowClient({
-      status: () => Promise.resolve(success(currentStatus)),
-      refresh: () => refresh.promise,
-    });
-    const user = userEvent.setup();
-    renderBrowser(client);
-
-    await user.click(
-      await screen.findByRole("button", { name: "Refresh sources" }),
-    );
-    expect(
-      screen.getByRole("button", { name: "Refresh in progress" }),
-    ).toBeDisabled();
-
-    currentStatus = NEXT_GENERATION_STATUS;
-    await act(async () => {
-      refresh.resolve(
-        failure({
-          _tag: "transport",
-          retryable: true,
-          message: "Detached request status is unknown.",
-        }),
-      );
-      await refresh.promise;
-    });
-
-    expect(
-      await screen.findByText("Refresh result was not received"),
     ).toBeVisible();
-    await waitFor(() => expect(client.statusInputs).toHaveLength(2));
-    expect(await screen.findByText("CATALOG / 8")).toBeVisible();
-    await waitFor(() => expect(client.channelListInputs.length).toBeGreaterThan(1));
+    await user.click(screen.getByRole("button", { name: "Close Feeds" }));
+    expect(
+      await screen.findByRole("button", { name: "Tune World News" }),
+    ).toBeVisible();
+    expect(client.configurationInputs).toHaveLength(1);
+    expect(client.configurationInputs[0]).toMatchObject({
+      m3uLocation: privateM3u,
+      epgLocation: privateEpg,
+    });
+    expect(m3u).toHaveValue("");
+    expect(epg).toHaveValue("");
+    expect(document.body).not.toHaveTextContent(privateM3u);
+    expect(document.body).not.toHaveTextContent(privateEpg);
+    expect(client.groupInputs).toHaveLength(1);
+    expect(client.guideInputs).toHaveLength(1);
   });
 
-  it("resynchronizes a missed publication from a refresh-completed hint", async () => {
-    let currentStatus = FRESH_STATUS;
-    const client = new FakeSparrowClient({
-      status: () => Promise.resolve(success(currentStatus)),
-      channels: () =>
-        Promise.resolve(
-          success(
-            currentStatus.generation === NEXT_GENERATION_STATUS.generation
-              ? NEXT_GENERATION_CHANNELS_PAGE
-              : CHANNELS_PAGE,
-          ),
-        ),
-    });
-    renderBrowser(client);
-    expect(await screen.findByText("World News")).toBeVisible();
-
-    currentStatus = NEXT_GENERATION_STATUS;
-    await act(async () => {
-      client.emit(
-        clientSchemas.sparrowEvent.parse({
-          _tag: "refresh-completed",
-          occurredAt: "2026-08-30T11:00:03Z",
-          source: "m3u",
-          outcome: {
-            _tag: "updated",
-            validatedAt: "2026-08-30T11:00:00Z",
-          },
-        }),
-      );
-    });
-
-    expect(await screen.findByText("Replacement Channel")).toBeVisible();
-    expect(screen.queryByText("World News")).not.toBeInTheDocument();
-    expect(client.statusInputs).toHaveLength(2);
-    expect(client.channelListInputs).toHaveLength(2);
-  });
-
-  it("owns exactly one event subscription after StrictMode replay and releases it", async () => {
+  it("keeps hosted Feeds read-only and free of source-location controls", async () => {
     const client = new FakeSparrowClient();
-    const queryClient = new QueryClient({
-      defaultOptions: {
-        queries: { retry: false, refetchOnWindowFocus: false },
+    const user = userEvent.setup();
+    renderHostedBrowser(client);
+
+    await user.click(await screen.findByRole("button", { name: "Feeds" }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "Feeds & signal health",
+    });
+    expect(
+      within(dialog).getByText(/deployment-managed sources/),
+    ).toBeVisible();
+    expect(
+      within(dialog).queryByLabelText("Required / Channel source"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("region", {
+        name: "Safe source diagnostics",
+      }),
+    ).not.toHaveTextContent("http");
+    expect(client.configurationInputs).toHaveLength(0);
+  });
+
+  it("marks a retained catalog without hiding its usable guide", async () => {
+    const client = new FakeSparrowClient({
+      status: async () => success(RETAINED_STATUS),
+    });
+    renderHostedBrowser(client);
+
+    const retained = await screen.findByText(
+      "Retained catalog · a fresh source check is pending",
+    );
+    expect(retained.closest("aside")).not.toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Tune World News" }),
+    ).toBeVisible();
+  });
+
+  it("retries only status when the visible failure belongs to status", async () => {
+    let statusAttempts = 0;
+    const client = new FakeSparrowClient({
+      status: async () => {
+        statusAttempts += 1;
+        return statusAttempts === 1
+          ? failure({ _tag: "service-unavailable" })
+          : success(FRESH_STATUS);
       },
     });
-    const view = render(
-      <StrictMode>
-        <QueryClientProvider client={queryClient}>
-          <CatalogBrowser client={client} playbackEngine={TEST_PLAYBACK_ENGINE} />
-        </QueryClientProvider>
-      </StrictMode>,
-    );
+    const user = userEvent.setup();
+    renderHostedBrowser(client);
 
-    await screen.findByText("World News");
-    expect(client.eventListeners.size).toBe(1);
-    view.unmount();
-    expect(client.eventListeners.size).toBe(0);
+    expect(
+      await screen.findByRole("button", { name: "Tune World News" }),
+    ).toBeVisible();
+    expect(
+      screen.getByText("Guide refresh failed; the visible window is retained."),
+    ).toBeVisible();
+    expect(client.statusInputs).toHaveLength(1);
+    expect(client.groupInputs).toHaveLength(1);
+    expect(client.guideInputs).toHaveLength(1);
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => expect(client.statusInputs).toHaveLength(2));
+    await waitFor(() =>
+      expect(
+        screen.queryByText(
+          "Guide refresh failed; the visible window is retained.",
+        ),
+      ).not.toBeInTheDocument(),
+    );
+    expect(client.groupInputs).toHaveLength(1);
+    expect(client.guideInputs).toHaveLength(1);
   });
 
-  it("warns about a retained stale source without hiding usable Channels", async () => {
+  it("retries every failing guide query without refetching status", async () => {
+    let groupAttempts = 0;
+    let guideAttempts = 0;
     const client = new FakeSparrowClient({
-      status: () => Promise.resolve(success(STALE_STATUS)),
+      groups: async () => {
+        groupAttempts += 1;
+        return groupAttempts === 1
+          ? failure({ _tag: "service-unavailable" })
+          : success(GROUPS_PAGE);
+      },
+      guide: async (input) => {
+        guideAttempts += 1;
+        return guideAttempts === 1
+          ? failure({ _tag: "service-unavailable" })
+          : success(defaultGuidePage(input));
+      },
     });
-    renderBrowser(client);
+    const user = userEvent.setup();
+    renderInstalledBrowser(client);
 
-    expect(await screen.findByText("World News")).toBeVisible();
-    const retainedBanner = screen.getByRole("status");
-    expect(within(retainedBanner).getByText("RECORDED SIGNAL")).toBeVisible();
-    expect(within(retainedBanner).getByText(/generation 7/)).toBeVisible();
-    expect(screen.getByText("RECORDED / STALE")).toBeVisible();
+    expect(
+      await screen.findByRole("button", { name: "Try again" }),
+    ).toBeVisible();
+    expect(client.statusInputs).toHaveLength(1);
+    expect(client.groupInputs).toHaveLength(1);
+    expect(client.guideInputs).toHaveLength(1);
+
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(
+      await screen.findByRole("button", { name: "Tune World News" }),
+    ).toBeVisible();
+    expect(client.statusInputs).toHaveLength(1);
+    expect(client.groupInputs).toHaveLength(2);
+    expect(client.guideInputs).toHaveLength(2);
+  });
+
+  it("appends a guide continuation with its correlated cursor history", async () => {
+    const client = new FakeSparrowClient({
+      guide: async (input) =>
+        success(
+          input.cursor === undefined
+            ? guidePage(input, {
+                rows: [guideRow(WORLD_NEWS, input, "Live Bulletin")],
+                next: "guide-next",
+              })
+            : guidePage(input, {
+                rows: [guideRow(CINEMA_ONE, input, "Feature Presentation")],
+              }),
+        ),
+    });
+    const user = userEvent.setup();
+    renderHostedBrowser(client);
+
+    await user.click(
+      await screen.findByRole("button", { name: "More Channels" }),
+    );
+
+    expect(
+      await screen.findByRole("button", { name: "Tune Cinema One" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Tune World News" }),
+    ).toBeVisible();
+    const continuation = requireMatch(
+      client.guideInputs,
+      (input) => input.cursor !== undefined,
+      "expected a guide continuation",
+    );
+    expect(continuation.cursor).toBe("guide-next");
+    expect(continuation.previousCursors).toEqual([]);
+  });
+
+  it("surfaces a failed group continuation and resumes pagination on retry", async () => {
+    let continuationAttempts = 0;
+    const client = new FakeSparrowClient({
+      groups: async (input) => {
+        if (input.cursor === undefined) {
+          return success(CONTINUING_GROUPS_PAGE);
+        }
+        continuationAttempts += 1;
+        return continuationAttempts === 1
+          ? failure({ _tag: "service-unavailable" })
+          : success(
+              clientSchemas.groupsPageFor(input).parse({
+                generation: 7,
+                items: [{ name: "Recovered", channelCount: 1 }],
+                next: null,
+              }),
+            );
+      },
+    });
+    const user = userEvent.setup();
+    renderHostedBrowser(client);
+
+    await waitFor(() => expect(client.groupInputs).toHaveLength(2));
+    await act(async () => Promise.resolve());
+
+    expect(client.groupInputs).toHaveLength(2);
+    expect(client.groupInputs[1]).toMatchObject({
+      cursor: "groups-next",
+      previousCursors: [],
+    });
+    expect(
+      screen.getByText("Guide refresh failed; the visible window is retained."),
+    ).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(
+      await screen.findByRole("radio", { name: /Recovered/ }),
+    ).toBeVisible();
+    await waitFor(() => expect(client.groupInputs).toHaveLength(4));
+    expect(client.groupInputs[2]?.cursor).toBeUndefined();
+    expect(client.groupInputs[3]).toMatchObject({
+      cursor: "groups-next",
+      previousCursors: [],
+    });
+    expect(client.guideInputs).toHaveLength(1);
+    expect(
+      screen.queryByText(
+        "Guide refresh failed; the visible window is retained.",
+      ),
+    ).not.toBeInTheDocument();
+  });
+
+  it("rejects rows from a mismatched continuation generation", async () => {
+    const client = new FakeSparrowClient({
+      guide: async (input) =>
+        success(
+          input.cursor === undefined
+            ? guidePage(input, {
+                rows: [guideRow(WORLD_NEWS, input, "Live Bulletin")],
+                next: "guide-next",
+              })
+            : guidePage(input, {
+                generation: 8,
+                rows: [guideRow(CINEMA_ONE, input, "Replacement Feature")],
+              }),
+        ),
+    });
+    const user = userEvent.setup();
+    renderHostedBrowser(client);
+
+    await user.click(
+      await screen.findByRole("button", { name: "More Channels" }),
+    );
+    await waitFor(() => expect(client.guideInputs).toHaveLength(2));
+
+    expect(
+      screen.getByRole("button", { name: "Tune World News" }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Tune Cinema One" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Replacement Feature")).not.toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "Guide refresh failed; the visible window is retained.",
+      ),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "More Channels" })).toBeEnabled();
   });
 });
 
-function renderBrowser(client: SparrowClient): QueryClient {
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      queries: {
-        retry: false,
-        refetchOnWindowFocus: false,
-      },
-    },
-  });
-  render(
-    <QueryClientProvider client={queryClient}>
-      <CatalogBrowser client={client} playbackEngine={TEST_PLAYBACK_ENGINE} />
-    </QueryClientProvider>,
+function renderHostedBrowser(client: InstalledSparrowClient): QueryClient {
+  return renderBrowser(
+    <CatalogBrowser client={client} playbackEngine={TEST_PLAYBACK_ENGINE} />,
   );
-  return queryClient;
 }
 
-function renderInstalledBrowser(
-  client: FakeSparrowClient,
-  sourceConfiguration: Pick<
-    InstalledSparrowClient,
-    "replaceSourceConfiguration"
-  > = {
-    replaceSourceConfiguration: () =>
-      Promise.resolve(success(FRESH_STATUS)),
-  },
-): QueryClient {
-  client.playbackTransport = "installed";
+function renderInstalledBrowser(client: InstalledSparrowClient): QueryClient {
+  return renderBrowser(
+    <CatalogBrowser
+      client={client}
+      runtime="installed"
+      playbackEngine={TEST_INSTALLED_PLAYBACK_ENGINE}
+    />,
+  );
+}
+
+function renderBrowser(browser: ReactElement): QueryClient {
   const queryClient = new QueryClient({
     defaultOptions: {
-      queries: {
-        retry: false,
-        refetchOnWindowFocus: false,
-      },
+      queries: { retry: false, refetchOnWindowFocus: false },
     },
   });
   render(
-    <QueryClientProvider client={queryClient}>
-      <CatalogBrowser
-        client={client}
-        runtime="installed"
-        sourceConfiguration={sourceConfiguration}
-        playbackEngine={TEST_NATIVE_PLAYBACK_ENGINE}
-      />
-    </QueryClientProvider>,
+    <QueryClientProvider client={queryClient}>{browser}</QueryClientProvider>,
   );
   return queryClient;
 }
@@ -1397,41 +1100,120 @@ const TEST_PLAYBACK_ENGINE: HostedPlaybackEngine = {
   },
 };
 
-const TEST_NATIVE_PLAYBACK_ENGINE: InstalledPlaybackEngine = {
+const TEST_INSTALLED_PLAYBACK_ENGINE: InstalledPlaybackEngine = {
   start: ({ onPlaying }) => {
     onPlaying();
     return { stop: () => undefined };
   },
 };
 
-function androidPresentationFixture() {
+function defaultGuidePage(input: GuideWindowInput): GuideWindow {
+  const newsProgrammes = programmesFor(input, [
+    ["Live Bulletin", 0, 60],
+    ["Future Bulletin", 60, 120],
+  ]);
+  return guidePage(input, {
+    rows: [
+      {
+        channel: WORLD_NEWS,
+        programmes: newsProgrammes,
+        programmesTruncated: false,
+      },
+      guideRow(CINEMA_ONE, input, "Feature Presentation"),
+    ],
+  });
+}
+
+function guideRow(
+  channel: ChannelSummary,
+  input: GuideWindowInput,
+  title: string,
+): GuideWindowChannel {
   return {
-    status: async () =>
-      success({
-        state: "stopped" as const,
-        decodedFrames: 0,
-        droppedFrames: 0,
-        bufferedDurationMs: 0,
-        silent: true,
-      }),
-    pause: async () => success(undefined),
-    resume: async () => success(undefined),
-    setVolume: async () => success(undefined),
-    setMuted: async () => success(undefined),
-    setViewport: async () => success(undefined),
-    stop: async () => success(undefined),
+    channel,
+    programmes: programmesFor(input, [[title, 0, 180]]),
+    programmesTruncated: false,
   };
 }
 
-function success<Value>(
-  value: Value,
-): { readonly ok: true; readonly value: Value } {
+function programmesFor(
+  input: GuideWindowInput,
+  programmes: readonly (readonly [
+    title: string,
+    startsAfterMinutes: number,
+    endsAfterMinutes: number,
+  ])[],
+): readonly GuideProgramme[] {
+  const windowStart = Date.parse(input.startsAt);
+  return programmes.map(([title, startsAfterMinutes, endsAfterMinutes]) => ({
+    title,
+    titleTruncated: false,
+    startsAt: clientSchemas.isoInstant.parse(
+      new Date(windowStart + startsAfterMinutes * 60_000).toISOString(),
+    ),
+    endsAt: clientSchemas.isoInstant.parse(
+      new Date(windowStart + endsAfterMinutes * 60_000).toISOString(),
+    ),
+  }));
+}
+
+function guidePage(
+  input: GuideWindowInput,
+  options: {
+    readonly rows: readonly GuideWindowChannel[];
+    readonly generation?: number;
+    readonly next?: string;
+  },
+): GuideWindow {
+  const items =
+    options.next === undefined
+      ? options.rows
+      : fillContinuingGuidePage(input, options.rows);
+  return clientSchemas.guideWindowFor(input).parse({
+    generation: options.generation ?? 7,
+    items: items.map((row) => ({
+      channel: row.channel,
+      programmes: row.programmes.map((programme) => ({
+        title: programme.title,
+        titleTruncated: programme.titleTruncated,
+        startsAt: programme.startsAt,
+        endsAt: programme.endsAt,
+      })),
+      programmesTruncated: row.programmesTruncated,
+    })),
+    next: options.next ?? null,
+  });
+}
+
+function fillContinuingGuidePage(
+  input: GuideWindowInput,
+  rows: readonly GuideWindowChannel[],
+): readonly GuideWindowChannel[] {
+  const fillerCount = input.channelLimit - rows.length;
+  return [
+    ...rows,
+    ...Array.from({ length: fillerCount }, (_, index) => {
+      const channel = clientSchemas.channel.parse({
+        id: `guide-filler-${index}`,
+        name: `Guide filler ${index + 1}`,
+        group: input.group ?? "Auxiliary",
+      });
+      return guideRow(channel, input, `Filler Programme ${index + 1}`);
+    }),
+  ];
+}
+
+function success<Value>(value: Value): {
+  readonly ok: true;
+  readonly value: Value;
+} {
   return { ok: true, value };
 }
 
-function failure(
-  error: ClientError,
-): { readonly ok: false; readonly error: ClientError } {
+function failure(error: ClientError): {
+  readonly ok: false;
+  readonly error: ClientError;
+} {
   return { ok: false, error };
 }
 
@@ -1456,10 +1238,7 @@ function deferred<Value>(): Deferred<Value> {
   };
 }
 
-function requireFirst<Value>(
-  values: readonly Value[],
-  message: string,
-): Value {
+function requireFirst<Value>(values: readonly Value[], message: string): Value {
   const value = values[0];
   if (value === undefined) {
     throw new Error(message);

@@ -1,5 +1,16 @@
 import { z } from "zod";
 
+import {
+  areProgrammeStartsNondecreasing,
+  createBoundedProgrammeSlotSchema,
+  createGuideContractSchemas,
+  isoInstantSchema,
+  isInstantBefore,
+  type IsoInstant,
+} from "./guide-contract";
+
+export type { IsoInstant } from "./guide-contract";
+
 const textEncoder = new TextEncoder();
 const withinUtf8ByteLimit = (value: string, limit: number): boolean =>
   textEncoder.encode(value).byteLength <= limit;
@@ -37,10 +48,7 @@ const pageCursorSchema = z
     message: "Page cursors cannot exceed 1024 UTF-8 bytes.",
   })
   .brand<"PageCursor">();
-const timestampSchema = z
-  .string()
-  .datetime({ offset: true })
-  .brand<"IsoInstant">();
+const timestampSchema = isoInstantSchema;
 const channelGroupNameSchema = z
   .string()
   .max(1024)
@@ -73,9 +81,6 @@ export type CatalogGeneration = z.output<typeof catalogGenerationSchema>;
 
 /** An opaque, non-empty continuation token tied to one catalog generation. */
 export type PageCursor = z.output<typeof pageCursorSchema>;
-
-/** An RFC 3339 instant carrying an explicit UTC offset. */
-export type IsoInstant = z.output<typeof timestampSchema>;
 
 /** Hosted deployment capabilities exposed by the authenticated HTTP adapter. */
 export interface HostedCapabilities {
@@ -312,13 +317,35 @@ export interface ChannelDetails {
   readonly group: string;
 }
 
-/** Browser-safe Programme metadata associated with one catalog Channel. */
-export interface ProgrammeSummary {
-  readonly channelId: ChannelId;
+/** The time-bound Programme fields shared by full schedules and guide rows. */
+export interface ProgrammeSlot {
   readonly title: string;
-  readonly description: string | null;
   readonly startsAt: IsoInstant;
   readonly endsAt: IsoInstant;
+}
+
+/** Browser-safe Programme metadata associated with one catalog Channel. */
+export interface ProgrammeSummary extends ProgrammeSlot {
+  readonly channelId: ChannelId;
+  readonly description: string | null;
+}
+
+/** One compact Programme search match paired with its owning Channel. */
+export interface ProgrammeSearchHit extends ProgrammeSlot {
+  readonly channel: ChannelSummary;
+  readonly titleTruncated: boolean;
+}
+
+/** Bounded Programme metadata carried inside its owning guide row. */
+export interface GuideProgramme extends ProgrammeSlot {
+  readonly titleTruncated: boolean;
+}
+
+/** One guide row with bounded Programme metadata for a catalog Channel. */
+export interface GuideWindowChannel {
+  readonly channel: ChannelSummary;
+  readonly programmes: readonly GuideProgramme[];
+  readonly programmesTruncated: boolean;
 }
 
 /** One generation-bound page of immutable catalog values. */
@@ -327,6 +354,9 @@ export interface Page<Item> {
   readonly items: readonly Item[];
   readonly next: PageCursor | null;
 }
+
+/** One generation-bound page of Channels projected into a guide window. */
+export type GuideWindow = Page<GuideWindowChannel>;
 
 /** Cancellation options accepted by non-paginated client reads. */
 export interface ClientRequestOptions {
@@ -337,6 +367,8 @@ export interface ClientRequestOptions {
 export interface ListGroupsInput extends ClientRequestOptions {
   readonly limit: number;
   readonly cursor?: PageCursor;
+  /** Earlier submitted cursors; used only to reject malformed response cycles. */
+  readonly previousCursors?: readonly PageCursor[];
 }
 
 /** Input for reading a page of channels, optionally narrowed to one group. */
@@ -345,6 +377,18 @@ export interface ListChannelsInput extends ClientRequestOptions {
   /** Omit for every group; use an empty string for the ungrouped bucket. */
   readonly group?: string;
   readonly cursor?: PageCursor;
+}
+
+/** Input for reading a bounded page of Channels and overlapping Programmes. */
+export interface GuideWindowInput extends ClientRequestOptions {
+  readonly startsAt: IsoInstant;
+  readonly endsAt: IsoInstant;
+  readonly channelLimit: number;
+  /** Omit for every group; use an empty string for the ungrouped bucket. */
+  readonly group?: string;
+  readonly cursor?: PageCursor;
+  /** Earlier submitted cursors; used only to reject malformed response cycles. */
+  readonly previousCursors?: readonly PageCursor[];
 }
 
 /** Input for resolving one channel by its opaque identifier. */
@@ -550,7 +594,7 @@ export type PlaybackDescriptor =
 export interface SearchResults {
   readonly generation: CatalogGeneration;
   readonly channels: Page<ChannelSummary>;
-  readonly programmes: Page<ProgrammeSummary>;
+  readonly programmes: Page<ProgrammeSearchHit>;
 }
 
 /** Expected, browser-safe failures returned by every client operation. */
@@ -572,6 +616,8 @@ export type ClientError =
         | "epg"
         | "channel-id"
         | "channel-group"
+        | "guide-starts-at"
+        | "guide-ends-at"
         | "search-term"
         | "page-limit"
         | "page-cursor";
@@ -656,6 +702,9 @@ export interface SparrowClient {
   listChannels(
     input: ListChannelsInput,
   ): Promise<ClientResult<Page<ChannelSummary>>>;
+
+  /** Reads a bounded Channel page with Programmes overlapping one UTC window. */
+  guideWindow(input: GuideWindowInput): Promise<ClientResult<GuideWindow>>;
 
   /** Resolves browser-safe details for one channel. */
   channel(input: ChannelInput): Promise<ClientResult<ChannelDetails>>;
@@ -1020,9 +1069,14 @@ const programmeSummarySchema: z.ZodType<ProgrammeSummary> = z
   })
   .refine(
     (programme) =>
-      Date.parse(programme.endsAt) > Date.parse(programme.startsAt),
+      isInstantBefore(programme.startsAt, programme.endsAt),
     { message: "Programme end must follow its start." },
   );
+
+const programmeSearchHitSchema: z.ZodType<ProgrammeSearchHit> =
+  createBoundedProgrammeSlotSchema(withinUtf8ByteLimit).safeExtend({
+    channel: channelSummarySchema,
+  });
 
 const hostedPlaybackDescriptorSchema: z.ZodType<HostedPlaybackDescriptor> =
   z.strictObject({
@@ -1176,6 +1230,14 @@ const requestedPageSchema = <Item>(
     },
   );
 
+const guideContractSchemas = createGuideContractSchemas({
+  channelSummarySchema,
+  pageSchema,
+  requestedPageSchema,
+  withinUtf8ByteLimit,
+  isNewCursor,
+});
+
 const schedulePageSchemaFor = (
   input: Pick<
     ScheduleInput,
@@ -1195,22 +1257,30 @@ const schedulePageSchemaFor = (
           "Every scheduled Programme must belong to the requested Channel.",
       },
     )
-    .refine((page) => isNondecreasingByStart(page.items), {
+    .refine((page) => areProgrammeStartsNondecreasing(page.items), {
       message: "A schedule page must be ordered by Programme start.",
     })
     .refine(
       (page) =>
         input.afterStartsAt === undefined ||
         page.items[0] === undefined ||
-        Date.parse(page.items[0].startsAt) >= Date.parse(input.afterStartsAt),
+        !isInstantBefore(page.items[0].startsAt, input.afterStartsAt),
       { message: "A schedule continuation cannot precede its prior page." },
     );
+
+const groupsPageSchemaFor = (
+  input: Pick<ListGroupsInput, "cursor" | "previousCursors">,
+): z.ZodType<Page<ChannelGroup>> =>
+  pageSchema(channelGroupSchema).refine(
+    (page) => isNewCursor(page.next, input.cursor, input.previousCursors),
+    { message: "A group continuation cannot repeat an earlier cursor." },
+  );
 
 const searchResultsSchema: z.ZodType<SearchResults> = z
   .strictObject({
     generation: catalogGenerationSchema,
     channels: pageSchema(channelSummarySchema),
-    programmes: pageSchema(programmeSummarySchema),
+    programmes: pageSchema(programmeSearchHitSchema),
   })
   .refine(
     (results) =>
@@ -1235,7 +1305,7 @@ const searchResultsSchemaFor = (
       generation: catalogGenerationSchema,
       channels: requestedPageSchema(channelSummarySchema, input.channelLimit),
       programmes: requestedPageSchema(
-        programmeSummarySchema,
+        programmeSearchHitSchema,
         input.programmeLimit,
       ),
     })
@@ -1293,20 +1363,6 @@ function isPageLimit(value: number): boolean {
   return Number.isInteger(value) && value >= 1 && value <= 100;
 }
 
-function isNondecreasingByStart(
-  programmes: readonly ProgrammeSummary[],
-): boolean {
-  let previousStart: number | undefined;
-  for (const programme of programmes) {
-    const currentStart = Date.parse(programme.startsAt);
-    if (previousStart !== undefined && currentStart < previousStart) {
-      return false;
-    }
-    previousStart = currentStart;
-  }
-  return true;
-}
-
 type ServerClientError = Exclude<
   ClientError,
   { readonly _tag: "transport" } | { readonly _tag: "cancelled" }
@@ -1331,6 +1387,8 @@ const serverClientErrorSchema: z.ZodType<ServerClientError> =
         "epg",
         "channel-id",
         "channel-group",
+        "guide-starts-at",
+        "guide-ends-at",
         "search-term",
         "page-limit",
         "page-cursor",
@@ -1402,8 +1460,12 @@ export const clientSchemas = Object.freeze({
   refreshReport: refreshReportSchema,
   sparrowEvent: sparrowEventSchema,
   groupsPage: pageSchema(channelGroupSchema),
+  groupsPageFor: groupsPageSchemaFor,
   channelsPage: pageSchema(channelSummarySchema),
   channel: channelDetailsSchema,
+  isoInstant: timestampSchema,
+  guideWindow: guideContractSchemas.guideWindow,
+  guideWindowFor: guideContractSchemas.guideWindowFor,
   schedulePage: pageSchema(programmeSummarySchema),
   searchResults: searchResultsSchema,
   schedulePageFor: schedulePageSchemaFor,

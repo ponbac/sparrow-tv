@@ -61,7 +61,7 @@ async fn channels_and_programmes_are_ranked_and_paginated_independently() {
         .expect("the first search pages are available");
 
     assert_eq!(names(first.channels()), ["News", "Newsroom"]);
-    assert_eq!(titles(first.programmes()), ["News"]);
+    assert_eq!(hit_titles(first.programmes()), ["News"]);
     assert_eq!(first.generation(), first.channels().generation());
     assert_eq!(
         first.channels().generation(),
@@ -106,7 +106,7 @@ async fn channels_and_programmes_are_ranked_and_paginated_independently() {
     );
     assert!(second.channels().next().is_none());
     assert_eq!(
-        titles(second.programmes()),
+        hit_titles(second.programmes()),
         ["News Tonight", "Evening News Bulletin"]
     );
     let final_programme_cursor = round_trip(
@@ -124,7 +124,7 @@ async fn channels_and_programmes_are_ranked_and_paginated_independently() {
         ))
         .expect("Programme pagination does not depend on Channel pagination");
     assert_eq!(names(final_programme.channels()), ["News"]);
-    assert_eq!(titles(final_programme.programmes()), ["Goodnews Story"]);
+    assert_eq!(hit_titles(final_programme.programmes()), ["Goodnews Story"]);
     assert!(final_programme.programmes().next().is_none());
 
     let repeated = core
@@ -140,7 +140,7 @@ async fn channels_and_programmes_are_ranked_and_paginated_independently() {
         .search(request("historical", 100, 100))
         .expect("Programme descriptions are indexed without reparsing EPG");
     assert!(description_match.channels().items().is_empty());
-    assert_eq!(titles(description_match.programmes()), ["News"]);
+    assert_eq!(hit_titles(description_match.programmes()), ["News"]);
     assert_eq!(source.open_count_for(SourceKind::M3u), 1);
     assert_eq!(source.open_count_for(SourceKind::Epg), 1);
 }
@@ -356,6 +356,13 @@ fn names(page: &sparrow_core::Page<sparrow_core::ChannelSummary>) -> Vec<&str> {
 }
 
 fn titles(page: &sparrow_core::Page<sparrow_core::ProgrammeSummary>) -> Vec<&str> {
+    page.items()
+        .iter()
+        .map(|programme| programme.title())
+        .collect()
+}
+
+fn hit_titles(page: &sparrow_core::Page<sparrow_core::ProgrammeSearchHit>) -> Vec<&str> {
     page.items()
         .iter()
         .map(|programme| programme.title())

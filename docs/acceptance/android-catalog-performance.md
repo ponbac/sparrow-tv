@@ -50,10 +50,10 @@ version, target SDK, and debuggable flag, and compares the installed `base.apk`
 digest when Android permits the shell to read it. It then runs three distinct
 process-cold offline launches. The timer starts before the
 activity launch and stops only when the installed UI exposes local IPC, a
-retained catalog, its complete 24-Channel first page, group controls, and search.
+retained catalog, its complete 40-Channel guide page, group controls, and search.
 It does not use Android's `am start -W` timing as the readiness result. It then
-selects the first card without reading its content and waits for Channel details
-to resolve, covering initial browse work.
+tunes the first Channel row without reading its content and waits for that row's
+pressed state, covering the Split Stage interaction without an extra detail read.
 
 During load and browse, the tool samples the main process's `VmHWM` and `VmRSS`
 through its own UID. `VmHWM` is gated at 524,288 KiB; total PSS and cgroup memory

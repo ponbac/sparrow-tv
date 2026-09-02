@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 mod android_playback;
 mod audio_preferences;
-mod bounded_blocking;
 mod config_store;
 mod instance_lock;
 mod ipc;
@@ -47,6 +46,7 @@ pub fn run() {
             ipc::catalog_list_channels,
             ipc::catalog_channel,
             ipc::catalog_schedule,
+            ipc::catalog_guide_window,
             ipc::catalog_search,
             ipc::catalog_search_channels,
             ipc::catalog_search_programmes,

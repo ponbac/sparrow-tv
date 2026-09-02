@@ -11,6 +11,8 @@ import {
   type ClientResult,
   type ListChannelsInput,
   type ListGroupsInput,
+  type GuideWindow,
+  type GuideWindowInput,
   type Page,
   type PlaybackDescriptor,
   type ProgrammeSummary,
@@ -181,7 +183,7 @@ class HttpSparrowClient implements SparrowClient {
 
     return this.#request(
       `${API_ROOT}/groups?${query.toString()}`,
-      clientSchemas.groupsPage,
+      clientSchemas.groupsPageFor(input),
       input.signal,
     );
   }
@@ -202,6 +204,26 @@ class HttpSparrowClient implements SparrowClient {
     return this.#request(
       `${API_ROOT}/channels?${query.toString()}`,
       clientSchemas.channelsPage,
+      input.signal,
+    );
+  }
+
+  /** Reads one Channel page with Programmes overlapping an exact UTC window. */
+  guideWindow(input: GuideWindowInput): Promise<ClientResult<GuideWindow>> {
+    const query = new URLSearchParams();
+    query.set("startsAt", input.startsAt);
+    query.set("endsAt", input.endsAt);
+    query.set("channelLimit", String(input.channelLimit));
+    if (input.group !== undefined) {
+      query.set("group", input.group);
+    }
+    if (input.cursor !== undefined) {
+      query.set("cursor", input.cursor);
+    }
+
+    return this.#request(
+      `${API_ROOT}/guide?${query.toString()}`,
+      clientSchemas.guideWindowFor(input),
       input.signal,
     );
   }

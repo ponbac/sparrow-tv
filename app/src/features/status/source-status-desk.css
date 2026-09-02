@@ -2,11 +2,11 @@
   position: relative;
   z-index: 1;
   padding: 30px clamp(24px, 4vw, 70px) 34px;
-  color: var(--paper);
+  color: var(--bone);
   border-bottom: 1px solid var(--ink);
   background:
     linear-gradient(100deg, rgba(215, 255, 101, 0.07), transparent 38%),
-    var(--ink-soft);
+    var(--ink-raised);
 }
 
 :where(.source-desk) .source-desk__heading {
@@ -18,7 +18,7 @@
 }
 
 :where(.source-desk) .source-desk__index {
-  color: var(--signal);
+  color: var(--tomato);
   font-family: "Newsreader Variable", serif;
   font-size: 2.5rem;
   font-style: italic;
@@ -62,7 +62,7 @@
 }
 
 :where(.source-desk) .source-desk__refresh[aria-busy="true"] svg {
-  animation: dial-turn 900ms linear infinite;
+  animation: source-desk-dial-turn 900ms linear infinite;
 }
 
 :where(.source-desk) .source-desk__refresh:disabled {
@@ -103,7 +103,7 @@
 :where(.source-desk) .source-card[data-state="stale"]::after,
 :where(.source-desk) .source-card[data-state="failed"]::after,
 :where(.source-desk) .source-card[data-state="unavailable"]::after {
-  background: var(--signal);
+  background: var(--tomato);
 }
 
 :where(.source-desk) .source-card[data-state="checking"]::after,
@@ -138,7 +138,7 @@
   height: 24px;
   place-items: center;
   color: var(--ink);
-  background: var(--signal);
+  background: var(--tomato);
 }
 
 :where(.source-desk) .source-card__topline strong {
@@ -148,7 +148,7 @@
 :where(.source-desk) .source-card[data-state="failed"] .source-card__topline strong,
 :where(.source-desk) .source-card[data-state="unavailable"] .source-card__topline strong,
 :where(.source-desk) .source-card[data-state="stale"] .source-card__topline strong {
-  color: var(--signal-pale);
+  color: var(--tomato);
 }
 
 :where(.source-desk) .source-card h3,
@@ -183,7 +183,7 @@
 :where(.source-desk) .source-card code {
   width: fit-content;
   padding: 3px 6px;
-  color: var(--signal-pale);
+  color: var(--tomato);
   background: rgba(255, 90, 31, 0.13);
 }
 
@@ -199,7 +199,7 @@
 }
 
 :where(.source-desk) .refresh-feedback[data-tone="failed"] {
-  color: var(--paper);
+  color: var(--bone);
   background: #8e2e15;
 }
 
@@ -257,9 +257,15 @@
 }
 
 :where(.source-desk) .source-desk__diagnostics button {
-  color: var(--paper);
+  color: var(--bone);
   border-color: rgba(243, 237, 223, 0.4);
   background: transparent;
+}
+
+@keyframes source-desk-dial-turn {
+  to {
+    transform: rotate(1turn);
+  }
 }
 
 @media (max-width: 760px) {

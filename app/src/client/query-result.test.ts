@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   ClientQueryError,
   clientErrorFromQuery,
+  generationBoundResult,
   successfulQueryResult,
 } from "./query-result";
+import type { CatalogGeneration } from "./contracts";
 
 describe("React Query client result boundary", () => {
   it("returns successful client data unchanged", async () => {
@@ -38,5 +40,26 @@ describe("React Query client result boundary", () => {
       message: "The hosted desk did not complete this catalog request.",
     });
     expect(JSON.stringify(recovered)).not.toContain(privateCanary);
+  });
+
+  it("rejects a page from outside the expected catalog generation", async () => {
+    const operation = Promise.resolve({
+      ok: true,
+      value: {
+        generation: 8 as CatalogGeneration,
+        items: ["replacement"],
+        next: null,
+      },
+    } as const);
+
+    const failure = await generationBoundResult(
+      operation,
+      7 as CatalogGeneration,
+    ).catch((error: unknown) => error);
+
+    expect(clientErrorFromQuery(failure)).toEqual({
+      _tag: "stale-cursor",
+      current: 8,
+    });
   });
 });

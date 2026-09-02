@@ -128,7 +128,7 @@ export function HostedPlayer({
       );
     }
   };
-  const overlayAction =
+  const recoveryAction =
     state._tag === "failed" && state.retryable
       ? {
           label: retryLabel(state.failure),
@@ -145,7 +145,7 @@ export function HostedPlayer({
       transportLabel="same-origin relay"
       privacyCopy="Provider details remain behind the Sparrow relay."
       onPlaying={() => setState({ _tag: "playing" })}
-      {...(overlayAction === undefined ? {} : { overlayAction })}
+      {...(recoveryAction === undefined ? {} : { recoveryAction })}
       volume={volume}
       muted={muted}
       fullscreen={fullscreen}

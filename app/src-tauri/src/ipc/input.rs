@@ -4,6 +4,10 @@ use sparrow_core::{
     SearchRequest, SearchTerm, SourceConfiguration,
 };
 
+mod guide_window;
+
+pub(crate) use guide_window::GuideWindowInput;
+
 use crate::config_store::StoredSourceConfiguration;
 use crate::{
     android_playback::{AndroidPlaybackControls, AndroidPlaybackIdentity, AndroidPlaybackViewport},

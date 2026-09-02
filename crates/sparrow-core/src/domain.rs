@@ -13,6 +13,12 @@ use thiserror::Error;
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
+mod programmes;
+
+pub use programmes::{
+    GuideProgramme, GuideWindowChannel, GuideWindowQuery, ProgrammeSearchHit, ProgrammeSummary,
+};
+
 const MAX_SOURCE_LOCATION_BYTES: usize = 16 * 1024;
 const PAGE_CURSOR_PREFIX: &str = "pc1";
 const CATALOG_GENERATION_DOMAIN: &[u8] = b"sparrow-catalog-generation-v1\0";
@@ -266,6 +272,8 @@ pub enum InputField {
     Epg,
     ChannelId,
     ChannelGroup,
+    GuideWindowStartsAt,
+    GuideWindowEndsAt,
     SearchTerm,
     PageLimit,
     PageCursor,
@@ -278,6 +286,8 @@ impl Display for InputField {
             InputField::Epg => "epg",
             InputField::ChannelId => "channel ID",
             InputField::ChannelGroup => "channel group",
+            InputField::GuideWindowStartsAt => "guide window start",
+            InputField::GuideWindowEndsAt => "guide window end",
             InputField::SearchTerm => "search term",
             InputField::PageLimit => "page limit",
             InputField::PageCursor => "page cursor",
@@ -526,6 +536,13 @@ impl PageRequest {
     /// Returns the bounded maximum number of items requested.
     pub const fn limit(&self) -> PageLimit {
         self.limit
+    }
+
+    fn required_selection_prefix_len(&self) -> usize {
+        self.cursor
+            .as_ref()
+            .map_or(0, |cursor| cursor.offset)
+            .saturating_add(usize::from(self.limit.get()))
     }
 }
 
@@ -797,59 +814,6 @@ impl Debug for SecretPlaybackLocation {
     }
 }
 
-/// One source-derived Programme associated with a Channel in this catalog generation.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProgrammeSummary {
-    channel_id: ChannelId,
-    title: Arc<str>,
-    description: Option<Arc<str>>,
-    starts_at: DateTime<Utc>,
-    ends_at: DateTime<Utc>,
-}
-
-impl ProgrammeSummary {
-    pub(crate) fn new(
-        channel_id: ChannelId,
-        title: Arc<str>,
-        description: Option<Arc<str>>,
-        starts_at: DateTime<Utc>,
-        ends_at: DateTime<Utc>,
-    ) -> Self {
-        Self {
-            channel_id,
-            title,
-            description,
-            starts_at,
-            ends_at,
-        }
-    }
-
-    /// Returns the opaque Channel Identifier associated with this Programme.
-    pub fn channel_id(&self) -> &ChannelId {
-        &self.channel_id
-    }
-
-    /// Returns the normalized Programme title supplied by the EPG Source.
-    pub fn title(&self) -> &str {
-        &self.title
-    }
-
-    /// Returns the optional normalized Programme description.
-    pub fn description(&self) -> Option<&str> {
-        self.description.as_deref()
-    }
-
-    /// Returns the Programme start instant normalized to UTC.
-    pub const fn starts_at(&self) -> DateTime<Utc> {
-        self.starts_at
-    }
-
-    /// Returns the Programme end instant normalized to UTC.
-    pub const fn ends_at(&self) -> DateTime<Utc> {
-        self.ends_at
-    }
-}
-
 /// Selects all Channels or the Channels in one exact source-derived group.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChannelQuery {
@@ -943,6 +907,29 @@ pub struct Page<T> {
     next: Option<PageCursor>,
 }
 
+/// A bounded selection prefix paired with its full unmaterialized length.
+pub(crate) struct SelectionPrefix {
+    indices: Vec<usize>,
+    total_len: usize,
+}
+
+impl SelectionPrefix {
+    pub(crate) fn new(indices: Vec<usize>, total_len: usize) -> Self {
+        debug_assert!(indices.len() <= total_len);
+        Self { indices, total_len }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn indices(&self) -> &[usize] {
+        &self.indices
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn total_len(&self) -> usize {
+        self.total_len
+    }
+}
+
 impl<T> Page<T> {
     /// Projects only the requested bounded window from an immutable collection.
     pub(crate) fn from_request(
@@ -988,18 +975,24 @@ impl<T> Page<T> {
         })
     }
 
-    /// Projects only selected indexes that fall inside the requested page window.
-    pub(crate) fn from_selection_projection<U>(
+    /// Selects only the prefix needed for this page, then projects its bounded window.
+    pub(crate) fn from_bounded_selection_projection<U>(
         generation: CatalogGeneration,
         source: &[U],
-        selection: &[usize],
         request: &PageRequest,
         query: CursorQueryHash,
+        select: impl FnOnce(usize) -> Result<SelectionPrefix, CoreError>,
         mut project: impl FnMut(&U) -> T,
     ) -> Result<Self, CoreError> {
-        debug_assert!(selection.iter().all(|index| *index < source.len()));
-        let window = page_window(generation, selection.len(), request, query)?;
-        let items = selection[window.range]
+        let required_prefix_len = request.required_selection_prefix_len().min(source.len());
+        let selection = select(required_prefix_len)?;
+        debug_assert!(selection.indices.iter().all(|index| *index < source.len()));
+        debug_assert_eq!(
+            selection.indices.len(),
+            selection.total_len.min(required_prefix_len)
+        );
+        let window = page_window(generation, selection.total_len, request, query)?;
+        let items = selection.indices[window.range]
             .iter()
             .map(|index| project(&source[*index]))
             .collect::<Vec<_>>();
@@ -1085,11 +1078,14 @@ impl<T: Debug> Debug for Page<T> {
 #[derive(Clone, Debug)]
 pub struct SearchResults {
     channels: Page<ChannelSummary>,
-    programmes: Page<ProgrammeSummary>,
+    programmes: Page<ProgrammeSearchHit>,
 }
 
 impl SearchResults {
-    pub(crate) fn new(channels: Page<ChannelSummary>, programmes: Page<ProgrammeSummary>) -> Self {
+    pub(crate) fn new(
+        channels: Page<ChannelSummary>,
+        programmes: Page<ProgrammeSearchHit>,
+    ) -> Self {
         debug_assert_eq!(channels.generation(), programmes.generation());
         Self {
             channels,
@@ -1106,7 +1102,7 @@ impl SearchResults {
         &self.channels
     }
 
-    pub const fn programmes(&self) -> &Page<ProgrammeSummary> {
+    pub const fn programmes(&self) -> &Page<ProgrammeSearchHit> {
         &self.programmes
     }
 }

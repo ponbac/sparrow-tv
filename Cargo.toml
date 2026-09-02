@@ -1,6 +1,8 @@
 [workspace]
 members = [
   "app/src-tauri",
+  "crates/sparrow-bounded-blocking",
+  "crates/sparrow-client-contract",
   "crates/sparrow-core",
   "crates/sparrow-server",
   "crates/sparrow-snapshot-store",

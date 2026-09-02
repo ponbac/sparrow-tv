@@ -196,7 +196,11 @@ describe("hosted HTTP Sparrow client", () => {
       throw new Error("expected the channel page fixture to contain one item");
     }
 
-    await expect(client.channel({ id: firstChannel.id })).resolves.toEqual({
+    await expect(
+      client.channel({
+        id: firstChannel.id,
+      }),
+    ).resolves.toEqual({
       ok: true,
       value: channelDetails,
     });
@@ -473,9 +477,11 @@ describe("hosted HTTP Sparrow client", () => {
     if (channel === undefined) {
       throw new Error("expected the channel fixture to contain one item");
     }
-    await expect(client.channel({ id: channel.id })).resolves.toEqual(
-      invalidResponse(false),
-    );
+    await expect(
+      client.channel({
+        id: channel.id,
+      }),
+    ).resolves.toEqual(invalidResponse(false));
     await expect(client.status()).resolves.toEqual(invalidResponse(false));
   });
 
@@ -676,7 +682,9 @@ describe("hosted HTTP Sparrow client", () => {
     ]);
     const client = createHttpSparrowClient({ fetch: http.fetch });
     await client.listGroups({ limit: 50, cursor: parsedGroups.data.next });
-    await client.channel({ id: channel.id });
+    await client.channel({
+      id: channel.id,
+    });
 
     expect(requestAt(http, 0).url).toBe(
       "/api/v1/groups?limit=50&cursor=next+%2F%3F%26%3D%E2%98%83",
@@ -684,6 +692,23 @@ describe("hosted HTTP Sparrow client", () => {
     expect(requestAt(http, 1).url).toBe(
       "/api/v1/channels/channel%20%2F%3F%26%3D%E2%98%83",
     );
+  });
+
+  it("rejects a repeated group continuation cursor", async () => {
+    const parsed = clientSchemas.groupsPage.parse(groupsPage);
+    if (parsed.next === null) {
+      throw new Error("expected the group continuation fixture");
+    }
+    const http = createFakeHttp([{ body: groupsPage }]);
+    const client = createHttpSparrowClient({ fetch: http.fetch });
+
+    await expect(
+      client.listGroups({
+        limit: 50,
+        cursor: parsed.next,
+        previousCursors: [],
+      }),
+    ).resolves.toEqual(invalidResponse(false));
   });
 
   it("accepts only group names and cursors that the HTTP query boundary can round-trip", () => {

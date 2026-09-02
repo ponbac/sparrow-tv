@@ -194,7 +194,7 @@ describe("Android catalog acceptance boundaries", () => {
       nativeBridge: true,
       catalogShell: true,
       loading: false,
-      channelCount: 24,
+      channelCount: 40,
       groupButtonCount: 102,
       searchVisible: true,
       retainedCatalog: true,
