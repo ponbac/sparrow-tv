@@ -58,17 +58,16 @@ describe("BoardSearch", () => {
       void input;
       return success(CHANNEL_RESULTS);
     });
-    const client = searchClient(search);
-    renderSearch(client, CHANNEL_RESULTS.generation);
+    renderSearch(searchClient(search), CHANNEL_RESULTS.generation);
 
-    await userEvent
-      .setup()
-      .type(
-        screen.getByRole("combobox", {
-          name: "Search Channels and Programmes",
-        }),
-        "  news  ",
-      );
+    fireEvent.change(
+      screen.getByRole("combobox", {
+        name: "Search Channels and Programmes",
+      }),
+      { target: { value: "  news  " } },
+    );
+
+    expect(search).not.toHaveBeenCalled();
 
     expect(await screen.findByText("World News")).toBeVisible();
     expect(search).toHaveBeenCalledTimes(1);
