@@ -45,11 +45,13 @@ import {
 } from "../../client/contracts";
 import type { InstalledPlaybackEngine } from "../playback/installed-playback-engine";
 import type { HostedPlaybackEngine } from "../playback/mpegts-engine";
+import { BOARD_GROUP_EXCLUSIONS_STORAGE_KEY } from "../guide/board-group-roster";
 import { CatalogBrowser } from "./catalog-browser";
 
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  localStorage.clear();
 });
 
 const HOSTED_CAPABILITIES = clientSchemas.capabilities.parse({
@@ -696,6 +698,38 @@ describe("CatalogBrowser Split Stage", () => {
         "expected the selected group to reach guideWindow",
       ).group,
     ).toBe("Cinema");
+  });
+
+  it("excludes a Channel Group from the board and All-window rows", async () => {
+    const client = new FakeSparrowClient({
+      guide: async (input) =>
+        success(
+          guidePage(input, {
+            rows: [guideRow(WORLD_NEWS, input, "Live Bulletin"), guideRow(CINEMA_ONE, input, "Feature Presentation")],
+          }),
+        ),
+    });
+    const user = userEvent.setup();
+    renderHostedBrowser(client);
+
+    expect(
+      await screen.findByRole("button", { name: "Tune World News" }),
+    ).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Channel Group roster" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Exclude News" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Close Channel Group roster" }),
+    );
+
+    const lane = screen.getByRole("radiogroup", { name: "Channel groups" });
+    expect(within(lane).queryByRole("radio", { name: /News/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Tune World News" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Tune Cinema One" })).toBeVisible();
+    expect(localStorage.getItem(BOARD_GROUP_EXCLUSIONS_STORAGE_KEY)).toContain(
+      "News",
+    );
   });
 
   it("keeps playback mounted when the clock opens the next guide window", async () => {

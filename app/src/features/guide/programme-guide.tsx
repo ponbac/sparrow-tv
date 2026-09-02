@@ -1,5 +1,3 @@
-import { Radio } from "@base-ui/react/radio";
-import { RadioGroup } from "@base-ui/react/radio-group";
 import { Tooltip } from "@base-ui/react/tooltip";
 import { useState, type ReactNode } from "react";
 import type {
@@ -11,6 +9,7 @@ import type {
   GuideProgramme,
   ProgrammeSlot,
 } from "../../client/contracts";
+import { ChannelGroupLane } from "./channel-group-lane";
 import {
   clockLabel,
   clockMarks,
@@ -19,9 +18,6 @@ import {
 } from "./guide-window";
 import { ProgrammeGuideRow } from "./programme-guide-row";
 import "./programme-guide.css";
-
-const ALL_GROUPS = "all";
-const GROUP_PREFIX = "group:";
 
 /** The Programme currently highlighted in the guide. */
 export interface GuideSelection {
@@ -49,6 +45,9 @@ export interface ProgrammeGuideProps {
   };
   readonly onSelectGroup: (group: string | null) => void;
   readonly onPrefetchGroup: (group: string | null) => void;
+  readonly excludedGroups: ReadonlySet<string>;
+  readonly onSetGroupExcluded: (name: string, exclude: boolean) => void;
+  readonly onRestoreExcludedGroups: () => void;
   readonly onPreparePlayback: () => void;
   readonly onTune: (
     channel: ChannelSummary,
@@ -77,6 +76,9 @@ export function ProgrammeGuide({
   emptyState,
   onSelectGroup,
   onPrefetchGroup,
+  excludedGroups,
+  onSetGroupExcluded,
+  onRestoreExcludedGroups,
   onPreparePlayback,
   onTune,
   onRetry,
@@ -85,8 +87,11 @@ export function ProgrammeGuide({
   feeds,
 }: ProgrammeGuideProps) {
   const marks = clockMarks(window);
-  const activeFilter = filterValue(activeGroup);
   const [channelNameTooltip] = useState(() => Tooltip.createHandle<string>());
+  const boardEmpty =
+    emptyState === undefined &&
+    groups.length > 0 &&
+    excludedGroups.size === groups.length;
 
   return (
     <section className="programme-guide" aria-label="Programme guide">
@@ -96,38 +101,15 @@ export function ProgrammeGuide({
       </header>
 
       <div className="programme-guide__body">
-        <RadioGroup
-          className="programme-guide__groups"
-          value={activeFilter}
-          onValueChange={(value) => onSelectGroup(groupFromFilterValue(value))}
-          aria-label="Channel groups"
-        >
-          <Radio.Root
-            className="programme-guide__group"
-            data-acceptance-group
-            value={ALL_GROUPS}
-            onMouseEnter={() => onPrefetchGroup(null)}
-            onFocus={() => onPrefetchGroup(null)}
-          >
-            All
-          </Radio.Root>
-          {groups.map((group) => {
-            const groupValue = filterValue(group.name);
-            return (
-              <Radio.Root
-                className="programme-guide__group"
-                data-acceptance-group
-                key={groupValue}
-                value={groupValue}
-                onMouseEnter={() => onPrefetchGroup(group.name)}
-                onFocus={() => onPrefetchGroup(group.name)}
-              >
-                {group.name === "" ? "Ungrouped" : group.name}
-                <em>{group.channelCount}</em>
-              </Radio.Root>
-            );
-          })}
-        </RadioGroup>
+        <ChannelGroupLane
+          groups={groups}
+          activeGroup={activeGroup}
+          excluded={excludedGroups}
+          onSelectGroup={onSelectGroup}
+          onPrefetchGroup={onPrefetchGroup}
+          onSetExcluded={onSetGroupExcluded}
+          onRestoreAll={onRestoreExcludedGroups}
+        />
 
         <div className="programme-guide__panel">
           <div className="programme-guide__ruler" aria-hidden="true">
@@ -173,10 +155,15 @@ export function ProgrammeGuide({
             ) : rows.length === 0 ? (
               <GuideNotice
                 tone="empty"
-                title={emptyState?.title ?? "Nothing is patched here"}
+                title={
+                  emptyState?.title ??
+                  (boardEmpty ? "The board is empty" : "Nothing is patched here")
+                }
               >
                 {emptyState?.detail ??
-                  "This group has no Channels in the current catalog window."}
+                  (boardEmpty
+                    ? "Restore a Channel Group from the roster to patch this guide."
+                    : "This group has no Channels in the current catalog window.")}
               </GuideNotice>
             ) : (
               <Tooltip.Provider delay={400}>
@@ -285,14 +272,6 @@ function GuideNotice({
       <p>{children}</p>
     </div>
   );
-}
-
-function filterValue(group: string | null): string {
-  return group === null ? ALL_GROUPS : `${GROUP_PREFIX}${group}`;
-}
-
-function groupFromFilterValue(value: string): string | null {
-  return value === ALL_GROUPS ? null : value.slice(GROUP_PREFIX.length);
 }
 
 function guideErrorCopy(error: ClientError): string {
