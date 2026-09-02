@@ -143,7 +143,8 @@ export function useGuideCatalog({
     isFetchingNextPage: isFetchingNextGroupPage,
     refetch: refetchGroups,
   } = groupsQuery;
-  const { refetch: refetchGuide } = guideQuery;
+  const { refetch: refetchGuide, fetchNextPage: fetchNextGuidePage } =
+    guideQuery;
   const guideError = clientErrorFromQuery(guideQuery.error);
   const groupsError = clientErrorFromQuery(groupsQuery.error);
   const error =
@@ -208,6 +209,9 @@ export function useGuideCatalog({
       void refetchGroups();
     }
   }, [groupsError, guideError, refetchGroups, refetchGuide]);
+  const loadMore = useCallback(() => {
+    void fetchNextGuidePage();
+  }, [fetchNextGuidePage]);
 
   return {
     groups,
@@ -221,7 +225,7 @@ export function useGuideCatalog({
     hasMore: guideQuery.hasNextPage === true,
     loadingMore: guideQuery.isFetchingNextPage,
     retry,
-    loadMore: () => void guideQuery.fetchNextPage(),
+    loadMore,
     prefetchGroup,
   };
 }

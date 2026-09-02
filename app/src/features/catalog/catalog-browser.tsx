@@ -3,6 +3,7 @@ import {
   lazy,
   Suspense,
   useCallback,
+  useEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -22,10 +23,16 @@ import {
   type SparrowClient,
 } from "../../client/contracts";
 import { BoardSearch } from "../guide/board-search";
+import {
+  resolvedActiveGroup,
+  shouldAdvancePastExcludedPage,
+  visibleGuideRows,
+} from "../guide/board-group-roster";
 import { CinemaStage } from "../guide/cinema-stage";
 import { FeedsDialog } from "../guide/feeds-dialog";
 import { clockLabel, clockWindow, programmeAt } from "../guide/guide-window";
 import { ProgrammeGuide, type GuideSelection } from "../guide/programme-guide";
+import { useBoardGroupExclusions } from "../guide/use-board-group-exclusions";
 import { useGuideClock } from "../guide/use-guide-clock";
 import { useCatalogSynchronization } from "../status/catalog-synchronization";
 import { useGuideCatalog } from "./use-guide-catalog";
@@ -80,6 +87,8 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   const queryClient = useQueryClient();
   const synchronization = useCatalogSynchronization(client);
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
+  const groupExclusions = useBoardGroupExclusions();
+  const boardGroup = resolvedActiveGroup(activeGroup, groupExclusions.excluded);
   const [selectedSignal, setSelectedSignal] = useState<SelectedSignal | null>(
     null,
   );
@@ -100,7 +109,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   const guideCatalog = useGuideCatalog({
     client,
     enabled: browseEnabled,
-    group: activeGroup,
+    group: boardGroup,
     startsAt: guideClock.startsAt,
     endsAt: guideClock.endsAt,
     expectedGeneration: authoritativeGeneration,
@@ -113,7 +122,11 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
         ? synchronization.retryStatus
         : guideCatalog.retry;
   const groups = guideCatalog.groups;
-  const rows = guideCatalog.rows;
+  const rows = visibleGuideRows(
+    guideCatalog.rows,
+    groupExclusions.excluded,
+    boardGroup,
+  );
   const defaultSignal = defaultSelectedSignal(rows, now);
   const selection = selectedSignal ?? defaultSignal;
   const guideSelection: GuideSelection | null =
@@ -123,7 +136,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   const playingRow =
     playingChannel === null
       ? undefined
-      : rows.find((row) => row.channel.id === playingChannel.id);
+      : guideCatalog.rows.find((row) => row.channel.id === playingChannel.id);
   const stageSignal: SelectedSignal | null =
     playingChannel === null
       ? selection
@@ -171,6 +184,35 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   );
   const preparePlayback =
     runtime === "installed" ? loadInstalledPlayer : loadHostedPlayer;
+  const { loadMore } = guideCatalog;
+  useEffect(() => {
+    if (
+      !shouldAdvancePastExcludedPage({
+        activeGroup: boardGroup,
+        excludedCount: groupExclusions.excluded.size,
+        receivedCount: guideCatalog.rows.length,
+        visibleCount: rows.length,
+        hasMore: guideCatalog.hasMore,
+        loading:
+          guideCatalog.loading ||
+          guideCatalog.loadingMore ||
+          guideCatalog.replacing,
+      })
+    ) {
+      return;
+    }
+    loadMore();
+  }, [
+    boardGroup,
+    groupExclusions.excluded.size,
+    guideCatalog.hasMore,
+    guideCatalog.loading,
+    guideCatalog.loadingMore,
+    guideCatalog.replacing,
+    guideCatalog.rows.length,
+    loadMore,
+    rows.length,
+  ]);
   if (synchronization.statusPending) {
     return <CatalogLoading runtime={runtime} />;
   }
@@ -250,6 +292,9 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
           emptyState={guideEmptyState(runtime, status, browseEnabled)}
           onSelectGroup={selectGroup}
           onPrefetchGroup={guideCatalog.prefetchGroup}
+          excludedGroups={groupExclusions.excluded}
+          onSetGroupExcluded={groupExclusions.setExcluded}
+          onRestoreExcludedGroups={groupExclusions.restoreAll}
           onPreparePlayback={preparePlayback}
           onTune={tune}
           onRetry={retryGuide}
