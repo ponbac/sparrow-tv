@@ -1,12 +1,12 @@
 .split-stage {
   display: grid;
   height: 100dvh;
-  min-height: 520px;
-  grid-template-rows: 38px auto minmax(0, 1fr);
+  min-height: 32.5rem;
+  grid-template-rows: 2.375rem auto minmax(0, 1fr);
   overflow: hidden;
   color: var(--bone);
   background: var(--ink);
-  font-size: 13px;
+  font-size: 0.8125rem;
   letter-spacing: 0.01em;
 }
 
@@ -16,8 +16,8 @@
   grid-row: 1;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
-  padding: 0 18px 0 20px;
+  gap: 1.25rem;
+  padding: 0 1.125rem 0 1.25rem;
   border-bottom: 1px solid var(--line);
   background: var(--ink);
 }
@@ -30,11 +30,11 @@
 
 .split-stage__identity {
   min-width: 0;
-  gap: 12px;
+  gap: 0.75rem;
 }
 
 .split-stage__identity strong {
-  font-size: 0.69rem;
+  font-size: 0.8rem;
   font-weight: 700;
   letter-spacing: 0.42em;
   line-height: 1;
@@ -42,8 +42,8 @@
 }
 
 .split-stage__identity > i {
-  width: 2px;
-  height: 2px;
+  width: 0.125rem;
+  height: 0.125rem;
   border-radius: 50%;
   background: #4a4642;
 }
@@ -51,16 +51,16 @@
 .split-stage__identity > span {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 0.4375rem;
   color: var(--tomato);
-  font-size: 0.62rem;
+  font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.28em;
 }
 
 .split-stage__identity > span::before {
-  width: 6px;
-  height: 6px;
+  width: 0.375rem;
+  height: 0.375rem;
   border-radius: 50%;
   background: var(--tomato);
   box-shadow: 0 0 12px rgb(255 77 58 / 48%);
@@ -68,19 +68,19 @@
 }
 
 .split-stage__identity time {
-  font-size: 0.8rem;
+  font-size: 0.875rem;
   font-variant-numeric: tabular-nums;
   font-weight: 550;
   letter-spacing: 0.08em;
 }
 
 .split-stage__freshness {
-  gap: 16px;
+  gap: 1rem;
 }
 
 .split-stage__status {
   color: var(--bone-dim);
-  font-size: 0.62rem;
+  font-size: 0.72rem;
   font-weight: 600;
   letter-spacing: 0.16em;
   text-transform: uppercase;
@@ -88,9 +88,9 @@
 
 .split-stage__status::before {
   display: inline-block;
-  width: 5px;
-  height: 5px;
-  margin-right: 7px;
+  width: 0.3125rem;
+  height: 0.3125rem;
+  margin-right: 0.4375rem;
   border-radius: 50%;
   background: var(--acid);
   content: "";
@@ -103,7 +103,7 @@
 }
 
 .split-stage__status b {
-  margin-left: 6px;
+  margin-left: 0.375rem;
   color: var(--bone);
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -112,11 +112,11 @@
 .split-stage__retained {
   z-index: 19;
   grid-row: 2;
-  padding: 5px 18px;
+  padding: 0.3125rem 1.125rem;
   color: #140806;
   background: var(--tomato);
   font-family: var(--mono);
-  font-size: 0.61rem;
+  font-size: 0.7rem;
   font-weight: 750;
   letter-spacing: 0.08em;
   text-align: center;
@@ -147,19 +147,19 @@
   position: absolute;
   top: 42%;
   left: 50%;
-  width: 7px;
-  height: 7px;
+  width: 0.4375rem;
+  height: 0.4375rem;
   background: var(--tomato);
   transform: translate(-50%, -50%) rotate(45deg);
 }
 
 @media (max-width: 1050px) {
   :root {
-    --guide-gutter: 108px;
+    --guide-gutter: 6.75rem;
   }
 
   .split-stage__freshness {
-    gap: 8px;
+    gap: 0.5rem;
   }
 }
 
@@ -181,7 +181,7 @@
 
   .split-stage__workspace {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(430px, 58dvh) minmax(540px, 70dvh);
+    grid-template-rows: minmax(26.875rem, 58dvh) minmax(33.75rem, 70dvh);
   }
 
   .split-stage__knife {
@@ -191,15 +191,15 @@
 
 @media (max-width: 460px) {
   :root {
-    --guide-gutter: 102px;
+    --guide-gutter: 6.375rem;
   }
 
   .split-stage__masthead {
-    padding: 0 12px;
+    padding: 0 0.75rem;
   }
 
   .split-stage__identity {
-    gap: 8px;
+    gap: 0.5rem;
   }
 
   .split-stage__identity > span {

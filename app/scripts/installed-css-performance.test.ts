@@ -9,6 +9,38 @@ import { describe, expect, it } from "vitest";
 const installedStylesRoot = fileURLToPath(new URL("../src/", import.meta.url));
 
 describe("installed app repaint contract", () => {
+  it("scales Split Stage chrome with large-desktop typography", async () => {
+    const stylesheets = new Map(await installedStylesheets());
+    const indexStyles = stylesheets.get("index.css");
+    const splitStageStyles = stylesheets.get("features/guide/split-stage.css");
+    const guideStyles = stylesheets.get("features/guide/programme-guide.css");
+    const cinemaStyles = stylesheets.get("features/guide/cinema-stage.css");
+
+    expect(indexStyles).toBeDefined();
+    expect(splitStageStyles).toBeDefined();
+    expect(guideStyles).toBeDefined();
+    expect(cinemaStyles).toBeDefined();
+
+    expect(declaration(indexStyles!, "html", "font-size")).toBe(
+      "clamp(100%, 0.75vw, 150%)",
+    );
+    expect(declaration(splitStageStyles!, ".split-stage", "font-size")).toBe(
+      "0.8125rem",
+    );
+    expect(
+      declaration(splitStageStyles!, ".split-stage", "grid-template-rows"),
+    ).toBe("2.375rem auto minmax(0, 1fr)");
+    expect(
+      declaration(guideStyles!, ".programme-guide", "grid-template-rows"),
+    ).toBe("2.75rem minmax(0, 1fr)");
+    expect(declaration(guideStyles!, ".programme-guide__row", "height")).toBe(
+      "2.75rem",
+    );
+    expect(
+      declaration(cinemaStyles!, ".cinema-stage", "grid-template-rows"),
+    ).toBe("minmax(11.25rem, 1fr) auto 3.625rem");
+  });
+
   it("keeps persistent Split Stage chrome static", async () => {
     const continuousChromeSelectors: string[] = [];
     let persistentChromeRules = 0;
@@ -83,6 +115,18 @@ function declarationsByProperty(rule: Rule): ReadonlyMap<string, string> {
     declarations.set(declaration.prop, declaration.value.trim());
   });
   return declarations;
+}
+
+function declaration(
+  stylesheet: postcss.Root,
+  selector: string,
+  property: string,
+): string | undefined {
+  let value: string | undefined;
+  stylesheet.walkRules(selector, (rule) => {
+    value = declarationsByProperty(rule).get(property) ?? value;
+  });
+  return value;
 }
 
 function coversViewport(

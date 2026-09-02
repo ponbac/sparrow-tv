@@ -3,7 +3,7 @@
   display: grid;
   min-width: 0;
   min-height: 0;
-  grid-template-rows: 44px minmax(0, 1fr);
+  grid-template-rows: 2.75rem minmax(0, 1fr);
   background: var(--ink-raised);
 }
 
@@ -11,8 +11,8 @@
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 10px;
-  padding: 0 14px;
+  gap: 0.625rem;
+  padding: 0 0.875rem;
   border-bottom: 1px solid var(--line);
 }
 
@@ -24,18 +24,18 @@
 }
 
 .programme-guide__body {
-  grid-template-rows: 36px minmax(0, 1fr);
+  grid-template-rows: 2.25rem minmax(0, 1fr);
 }
 
 .programme-guide__panel {
-  grid-template-rows: 26px minmax(0, 1fr);
+  grid-template-rows: 1.625rem minmax(0, 1fr);
 }
 
 .programme-guide__groups {
   display: flex;
   min-width: 0;
   align-items: stretch;
-  padding: 0 8px;
+  padding: 0 0.5rem;
   overflow-x: auto;
   border-bottom: 1px solid var(--line);
   scrollbar-width: none;
@@ -50,13 +50,13 @@
   min-width: max-content;
   flex: 0 0 auto;
   align-items: center;
-  gap: 6px;
-  padding: 0 11px;
+  gap: 0.375rem;
+  padding: 0 0.6875rem;
   color: var(--bone-dim);
   border: 0;
   border-bottom: 2px solid transparent;
   background: transparent;
-  font-size: 0.68rem;
+  font-size: 0.8rem;
   font-weight: 550;
   letter-spacing: 0.04em;
 }
@@ -72,7 +72,7 @@
 
 .programme-guide__group em {
   opacity: 0.82;
-  font-size: 0.55rem;
+  font-size: 0.68rem;
   font-style: normal;
 }
 
@@ -92,9 +92,9 @@
 
 .programme-guide__ruler time {
   position: absolute;
-  top: 7px;
+  top: 0.4375rem;
   color: var(--bone-dim);
-  font-size: 0.58rem;
+  font-size: 0.7rem;
   font-variant-numeric: tabular-nums;
   font-weight: 550;
   letter-spacing: 0.1em;
@@ -124,21 +124,21 @@
 
 .programme-guide__row {
   display: grid;
-  height: 44px;
+  height: 2.75rem;
   grid-template-columns: var(--guide-gutter) minmax(0, 1fr);
   border-bottom: 1px solid #242424;
   content-visibility: auto;
-  contain-intrinsic-size: 44px;
+  contain-intrinsic-size: 2.75rem;
 }
 
 .programme-guide__channel {
   display: grid;
   min-width: 0;
   height: 100%;
-  grid-template-columns: 34px minmax(0, 1fr);
+  grid-template-columns: 2.125rem minmax(0, 1fr);
   align-items: center;
-  gap: 6px;
-  padding: 0 8px 0 10px;
+  gap: 0.375rem;
+  padding: 0 0.5rem 0 0.625rem;
   color: var(--bone);
   border: 0;
   border-right: 1px solid #242424;
@@ -148,12 +148,12 @@
 
 .programme-guide__channel > span {
   display: grid;
-  width: 28px;
-  height: 18px;
+  width: 1.75rem;
+  height: 1.125rem;
   place-items: center;
   color: #aaa29a;
   background: #242424;
-  font-size: 0.54rem;
+  font-size: 0.68rem;
   font-variant-numeric: tabular-nums;
   font-weight: 650;
   letter-spacing: 0.08em;
@@ -161,7 +161,7 @@
 
 .programme-guide__channel strong {
   overflow: hidden;
-  font-size: 0.68rem;
+  font-size: 0.8rem;
   font-weight: 550;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -190,12 +190,12 @@
 
 .programme-guide__programme {
   position: absolute;
-  top: 4px;
-  bottom: 4px;
+  top: 0.25rem;
+  bottom: 0.25rem;
   display: flex;
-  min-width: 10px;
+  min-width: 0.625rem;
   align-items: center;
-  padding: 0 8px;
+  padding: 0 0.5rem;
   overflow: hidden;
   color: var(--bone);
   border: 1px solid #2c2c2c;
@@ -232,12 +232,12 @@
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 6px;
+  gap: 0.375rem;
 }
 
 .programme-guide__programme-copy small {
   color: var(--tomato);
-  font-size: 0.48rem;
+  font-size: 0.68rem;
   font-weight: 750;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -245,7 +245,7 @@
 
 .programme-guide__programme-copy b {
   overflow: hidden;
-  font-size: 0.68rem;
+  font-size: 0.8rem;
   font-weight: 450;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -277,31 +277,31 @@
 .programme-guide__truncated {
   position: absolute;
   top: 50%;
-  left: 10px;
+  left: 0.625rem;
   color: #66605b;
-  font-size: 0.58rem;
+  font-size: 0.7rem;
   letter-spacing: 0.05em;
   transform: translateY(-50%);
 }
 
 .programme-guide__truncated {
-  right: 10px;
+  right: 0.625rem;
   left: auto;
   color: var(--tomato);
 }
 
 .programme-guide__notice {
   display: grid;
-  min-height: 190px;
+  min-height: 11.875rem;
   place-content: center;
   justify-items: center;
-  padding: 28px;
+  padding: 1.75rem;
   color: var(--bone-dim);
   text-align: center;
 }
 
 .programme-guide__notice > span {
-  margin-bottom: 10px;
+  margin-bottom: 0.625rem;
   color: var(--tomato);
   font-size: 1.5rem;
 }
@@ -316,20 +316,20 @@
 .programme-guide__notice p {
   max-width: 42ch;
   margin: 6px 0 0;
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   line-height: 1.5;
 }
 
 .programme-guide__notice button,
 .programme-guide__retained button,
 .programme-guide__more {
-  min-height: 34px;
-  padding: 0 12px;
+  min-height: 2.125rem;
+  padding: 0 0.75rem;
   color: var(--bone);
   border: 1px solid #4b4844;
   background: transparent;
   font-family: var(--mono);
-  font-size: 0.58rem;
+  font-size: 0.7rem;
   font-weight: 750;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -347,22 +347,22 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 7px 10px;
+  gap: 0.75rem;
+  padding: 0.4375rem 0.625rem;
   color: #140806;
   background: var(--tomato);
-  font-size: 0.62rem;
+  font-size: 0.72rem;
 }
 
 .programme-guide__retained button {
-  min-height: 28px;
+  min-height: 1.75rem;
   color: #140806;
   border-color: #140806;
 }
 
 .programme-guide__more {
   display: block;
-  margin: 12px auto;
+  margin: 0.75rem auto;
 }
 
 @media (max-width: 760px) {
@@ -374,10 +374,10 @@
 
 @media (max-width: 460px) {
   .programme-guide__toolbar {
-    padding: 0 9px;
+    padding: 0 0.5625rem;
   }
 
   .programme-guide__rows {
-    min-width: 570px;
+    min-width: 35.625rem;
   }
 }

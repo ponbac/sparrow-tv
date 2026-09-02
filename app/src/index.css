@@ -13,7 +13,7 @@
   --tomato: #ff4d3a;
   --acid: #d7ff65;
   --line: rgb(239 231 220 / 10%);
-  --guide-gutter: 124px;
+  --guide-gutter: 7.75rem;
   --display: "Newsreader Variable", Georgia, serif;
   --mono: "JetBrains Mono Variable", monospace;
 }
@@ -28,6 +28,7 @@ html {
   min-width: 320px;
   min-height: 100%;
   background: var(--ink);
+  font-size: clamp(100%, 0.75vw, 150%);
 }
 
 body {

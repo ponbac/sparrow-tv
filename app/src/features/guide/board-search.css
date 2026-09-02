@@ -8,21 +8,21 @@
 
 .board-search > svg {
   position: absolute;
-  left: 10px;
-  width: 13px;
+  left: 0.625rem;
+  width: 0.8125rem;
   pointer-events: none;
   color: var(--bone-dim);
 }
 
 .board-search input {
   width: 100%;
-  height: 29px;
-  padding: 0 33px 0 30px;
+  height: 1.8125rem;
+  padding: 0 2.0625rem 0 1.875rem;
   color: var(--bone);
   border: 1px solid #2e2e2e;
   outline: none;
   background: #121212;
-  font-size: 0.72rem;
+  font-size: 0.82rem;
 }
 
 .board-search input:focus {
@@ -37,8 +37,8 @@
   position: absolute;
   right: 1px;
   display: grid;
-  width: 34px;
-  height: 27px;
+  width: 2.125rem;
+  height: 1.6875rem;
   place-items: center;
   color: var(--bone-dim);
   border: 0;
@@ -46,18 +46,18 @@
 }
 
 .board-search button svg {
-  width: 13px;
+  width: 0.8125rem;
 }
 
 .board-search__positioner {
   z-index: 40;
   width: var(--anchor-width);
-  min-width: 280px;
-  max-width: min(560px, calc(100vw - 24px));
+  min-width: 17.5rem;
+  max-width: min(35rem, calc(100vw - 1.5rem));
 }
 
 .board-search__popup {
-  max-height: min(440px, var(--available-height));
+  max-height: min(27.5rem, var(--available-height));
   overflow: auto;
   color: var(--bone);
   border: 1px solid #373431;
@@ -67,35 +67,35 @@
 
 .board-search__state {
   margin: 0;
-  padding: 15px;
+  padding: 0.9375rem;
   color: var(--bone-dim);
-  font-size: 0.68rem;
+  font-size: 0.8rem;
   line-height: 1.45;
 }
 
 .board-search__state button {
-  margin-left: 10px;
-  padding: 4px 7px;
+  margin-left: 0.625rem;
+  padding: 0.25rem 0.4375rem;
   color: var(--bone);
   border: 1px solid var(--tomato);
   background: transparent;
-  font-size: 0.6rem;
+  font-size: 0.72rem;
   text-transform: uppercase;
 }
 
 .board-search__results {
   margin: 0;
-  padding: 5px;
+  padding: 0.3125rem;
   list-style: none;
 }
 
 .board-search__result {
   display: grid;
   width: 100%;
-  grid-template-columns: 64px minmax(0, 1fr) auto;
+  grid-template-columns: 4rem minmax(0, 1fr) auto;
   align-items: baseline;
-  gap: 8px;
-  padding: 10px;
+  gap: 0.5rem;
+  padding: 0.625rem;
   border: 0;
   border-bottom: 1px solid #242424;
   background: transparent;
@@ -109,14 +109,14 @@
 .board-search__result > span,
 .board-search__result > small {
   color: var(--bone-dim);
-  font-size: 0.53rem;
+  font-size: 0.68rem;
   letter-spacing: 0.09em;
   text-transform: uppercase;
 }
 
 .board-search__result > strong {
   overflow: hidden;
-  font-size: 0.72rem;
+  font-size: 0.82rem;
   font-weight: 550;
   text-overflow: ellipsis;
   white-space: nowrap;
