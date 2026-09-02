@@ -1,6 +1,7 @@
 import { Radio } from "@base-ui/react/radio";
 import { RadioGroup } from "@base-ui/react/radio-group";
-import type { ReactNode } from "react";
+import { Tooltip } from "@base-ui/react/tooltip";
+import { useState, type ReactNode } from "react";
 import type {
   ChannelGroup,
   ChannelId,
@@ -85,6 +86,7 @@ export function ProgrammeGuide({
 }: ProgrammeGuideProps) {
   const marks = clockMarks(window);
   const activeFilter = filterValue(activeGroup);
+  const [channelNameTooltip] = useState(() => Tooltip.createHandle<string>());
 
   return (
     <section className="programme-guide" aria-label="Programme guide">
@@ -177,27 +179,31 @@ export function ProgrammeGuide({
                   "This group has no Channels in the current catalog window."}
               </GuideNotice>
             ) : (
-              <div className="programme-guide__rows">
-                {rows.map((row, rowIndex) => {
-                  const selected = selection?.channelId === row.channel.id;
-                  return (
-                    <ProgrammeGuideRow
-                      key={row.channel.id}
-                      row={row}
-                      rowIndex={rowIndex}
-                      window={window}
-                      now={now}
-                      selected={selected}
-                      selectedProgramme={
-                        selected ? (selection?.programme ?? null) : null
-                      }
-                      playing={playingChannel === row.channel.id}
-                      onPreparePlayback={onPreparePlayback}
-                      onTune={onTune}
-                    />
-                  );
-                })}
-              </div>
+              <Tooltip.Provider delay={400}>
+                <div className="programme-guide__rows">
+                  {rows.map((row, rowIndex) => {
+                    const selected = selection?.channelId === row.channel.id;
+                    return (
+                      <ProgrammeGuideRow
+                        key={row.channel.id}
+                        row={row}
+                        rowIndex={rowIndex}
+                        window={window}
+                        now={now}
+                        selected={selected}
+                        selectedProgramme={
+                          selected ? (selection?.programme ?? null) : null
+                        }
+                        playing={playingChannel === row.channel.id}
+                        channelNameTooltip={channelNameTooltip}
+                        onPreparePlayback={onPreparePlayback}
+                        onTune={onTune}
+                      />
+                    );
+                  })}
+                </div>
+                <ChannelNameTooltip handle={channelNameTooltip} />
+              </Tooltip.Provider>
             )}
 
             {error !== null && rows.length > 0 ? (
@@ -227,6 +233,35 @@ export function ProgrammeGuide({
         </div>
       </div>
     </section>
+  );
+}
+
+/** One Base UI tooltip reused across Channel name triggers. */
+function ChannelNameTooltip({
+  handle,
+}: {
+  readonly handle: Tooltip.Handle<string>;
+}) {
+  return (
+    <Tooltip.Root disableHoverablePopup handle={handle}>
+      {({ payload }) => (
+        <Tooltip.Portal>
+          <Tooltip.Positioner
+            className="programme-guide__channel-tooltip-positioner"
+            side="right"
+            align="center"
+            sideOffset={8}
+          >
+            <Tooltip.Popup
+              className="programme-guide__channel-tooltip"
+              role="tooltip"
+            >
+              {payload}
+            </Tooltip.Popup>
+          </Tooltip.Positioner>
+        </Tooltip.Portal>
+      )}
+    </Tooltip.Root>
   );
 }
 

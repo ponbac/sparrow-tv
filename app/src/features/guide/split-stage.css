@@ -155,7 +155,7 @@
 
 @media (max-width: 1050px) {
   :root {
-    --guide-gutter: 6.75rem;
+    --guide-gutter: min(16rem, 36%);
   }
 
   .split-stage__freshness {
@@ -191,7 +191,7 @@
 
 @media (max-width: 460px) {
   :root {
-    --guide-gutter: 6.375rem;
+    --guide-gutter: min(13.5rem, 44%);
   }
 
   .split-stage__masthead {

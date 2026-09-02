@@ -13,7 +13,7 @@
   --tomato: #ff4d3a;
   --acid: #d7ff65;
   --line: rgb(239 231 220 / 10%);
-  --guide-gutter: 7.75rem;
+  --guide-gutter: min(20rem, 38%);
   --display: "Newsreader Variable", Georgia, serif;
   --mono: "JetBrains Mono Variable", monospace;
 }

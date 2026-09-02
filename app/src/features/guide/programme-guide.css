@@ -119,7 +119,7 @@
 
 .programme-guide__rows {
   position: relative;
-  min-width: 610px;
+  min-width: 48.75rem;
 }
 
 .programme-guide__row {
@@ -160,11 +160,44 @@
 }
 
 .programme-guide__channel strong {
+  min-width: 0;
   overflow: hidden;
   font-size: 0.8rem;
   font-weight: 550;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.programme-guide__channel-tooltip-positioner {
+  z-index: 24;
+}
+
+.programme-guide__channel-tooltip {
+  box-sizing: border-box;
+  max-width: min(22rem, calc(100vw - 2rem));
+  padding: 0.4375rem 0.625rem;
+  overflow-wrap: anywhere;
+  color: var(--bone);
+  border: 1px solid #3a3835;
+  background: #141414;
+  box-shadow: 0 10px 28px rgb(0 0 0 / 42%);
+  font-size: 0.8rem;
+  font-weight: 550;
+  line-height: 1.35;
+  transform-origin: var(--transform-origin);
+  transition:
+    opacity 0.12s ease,
+    transform 0.12s ease;
+}
+
+.programme-guide__channel-tooltip[data-starting-style],
+.programme-guide__channel-tooltip[data-ending-style] {
+  opacity: 0;
+  transform: scale(0.97);
+}
+
+.programme-guide__channel-tooltip[data-instant] {
+  transition-duration: 0ms;
 }
 
 .programme-guide__channel:hover strong,
@@ -378,6 +411,6 @@
   }
 
   .programme-guide__rows {
-    min-width: 35.625rem;
+    min-width: 42.5rem;
   }
 }
