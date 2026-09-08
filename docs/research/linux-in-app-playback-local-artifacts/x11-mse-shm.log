@@ -1,0 +1,78 @@
+
+(player:43888): dbind-WARNING **: 20:58:33.399: AT-SPI: Error retrieving accessibility bus address: org.freedesktop.DBus.Error.ServiceUnknown: The name org.a11y.Bus was not provided by any .service files
+WEB {"event":"features","msePlayback":true,"mseLivePlayback":true,"mseH265Playback":true,"networkStreamIO":true,"networkLoaderName":"fetch-stream-loader","nativeMP4H264Playback":true,"nativeMP4H265Playback":true,"nativeWebmVP8Playback":true,"nativeWebmVP9Playback":true}
+WEB {"event":"released","generation":0}
+WEB {"event":"waiting","generation":1}
+[W][20:58:34.740314] pw.conf      | [          conf.c: 1182 try_load_conf()] can't load config client.conf: No such file or directory
+[E][20:58:34.740365] pw.conf      | [          conf.c: 1215 pw_conf_load_conf_for_context()] can't load config client.conf: No such file or directory
+[ALSOFT] (EE) Failed to create PipeWire event context (errno: 2)
+ALSA lib confmisc.c:855:(parse_card) [error.core] cannot find card '0'
+ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_card_inum returned error: No such file or directory
+ALSA lib confmisc.c:422:(snd_func_concat) [error.core] error evaluating strings
+ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_concat returned error: No such file or directory
+ALSA lib confmisc.c:1342:(snd_func_refer) [error.core] error evaluating name
+ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5734:(snd_config_expand) [error.core] Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) [error.pcm] Unknown PCM default
+WEB {"event":"playing","generation":1}
+WEB {"event":"sample","generation":1,"time":0.259973368,"total":8,"dropped":0,"presented":8,"ready":3,"paused":false}
+WEB {"event":"sample","generation":1,"time":1.259903584,"total":38,"dropped":0,"presented":37,"ready":3,"paused":false}
+WEB {"event":"sample","generation":1,"time":2.260410037,"total":68,"dropped":0,"presented":67,"ready":3,"paused":false}
+WEB {"event":"sample","generation":1,"time":3.260076241,"total":98,"dropped":0,"presented":98,"ready":3,"paused":false}
+WEB {"event":"sample","generation":1,"time":4.260100594,"total":128,"dropped":0,"presented":127,"ready":3,"paused":false}
+ACTION resize
+WEB {"event":"sample","generation":1,"time":5.260121635,"total":158,"dropped":0,"presented":157,"ready":3,"paused":false}
+WEB {"event":"sample","generation":1,"time":6.262068433,"total":188,"dropped":0,"presented":187,"ready":3,"paused":false}
+WEB {"event":"sample","generation":1,"time":7.266017026,"total":218,"dropped":0,"presented":218,"ready":3,"paused":false}
+WEB {"event":"sample","generation":1,"time":8.270022596,"total":248,"dropped":0,"presented":248,"ready":3,"paused":false}
+ACTION fullscreen
+WEB {"event":"sample","generation":1,"time":9.274305983,"total":278,"dropped":0,"presented":278,"ready":3,"paused":false}
+WEB {"event":"sample","generation":1,"time":10.278129063,"total":308,"dropped":0,"presented":308,"ready":3,"paused":false}
+ACTION unfullscreen
+WEB {"event":"sample","generation":1,"time":11.282324308,"total":338,"dropped":0,"presented":338,"ready":3,"paused":false}
+WEB {"event":"sample","generation":1,"time":12.286015264,"total":368,"dropped":0,"presented":368,"ready":3,"paused":false}
+ACTION release
+WEB {"event":"released","generation":1}
+WEB {"event":"sample","generation":1,"time":0,"total":0,"dropped":0,"presented":376,"ready":0,"paused":true}
+WEB {"event":"sample","generation":1,"time":0,"total":0,"dropped":0,"presented":376,"ready":0,"paused":true}
+ACTION resume
+WEB {"event":"released","generation":1}
+WEB {"event":"waiting","generation":2}
+ALSA lib confmisc.c:855:(parse_card) [error.core] cannot find card '0'
+ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_card_inum returned error: No such file or directory
+ALSA lib confmisc.c:422:(snd_func_concat) [error.core] error evaluating strings
+ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_concat returned error: No such file or directory
+ALSA lib confmisc.c:1342:(snd_func_refer) [error.core] error evaluating name
+ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5734:(snd_config_expand) [error.core] Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) [error.pcm] Unknown PCM default
+WEB {"event":"playing","generation":2}
+WEB {"event":"sample","generation":2,"time":0.103311996,"total":3,"dropped":0,"presented":3,"ready":3,"paused":false}
+WEB {"event":"sample","generation":2,"time":1.107345918,"total":33,"dropped":0,"presented":33,"ready":3,"paused":false}
+WEB {"event":"sample","generation":2,"time":2.111196656,"total":63,"dropped":0,"presented":63,"ready":3,"paused":false}
+ACTION release-before-replace
+WEB {"event":"released","generation":2}
+WEB {"event":"sample","generation":2,"time":0,"total":0,"dropped":0,"presented":70,"ready":0,"paused":true}
+ACTION replace
+WEB {"event":"released","generation":2}
+WEB {"event":"waiting","generation":3}
+ALSA lib confmisc.c:855:(parse_card) [error.core] cannot find card '0'
+ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_card_inum returned error: No such file or directory
+ALSA lib confmisc.c:422:(snd_func_concat) [error.core] error evaluating strings
+ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_concat returned error: No such file or directory
+ALSA lib confmisc.c:1342:(snd_func_refer) [error.core] error evaluating name
+ALSA lib conf.c:5211:(_snd_config_evaluate) [error.core] function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5734:(snd_config_expand) [error.core] Evaluate error: No such file or directory
+ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) [error.pcm] Unknown PCM default
+WEB {"event":"playing","generation":3}
+WEB {"event":"sample","generation":3,"time":0.139969423,"total":4,"dropped":0,"presented":4,"ready":3,"paused":false}
+WEB {"event":"sample","generation":3,"time":1.144121417,"total":34,"dropped":0,"presented":34,"ready":3,"paused":false}
+WEB {"event":"sample","generation":3,"time":2.147884666,"total":64,"dropped":0,"presented":64,"ready":3,"paused":false}
+WEB {"event":"sample","generation":3,"time":3.15189282,"total":94,"dropped":0,"presented":94,"ready":3,"paused":false}
+WEB {"event":"sample","generation":3,"time":4.155905866,"total":125,"dropped":0,"presented":124,"ready":3,"paused":false}
+WEB {"event":"sample","generation":3,"time":5.159906096,"total":155,"dropped":0,"presented":154,"ready":3,"paused":false}
+ACTION stop
+WEB {"event":"released","generation":3}
+WEB {"event":"sample","generation":3,"time":0,"total":0,"dropped":0,"presented":161,"ready":0,"paused":true}
+WEB {"event":"sample","generation":3,"time":0,"total":0,"dropped":0,"presented":161,"ready":0,"paused":true}
+CLEANUP complete renders=0 changed=0

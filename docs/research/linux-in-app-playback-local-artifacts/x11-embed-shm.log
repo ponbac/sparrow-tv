@@ -1,0 +1,50 @@
+
+(player:44164): dbind-WARNING **: 20:59:02.417: AT-SPI: Error retrieving accessibility bus address: org.freedesktop.DBus.Error.ServiceUnknown: The name org.a11y.Bus was not provided by any .service files
+GL_RENDERER llvmpipe (LLVM 21.1.8, 256 bits)
+Cannot load libcuda.so.1
+MPV_EVENT file-loaded
+MPV_EVENT playback-restart
+MPV_SAMPLE t=1 renders=2 changed=2 time-pos=0.054667 decoder-frame-drop-count=0 frame-drop-count=1 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=2 renders=26 changed=26 time-pos=0.888000 decoder-frame-drop-count=0 frame-drop-count=3 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=3 renders=57 changed=57 time-pos=1.921333 decoder-frame-drop-count=0 frame-drop-count=3 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=4 renders=87 changed=87 time-pos=2.921333 decoder-frame-drop-count=0 frame-drop-count=3 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=5 renders=117 changed=117 time-pos=3.921333 decoder-frame-drop-count=0 frame-drop-count=3 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=6 renders=147 changed=147 time-pos=4.921333 decoder-frame-drop-count=0 frame-drop-count=3 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+ACTION resize
+MPV_SAMPLE t=7 renders=176 changed=176 time-pos=5.888000 decoder-frame-drop-count=0 frame-drop-count=3 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=8 renders=206 changed=206 time-pos=6.888000 decoder-frame-drop-count=0 frame-drop-count=3 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=9 renders=236 changed=236 time-pos=7.888000 decoder-frame-drop-count=0 frame-drop-count=3 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=10 renders=267 changed=267 time-pos=8.921333 decoder-frame-drop-count=0 frame-drop-count=3 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+ACTION fullscreen
+MPV_SAMPLE t=11 renders=297 changed=297 time-pos=9.921333 decoder-frame-drop-count=0 frame-drop-count=3 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=12 renders=327 changed=327 time-pos=10.921333 decoder-frame-drop-count=0 frame-drop-count=3 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+ACTION unfullscreen
+MPV_SAMPLE t=13 renders=357 changed=357 time-pos=11.921333 decoder-frame-drop-count=0 frame-drop-count=3 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=14 renders=387 changed=387 time-pos=12.921333 decoder-frame-drop-count=0 frame-drop-count=3 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+ACTION release
+MPV_EVENT end-file
+MPV_SAMPLE t=15 renders=389 changed=389 time-pos=unavailable decoder-frame-drop-count=unavailable frame-drop-count=unavailable estimated-vf-fps=unavailable hwdec-current=unavailable idle-active=yes
+MPV_SAMPLE t=16 renders=389 changed=389 time-pos=unavailable decoder-frame-drop-count=unavailable frame-drop-count=unavailable estimated-vf-fps=unavailable hwdec-current=unavailable idle-active=yes
+ACTION resume
+MPV_EVENT file-loaded
+MPV_EVENT playback-restart
+MPV_SAMPLE t=17 renders=398 changed=398 time-pos=0.288000 decoder-frame-drop-count=0 frame-drop-count=0 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=18 renders=427 changed=427 time-pos=1.254667 decoder-frame-drop-count=0 frame-drop-count=0 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=19 renders=457 changed=457 time-pos=2.254667 decoder-frame-drop-count=0 frame-drop-count=0 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+ACTION release-before-replace
+MPV_EVENT end-file
+MPV_SAMPLE t=20 renders=459 changed=459 time-pos=unavailable decoder-frame-drop-count=unavailable frame-drop-count=unavailable estimated-vf-fps=unavailable hwdec-current=unavailable idle-active=yes
+ACTION replace
+MPV_EVENT file-loaded
+MPV_EVENT playback-restart
+MPV_SAMPLE t=21 renders=468 changed=468 time-pos=0.288000 decoder-frame-drop-count=0 frame-drop-count=0 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=22 renders=497 changed=497 time-pos=1.254667 decoder-frame-drop-count=0 frame-drop-count=0 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=23 renders=527 changed=527 time-pos=2.254667 decoder-frame-drop-count=0 frame-drop-count=0 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=24 renders=557 changed=557 time-pos=3.254667 decoder-frame-drop-count=0 frame-drop-count=0 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=25 renders=587 changed=587 time-pos=4.254667 decoder-frame-drop-count=0 frame-drop-count=0 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=26 renders=617 changed=617 time-pos=5.254667 decoder-frame-drop-count=0 frame-drop-count=0 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+ACTION stop
+MPV_EVENT end-file
+MPV_SAMPLE t=27 renders=619 changed=619 time-pos=unavailable decoder-frame-drop-count=unavailable frame-drop-count=unavailable estimated-vf-fps=unavailable hwdec-current=unavailable idle-active=yes
+MPV_SAMPLE t=28 renders=619 changed=619 time-pos=unavailable decoder-frame-drop-count=unavailable frame-drop-count=unavailable estimated-vf-fps=unavailable hwdec-current=unavailable idle-active=yes
+CLEANUP complete renders=619 changed=619

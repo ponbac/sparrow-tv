@@ -1,0 +1,20 @@
+[
+  {
+    "variant": "x11-embed-shm",
+    "exit_code": 0,
+    "cleanup": true,
+    "samples": 28
+  },
+  {
+    "variant": "wayland-mse-shm",
+    "exit_code": 0,
+    "cleanup": true,
+    "samples": 27
+  },
+  {
+    "variant": "wayland-embed-disable",
+    "exit_code": 0,
+    "cleanup": true,
+    "samples": 28
+  }
+]
