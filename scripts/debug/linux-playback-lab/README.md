@@ -162,3 +162,8 @@ python3 scripts/debug/linux-playback-lab/summarize-installed.py \
 
 See the [frame pacing diagnosis](../../../docs/research/linux-in-app-frame-pacing.md)
 for the original latency-chasing policy, controlled comparisons, and limitations.
+The [startup follow-up](../../../docs/research/linux-in-app-startup-buffering.md)
+covers burst settling, a five-second reserve, and cooldown. Summaries also report
+time to the first playing sample, startup seeks/waiting, and maximum startup
+frame and media-timestamp gaps. The initial play request itself can produce a
+waiting event; startup waiting counts are not all post-start stalls.

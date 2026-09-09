@@ -1,0 +1,27 @@
+[
+  {
+    "variant": "x11-default-shm",
+    "exit_code": 0,
+    "finished": true,
+    "samples": 91,
+    "timed_out": false,
+    "playing_samples": 87,
+    "failed_samples": 0,
+    "windows": [
+      {
+        "pid": 254222,
+        "at": [
+          646,
+          53
+        ],
+        "size": [
+          626,
+          739
+        ],
+        "xwayland": true,
+        "fullscreen": 0
+      }
+    ],
+    "remaining_mpv_sockets": 0
+  }
+]

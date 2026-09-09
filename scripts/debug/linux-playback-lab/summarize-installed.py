@@ -13,7 +13,13 @@ def summarize(samples, start):
         raise ValueError('Run must extend beyond the steady interval start')
     return {
         'interval_seconds': [start, last['elapsed']],
+        'first_playing_second': next((sample['elapsed'] for sample in samples if sample['playing']), None),
         'startup_seeks': first['seeking'],
+        'startup_waiting_events': first['waiting'],
+        'maximum_startup_frame_callback_gap_ms': max(
+            sample['frameGaps']['max'] for sample in samples if sample['elapsed'] <= start),
+        'maximum_startup_media_timestamp_gap_ms': round(max(
+            sample['mediaGaps']['max'] for sample in samples if sample['elapsed'] <= start), 2),
         'steady_seeks': last['seeking'] - first['seeking'],
         'steady_waiting_events': last['waiting'] - first['waiting'],
         'approximate_callbacks_per_second': round(

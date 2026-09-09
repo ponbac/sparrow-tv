@@ -35,6 +35,7 @@ export interface HostedPlaybackEngine {
 }
 
 interface EnginePlayer {
+  currentTime: number;
   readonly on: (event: string, listener: (...args: unknown[]) => void) => void;
   readonly off: (event: string, listener: (...args: unknown[]) => void) => void;
   readonly attachMediaElement: (video: HTMLMediaElement) => void;
@@ -61,8 +62,6 @@ export interface MpegtsRuntime {
       readonly enableStashBuffer: boolean;
       readonly lazyLoad: boolean;
       readonly liveBufferLatencyChasing: boolean;
-      readonly liveBufferLatencyMaxLatency?: number;
-      readonly liveBufferLatencyMinRemain?: number;
       readonly autoCleanupSourceBuffer: boolean;
       readonly enableWorker?: false;
       readonly customLoader?: NativeLoaderConstructor;

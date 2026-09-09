@@ -1,4 +1,5 @@
 import mpegts from "mpegts.js";
+import { watchNativeLiveBuffer } from "./native-live-buffer";
 import type { NativeStreamPlaybackTransport } from "../../client/contracts";
 import type {
   HostedPlaybackFailure,
@@ -48,6 +49,7 @@ export function createNativeMpegtsPlaybackEngine(
       }
 
       let active = true;
+      let releaseBufferWatch: (() => void) | null = null;
       let player: ReturnType<MpegtsRuntime["createPlayer"]> | null = null;
       let readFailure: {
         readonly failure: HostedPlaybackFailure;
@@ -67,6 +69,8 @@ export function createNativeMpegtsPlaybackEngine(
           return;
         }
         active = false;
+        releaseBufferWatch?.();
+        releaseBufferWatch = null;
         const current = player;
         player = null;
         if (current !== null) {
@@ -117,11 +121,8 @@ export function createNativeMpegtsPlaybackEngine(
             isLive: true,
             enableStashBuffer: false,
             lazyLoad: false,
-            // Half a second cannot absorb bursty live delivery. Keep a useful
-            // reserve after catch-up instead of repeatedly seeking into stalls.
-            liveBufferLatencyChasing: true,
-            liveBufferLatencyMaxLatency: 6,
-            liveBufferLatencyMinRemain: 3,
+            // The owned buffer watcher waits for the initial burst to settle.
+            liveBufferLatencyChasing: false,
             autoCleanupSourceBuffer: true,
             enableWorker: false,
             customLoader: createNativeMpegtsLoader(
@@ -135,6 +136,15 @@ export function createNativeMpegtsPlaybackEngine(
         player.on(runtime.Events.LOADING_COMPLETE, onLoadingComplete);
         player.attachMediaElement(request.video);
         player.load();
+        releaseBufferWatch = watchNativeLiveBuffer(request.video, (seconds) => {
+          if (!active || player === null) return;
+          try {
+            player.currentTime = seconds;
+          } catch {
+            stop();
+            request.onFailure("media-unsupported", false);
+          }
+        });
         const play = player.play();
         if (play !== undefined) {
           void Promise.resolve(play).catch((error: unknown) => {

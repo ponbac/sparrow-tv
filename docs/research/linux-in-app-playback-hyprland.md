@@ -4,8 +4,10 @@ Date: 2026-09-09. Starting revision: `aa03304d` (PR #62).
 
 Follow-up: the [frame pacing diagnosis](linux-in-app-frame-pacing.md) identifies
 aggressive latency chasing and insufficient forward buffer as the cause of the
-measured long stalls. The revised installed player retains a three-second
-reserve after catch-up. The earlier observations below remain historical.
+measured long stalls. The initial correction retained a three-second
+reserve after catch-up; the [startup follow-up](linux-in-app-startup-buffering.md)
+now waits for burst delivery to settle and retains five seconds. The earlier
+observations below remain historical.
 
 ## Findings
 

@@ -4,9 +4,13 @@ Date: 2026-09-09. Host and private sample aliases are described in the
 [Hyprland report](linux-in-app-playback-hyprland.md). The Linux in-app player
 remains the default; external mpv remains an explicit user choice.
 
+The startup follow-up and current buffer policy are recorded in
+[startup buffering](linux-in-app-startup-buffering.md). The threshold-only
+revision below is the earlier experiment.
+
 ## Cause under test
 
-The installed adapter enables `liveBufferLatencyChasing` but originally used
+The installed adapter originally enabled `liveBufferLatencyChasing` and used
 mpegts.js 1.7.3's implicit thresholds: catch up above 1.5 seconds of forward
 buffer, seeking to only 0.5 seconds before the buffered end. The library applies
 that check on SourceBuffer updates. See its pinned [defaults](https://github.com/xqq/mpegts.js/blob/v1.7.3/src/config.js)
@@ -98,11 +102,10 @@ denied passed. The revised candidate is retained at
 
 ## Remaining limits
 
-Startup still performs catch-up seeks while draining the provider's initial
-burst (12 in sample C's revised run). The new thresholds reduce their frequency
-but do not eliminate startup jumps. A future startup policy could wait for the
-initial burst to settle and catch up once; that requires separate tune-time and
-cancellation validation.
+The threshold-only revision still performed catch-up seeks while draining the
+provider's initial burst (12 in sample C's revised run). Those thresholds reduced their frequency
+but did not eliminate startup jumps. The [startup follow-up](linux-in-app-startup-buffering.md)
+replaces this policy and records its separate validation.
 
 The runs are 90 seconds each, with a 70-second steady comparison interval.
 Longer sessions, unusually variable networks, and other channel formats may

@@ -1,0 +1,148 @@
+[
+  {
+    "run": "startup-d-before",
+    "interval_seconds": [
+      20,
+      90
+    ],
+    "first_playing_second": 5,
+    "startup_seeks": 13,
+    "startup_waiting_events": 1,
+    "maximum_startup_frame_callback_gap_ms": 324.0,
+    "maximum_startup_media_timestamp_gap_ms": 6260.0,
+    "steady_seeks": 0,
+    "steady_waiting_events": 3,
+    "approximate_callbacks_per_second": 49.7,
+    "maximum_frame_callback_gap_ms": 183.0,
+    "maximum_animation_callback_gap_ms": 14.0,
+    "sample_intervals_with_frame_gap_over_100ms": 1,
+    "median_forward_buffer_seconds": 2.21,
+    "decoder_counter_resets": 2,
+    "failed_samples": 0
+  },
+  {
+    "run": "startup-e-before",
+    "interval_seconds": [
+      20,
+      90
+    ],
+    "first_playing_second": 5,
+    "startup_seeks": 13,
+    "startup_waiting_events": 1,
+    "maximum_startup_frame_callback_gap_ms": 1051.0,
+    "maximum_startup_media_timestamp_gap_ms": 9271.0,
+    "steady_seeks": 0,
+    "steady_waiting_events": 8,
+    "approximate_callbacks_per_second": 47.96,
+    "maximum_frame_callback_gap_ms": 625.0,
+    "maximum_animation_callback_gap_ms": 70.0,
+    "sample_intervals_with_frame_gap_over_100ms": 5,
+    "median_forward_buffer_seconds": 2.01,
+    "decoder_counter_resets": 11,
+    "failed_samples": 0
+  },
+  {
+    "run": "startup-d-settled-3s",
+    "interval_seconds": [
+      20,
+      90
+    ],
+    "first_playing_second": 5,
+    "startup_seeks": 1,
+    "startup_waiting_events": 1,
+    "maximum_startup_frame_callback_gap_ms": 617.0,
+    "maximum_startup_media_timestamp_gap_ms": 39534.0,
+    "steady_seeks": 0,
+    "steady_waiting_events": 5,
+    "approximate_callbacks_per_second": 49.06,
+    "maximum_frame_callback_gap_ms": 566.0,
+    "maximum_animation_callback_gap_ms": 43.0,
+    "sample_intervals_with_frame_gap_over_100ms": 2,
+    "median_forward_buffer_seconds": 2.39,
+    "decoder_counter_resets": 5,
+    "failed_samples": 0
+  },
+  {
+    "run": "startup-d-settled-5s",
+    "interval_seconds": [
+      20,
+      180
+    ],
+    "first_playing_second": 4,
+    "startup_seeks": 1,
+    "startup_waiting_events": 1,
+    "maximum_startup_frame_callback_gap_ms": 245.0,
+    "maximum_startup_media_timestamp_gap_ms": 36360.0,
+    "steady_seeks": 0,
+    "steady_waiting_events": 0,
+    "approximate_callbacks_per_second": 50.02,
+    "maximum_frame_callback_gap_ms": 34.0,
+    "maximum_animation_callback_gap_ms": 19.0,
+    "sample_intervals_with_frame_gap_over_100ms": 0,
+    "median_forward_buffer_seconds": 6.27,
+    "decoder_counter_resets": 1,
+    "failed_samples": 0,
+    "first_90_seconds": {
+      "interval_seconds": [
+        20,
+        90
+      ],
+      "first_playing_second": 4,
+      "startup_seeks": 1,
+      "startup_waiting_events": 1,
+      "maximum_startup_frame_callback_gap_ms": 245.0,
+      "maximum_startup_media_timestamp_gap_ms": 36360.0,
+      "steady_seeks": 0,
+      "steady_waiting_events": 0,
+      "approximate_callbacks_per_second": 50.04,
+      "maximum_frame_callback_gap_ms": 33.0,
+      "maximum_animation_callback_gap_ms": 15.0,
+      "sample_intervals_with_frame_gap_over_100ms": 0,
+      "median_forward_buffer_seconds": 6.85,
+      "decoder_counter_resets": 1,
+      "failed_samples": 0
+    }
+  },
+  {
+    "run": "startup-e-settled-5s",
+    "interval_seconds": [
+      20,
+      90
+    ],
+    "first_playing_second": 4,
+    "startup_seeks": 1,
+    "startup_waiting_events": 1,
+    "maximum_startup_frame_callback_gap_ms": 242.0,
+    "maximum_startup_media_timestamp_gap_ms": 38086.0,
+    "steady_seeks": 0,
+    "steady_waiting_events": 0,
+    "approximate_callbacks_per_second": 50.06,
+    "maximum_frame_callback_gap_ms": 33.0,
+    "maximum_animation_callback_gap_ms": 12.0,
+    "sample_intervals_with_frame_gap_over_100ms": 0,
+    "median_forward_buffer_seconds": 4.31,
+    "decoder_counter_resets": 1,
+    "failed_samples": 0
+  },
+  {
+    "run": "startup-c-settled-5s",
+    "interval_seconds": [
+      20,
+      90
+    ],
+    "first_playing_second": 5,
+    "startup_seeks": 1,
+    "startup_waiting_events": 1,
+    "maximum_startup_frame_callback_gap_ms": 279.0,
+    "maximum_startup_media_timestamp_gap_ms": 32400.0,
+    "steady_seeks": 0,
+    "steady_waiting_events": 0,
+    "approximate_callbacks_per_second": 49.9,
+    "maximum_frame_callback_gap_ms": 42.0,
+    "maximum_animation_callback_gap_ms": 14.0,
+    "sample_intervals_with_frame_gap_over_100ms": 0,
+    "median_forward_buffer_seconds": 5.37,
+    "decoder_counter_resets": 1,
+    "failed_samples": 0
+  }
+]

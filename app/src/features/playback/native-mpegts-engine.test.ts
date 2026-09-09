@@ -1,5 +1,5 @@
 import mpegts from "mpegts.js";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { clientSchemas } from "../../client/contracts";
 import {
   createNativeMpegtsPlaybackEngine,
@@ -16,7 +16,48 @@ const DESCRIPTOR = clientSchemas.nativePlaybackDescriptor.parse({
   selection: { _tag: "none" },
 });
 
+afterEach(() => {
+  vi.clearAllTimers();
+  vi.useRealTimers();
+});
+
 describe("installed mpegts.js adapter", () => {
+  it.each(["stop", "error"] as const)(
+    "releases the live-buffer timer on %s before another catch-up",
+    (reason) => {
+      vi.useFakeTimers({
+        toFake: ["setInterval", "clearInterval", "performance"],
+      });
+      const fixture = runtimeFixture();
+      const video = document.createElement("video");
+      Object.defineProperties(video, {
+        paused: { value: false },
+        buffered: { value: { length: 1, start: () => 0, end: () => 40 } },
+      });
+      const started = createNativeMpegtsPlaybackEngine(fixture.runtime).start({
+        session: { read: vi.fn(async () => success(new ArrayBuffer(0))) },
+        descriptor: DESCRIPTOR,
+        video,
+        onFailure: vi.fn(),
+        onAutoplayBlocked: vi.fn(),
+        onPlaying: vi.fn(),
+      });
+      if (typeof started === "string" || fixture.errorListener === undefined) {
+        throw new Error("expected an active player");
+      }
+      vi.advanceTimersByTime(2_000);
+      expect(fixture.calls.filter((call) => call.startsWith("seek:"))).toEqual([
+        "seek:35",
+      ]);
+      if (reason === "stop") started.stop();
+      else fixture.errorListener("media");
+      vi.advanceTimersByTime(31_000);
+      expect(fixture.calls.filter((call) => call.startsWith("seek:"))).toEqual([
+        "seek:35",
+      ]);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
   it("binds an opaque stream to a main-thread loader without final-stopping its session", async () => {
     const fixture = runtimeFixture();
     const read = vi.fn(async () => success(new ArrayBuffer(0)));
@@ -45,15 +86,15 @@ describe("installed mpegts.js adapter", () => {
       isLive: true,
       enableStashBuffer: false,
       lazyLoad: false,
-      liveBufferLatencyChasing: true,
-      liveBufferLatencyMaxLatency: 6,
-      liveBufferLatencyMinRemain: 3,
+      liveBufferLatencyChasing: false,
       autoCleanupSourceBuffer: true,
       enableWorker: false,
       customLoader: expect.any(Function),
     });
     expect(JSON.stringify(fixture.source)).not.toContain(DESCRIPTOR.sessionId);
-    expect(JSON.stringify(fixture.source)).not.toContain(DESCRIPTOR.streamHandle);
+    expect(JSON.stringify(fixture.source)).not.toContain(
+      DESCRIPTOR.streamHandle,
+    );
 
     video.dispatchEvent(new Event("playing"));
     expect(playing).toHaveBeenCalledTimes(1);
@@ -124,11 +165,10 @@ describe("installed mpegts.js adapter", () => {
       });
       await Promise.resolve();
 
-      expect(failure).toHaveBeenCalledWith(
-        expected,
-        type === "network",
+      expect(failure).toHaveBeenCalledWith(expected, type === "network");
+      expect(JSON.stringify(failure.mock.calls)).not.toContain(
+        "provider.invalid",
       );
-      expect(JSON.stringify(failure.mock.calls)).not.toContain("provider.invalid");
     }
   });
 
@@ -171,7 +211,9 @@ describe("installed mpegts.js adapter", () => {
     fixture.errorListener("network", "private-detail");
 
     expect(failure).toHaveBeenCalledWith("source-unavailable", false);
-    expect(JSON.stringify(failure.mock.calls)).not.toContain("provider.invalid");
+    expect(JSON.stringify(failure.mock.calls)).not.toContain(
+      "provider.invalid",
+    );
   });
 });
 
@@ -179,11 +221,9 @@ function runtimeFixture(mseLivePlayback = true): {
   readonly runtime: NativeMpegtsRuntime;
   readonly calls: string[];
   readonly source:
-    | Parameters<NativeMpegtsRuntime["createPlayer"]>[0]
-    | undefined;
+    Parameters<NativeMpegtsRuntime["createPlayer"]>[0] | undefined;
   readonly config:
-    | Parameters<NativeMpegtsRuntime["createPlayer"]>[1]
-    | undefined;
+    Parameters<NativeMpegtsRuntime["createPlayer"]>[1] | undefined;
   readonly errorListener: ((...args: unknown[]) => void) | undefined;
 } {
   const calls: string[] = [];
@@ -204,7 +244,15 @@ function runtimeFixture(mseLivePlayback = true): {
     createPlayer: (nextSource, nextConfig) => {
       source = nextSource;
       config = nextConfig;
+      let currentTime = 0;
       return {
+        get currentTime() {
+          return currentTime;
+        },
+        set currentTime(seconds: number) {
+          currentTime = seconds;
+          calls.push(`seek:${seconds}`);
+        },
         on: (event, listener) => {
           calls.push(`on:${event}`);
           if (event === runtime.Events.ERROR) {
@@ -239,7 +287,10 @@ function runtimeFixture(mseLivePlayback = true): {
   };
 }
 
-function success<Value>(value: Value): { readonly ok: true; readonly value: Value } {
+function success<Value>(value: Value): {
+  readonly ok: true;
+  readonly value: Value;
+} {
   return { ok: true, value };
 }
 
