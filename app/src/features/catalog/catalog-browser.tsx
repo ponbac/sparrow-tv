@@ -311,9 +311,6 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
           }
           feeds={feeds}
         />
-        <div className="split-stage__knife" aria-hidden="true">
-          <i />
-        </div>
       </main>
     </div>
   );

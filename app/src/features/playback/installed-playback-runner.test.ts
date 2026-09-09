@@ -28,6 +28,65 @@ const SPANISH_AUDIO_ID = clientSchemas.audioTrackId.parse(
 );
 
 describe("InstalledPlaybackRunner", () => {
+  it("releases the in-app session before opening mpv, then resets the next channel to default", async () => {
+    const released = deferred<ClientResult<void>>();
+    const first = sessionFixture(71, { stop: () => released.promise });
+    const external = sessionFixture(72);
+    const next = sessionFixture(73);
+    const client = clientFixture(() => first.value);
+    client.createPlaybackSession
+      .mockReturnValueOnce(first.value)
+      .mockReturnValueOnce(external.value)
+      .mockReturnValueOnce(next.value);
+    const engine = recordingEngine();
+    const runner = createInstalledPlaybackRunner({
+      client,
+      engine: engine.value,
+    });
+    const video = document.createElement("video");
+    await runner.select(CHANNEL_A, video);
+    const switching = runner.switchPlayer("mpv");
+    await until(() => first.stop.mock.calls.length === 1);
+    expect(client.createPlaybackSession).toHaveBeenCalledTimes(1);
+    released.resolve(success(undefined));
+    await switching;
+    expect(client.createPlaybackSession).toHaveBeenNthCalledWith(2, {
+      id: CHANNEL_A.id,
+      engine: "mpv",
+    });
+    await runner.select(CHANNEL_B, video);
+    expect(client.createPlaybackSession).toHaveBeenNthCalledWith(3, {
+      id: CHANNEL_B.id,
+    });
+    expect(engine.maximumActive).toBe(1);
+    await runner.stop();
+  });
+
+  it("does not open mpv if the previous session cannot confirm cleanup", async () => {
+    const first = sessionFixture(74, {
+      stop: async () => ({
+        ok: false,
+        error: {
+          _tag: "transport",
+          retryable: false,
+          message: "cleanup failed",
+        },
+      }),
+    });
+    const client = clientFixture(() => first.value);
+    const runner = createInstalledPlaybackRunner({
+      client,
+      engine: recordingEngine().value,
+    });
+    await runner.select(CHANNEL_A, document.createElement("video"));
+    await runner.switchPlayer("mpv");
+    expect(client.createPlaybackSession).toHaveBeenCalledTimes(1);
+    expect(runner.getSnapshot().phase).toMatchObject({
+      _tag: "failed",
+      failure: "cleanup-unconfirmed",
+    });
+  });
+
   it("confirms suspend before pause/resume/restart and never overlaps engines", async () => {
     const order: string[] = [];
     const suspended = deferred<ClientResult<void>>();

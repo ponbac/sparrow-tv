@@ -1,0 +1,38 @@
+[
+  {
+    "variant": "wayland-mse-disable",
+    "desktop": true,
+    "capture": "wayland-mse-disable.png",
+    "xwayland": false,
+    "exit_code": 0,
+    "cleanup": true,
+    "samples": 27
+  },
+  {
+    "variant": "wayland-mse-shm",
+    "desktop": true,
+    "capture": "wayland-mse-shm.png",
+    "xwayland": false,
+    "exit_code": 0,
+    "cleanup": true,
+    "samples": 27
+  },
+  {
+    "variant": "wayland-embed-disable",
+    "desktop": true,
+    "capture": "wayland-embed-disable.png",
+    "xwayland": false,
+    "exit_code": 0,
+    "cleanup": true,
+    "samples": 28
+  },
+  {
+    "variant": "wayland-embed-shm",
+    "desktop": true,
+    "capture": "wayland-embed-shm.png",
+    "xwayland": false,
+    "exit_code": 0,
+    "cleanup": true,
+    "samples": 28
+  }
+]

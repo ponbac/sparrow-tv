@@ -46,6 +46,8 @@ describe("installed mpegts.js adapter", () => {
       enableStashBuffer: false,
       lazyLoad: false,
       liveBufferLatencyChasing: true,
+      liveBufferLatencyMaxLatency: 6,
+      liveBufferLatencyMinRemain: 3,
       autoCleanupSourceBuffer: true,
       enableWorker: false,
       customLoader: expect.any(Function),

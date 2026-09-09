@@ -4,14 +4,20 @@
 
 Determine whether Sparrow should regain an in-app picture through WebKit/MSE
 or embedded libmpv. Production still launches external system mpv. This PR
-contains research and a diagnostic harness, not an engine switch or a Tauri
-embedding implementation.
+contains research, a diagnostic harness and an opt-in installed MSE candidate,
+not a production engine switch or a Tauri embedding implementation.
+
+The [Hyprland laptop continuation](linux-in-app-playback-hyprland.md) records
+target-desktop tests and the installed candidate. The harness now supports
+`--desktop`; its [README](../../scripts/debug/linux-playback-lab/README.md)
+also documents the private installed-app comparison runner.
 
 Start with the [local results](linux-in-app-playback-local-experiment.md) and
 [options](linux-in-app-playback-options.md). Nine recorded software-rendered
 runs completed: six renderer variants, then three control-wiring checks.
 Both approaches displayed a generated 720p30 H.264/AAC MPEG-TS fixture.
-The original provider-stream failure has **not** been reproduced here.
+Those original virtual-display runs did not reproduce the provider-stream
+failure. See the laptop continuation for the later real-stream results.
 
 The main acceptance machine uses Hyprland. Distinguish its native Wayland
 clients from XWayland clients: the currently documented AppImage launcher uses
@@ -34,7 +40,7 @@ python3 scripts/debug/linux-playback-lab/run.py --output /tmp/sparrow-playback-l
 ```
 
 This downloads pinned mpegts.js, generates a fixture, compiles the C harness
-and runs six sequential variants in about three minutes. It does not install
+and runs seven sequential variants in about four minutes. It does not install
 system packages or use Sparrow's configuration. Inspect `summary.json`, the
 per-variant logs and screenshots, and `runner-server.log` in the output directory.
 
@@ -113,12 +119,14 @@ change codecs, buffers and GPU options together in an attempt to get a pass.
 
 ## 3. Implementation machine: test the real Sparrow boundary
 
-This work is still required; no commands in this PR enable an installed MSE
-selector or embedded Tauri adapter.
+The `linux-playback-lab` Cargo feature enables a startup engine override
+and bounded measurements through the real Rust byte transport. Follow the
+harness README to build and run an isolated candidate. The embedded Tauri
+adapter and broader acceptance work remain outstanding.
 
-1. Add a development-only engine selector to a candidate, retaining external
-   mpv as the comparison. Route MSE through Sparrow's existing native adapter
-   and Rust byte stream, not the harness's direct loopback HTTP loader.
+1. Build the opt-in `linux-playback-lab` candidate described in the README,
+   retaining external mpv as the comparison. It routes MSE through Sparrow's
+   existing native adapter and Rust byte stream.
 2. On the target machine, compare external mpv, MSE with the previous disabled
    renderer, and MSE with the corrected packaged XWayland/SHM renderer. Keep
    the original representative streams and other settings fixed. Native
@@ -132,8 +140,9 @@ selector or embedded Tauri adapter.
    Wayland), recording decoder and output modes. Enable and test hardware
    decoding as a separate deliberate change; add the required native display
    interop where applicable. The GL renderer may differ from the CLI renderer.
-5. Build a local candidate with the repository's `just build-appimage` recipe
-   and inspect the actual resolved libmpv/WebKit/GStreamer dependencies. Repeat
+5. Build a local candidate with the README's feature-enabled equivalent of
+   `just build-appimage` and inspect the actual resolved libmpv/WebKit/GStreamer
+   dependencies. Repeat
    the target-host checks on that package. Development runs are not package
    acceptance. Follow [personal release acceptance](../release/personal-acceptance.md)
    only when testing an actual immutable release candidate; these experiments
@@ -168,12 +177,12 @@ candidate-specific driver for those longer measurements. Do not compare raw
 counter names across engines without checking their meaning; missing counters
 are not zero drops.
 
-## Decision gate
+## Accepted default and remaining work
 
-Follow [ADR 0001](../adr/0001-shared-native-http-playback.md). Restore MSE as
-primary only after a packaged differential meets the failing representative
-streams. Promote embedded libmpv only after equivalent playback, source privacy
-and deterministic ownership/cleanup are demonstrated. If either test fails,
-report the smallest reproducing case and keep the proven external primary.
-Reconcile the stale architecture handoff and ADR references when the resulting
-implementation decision is accepted, not from synthetic smoke tests alone.
+On 2026-09-09 the owner chose in-app Linux playback as the default despite the
+remaining frame pacing issues, with an explicit button to open mpv. This
+supersedes the previous performance-equivalence gate for the default. Follow
+[ADR 0001](../adr/0001-shared-native-http-playback.md): improve the integrated
+player while retaining source privacy and release-before-switch ownership.
+Embedded libmpv still needs representative-stream performance and cleanup
+validation before replacing the current in-app implementation.

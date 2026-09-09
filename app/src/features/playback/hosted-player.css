@@ -1,4 +1,5 @@
 .hosted-player {
+  position: relative;
   display: grid;
   width: 100%;
   height: 100%;
@@ -7,6 +8,70 @@
   grid-template-rows: minmax(0, 1fr) auto auto;
   color: var(--bone);
   background: var(--ink-deep);
+}
+
+.hosted-player:fullscreen {
+  width: 100vw;
+  height: 100dvh;
+  grid-template-rows: minmax(0, 1fr);
+  background: #000;
+}
+
+.hosted-player:fullscreen .hosted-player__screen {
+  grid-area: 1 / 1;
+}
+
+.hosted-player:fullscreen .hosted-player__heading,
+.hosted-player:fullscreen .hosted-player__controls {
+  position: absolute;
+  z-index: 5;
+  right: 0;
+  left: 0;
+  border: 0;
+  transition: opacity 180ms ease;
+}
+
+.hosted-player:fullscreen .hosted-player__heading {
+  top: 0;
+  padding: 1.25rem 1.5rem 2.5rem;
+  background: linear-gradient(#000c, transparent);
+}
+
+.hosted-player:fullscreen .hosted-player__controls {
+  bottom: 0;
+  padding: 2.5rem 1.5rem 1.25rem;
+  background: linear-gradient(transparent, #000e);
+}
+
+.hosted-player:fullscreen .hosted-player__controls p {
+  display: none;
+}
+
+.hosted-player:fullscreen[data-controls-visible="false"] {
+  cursor: none;
+}
+
+.hosted-player:fullscreen[data-controls-visible="false"] .hosted-player__heading,
+.hosted-player:fullscreen[data-controls-visible="false"] .hosted-player__controls {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.hosted-player:fullscreen:has(:focus-visible) .hosted-player__controls {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.hosted-player__controls button:disabled {
+  opacity: 0.45;
+  cursor: wait;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hosted-player:fullscreen .hosted-player__heading,
+  .hosted-player:fullscreen .hosted-player__controls {
+    transition: none;
+  }
 }
 
 .hosted-player__heading {
@@ -79,15 +144,6 @@
   background:
     radial-gradient(circle at center, rgb(255 77 58 / 8%), transparent 38%),
     #050505;
-}
-
-.hosted-player__screen::after {
-  position: absolute;
-  z-index: 2;
-  inset: 0;
-  pointer-events: none;
-  box-shadow: inset 0 0 48px rgb(0 0 0 / 55%);
-  content: "";
 }
 
 .hosted-player video {

@@ -60,4 +60,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
 
-http.server.ThreadingHTTPServer(('127.0.0.1', int(sys.argv[2]) if len(sys.argv) > 2 else 18765), Handler).serve_forever()
+server = http.server.ThreadingHTTPServer(('127.0.0.1', int(sys.argv[2]) if len(sys.argv) > 2 else 18765), Handler)
+print(f'SERVER_READY port={server.server_port}', flush=True)
+server.serve_forever()

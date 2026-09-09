@@ -5,6 +5,10 @@ edition.workspace = true
 publish.workspace = true
 default-run = "sparrow-installed"
 
+[features]
+# Explicit opt-in for local packaged playback comparisons; never a release default.
+linux-playback-lab = []
+
 [lib]
 name = "sparrow_installed"
 crate-type = ["lib", "cdylib", "staticlib"]

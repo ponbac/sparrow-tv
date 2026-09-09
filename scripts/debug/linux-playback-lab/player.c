@@ -20,6 +20,13 @@ static unsigned long previous_sample;
 static int seconds;
 static const char *source;
 
+static gboolean close_window(GtkWidget *widget, GdkEvent *event, void *unused) {
+    (void)widget; (void)event; (void)unused;
+    /* Keep the GLArea alive until its render context has been freed. */
+    gtk_main_quit();
+    return TRUE;
+}
+
 static gboolean window_state(GtkWidget *widget, GdkEventWindowState *event, void *unused) {
     (void)widget; (void)unused;
     g_print("WINDOW_STATE fullscreen=%d\n", !!(event->new_window_state & GDK_WINDOW_STATE_FULLSCREEN));
@@ -172,12 +179,16 @@ static gboolean tick(void *unused) {
 int main(int argc, char **argv) {
     if (argc != 4) { fprintf(stderr, "usage: player mse|embed PAGE_URL STREAM_URL\n"); return 2; }
     gtk_init(&argc, &argv);
+    g_print("GDK_BACKEND %s GTK %u.%u.%u WEBKIT %u.%u.%u\n",
+        G_OBJECT_TYPE_NAME(gdk_display_get_default()),
+        gtk_get_major_version(), gtk_get_minor_version(), gtk_get_micro_version(),
+        webkit_get_major_version(), webkit_get_minor_version(), webkit_get_micro_version());
     source = argv[3];
     gboolean embedded = strcmp(argv[1], "embed") == 0;
     window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(window), "Sparrow playback experiment");
     gtk_window_set_default_size(GTK_WINDOW(window), 960, 600);
-    g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+    g_signal_connect(window, "delete-event", G_CALLBACK(close_window), NULL);
     g_signal_connect(window, "window-state-event", G_CALLBACK(window_state), NULL);
     WebKitUserContentManager *manager = webkit_user_content_manager_new();
     webkit_user_content_manager_register_script_message_handler(manager, "lab");
@@ -221,7 +232,6 @@ int main(int argc, char **argv) {
     }
     if (player) { mpv_terminate_destroy(player); player = NULL; }
     g_print("CLEANUP complete renders=%u changed=%u\n", renders, changed_samples);
-    g_signal_handlers_disconnect_by_func(window, G_CALLBACK(gtk_main_quit), NULL);
     gtk_widget_destroy(window);
     return 0;
 }

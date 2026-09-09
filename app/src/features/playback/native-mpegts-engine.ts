@@ -117,7 +117,11 @@ export function createNativeMpegtsPlaybackEngine(
             isLive: true,
             enableStashBuffer: false,
             lazyLoad: false,
+            // Half a second cannot absorb bursty live delivery. Keep a useful
+            // reserve after catch-up instead of repeatedly seeking into stalls.
             liveBufferLatencyChasing: true,
+            liveBufferLatencyMaxLatency: 6,
+            liveBufferLatencyMinRemain: 3,
             autoCleanupSourceBuffer: true,
             enableWorker: false,
             customLoader: createNativeMpegtsLoader(

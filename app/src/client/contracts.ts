@@ -445,9 +445,13 @@ export interface StopPlaybackInput extends ClientRequestOptions {
   readonly streamHandle?: NativeStreamHandle;
 }
 
+/** Explicit player choice retained for one session; new Channels default to in-app playback. */
+export type InstalledPlayerChoice = "in-app" | "mpv";
+
 /** Input for creating one installed Playback Session around a Channel intent. */
 export interface CreatePlaybackSessionInput {
   readonly id: ChannelId;
+  readonly engine?: InstalledPlayerChoice;
 }
 
 /** Input for reading the current transport owned by one installed session. */

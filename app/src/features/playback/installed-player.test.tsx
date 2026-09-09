@@ -98,6 +98,57 @@ const SPANISH_AUDIO_DESCRIPTOR = clientSchemas.nativePlaybackDescriptor.parse({
 const LINUX_TRANSPORT = { _tag: "linux-mpv" } as const;
 
 describe("InstalledPlayer", () => {
+  it("fullscreens the player and controls, and follows browser exit", async () => {
+    const session = fixtureSession();
+    render(
+      <InstalledPlayer
+        channel={CHANNEL}
+        client={fixtureClient(() => session.value)}
+        engine={playingEngine().value}
+        onStop={vi.fn()}
+      />,
+    );
+    await screen.findByText("ON AIR");
+    const surface = screen.getByRole("region", { name: CHANNEL.name });
+    const request = vi.fn(async () => {
+      Object.defineProperty(document, "fullscreenElement", {
+        configurable: true,
+        value: surface,
+      });
+      document.dispatchEvent(new Event("fullscreenchange"));
+    });
+    Object.defineProperty(surface, "requestFullscreen", {
+      configurable: true,
+      value: request,
+    });
+    try {
+      await userEvent
+        .setup()
+        .click(screen.getByRole("button", { name: "Full screen" }));
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(surface).toContainElement(
+        screen.getByRole("group", { name: "Playback controls" }),
+      );
+      expect(
+        screen.getByRole("button", { name: "Exit fullscreen" }),
+      ).toHaveAttribute("aria-pressed", "true");
+      act(() => {
+        Object.defineProperty(document, "fullscreenElement", {
+          configurable: true,
+          value: null,
+        });
+        document.dispatchEvent(new Event("fullscreenchange"));
+      });
+      expect(
+        screen.getByRole("button", { name: "Full screen" }),
+      ).toHaveAttribute("aria-pressed", "false");
+      fireEvent.doubleClick(surface.querySelector(".hosted-player__screen")!);
+      await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    } finally {
+      Reflect.deleteProperty(document, "fullscreenElement");
+    }
+  });
+
   it("brings a newly mounted player into the mobile viewport before playback starts", async () => {
     const originalMatchMedia = Object.getOwnPropertyDescriptor(
       window,
@@ -284,7 +335,9 @@ describe("InstalledPlayer", () => {
       },
       signal: expect.any(AbortSignal),
     });
-    expect(await screen.findByText("Audio preference saved for this channel.")).toBeVisible();
+    expect(
+      await screen.findByText("Audio preference saved for this channel."),
+    ).toBeVisible();
     expect(selector).toHaveValue(SPANISH_AUDIO_ID);
   });
 
@@ -312,7 +365,9 @@ describe("InstalledPlayer", () => {
         "Saved audio is unavailable. Using the first compatible track.",
       ),
     ).toBeVisible();
-    expect(screen.getByRole("combobox", { name: "Audio track" })).toBeDisabled();
+    expect(
+      screen.getByRole("combobox", { name: "Audio track" }),
+    ).toBeDisabled();
   });
 
   it("does not leak resources across React StrictMode setup replay", async () => {
@@ -409,9 +464,7 @@ describe("InstalledPlayer", () => {
     expect(screen.getByText("Live monitor · system mpv")).toBeVisible();
     expect(screen.getByRole("button", { name: "Mute" })).toBeVisible();
     expect(screen.getByRole("slider", { name: "Volume" })).toBeVisible();
-    expect(
-      screen.getByRole("button", { name: "Full screen" }),
-    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Full screen" })).toBeVisible();
     expect(
       screen.queryByRole("button", { name: "Open in mpv" }),
     ).not.toBeInTheDocument();
@@ -421,7 +474,7 @@ describe("InstalledPlayer", () => {
     expect(session.stop).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps a terminal primary failure on the restart-only path", async () => {
+  it("offers an explicit mpv switch after an in-app format failure", async () => {
     const session = fixtureSession();
     const engine: InstalledPlaybackEngine = {
       start: ({ onFailure }) => {
@@ -439,9 +492,7 @@ describe("InstalledPlayer", () => {
     );
 
     expect(await screen.findByText("FORMAT MISSED")).toBeVisible();
-    expect(
-      screen.queryByRole("button", { name: "Open in mpv" }),
-    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open in mpv" })).toBeEnabled();
   });
 
   it("gives actionable copy when the required Linux system player is missing", async () => {
@@ -467,7 +518,9 @@ describe("InstalledPlayer", () => {
     expect(
       screen.getByText("System mpv is required for Linux playback"),
     ).toBeVisible();
-    expect(screen.getByText("Install mpv, then restart playback.")).toBeVisible();
+    expect(
+      screen.getByText("Install mpv, then restart playback."),
+    ).toBeVisible();
   });
 });
 
@@ -514,6 +567,13 @@ function fixtureClient(
 } {
   return {
     createPlaybackSession: vi.fn(create),
+    capabilities: async () =>
+      success({
+        sourceConfiguration: "device-writable",
+        playbackTransport: "platform-native",
+        audioTrackSelection: true,
+        mpvFailover: true,
+      }),
   };
 }
 

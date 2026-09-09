@@ -41,7 +41,7 @@ describe("installed app repaint contract", () => {
     );
     expect(
       declaration(cinemaStyles!, ".cinema-stage", "grid-template-rows"),
-    ).toBe("minmax(11.25rem, 1fr) auto 3.625rem");
+    ).toBe("auto auto auto");
   });
 
   it("keeps persistent Split Stage chrome static", async () => {

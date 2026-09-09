@@ -264,9 +264,9 @@ pub(crate) async fn start_playback(
     state: &InstalledRuntime,
     input: PlaybackStartInput,
 ) -> Result<PlaybackDescriptorDto, ClientErrorDto> {
-    let (channel_id, session_id) = input.into_playback()?;
+    let (channel_id, session_id, engine) = input.into_playback()?;
     state
-        .start_playback(session_id, channel_id)
+        .start_playback(session_id, channel_id, engine)
         .await
         .map(PlaybackDescriptorDto::from)
         .map_err(ClientErrorDto::from)
@@ -446,8 +446,9 @@ pub(crate) async fn reopen_playback(
     state: &InstalledRuntime,
     input: PlaybackReopenInput,
 ) -> Result<PlaybackDescriptorDto, ClientErrorDto> {
+    let (session_id, engine) = input.into_playback()?;
     state
-        .reopen_playback(input.into_session_id()?)
+        .reopen_playback(session_id, engine)
         .await
         .map(PlaybackDescriptorDto::from)
         .map_err(ClientErrorDto::from)

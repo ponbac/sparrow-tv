@@ -91,20 +91,31 @@ pub(crate) struct ChannelInput {
 }
 
 /// The provider location is resolved natively from `id`; no destination or
-/// transport policy can enter through this command.
+/// source or arbitrary player options can enter through this command.
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum PlaybackEngineInput {
+    InApp,
+    #[cfg(target_os = "linux")]
+    Mpv,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PlaybackStartInput {
     id: String,
     session_id: String,
+    engine: Option<PlaybackEngineInput>,
 }
 
 impl PlaybackStartInput {
-    pub(crate) fn into_playback(self) -> Result<(ChannelId, PlaybackSessionId), ClientErrorDto> {
+    pub(crate) fn into_playback(
+        self,
+    ) -> Result<(ChannelId, PlaybackSessionId, Option<PlaybackEngineInput>), ClientErrorDto> {
         let channel_id = ChannelId::parse(self.id).map_err(ClientErrorDto::from)?;
         let session_id = PlaybackSessionId::parse(self.session_id)
             .map_err(|_| ClientErrorDto::service_unavailable())?;
-        Ok((channel_id, session_id))
+        Ok((channel_id, session_id, self.engine))
     }
 }
 
@@ -339,6 +350,7 @@ impl PlaybackSuspendInput {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PlaybackReopenInput {
     session_id: String,
+    engine: Option<PlaybackEngineInput>,
 }
 
 #[derive(Deserialize)]
@@ -391,8 +403,12 @@ where
 }
 
 impl PlaybackReopenInput {
-    pub(crate) fn into_session_id(self) -> Result<PlaybackSessionId, ClientErrorDto> {
-        PlaybackSessionId::parse(self.session_id).map_err(|_| ClientErrorDto::service_unavailable())
+    pub(crate) fn into_playback(
+        self,
+    ) -> Result<(PlaybackSessionId, Option<PlaybackEngineInput>), ClientErrorDto> {
+        let session = PlaybackSessionId::parse(self.session_id)
+            .map_err(|_| ClientErrorDto::service_unavailable())?;
+        Ok((session, self.engine))
     }
 }
 
@@ -541,6 +557,26 @@ mod tests {
     use sparrow_core::CoreError;
 
     use super::*;
+
+    #[test]
+    fn player_choice_accepts_only_known_engines() {
+        assert!(matches!(
+            serde_json::from_value::<PlaybackEngineInput>(json!("in-app")).unwrap(),
+            PlaybackEngineInput::InApp
+        ));
+        #[cfg(target_os = "linux")]
+        assert!(matches!(
+            serde_json::from_value::<PlaybackEngineInput>(json!("mpv")).unwrap(),
+            PlaybackEngineInput::Mpv
+        ));
+        for value in [
+            json!("vlc"),
+            json!("--arbitrary-option"),
+            json!({"path": "player"}),
+        ] {
+            assert!(serde_json::from_value::<PlaybackEngineInput>(value).is_err());
+        }
+    }
 
     #[test]
     fn strict_inputs_reject_unknown_fields_and_refine_values_in_core() {
@@ -770,7 +806,7 @@ mod tests {
             "sessionId": "play1_0123456789abcdef0123456789abcdef_a"
         }))
         .expect("reopen shape parses");
-        assert!(reopen.into_session_id().is_ok());
+        assert!(reopen.into_playback().is_ok());
 
         let mpv_health: PlaybackMpvControlInput = serde_json::from_value(json!({
             "sessionId": "play1_0123456789abcdef0123456789abcdef_a",
@@ -887,7 +923,7 @@ mod tests {
                 serde_json::from_value(json!({ "sessionId": invalid }))
                     .expect("reopen shape parses");
             assert!(matches!(
-                reopen.into_session_id(),
+                reopen.into_playback(),
                 Err(ClientErrorDto::ServiceUnavailable)
             ));
         }

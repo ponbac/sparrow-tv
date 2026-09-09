@@ -61,6 +61,8 @@ export interface MpegtsRuntime {
       readonly enableStashBuffer: boolean;
       readonly lazyLoad: boolean;
       readonly liveBufferLatencyChasing: boolean;
+      readonly liveBufferLatencyMaxLatency?: number;
+      readonly liveBufferLatencyMinRemain?: number;
       readonly autoCleanupSourceBuffer: boolean;
       readonly enableWorker?: false;
       readonly customLoader?: NativeLoaderConstructor;

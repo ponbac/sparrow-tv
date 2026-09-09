@@ -71,10 +71,13 @@ impl Debug for AudioTrackId {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum AudioCodec {
+    #[serde(rename = "mpeg-1-audio")]
     Mpeg1Audio,
+    #[serde(rename = "mpeg-2-audio")]
     Mpeg2Audio,
     AacAdts,
     AacLatm,
+    #[serde(rename = "ac-3")]
     Ac3,
 }
 
@@ -1170,6 +1173,19 @@ fn mpeg_crc32(bytes: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn audio_codecs_serialize_to_the_client_contract() {
+        for (codec, wire_name) in [
+            (super::AudioCodec::Mpeg1Audio, "mpeg-1-audio"),
+            (super::AudioCodec::Mpeg2Audio, "mpeg-2-audio"),
+            (super::AudioCodec::AacAdts, "aac-adts"),
+            (super::AudioCodec::AacLatm, "aac-latm"),
+            (super::AudioCodec::Ac3, "ac-3"),
+        ] {
+            assert_eq!(serde_json::to_value(codec).unwrap(), wire_name);
+        }
+    }
+
     use super::*;
 
     use futures_util::stream;

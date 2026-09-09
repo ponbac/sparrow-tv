@@ -1,10 +1,20 @@
-import { Maximize2, RotateCcw, Square, Volume2, VolumeX } from "lucide-react";
-import type { ReactNode, RefObject } from "react";
-import type { ChannelId } from "../../client/contracts";
 import {
-  playerPresentation,
-  type PlayerState,
-} from "./playback-presentation";
+  Maximize2,
+  Minimize2,
+  RotateCcw,
+  Square,
+  Volume2,
+  VolumeX,
+} from "lucide-react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from "react";
+import type { ChannelId } from "../../client/contracts";
+import { playerPresentation, type PlayerState } from "./playback-presentation";
 import "./hosted-player.css";
 
 export interface PlaybackSurfaceProps {
@@ -25,7 +35,7 @@ export interface PlaybackSurfaceProps {
   readonly fullscreen: boolean;
   readonly onVolumeChange: (volume: number) => void;
   readonly onToggleMuted: () => void;
-  readonly onRequestFullscreen: () => void;
+  readonly onRequestFullscreen: (surface: HTMLElement) => void;
   readonly showMediaControls?: boolean;
   readonly stopLabel?: string;
   readonly onStop: () => void;
@@ -54,6 +64,26 @@ export function PlaybackSurface({
   onStop,
   onAutoplayFailure,
 }: PlaybackSurfaceProps) {
+  const surfaceRef = useRef<HTMLElement>(null);
+  const hideControls = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const revealControls = () => {
+    setControlsVisible(true);
+    if (hideControls.current !== null) clearTimeout(hideControls.current);
+    if (fullscreen)
+      hideControls.current = setTimeout(() => setControlsVisible(false), 2500);
+  };
+  useEffect(() => {
+    if (fullscreen)
+      hideControls.current = setTimeout(() => setControlsVisible(false), 2500);
+    else setControlsVisible(true);
+    return () => {
+      if (hideControls.current !== null) clearTimeout(hideControls.current);
+    };
+  }, [fullscreen]);
+  const toggleFullscreen = () => {
+    if (surfaceRef.current !== null) onRequestFullscreen(surfaceRef.current);
+  };
   const beginBlockedPlayback = () => {
     const video = videoRef.current;
     if (video !== null) {
@@ -62,7 +92,33 @@ export function PlaybackSurface({
   };
   const presentation = playerPresentation(state);
   return (
-    <section className="hosted-player" aria-labelledby="playback-player-heading">
+    <section
+      className="hosted-player"
+      aria-labelledby="playback-player-heading"
+      ref={surfaceRef}
+      tabIndex={0}
+      data-controls-visible={controlsVisible}
+      onPointerMove={revealControls}
+      onFocusCapture={revealControls}
+      onKeyDown={(event) => {
+        if (
+          event.target instanceof HTMLElement &&
+          event.target.closest(
+            'input, select, textarea, [contenteditable="true"]',
+          )
+        )
+          return;
+        if (
+          event.key.toLowerCase() === "f" &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          !event.altKey
+        ) {
+          event.preventDefault();
+          toggleFullscreen();
+        }
+      }}
+    >
       <div className="hosted-player__heading">
         <div>
           <p className="eyebrow">Live monitor · {transportLabel}</p>
@@ -79,7 +135,11 @@ export function PlaybackSurface({
         </div>
       </div>
 
-      <div className="hosted-player__screen" data-state={state._tag}>
+      <div
+        className="hosted-player__screen"
+        data-state={state._tag}
+        onDoubleClick={toggleFullscreen}
+      >
         <video
           key={videoKey}
           ref={videoRef}
@@ -115,11 +175,7 @@ export function PlaybackSurface({
         {additionalControls}
         {showMediaControls ? (
           <>
-            <button
-              type="button"
-              aria-pressed={muted}
-              onClick={onToggleMuted}
-            >
+            <button type="button" aria-pressed={muted} onClick={onToggleMuted}>
               {muted ? (
                 <VolumeX aria-hidden="true" />
               ) : (
@@ -144,10 +200,19 @@ export function PlaybackSurface({
             <button
               type="button"
               aria-pressed={fullscreen}
-              onClick={onRequestFullscreen}
+              onClick={toggleFullscreen}
+              title={
+                fullscreen
+                  ? "Exit fullscreen (Esc)"
+                  : "Fullscreen (F or double-click)"
+              }
             >
-              <Maximize2 aria-hidden="true" />
-              Full screen
+              {fullscreen ? (
+                <Minimize2 aria-hidden="true" />
+              ) : (
+                <Maximize2 aria-hidden="true" />
+              )}
+              {fullscreen ? "Exit fullscreen" : "Full screen"}
             </button>
           </>
         ) : null}

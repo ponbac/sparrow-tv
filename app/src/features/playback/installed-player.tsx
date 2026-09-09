@@ -1,4 +1,10 @@
-import { Pause, RotateCcw, ScrollText } from "lucide-react";
+import {
+  ExternalLink,
+  MonitorPlay,
+  Pause,
+  RotateCcw,
+  ScrollText,
+} from "lucide-react";
 import {
   useEffect,
   useMemo,
@@ -29,7 +35,10 @@ import { PlaybackSurface } from "./playback-surface";
 
 export interface InstalledPlayerProps {
   readonly channel: { readonly id: ChannelId; readonly name: string };
-  readonly client: Pick<InstalledSparrowClient, "createPlaybackSession">;
+  readonly client: Pick<
+    InstalledSparrowClient,
+    "createPlaybackSession" | "capabilities"
+  >;
   readonly onStop: () => void;
   readonly engine?: InstalledPlaybackEngine;
   readonly lifecycleEvents?: InstalledLifecycleEvents;
@@ -45,6 +54,20 @@ export function InstalledPlayer({
 }: InstalledPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  const [canOpenMpv, setCanOpenMpv] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    void client.capabilities({ signal: controller.signal }).then(
+      (result) => {
+        if (!controller.signal.aborted)
+          setCanOpenMpv(result.ok && result.value.mpvFailover);
+      },
+      () => {
+        if (!controller.signal.aborted) setCanOpenMpv(false);
+      },
+    );
+    return () => controller.abort();
+  }, [client]);
   const runner = useMemo(
     () =>
       createInstalledPlaybackRunner({
@@ -109,7 +132,10 @@ export function InstalledPlayer({
 
   useEffect(() => {
     const updateFullscreen = () => {
-      runner.setFullscreen(document.fullscreenElement === videoRef.current);
+      runner.setFullscreen(
+        videoRef.current !== null &&
+          (document.fullscreenElement?.contains(videoRef.current) ?? false),
+      );
     };
     document.addEventListener("fullscreenchange", updateFullscreen);
     return () =>
@@ -193,6 +219,32 @@ export function InstalledPlayer({
       {...(recoveryAction === undefined ? {} : { recoveryAction })}
       additionalControls={
         <>
+          {canOpenMpv ? (
+            <button
+              type="button"
+              disabled={
+                phase._tag === "stopping" ||
+                phase._tag === "starting" ||
+                phase._tag === "suspending" ||
+                phase._tag === "replacing-audio"
+              }
+              onClick={() => {
+                const switchPlayer = async () => {
+                  if (document.fullscreenElement !== null)
+                    await document.exitFullscreen();
+                  await runner.switchPlayer(usesMpv ? "in-app" : "mpv");
+                };
+                void switchPlayer().catch(() => undefined);
+              }}
+            >
+              {usesMpv ? (
+                <MonitorPlay aria-hidden="true" />
+              ) : (
+                <ExternalLink aria-hidden="true" />
+              )}
+              {usesMpv ? "Play in app" : "Open in mpv"}
+            </button>
+          ) : null}
           {state.audio.tracks.length === 0 ? null : (
             <label className="hosted-player__audio-track">
               <span>Audio</span>
@@ -254,10 +306,14 @@ export function InstalledPlayer({
       fullscreen={state.controls.fullscreen}
       onVolumeChange={(volume) => runner.setVolume(volume)}
       onToggleMuted={() => runner.toggleMuted()}
-      onRequestFullscreen={() => void runner.requestFullscreen()}
+      onRequestFullscreen={(surface) => void runner.requestFullscreen(surface)}
       showMediaControls={!transportReleased}
       stopLabel={
-        transportReleased ? "Close player" : usesMpv ? "Stop mpv" : "Stop stream"
+        transportReleased
+          ? "Close player"
+          : usesMpv
+            ? "Stop mpv"
+            : "Stop stream"
       }
       onStop={stop}
       onAutoplayFailure={() => void runner.reportAutoplayFailure()}
@@ -325,7 +381,10 @@ function installedAudioStatus(
   if (preferenceStatus === "unchanged") {
     return "Saved audio preference is unchanged.";
   }
-  if (selection._tag === "selected" && selection.reason === "saved-preference") {
+  if (
+    selection._tag === "selected" &&
+    selection.reason === "saved-preference"
+  ) {
     return "Saved audio preference applied.";
   }
   return discovered && tracks.length === 0

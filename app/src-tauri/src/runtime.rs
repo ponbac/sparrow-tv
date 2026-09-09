@@ -29,7 +29,7 @@ use crate::{
     instance_lock::{InstanceLock, InstanceLockError},
     ipc::{
         dto::{CatalogStatusDto, ClientErrorDto, CoreEventDto},
-        input::{SearchRequestId, SourceConfigurationInputDto},
+        input::{PlaybackEngineInput, SearchRequestId, SourceConfigurationInputDto},
         subscriptions::SubscriptionRegistry,
     },
     playback::{
@@ -103,6 +103,8 @@ impl InstalledRuntimeSlot {
 
 /// The complete on-device catalog composition managed by Tauri.
 pub(crate) struct InstalledRuntime {
+    #[cfg(target_os = "linux")]
+    linux_playback: LinuxPlaybackEngine,
     playback: Arc<PlaybackManager>,
     core: Arc<SparrowCore>,
     configuration_store: SourceConfigurationStore,
@@ -114,6 +116,41 @@ pub(crate) struct InstalledRuntime {
     lifecycle_order: LifecycleOrder,
     lifecycle_revision: AtomicU64,
     _instance_lock: InstanceLock,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LinuxPlaybackEngine {
+    Mpv,
+    WebViewMse,
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxPlaybackEngine {
+    fn configured() -> Result<Self, InstalledStartupError> {
+        #[cfg(feature = "linux-playback-lab")]
+        {
+            let value = match std::env::var("SPARROW_LINUX_PLAYBACK_ENGINE") {
+                Ok(value) => Some(value),
+                Err(std::env::VarError::NotPresent) => None,
+                Err(std::env::VarError::NotUnicode(_)) => {
+                    return Err(InstalledStartupError::PlaybackAdapter);
+                }
+            };
+            Self::parse(value.as_deref())
+        }
+        #[cfg(not(feature = "linux-playback-lab"))]
+        Ok(Self::WebViewMse)
+    }
+
+    #[cfg(feature = "linux-playback-lab")]
+    fn parse(value: Option<&str>) -> Result<Self, InstalledStartupError> {
+        match value {
+            Some("mpv") => Ok(Self::Mpv),
+            None | Some("mse") => Ok(Self::WebViewMse),
+            Some(_) => Err(InstalledStartupError::PlaybackAdapter),
+        }
+    }
 }
 
 #[derive(Clone, Copy, serde::Serialize)]
@@ -133,6 +170,8 @@ impl InstalledRuntime {
         app_data: PathBuf,
         screen_wake: Arc<dyn ScreenWake>,
     ) -> Result<Self, InstalledStartupError> {
+        #[cfg(target_os = "linux")]
+        let linux_playback = LinuxPlaybackEngine::configured()?;
         prepare_app_data(&app_data)?;
         let private_root = app_data.join(PRIVATE_DIRECTORY);
         ensure_private_directory(&private_root).map_err(InstalledStartupError::from)?;
@@ -168,6 +207,8 @@ impl InstalledRuntime {
         ));
 
         Ok(Self {
+            #[cfg(target_os = "linux")]
+            linux_playback,
             playback,
             core,
             configuration_store,
@@ -306,16 +347,31 @@ impl InstalledRuntime {
         &self,
         session_id: PlaybackSessionId,
         channel_id: sparrow_core::ChannelId,
+        engine: Option<PlaybackEngineInput>,
     ) -> Result<InstalledPlaybackStart, PlaybackManagerError> {
         #[cfg(target_os = "linux")]
         {
-            self.playback
-                .start_mpv_primary(session_id, channel_id)
-                .await
-                .map(InstalledPlaybackStart::LinuxMpv)
+            let engine = match engine {
+                Some(PlaybackEngineInput::InApp) => LinuxPlaybackEngine::WebViewMse,
+                Some(PlaybackEngineInput::Mpv) => LinuxPlaybackEngine::Mpv,
+                None => self.linux_playback,
+            };
+            match engine {
+                LinuxPlaybackEngine::Mpv => self
+                    .playback
+                    .start_mpv_primary(session_id, channel_id)
+                    .await
+                    .map(InstalledPlaybackStart::LinuxMpv),
+                LinuxPlaybackEngine::WebViewMse => self
+                    .playback
+                    .start(session_id, channel_id)
+                    .await
+                    .map(InstalledPlaybackStart::NativeStream),
+            }
         }
         #[cfg(not(target_os = "linux"))]
         {
+            let _ = engine;
             self.playback
                 .start(session_id, channel_id)
                 .await
@@ -348,16 +404,31 @@ impl InstalledRuntime {
     pub(crate) async fn reopen_playback(
         &self,
         session_id: PlaybackSessionId,
+        engine: Option<PlaybackEngineInput>,
     ) -> Result<InstalledPlaybackStart, PlaybackManagerError> {
         #[cfg(target_os = "linux")]
         {
-            self.playback
-                .reopen_mpv(session_id)
-                .await
-                .map(InstalledPlaybackStart::LinuxMpv)
+            let engine = match engine {
+                Some(PlaybackEngineInput::InApp) => LinuxPlaybackEngine::WebViewMse,
+                Some(PlaybackEngineInput::Mpv) => LinuxPlaybackEngine::Mpv,
+                None => self.linux_playback,
+            };
+            match engine {
+                LinuxPlaybackEngine::Mpv => self
+                    .playback
+                    .reopen_mpv(session_id)
+                    .await
+                    .map(InstalledPlaybackStart::LinuxMpv),
+                LinuxPlaybackEngine::WebViewMse => self
+                    .playback
+                    .reopen(session_id)
+                    .await
+                    .map(InstalledPlaybackStart::NativeStream),
+            }
         }
         #[cfg(not(target_os = "linux"))]
         {
+            let _ = engine;
             self.android_presentation
                 .transport_transition(self.playback.reopen(session_id))
                 .await
@@ -925,6 +996,34 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[cfg(all(target_os = "linux", not(feature = "linux-playback-lab")))]
+    #[test]
+    fn normal_linux_build_defaults_to_in_app() {
+        assert_eq!(
+            LinuxPlaybackEngine::configured().unwrap(),
+            LinuxPlaybackEngine::WebViewMse
+        );
+    }
+
+    #[cfg(all(target_os = "linux", feature = "linux-playback-lab"))]
+    #[test]
+    fn playback_lab_defaults_to_in_app_and_validates_overrides() {
+        assert_eq!(
+            LinuxPlaybackEngine::parse(None).unwrap(),
+            LinuxPlaybackEngine::WebViewMse
+        );
+        assert_eq!(
+            LinuxPlaybackEngine::parse(Some("mpv")).unwrap(),
+            LinuxPlaybackEngine::Mpv
+        );
+        assert_eq!(
+            LinuxPlaybackEngine::parse(Some("mse")).unwrap(),
+            LinuxPlaybackEngine::WebViewMse
+        );
+        assert!(LinuxPlaybackEngine::parse(Some("unknown")).is_err());
+        assert!(LinuxPlaybackEngine::parse(Some("")).is_err());
+    }
 
     #[tokio::test]
     async fn android_transport_and_presentation_stop_before_a_generation_is_replaced() {

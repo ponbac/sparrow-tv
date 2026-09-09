@@ -1,0 +1,52 @@
+[
+  {
+    "variant": "x11-mse-shm",
+    "exit_code": 0,
+    "finished": true,
+    "samples": 66,
+    "timed_out": false,
+    "playing_samples": 62,
+    "failed_samples": 0,
+    "windows": [
+      {
+        "pid": 72436,
+        "at": [
+          646,
+          53
+        ],
+        "size": [
+          626,
+          739
+        ],
+        "xwayland": true,
+        "fullscreen": 0
+      }
+    ],
+    "remaining_mpv_sockets": 0
+  },
+  {
+    "variant": "x11-mpv-shm",
+    "exit_code": 0,
+    "finished": true,
+    "samples": 66,
+    "timed_out": false,
+    "playing_samples": 63,
+    "failed_samples": 0,
+    "windows": [
+      {
+        "pid": 73471,
+        "at": [
+          646,
+          53
+        ],
+        "size": [
+          626,
+          739
+        ],
+        "xwayland": true,
+        "fullscreen": 0
+      }
+    ],
+    "remaining_mpv_sockets": 0
+  }
+]

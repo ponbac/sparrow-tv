@@ -1,0 +1,29 @@
+[
+  {
+    "variant": "x11-mse-disable",
+    "desktop": true,
+    "capture": "x11-mse-disable.png",
+    "xwayland": true,
+    "exit_code": 0,
+    "cleanup": true,
+    "samples": 27
+  },
+  {
+    "variant": "x11-mse-shm",
+    "desktop": true,
+    "capture": "x11-mse-shm.png",
+    "xwayland": true,
+    "exit_code": 0,
+    "cleanup": true,
+    "samples": 27
+  },
+  {
+    "variant": "x11-embed-shm",
+    "desktop": true,
+    "capture": "x11-embed-shm.png",
+    "xwayland": true,
+    "exit_code": 0,
+    "cleanup": true,
+    "samples": 28
+  }
+]

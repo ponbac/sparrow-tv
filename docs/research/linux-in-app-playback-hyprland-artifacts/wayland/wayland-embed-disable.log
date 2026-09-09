@@ -1,0 +1,58 @@
+GDK_BACKEND GdkWaylandDisplay GTK 3.24.52 WEBKIT 2.52.6
+GL_RENDERER Mesa Intel(R) Arc(tm) Graphics (MTL)
+WINDOW_STATE fullscreen=0
+WINDOW_STATE fullscreen=0
+WINDOW_STATE fullscreen=0
+MPV_EVENT file-loaded
+MPV_EVENT playback-restart
+MPV_SAMPLE t=1 renders=42 changed=42 time-pos=1.354667 decoder-frame-drop-count=0 frame-drop-count=1 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=2 renders=72 changed=72 time-pos=2.354667 decoder-frame-drop-count=0 frame-drop-count=1 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=3 renders=102 changed=102 time-pos=3.354667 decoder-frame-drop-count=0 frame-drop-count=1 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=4 renders=132 changed=132 time-pos=4.354667 decoder-frame-drop-count=0 frame-drop-count=1 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=5 renders=162 changed=162 time-pos=5.354667 decoder-frame-drop-count=0 frame-drop-count=1 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=6 renders=192 changed=192 time-pos=6.354667 decoder-frame-drop-count=0 frame-drop-count=1 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+ACTION resize
+MPV_SAMPLE t=7 renders=222 changed=222 time-pos=7.354667 decoder-frame-drop-count=0 frame-drop-count=1 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=8 renders=252 changed=252 time-pos=8.354667 decoder-frame-drop-count=0 frame-drop-count=1 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=9 renders=282 changed=282 time-pos=9.354667 decoder-frame-drop-count=0 frame-drop-count=1 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=10 renders=312 changed=312 time-pos=10.354667 decoder-frame-drop-count=0 frame-drop-count=1 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+ACTION fullscreen
+WINDOW_STATE fullscreen=1
+MPV_SAMPLE t=11 renders=342 changed=342 time-pos=11.354667 decoder-frame-drop-count=0 frame-drop-count=1 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=12 renders=372 changed=372 time-pos=12.354667 decoder-frame-drop-count=0 frame-drop-count=1 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+ACTION unfullscreen
+WINDOW_STATE fullscreen=0
+MPV_SAMPLE t=13 renders=402 changed=402 time-pos=13.354667 decoder-frame-drop-count=0 frame-drop-count=1 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=14 renders=432 changed=432 time-pos=14.354667 decoder-frame-drop-count=0 frame-drop-count=1 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+ACTION release
+WEB control:stop
+MPV_EVENT end-file
+MPV_SAMPLE t=15 renders=435 changed=435 time-pos=unavailable decoder-frame-drop-count=unavailable frame-drop-count=unavailable estimated-vf-fps=unavailable hwdec-current=unavailable idle-active=yes
+MPV_SAMPLE t=16 renders=435 changed=435 time-pos=unavailable decoder-frame-drop-count=unavailable frame-drop-count=unavailable estimated-vf-fps=unavailable hwdec-current=unavailable idle-active=yes
+ACTION resume
+WEB control:start
+MPV_EVENT file-loaded
+MPV_EVENT playback-restart
+MPV_SAMPLE t=17 renders=458 changed=458 time-pos=0.754667 decoder-frame-drop-count=0 frame-drop-count=0 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=18 renders=488 changed=488 time-pos=1.754667 decoder-frame-drop-count=0 frame-drop-count=0 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=19 renders=518 changed=518 time-pos=2.754667 decoder-frame-drop-count=0 frame-drop-count=0 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+ACTION release-before-replace
+WEB control:stop
+MPV_EVENT end-file
+MPV_SAMPLE t=20 renders=521 changed=521 time-pos=unavailable decoder-frame-drop-count=unavailable frame-drop-count=unavailable estimated-vf-fps=unavailable hwdec-current=unavailable idle-active=yes
+ACTION replace
+WEB control:start
+MPV_EVENT file-loaded
+MPV_EVENT playback-restart
+MPV_SAMPLE t=21 renders=544 changed=544 time-pos=0.754667 decoder-frame-drop-count=0 frame-drop-count=0 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=22 renders=574 changed=574 time-pos=1.754667 decoder-frame-drop-count=0 frame-drop-count=0 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=23 renders=604 changed=604 time-pos=2.754667 decoder-frame-drop-count=0 frame-drop-count=0 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=24 renders=634 changed=634 time-pos=3.754667 decoder-frame-drop-count=0 frame-drop-count=0 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=25 renders=664 changed=664 time-pos=4.754667 decoder-frame-drop-count=0 frame-drop-count=0 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=26 renders=694 changed=694 time-pos=5.754667 decoder-frame-drop-count=0 frame-drop-count=0 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+ACTION stop
+WEB control:stop
+MPV_EVENT end-file
+MPV_SAMPLE t=27 renders=697 changed=697 time-pos=unavailable decoder-frame-drop-count=unavailable frame-drop-count=unavailable estimated-vf-fps=unavailable hwdec-current=unavailable idle-active=yes
+MPV_SAMPLE t=28 renders=697 changed=697 time-pos=unavailable decoder-frame-drop-count=unavailable frame-drop-count=unavailable estimated-vf-fps=unavailable hwdec-current=unavailable idle-active=yes
+CLEANUP complete renders=697 changed=697

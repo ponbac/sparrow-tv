@@ -113,17 +113,24 @@ export function HostedPlayer({
 
   useEffect(() => {
     const updateFullscreen = () => {
-      setFullscreen(document.fullscreenElement === videoRef.current);
+      setFullscreen(
+        videoRef.current !== null &&
+          (document.fullscreenElement?.contains(videoRef.current) ?? false),
+      );
     };
     document.addEventListener("fullscreenchange", updateFullscreen);
-    return () => document.removeEventListener("fullscreenchange", updateFullscreen);
+    return () =>
+      document.removeEventListener("fullscreenchange", updateFullscreen);
   }, []);
 
-  const requestFullscreen = () => {
-    const video = videoRef.current;
-    if (video !== null && video.requestFullscreen !== undefined) {
-      void video.requestFullscreen().then(
-        () => setFullscreen(true),
+  const requestFullscreen = (surface: HTMLElement) => {
+    if (surface.requestFullscreen !== undefined) {
+      const action =
+        document.fullscreenElement === surface
+          ? document.exitFullscreen()
+          : surface.requestFullscreen();
+      void action.then(
+        () => setFullscreen(document.fullscreenElement === surface),
         () => undefined,
       );
     }
