@@ -129,28 +129,9 @@
   min-width: 0;
   min-height: 0;
   grid-row: 3;
-  grid-template-columns: minmax(0, 52fr) minmax(0, 48fr);
-}
-
-.split-stage__knife {
-  position: absolute;
-  z-index: 12;
-  top: 0;
-  bottom: 0;
-  left: 52%;
-  width: 1px;
-  pointer-events: none;
-  background: #3a3835;
-}
-
-.split-stage__knife i {
-  position: absolute;
-  top: 42%;
-  left: 50%;
-  width: 0.4375rem;
-  height: 0.4375rem;
-  background: var(--tomato);
-  transform: translate(-50%, -50%) rotate(45deg);
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(18rem, 1fr);
+  overflow-y: auto;
 }
 
 @media (max-width: 1050px) {
@@ -181,12 +162,9 @@
 
   .split-stage__workspace {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(26.875rem, 58dvh) minmax(33.75rem, 70dvh);
+    grid-template-rows: auto minmax(28rem, 65dvh);
   }
 
-  .split-stage__knife {
-    display: none;
-  }
 }
 
 @media (max-width: 460px) {

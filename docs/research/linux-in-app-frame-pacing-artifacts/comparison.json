@@ -1,0 +1,104 @@
+[
+  {
+    "run": "pacing-c-baseline",
+    "interval_seconds": [
+      20,
+      90
+    ],
+    "startup_seeks": 36,
+    "steady_seeks": 6,
+    "steady_waiting_events": 36,
+    "approximate_callbacks_per_second": 40.11,
+    "maximum_frame_callback_gap_ms": 1042.0,
+    "maximum_animation_callback_gap_ms": 19.0,
+    "sample_intervals_with_frame_gap_over_100ms": 26,
+    "median_forward_buffer_seconds": 0.85,
+    "decoder_counter_resets": 22,
+    "failed_samples": 0
+  },
+  {
+    "run": "pacing-a-baseline",
+    "interval_seconds": [
+      20,
+      90
+    ],
+    "startup_seeks": 40,
+    "steady_seeks": 3,
+    "steady_waiting_events": 4,
+    "approximate_callbacks_per_second": 47.84,
+    "maximum_frame_callback_gap_ms": 283.0,
+    "maximum_animation_callback_gap_ms": 32.0,
+    "sample_intervals_with_frame_gap_over_100ms": 8,
+    "median_forward_buffer_seconds": 0.63,
+    "decoder_counter_resets": 11,
+    "failed_samples": 0
+  },
+  {
+    "run": "pacing-c-no-chase",
+    "interval_seconds": [
+      20,
+      90
+    ],
+    "startup_seeks": 0,
+    "steady_seeks": 0,
+    "steady_waiting_events": 0,
+    "approximate_callbacks_per_second": 49.81,
+    "maximum_frame_callback_gap_ms": 42.0,
+    "maximum_animation_callback_gap_ms": 13.0,
+    "sample_intervals_with_frame_gap_over_100ms": 0,
+    "median_forward_buffer_seconds": 33.27,
+    "decoder_counter_resets": 0,
+    "failed_samples": 0
+  },
+  {
+    "run": "pacing-c-buffered",
+    "interval_seconds": [
+      20,
+      90
+    ],
+    "startup_seeks": 12,
+    "steady_seeks": 0,
+    "steady_waiting_events": 0,
+    "approximate_callbacks_per_second": 49.94,
+    "maximum_frame_callback_gap_ms": 43.0,
+    "maximum_animation_callback_gap_ms": 14.0,
+    "sample_intervals_with_frame_gap_over_100ms": 0,
+    "median_forward_buffer_seconds": 5.31,
+    "decoder_counter_resets": 3,
+    "failed_samples": 0
+  },
+  {
+    "run": "pacing-a-buffered",
+    "interval_seconds": [
+      20,
+      90
+    ],
+    "startup_seeks": 9,
+    "steady_seeks": 0,
+    "steady_waiting_events": 0,
+    "approximate_callbacks_per_second": 49.97,
+    "maximum_frame_callback_gap_ms": 34.0,
+    "maximum_animation_callback_gap_ms": 14.0,
+    "sample_intervals_with_frame_gap_over_100ms": 0,
+    "median_forward_buffer_seconds": 5.26,
+    "decoder_counter_resets": 7,
+    "failed_samples": 0
+  },
+  {
+    "run": "pacing-b-buffered",
+    "interval_seconds": [
+      20,
+      90
+    ],
+    "startup_seeks": 10,
+    "steady_seeks": 0,
+    "steady_waiting_events": 0,
+    "approximate_callbacks_per_second": 50.01,
+    "maximum_frame_callback_gap_ms": 34.0,
+    "maximum_animation_callback_gap_ms": 13.0,
+    "sample_intervals_with_frame_gap_over_100ms": 0,
+    "median_forward_buffer_seconds": 3.55,
+    "decoder_counter_resets": 2,
+    "failed_samples": 0
+  }
+]

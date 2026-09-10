@@ -3,6 +3,7 @@ import type {
   InstalledPlaybackSession,
   InstalledPlaybackTransport,
   InstalledSparrowClient,
+  InstalledPlayerChoice,
 } from "../../client/contracts";
 import { installedClientPlaybackFailure } from "./playback-failure";
 import {
@@ -92,6 +93,7 @@ export class InstalledPlaybackRunner {
   #cleanupBlocked = false;
   #documentVisible: boolean;
   #foreground: boolean;
+  #playerChoice: InstalledPlayerChoice | undefined;
 
   constructor(options: InstalledPlaybackRunnerOptions) {
     this.#client = options.client;
@@ -128,7 +130,9 @@ export class InstalledPlaybackRunner {
   select(
     channel: InstalledPlaybackChannel,
     video: HTMLVideoElement,
+    playerChoice?: InstalledPlayerChoice,
   ): Promise<void> {
+    this.#playerChoice = playerChoice;
     const sessionEpoch = ++this.#sessionEpoch;
     const transportEpoch = ++this.#transportEpoch;
     const hadSession = this.#session !== null;
@@ -165,7 +169,10 @@ export class InstalledPlaybackRunner {
 
       let session: InstalledPlaybackSession;
       try {
-        session = this.#client.createPlaybackSession({ id: channel.id });
+        session = this.#client.createPlaybackSession({
+          id: channel.id,
+          ...(playerChoice === undefined ? {} : { engine: playerChoice }),
+        });
       } catch {
         this.#dispatch({
           _tag: "select",
@@ -194,6 +201,15 @@ export class InstalledPlaybackRunner {
       });
       await this.#open(sessionEpoch, "selection", true);
     });
+  }
+
+  /** Changes player only after the current session's final release is acknowledged. */
+  switchPlayer(choice: InstalledPlayerChoice): Promise<void> {
+    const channel = this.#state.channel;
+    const video = this.#video;
+    if (channel === null || video === null || this.#cleanupBlocked)
+      return Promise.resolve();
+    return this.select(channel, video, choice);
   }
 
   /** Releases live transport work while retaining the pinned session intent. */
@@ -228,11 +244,13 @@ export class InstalledPlaybackRunner {
     }
     const phase = this.#state.phase;
     if (phase._tag === "failed") {
-      return phase.canRestart ? this.select(channel, video) : Promise.resolve();
+      return phase.canRestart
+        ? this.select(channel, video, this.#playerChoice)
+        : Promise.resolve();
     }
     const session = this.#session;
     if (session === null) {
-      return this.select(channel, video);
+      return this.select(channel, video, this.#playerChoice);
     }
 
     const sessionEpoch = this.#sessionEpoch;
@@ -478,13 +496,14 @@ export class InstalledPlaybackRunner {
   }
 
   /** Requests fullscreen through the runner and records only the safe result. */
-  async requestFullscreen(): Promise<boolean> {
+  async requestFullscreen(surface?: HTMLElement): Promise<boolean> {
     const video = this.#video;
     if (video === null) {
       return false;
     }
     const sessionEpoch = this.#sessionEpoch;
     const requestedFullscreen = !this.#state.controls.fullscreen;
+    const target = surface ?? video;
     const engineFullscreen = this.#handle?.requestFullscreen;
     if (engineFullscreen !== undefined) {
       try {
@@ -507,13 +526,13 @@ export class InstalledPlaybackRunner {
     }
     try {
       if (requestedFullscreen) {
-        if (video.requestFullscreen === undefined) {
+        if (target.requestFullscreen === undefined) {
           return false;
         }
-        await video.requestFullscreen();
+        await target.requestFullscreen();
       } else {
         if (
-          document.fullscreenElement !== video ||
+          document.fullscreenElement !== target ||
           document.exitFullscreen === undefined
         ) {
           return false;
@@ -787,9 +806,7 @@ export class InstalledPlaybackRunner {
     this.#dispatch({
       _tag: "transport-opened",
       presentation:
-        nativeTransport === null
-          ? "linux-mpv"
-          : nativeTransport.presentation,
+        nativeTransport === null ? "linux-mpv" : nativeTransport.presentation,
       tracks: nativeTransport?.tracks ?? [],
       selection: nativeTransport?.selection ?? { _tag: "none" },
       ...(nativeTransport?.preferenceStatus === undefined

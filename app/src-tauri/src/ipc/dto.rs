@@ -31,7 +31,7 @@ impl CapabilitiesDto {
             source_configuration: "device-writable",
             playback_transport: "platform-native",
             audio_track_selection: true,
-            mpv_failover: false,
+            mpv_failover: cfg!(target_os = "linux"),
         }
     }
 }
@@ -658,7 +658,7 @@ mod tests {
                 "sourceConfiguration": "device-writable",
                 "playbackTransport": "platform-native",
                 "audioTrackSelection": true,
-                "mpvFailover": false,
+                "mpvFailover": cfg!(target_os = "linux"),
             })
         );
     }

@@ -1,0 +1,12 @@
+GDK_BACKEND GdkWaylandDisplay GTK 3.24.52 WEBKIT 2.52.6
+GL_RENDERER Mesa Intel(R) Arc(tm) Graphics (MTL)
+WINDOW_STATE fullscreen=0
+WINDOW_STATE fullscreen=0
+WINDOW_STATE fullscreen=0
+MPV_EVENT file-loaded
+MPV_EVENT playback-restart
+MPV_SAMPLE t=1 renders=30 changed=30 time-pos=0.921333 decoder-frame-drop-count=0 frame-drop-count=0 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=2 renders=59 changed=59 time-pos=1.888000 decoder-frame-drop-count=0 frame-drop-count=0 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=3 renders=89 changed=89 time-pos=2.888000 decoder-frame-drop-count=0 frame-drop-count=0 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+MPV_SAMPLE t=4 renders=119 changed=119 time-pos=3.888000 decoder-frame-drop-count=0 frame-drop-count=0 estimated-vf-fps=30.000000 hwdec-current=no idle-active=no
+CLEANUP complete renders=130 changed=130

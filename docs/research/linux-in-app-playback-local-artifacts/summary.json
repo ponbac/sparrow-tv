@@ -1,0 +1,38 @@
+[
+  {
+    "variant": "x11-mse-disable",
+    "exit_code": 0,
+    "cleanup": true,
+    "samples": 27
+  },
+  {
+    "variant": "x11-mse-shm",
+    "exit_code": 0,
+    "cleanup": true,
+    "samples": 27
+  },
+  {
+    "variant": "x11-embed-shm",
+    "exit_code": 0,
+    "cleanup": true,
+    "samples": 28
+  },
+  {
+    "variant": "wayland-mse-disable",
+    "exit_code": 0,
+    "cleanup": true,
+    "samples": 27
+  },
+  {
+    "variant": "wayland-mse-shm",
+    "exit_code": 0,
+    "cleanup": true,
+    "samples": 26
+  },
+  {
+    "variant": "wayland-embed-disable",
+    "exit_code": 0,
+    "cleanup": true,
+    "samples": 28
+  }
+]

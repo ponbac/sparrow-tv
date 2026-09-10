@@ -407,6 +407,7 @@ class TauriSparrowClient implements InstalledSparrowClient {
       this.#ipc,
       input.id,
       this.#nextPlaybackSessionId(),
+      input.engine,
     );
   }
 
@@ -551,6 +552,7 @@ class TauriSparrowClient implements InstalledSparrowClient {
  * The identifier never crosses this resource's interface.
  */
 class TauriPlaybackSession implements InstalledPlaybackSession {
+  readonly #engine: CreatePlaybackSessionInput["engine"];
   readonly #ipc: NativeIpc;
   readonly #channelId: CreatePlaybackSessionInput["id"];
   readonly #sessionId: PlaybackSessionId;
@@ -570,10 +572,12 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
     ipc: NativeIpc,
     channelId: CreatePlaybackSessionInput["id"],
     sessionId: PlaybackSessionId,
+    engine: CreatePlaybackSessionInput["engine"],
   ) {
     this.#ipc = ipc;
     this.#channelId = channelId;
     this.#sessionId = sessionId;
+    this.#engine = engine;
   }
 
   start(
@@ -588,6 +592,7 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
       {
         id: this.#channelId,
         sessionId: this.#sessionId,
+        ...(this.#engine === undefined ? {} : { engine: this.#engine }),
       },
       options.signal,
       null,
@@ -614,7 +619,10 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
     }
     return this.#open(
       NATIVE_COMMANDS.reopenPlayback,
-      { sessionId: this.#sessionId },
+      {
+        sessionId: this.#sessionId,
+        ...(this.#engine === undefined ? {} : { engine: this.#engine }),
+      },
       options.signal,
       this.#streamHandle,
       false,
@@ -705,9 +713,12 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
     let earlyCleanup = Promise.resolve();
     const outcomeFlight = invokeWithCancellation(
       () => {
-        invocation.raw = this.#ipc.invoke(NATIVE_COMMANDS.startAndroidPlayback, {
-          input: commandInput,
-        });
+        invocation.raw = this.#ipc.invoke(
+          NATIVE_COMMANDS.startAndroidPlayback,
+          {
+            input: commandInput,
+          },
+        );
         return invocation.raw;
       },
       input.signal,
@@ -722,7 +733,10 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
     );
     const rawFlight = invocation.raw;
     if (rawFlight === null) {
-      const result = parseNativeOutcome(await outcomeFlight, voidResponseSchema);
+      const result = parseNativeOutcome(
+        await outcomeFlight,
+        voidResponseSchema,
+      );
       return result.ok ? invalidNativeResponse() : result;
     }
     const settlement = rawFlight.then(
@@ -748,10 +762,7 @@ class TauriPlaybackSession implements InstalledPlaybackSession {
       }
     });
     this.#androidStartSettlement = trackedSettlement;
-    const result = parseNativeOutcome(
-      await outcomeFlight,
-      voidResponseSchema,
-    );
+    const result = parseNativeOutcome(await outcomeFlight, voidResponseSchema);
     if (
       !result.ok ||
       this.#stopped ||
@@ -1439,9 +1450,7 @@ function isUnitVolume(value: number): boolean {
   return Number.isFinite(value) && value >= 0 && value <= 1;
 }
 
-function isMpvPlaybackControl(
-  value: unknown,
-): value is MpvPlaybackControl {
+function isMpvPlaybackControl(value: unknown): value is MpvPlaybackControl {
   return mpvPlaybackControlSchema.safeParse(value).success;
 }
 

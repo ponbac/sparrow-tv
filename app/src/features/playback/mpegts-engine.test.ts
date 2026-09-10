@@ -191,6 +191,7 @@ function runtimeFixture(mseLivePlayback = true): {
       source = nextSource;
       config = nextConfig;
       return {
+        currentTime: 0,
         on: (event, listener) => {
           calls.push(`on:${event}`);
           const recordedListener = (...args: unknown[]) => {

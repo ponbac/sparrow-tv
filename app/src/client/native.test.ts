@@ -174,18 +174,18 @@ describe("installed Tauri Sparrow client", () => {
                 : command === NATIVE_COMMANDS.channels
                   ? CHANNELS_PAGE
                   : command === NATIVE_COMMANDS.channel
-                  ? CHANNEL
-                  : command === NATIVE_COMMANDS.guideWindow
-                    ? GUIDE_WINDOW_PAYLOAD
-                  : command === NATIVE_COMMANDS.schedule
-                      ? SCHEDULE_PAGE
-                      : command === NATIVE_COMMANDS.search
-                        ? SEARCH_RESULTS
-                        : command === NATIVE_COMMANDS.searchChannels
-                          ? CHANNELS_PAGE
-                          : command === NATIVE_COMMANDS.searchProgrammes
-                            ? SCHEDULE_PAGE
-                            : FRESH_STATUS,
+                    ? CHANNEL
+                    : command === NATIVE_COMMANDS.guideWindow
+                      ? GUIDE_WINDOW_PAYLOAD
+                      : command === NATIVE_COMMANDS.schedule
+                        ? SCHEDULE_PAGE
+                        : command === NATIVE_COMMANDS.search
+                          ? SEARCH_RESULTS
+                          : command === NATIVE_COMMANDS.searchChannels
+                            ? CHANNELS_PAGE
+                            : command === NATIVE_COMMANDS.searchProgrammes
+                              ? SCHEDULE_PAGE
+                              : FRESH_STATUS,
       ),
     );
     const client = createNativeSparrowClient({ ipc });
@@ -917,6 +917,54 @@ describe("installed Tauri Sparrow client", () => {
     ]);
   });
 
+  it.each(["in-app", "mpv"] as const)(
+    "preserves the explicit %s choice across resume",
+    async (engine) => {
+      const ipc = new FakeNativeIpc((command, args) => {
+        switch (command) {
+          case NATIVE_COMMANDS.startPlayback:
+          case NATIVE_COMMANDS.reopenPlayback:
+            return Promise.resolve({
+              _tag: "linux-mpv",
+              sessionId: requirePlaybackSessionId(args),
+            });
+          case NATIVE_COMMANDS.suspendPlayback:
+          case NATIVE_COMMANDS.stopPlayback:
+            return Promise.resolve(null);
+          default:
+            return Promise.reject(new Error("unexpected fixture command"));
+        }
+      });
+      const session = createNativeSparrowClient({ ipc }).createPlaybackSession({
+        id: CHANNEL.id,
+        engine,
+      });
+      await session.start();
+      await session.suspend();
+      await session.reopen();
+      const sessionId = requirePlaybackSessionId(
+        requireFirst(ipc.invokes).args,
+      );
+      expect(
+        ipc.invokes.filter(
+          ({ command }) =>
+            command === NATIVE_COMMANDS.startPlayback ||
+            command === NATIVE_COMMANDS.reopenPlayback,
+        ),
+      ).toEqual([
+        {
+          command: NATIVE_COMMANDS.startPlayback,
+          args: { input: { id: CHANNEL.id, sessionId, engine } },
+        },
+        {
+          command: NATIVE_COMMANDS.reopenPlayback,
+          args: { input: { sessionId, engine } },
+        },
+      ]);
+      await session.stop();
+    },
+  );
+
   it("projects Linux primary ownership and correlates private mpv controls", async () => {
     const ipc = new FakeNativeIpc((command, args) => {
       switch (command) {
@@ -949,9 +997,9 @@ describe("installed Tauri Sparrow client", () => {
     await expect(
       session.controlMpv({ _tag: "set-fullscreen", fullscreen: true }),
     ).resolves.toEqual({ ok: true, value: undefined });
-    await expect(
-      session.controlMpv({ _tag: "health-check" }),
-    ).resolves.toEqual({ ok: true, value: undefined });
+    await expect(session.controlMpv({ _tag: "health-check" })).resolves.toEqual(
+      { ok: true, value: undefined },
+    );
     await session.stop();
 
     const sessionId = requirePlaybackSessionId(requireFirst(ipc.invokes).args);

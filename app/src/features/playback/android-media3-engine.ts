@@ -291,26 +291,20 @@ export function createAndroidMedia3PlaybackEngine(
         );
       };
       if (initialViewport === null) {
-        cancelViewportWait = runtime.schedule(
-          INITIAL_VIEWPORT_WAIT_MS,
-          () => {
-            cancelViewportWait = null;
-            if (!active || presentation !== null || startInFlight) {
-              return;
-            }
-            const measured = runtime.measureViewport(request.video);
-            if (measured !== null) {
-              applyViewport(measured);
-              return;
-            }
-            fail("media-unsupported", false);
-          },
-        );
+        cancelViewportWait = runtime.schedule(INITIAL_VIEWPORT_WAIT_MS, () => {
+          cancelViewportWait = null;
+          if (!active || presentation !== null || startInFlight) {
+            return;
+          }
+          const measured = runtime.measureViewport(request.video);
+          if (measured !== null) {
+            applyViewport(measured);
+            return;
+          }
+          fail("media-unsupported", false);
+        });
       }
-      releaseViewport = runtime.observeViewport(
-        request.video,
-        applyViewport,
-      );
+      releaseViewport = runtime.observeViewport(request.video, applyViewport);
       request.video.addEventListener("volumechange", updateVolume);
       if (initialViewport !== null) {
         startPresentation(initialViewport);
@@ -430,8 +424,7 @@ function measureViewport(
   ) {
     return null;
   }
-  const rawScale =
-    window.devicePixelRatio * (visualViewport?.scale ?? 1);
+  const rawScale = window.devicePixelRatio * (visualViewport?.scale ?? 1);
   const scale = Number.isFinite(rawScale)
     ? Math.min(8, Math.max(1, rawScale))
     : 1;
@@ -453,7 +446,7 @@ function measureViewport(
   }
   return {
     ...physical,
-    fullscreen: document.fullscreenElement === video,
+    fullscreen: document.fullscreenElement?.contains(video) ?? false,
   };
 }
 

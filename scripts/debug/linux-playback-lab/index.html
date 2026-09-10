@@ -1,0 +1,55 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Sparrow playback experiment</title>
+<style>
+html,body {margin:0;background:transparent;color:white;font:16px sans-serif}
+header,footer {position:fixed;left:0;right:0;background:#162230;padding:16px;z-index:2}
+header {top:0} footer {bottom:0} video {position:fixed;inset:0;width:100%;height:100%}
+.badge {position:fixed;top:85px;left:25px;background:#183a51dd;padding:18px;z-index:3}
+</style>
+<script src="/mpegts.js"></script>
+<header>Sparrow · in-app playback experiment <span id="clock"></span></header>
+<video id="video" muted autoplay playsinline></video>
+<div class="badge">WebKit overlay above live video</div>
+<footer><button id="restart" onclick="lab.start()">Restart</button> <button id="release" onclick="lab.stop()">Release</button> Diagnostic fixture · H.264/AAC · 720p30</footer>
+<script>
+const embedded = new URLSearchParams(location.search).has('embed');
+const video = document.querySelector('video');
+if (embedded) video.remove();
+const report = data => window.webkit.messageHandlers.lab.postMessage(JSON.stringify(data));
+let player, generation = 0, presented = 0;
+window.lab = {
+ stop() {
+  if (embedded) { window.webkit.messageHandlers.lab.postMessage('control:stop'); return; }
+  if (player) { player.destroy(); player = undefined; video.removeAttribute('src'); video.load(); }
+  report({event:'released', generation});
+ },
+ start() {
+  if (embedded) { window.webkit.messageHandlers.lab.postMessage('control:start'); return; }
+  lab.stop(); generation++; presented = 0;
+  player = mpegts.createPlayer({type:'mpegts',isLive:true,url:'/stream.ts'}, {
+   enableWorker:false, enableStashBuffer:true, stashInitialSize:384*1024,
+   lazyLoad:false
+  });
+  player.on(mpegts.Events.ERROR, (type,detail) => report({event:'error',type,detail,generation}));
+  player.attachMediaElement(video); player.load();
+  player.play().catch(error => report({event:'play-error',message:error.message}));
+ }
+};
+if (!embedded) {
+ const frame = () => { presented++; video.requestVideoFrameCallback(frame); };
+ if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(frame);
+ video.addEventListener('playing', () => report({event:'playing',generation}));
+ video.addEventListener('waiting', () => report({event:'waiting',generation}));
+ report({event:'features',...mpegts.getFeatureList()});
+ lab.start();
+}
+setInterval(() => {
+ document.querySelector('#clock').textContent = new Date().toISOString();
+ if (!embedded) {
+  const q = video.getVideoPlaybackQuality();
+  report({event:'sample',generation,time:video.currentTime,total:q.totalVideoFrames,
+    dropped:q.droppedVideoFrames,presented,ready:video.readyState,paused:video.paused});
+ }
+},1000);
+</script>

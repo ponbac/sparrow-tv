@@ -6,6 +6,8 @@ mod config_store;
 mod instance_lock;
 mod ipc;
 mod playback;
+#[cfg(all(target_os = "linux", feature = "linux-playback-lab"))]
+mod playback_lab;
 mod runtime;
 mod screen_wake;
 mod selected_transport_stream;
@@ -15,7 +17,10 @@ mod selected_transport_stream;
 pub fn run() {
     #[cfg(target_os = "linux")]
     configure_linux_webkit_renderer();
-    let application = match tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(all(target_os = "linux", feature = "linux-playback-lab"))]
+    let builder = builder.on_page_load(playback_lab::on_page_load);
+    let application = match builder
         .manage(runtime::InstalledRuntimeSlot::new())
         .setup(|app| {
             use tauri::Manager as _;

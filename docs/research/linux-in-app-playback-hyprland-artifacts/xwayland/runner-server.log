@@ -1,0 +1,19 @@
+SERVER_READY port=45867
+STREAM_OPEN active=1 peak=1
+STREAM_CLOSE active=0 peak=1
+STREAM_OPEN active=1 peak=1
+STREAM_CLOSE active=0 peak=1
+STREAM_OPEN active=1 peak=1
+STREAM_CLOSE active=0 peak=1
+STREAM_OPEN active=1 peak=1
+STREAM_CLOSE active=0 peak=1
+STREAM_OPEN active=1 peak=1
+STREAM_CLOSE active=0 peak=1
+STREAM_OPEN active=1 peak=1
+STREAM_CLOSE active=0 peak=1
+STREAM_OPEN active=1 peak=1
+STREAM_CLOSE active=0 peak=1
+STREAM_OPEN active=1 peak=1
+STREAM_CLOSE active=0 peak=1
+STREAM_OPEN active=1 peak=1
+STREAM_CLOSE active=0 peak=1
