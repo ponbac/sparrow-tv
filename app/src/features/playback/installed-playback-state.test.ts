@@ -164,10 +164,14 @@ describe("installed Playback Session state", () => {
     );
     const decoded = JSON.parse(diagnostics) as {
       readonly transitions: readonly unknown[];
+      readonly media: unknown;
+      readonly version: number;
     };
 
     expect(state.controls.volume).toBe(0);
     expect(decoded.transitions).toHaveLength(20);
+    expect(decoded.version).toBe(2);
+    expect(decoded.media).toBeNull();
     for (const canary of [
       PRIVATE_CHANNEL.id,
       PRIVATE_CHANNEL.name,
@@ -185,5 +189,44 @@ describe("installed Playback Session state", () => {
     expect(diagnostics).toContain('"failure":"source-unavailable"');
     expect(diagnostics).toContain('"selection":"saved-preference-fallback"');
     expect(diagnostics).toContain('"preferenceStatus":"not-saved"');
+  });
+
+  it("copies bounded media counters without Channel or provider data", () => {
+    const state = reduceInstalledPlaybackState(createInstalledPlaybackState(), {
+      _tag: "select",
+      channel: PRIVATE_CHANNEL,
+      sessionEpoch: 1,
+      transportEpoch: 1,
+    });
+    const diagnostics = installedPlaybackDiagnostics(
+      state,
+      [],
+      1_000,
+      {
+        readyState: 4,
+        paused: false,
+        seeking: false,
+        currentTime: 12.34,
+        bufferAhead: 5.5,
+        bufferedRangeCount: 1,
+        waiting: 3,
+        stalledEvents: 1,
+        seekingEvents: 0,
+        seeked: 0,
+        standstills: 2,
+        msSinceTimeAdvance: 4_000,
+        width: 1920,
+        height: 1080,
+        totalVideoFrames: 200,
+        droppedVideoFrames: 4,
+        presentedFrames: 180,
+      },
+    );
+    expect(diagnostics).toContain('"standstills":2');
+    expect(diagnostics).toContain('"bufferAheadMs":5500');
+    expect(diagnostics).toContain('"waiting":3');
+    expect(diagnostics).toContain('"msSinceTimeAdvance":4000');
+    expect(diagnostics).not.toContain(PRIVATE_CHANNEL.id);
+    expect(diagnostics).not.toContain(PRIVATE_CHANNEL.name);
   });
 });

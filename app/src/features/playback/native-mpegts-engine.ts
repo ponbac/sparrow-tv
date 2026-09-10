@@ -1,5 +1,8 @@
 import mpegts from "mpegts.js";
-import { watchNativeLiveBuffer } from "./native-live-buffer";
+import {
+  watchNativeLiveBuffer,
+  type NativeLiveMediaObservation,
+} from "./native-live-buffer";
 import type { NativeStreamPlaybackTransport } from "../../client/contracts";
 import type {
   HostedPlaybackFailure,
@@ -13,6 +16,7 @@ import {
   type NativeLoaderRuntime,
   type NativePlaybackClient,
 } from "./native-mpegts-loader";
+import { adoptLiveMpegtsIo } from "./native-mpegts-live-io";
 
 /** Inputs accepted by the installed MPEG-TS adapter. */
 export interface NativeMpegtsPlaybackRequest {
@@ -27,11 +31,15 @@ export interface NativeMpegtsPlaybackRequest {
   readonly onPlaying: () => void;
 }
 
+export interface NativeMpegtsPlaybackHandle extends HostedPlaybackHandle {
+  readonly mediaSnapshot?: () => NativeLiveMediaObservation | undefined;
+}
+
 /** Narrow engine seam used by the installed player and deterministic UI tests. */
 export interface NativeMpegtsPlaybackEngine {
   readonly start: (
     request: NativeMpegtsPlaybackRequest,
-  ) => HostedPlaybackHandle | HostedPlaybackFailure;
+  ) => NativeMpegtsPlaybackHandle | HostedPlaybackFailure;
 }
 
 export interface NativeMpegtsRuntime
@@ -49,7 +57,8 @@ export function createNativeMpegtsPlaybackEngine(
       }
 
       let active = true;
-      let releaseBufferWatch: (() => void) | null = null;
+      let mediaWatch: ReturnType<typeof watchNativeLiveBuffer> | null = null;
+      let liveIoStop: () => void = () => undefined;
       let player: ReturnType<MpegtsRuntime["createPlayer"]> | null = null;
       let readFailure: {
         readonly failure: HostedPlaybackFailure;
@@ -69,8 +78,10 @@ export function createNativeMpegtsPlaybackEngine(
           return;
         }
         active = false;
-        releaseBufferWatch?.();
-        releaseBufferWatch = null;
+        liveIoStop();
+        liveIoStop = () => undefined;
+        mediaWatch?.stop();
+        mediaWatch = null;
         const current = player;
         player = null;
         if (current !== null) {
@@ -121,10 +132,16 @@ export function createNativeMpegtsPlaybackEngine(
             isLive: true,
             enableStashBuffer: false,
             lazyLoad: false,
-            // The owned buffer watcher waits for the initial burst to settle.
+            // Mid-stream MSE seeks stall WebKitGTK; do not chase live latency.
             liveBufferLatencyChasing: false,
             autoCleanupSourceBuffer: true,
             enableWorker: false,
+            // Transmuxer must exist before we adapt native IO pause/resume.
+            deferLoadAfterSourceOpen: false,
+            // BUFFER_FULL pauses IO. The library default (30s) treats any
+            // shorter live buffer as already recoverable, so it immediately
+            // resumes and wedges WebKitGTK SourceBuffers.
+            lazyLoadRecoverDuration: 3,
             customLoader: createNativeMpegtsLoader(
               trackedSession,
               request.descriptor,
@@ -136,15 +153,10 @@ export function createNativeMpegtsPlaybackEngine(
         player.on(runtime.Events.LOADING_COMPLETE, onLoadingComplete);
         player.attachMediaElement(request.video);
         player.load();
-        releaseBufferWatch = watchNativeLiveBuffer(request.video, (seconds) => {
-          if (!active || player === null) return;
-          try {
-            player.currentTime = seconds;
-          } catch {
-            stop();
-            request.onFailure("media-unsupported", false);
-          }
-        });
+        // load() must create the transmuxer before this runs. mpegts.js otherwise
+        // defers until MediaSource `sourceopen`, and BUFFER_FULL still HTTP-seeks.
+        liveIoStop = adoptLiveMpegtsIo(player, request.video).stop;
+        mediaWatch = watchNativeLiveBuffer(request.video);
         const play = player.play();
         if (play !== undefined) {
           void Promise.resolve(play).catch((error: unknown) => {
@@ -164,7 +176,10 @@ export function createNativeMpegtsPlaybackEngine(
         return "media-unsupported";
       }
 
-      return { stop };
+      return {
+        stop,
+        mediaSnapshot: () => mediaWatch?.snapshot(),
+      };
     },
   };
 }

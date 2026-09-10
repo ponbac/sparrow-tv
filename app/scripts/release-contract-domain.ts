@@ -638,12 +638,16 @@ export function verifyJustBoundaryRecipes(input: unknown): ParseResult<true> {
       "the Just recipe file interpolates a value into generated shell source",
     );
   }
-  for (const line of input.split(/\r?\n/u)) {
+  const lines = input.split(/\r?\n/u);
+  for (const [index, line] of lines.entries()) {
     if (/^\s/u.test(line) || /^(?:set|alias|export)\b/u.test(line)) continue;
     const recipe = /^@?([A-Za-z_][A-Za-z0-9_-]*)([^:]*):/u.exec(line);
-    if (recipe !== null && (recipe[2] ?? "").trim().length > 0) {
+    // Explicit positional arguments are passed as argv, not interpolated into
+    // shell source. The global template rejection above still applies to them.
+    const positional = lines[index - 1]?.trim() === "[positional-arguments]";
+    if (recipe !== null && (recipe[2] ?? "").trim().length > 0 && !positional) {
       return reject(
-        `${recipe[1] ?? "recipe"} must receive values through environment variables`,
+        `${recipe[1] ?? "recipe"} must receive values through environment variables or explicit positional arguments`,
       );
     }
   }

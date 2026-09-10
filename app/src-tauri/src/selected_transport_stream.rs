@@ -1369,6 +1369,37 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn every_selected_audio_codec_is_delivered_including_when_it_carries_pcr() {
+        // A selected Audio Track must actually reach the player. Codec/container
+        // adaptation belongs at the playback engine, never silent PID deletion.
+        for (stream_type, codec) in [
+            (0x03, AudioCodec::Mpeg1Audio),
+            (0x04, AudioCodec::Mpeg2Audio),
+            (0x81, AudioCodec::Ac3),
+            (0x0f, AudioCodec::AacAdts),
+            (0x11, AudioCodec::AacLatm),
+        ] {
+            let mut programme = fixture_programme();
+            programme.streams[1].stream_type = stream_type;
+            programme.streams[1].kind = StreamKind::Audio(codec);
+            programme.pcr_pid = 0x102;
+            let body: PlaybackByteStream = Box::pin(stream::iter([Ok::<_, PlaybackReadError>(
+                Bytes::from(fixture_transport(&programme)),
+            )]));
+            let opened =
+                SelectedTransportStream::open(body, SelectionRequest::Initial { saved: None })
+                    .await
+                    .expect("selected audio and its clock are supported");
+            assert!(opened.tracks[0].selected);
+            assert_eq!(opened.tracks[0].codec(), codec);
+            assert_eq!(
+                packet_pids(opened.stream.ready.front().expect("selected output")),
+                vec![0, 0x100, 0x101, 0x102],
+            );
+        }
+    }
+
     fn fixture_programme() -> Programme {
         Programme {
             transport_stream_id: 0x1234,

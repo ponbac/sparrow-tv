@@ -71,3 +71,7 @@ _Avoid_: Audio channel, sound stream, language setting
 **Audio Track Preference**:
 The last Audio Track selected for a Channel, reused for later Playback Sessions when that rendition remains available.
 _Avoid_: Global language preference, default audio track
+
+**Agent Control**:
+The privileged local command surface for an operator or agent to search the Channel Catalog, start a Playback Session, and read Playback Session diagnostics.
+_Avoid_: Remote control, MCP, desktop automation

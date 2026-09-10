@@ -12,7 +12,14 @@ check-app:
     cd app && bun install --frozen-lockfile
     cd app && bun run lint
     cd app && bun run test
+    bun test scripts/agent-control/cli.test.ts
     cd app && bun run build
+
+# Drive a running installed Sparrow. Requires SPARROW_AGENT_SOCKET and SPARROW_AGENT_TOKEN.
+# Pass CLI flags after `--`, e.g. `just -- agent --help` or `just agent ping`.
+[positional-arguments]
+agent *args:
+    bun scripts/agent-control/cli.ts "$@"
 
 ci: check release-contract-check hosted-shell-check
 

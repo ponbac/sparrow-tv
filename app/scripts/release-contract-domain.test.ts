@@ -303,6 +303,22 @@ describe("release contract", () => {
     ).toBe(false);
   });
 
+  it("permits explicitly positional argv without allowing shell interpolation", () => {
+    const safe = '[positional-arguments]\nagent *args:\n    tool "$@"';
+    expect(verifyJustBoundaryRecipes(safe)).toEqual({ ok: true, value: true });
+    expect(
+      verifyJustBoundaryRecipes(
+        '[positional-arguments]\nagent *args:\n    tool {{args}}',
+      ).ok,
+    ).toBe(false);
+    expect(
+      verifyJustBoundaryRecipes(`${safe}\nunsafe input:\n    tool "$input"`).ok,
+    ).toBe(false);
+    expect(
+      verifyJustBoundaryRecipes('unsafe input:\n    tool "$input"\n[positional-arguments]').ok,
+    ).toBe(false);
+  });
+
   it("requires one pinned square PNG before AppImage bundling", () => {
     const contract = successfulAppImageContract();
     expect(
