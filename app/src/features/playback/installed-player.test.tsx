@@ -15,6 +15,7 @@ import {
   type InstalledPlaybackTransport,
 } from "../../client/contracts";
 import { InstalledPlayer, type InstalledPlayerProps } from "./installed-player";
+import { dispatchAgentControl } from "../agent-control/agent-control-binding";
 import type {
   InstalledLifecycleEvents,
   InstalledLifecycleSignal,
@@ -298,6 +299,26 @@ describe("InstalledPlayer", () => {
     expect(
       screen.queryByRole("button", { name: "Restart" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("Agent Control propagates unconfirmed runner cleanup without dismissing the player", async () => {
+    const session = fixtureSession();
+    const client: InstalledPlayerProps["client"] = {
+      ...fixtureClient(() => session.value),
+      createPlaybackSession: () => ({
+        ...session.value,
+        stop: async () => ({ ok: false, error: { _tag: "transport", retryable: false, message: "private fixture failure" } }),
+      }),
+    };
+    let dismissed = false;
+    render(<InstalledPlayer channel={CHANNEL} client={client} engine={playingEngine().value}
+      onStop={() => { dismissed = true; }} />);
+    await screen.findByText("ON AIR");
+    await act(async () => {
+      expect(await dispatchAgentControl({ _tag: "stop" })).toEqual({ ok: false, error: { _tag: "cleanup-failed" } });
+    });
+    expect(dismissed).toBe(false);
+    expect(await screen.findByText("CLEANUP NEEDED")).toBeVisible();
   });
 
   it("enumerates Audio Tracks, selects without opaque UI, and confirms persistence", async () => {

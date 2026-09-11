@@ -21,6 +21,7 @@ import type {
   ChannelId,
   InstalledSparrowClient,
 } from "../../client/contracts";
+import { bindAgentControlPlayback } from "../agent-control/agent-control-binding";
 import {
   tauriInstalledLifecycleEvents,
   type InstalledLifecycleEvents,
@@ -82,6 +83,20 @@ export function InstalledPlayer({
     runner.getSnapshot,
     runner.getSnapshot,
   );
+
+  useEffect(() => {
+    return bindAgentControlPlayback({
+      channelName: channel.name,
+      diagnostics: () => runner.diagnostics(),
+      stop: async (signal) => {
+        const confirmed = await runner.stop();
+        if (confirmed && !signal?.aborted) {
+          onStop();
+        }
+        return confirmed;
+      },
+    });
+  }, [channel.name, onStop, runner]);
 
   useEffect(() => {
     const video = videoRef.current;

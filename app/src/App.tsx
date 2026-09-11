@@ -1,5 +1,11 @@
+import { lazy, Suspense } from "react";
 import { CatalogBrowser } from "./features/catalog/catalog-browser";
 import type { SparrowRuntime } from "./client/runtime";
+
+const InstalledAgentBridge = lazy(async () => {
+  const module = await import("./features/agent-control/installed-agent-bridge");
+  return { default: module.InstalledAgentBridge };
+});
 
 /** Dependencies owned by the selected React composition root. */
 export interface AppProps {
@@ -11,6 +17,11 @@ export default function App({ runtime }: AppProps) {
   return runtime._tag === "hosted" ? (
     <CatalogBrowser client={runtime.client} runtime="hosted" />
   ) : (
-    <CatalogBrowser client={runtime.client} runtime="installed" />
+    <>
+      <Suspense fallback={null}>
+        <InstalledAgentBridge />
+      </Suspense>
+      <CatalogBrowser client={runtime.client} runtime="installed" />
+    </>
   );
 }

@@ -38,6 +38,7 @@ import {
   type RefreshReport,
   type ScheduleInput,
   type SearchInput,
+  type SearchPageInput,
   type SearchResults,
   type SourceConfigurationInput,
   type SparrowEvent,
@@ -161,6 +162,7 @@ interface FakeBehavior {
 }
 
 class FakeSparrowClient implements InstalledSparrowClient {
+  installedSessionCount = 0;
   readonly statusInputs: (ClientRequestOptions | undefined)[] = [];
   readonly groupInputs: ListGroupsInput[] = [];
   readonly guideInputs: GuideWindowInput[] = [];
@@ -248,10 +250,20 @@ class FakeSparrowClient implements InstalledSparrowClient {
     );
   }
 
-  searchChannels(): Promise<ClientResult<Page<ChannelSummary>>> {
-    return Promise.resolve(
-      success({ generation: 7 as CatalogGeneration, items: [], next: null }),
-    );
+  searchChannels(
+    input: SearchPageInput,
+  ): Promise<ClientResult<Page<ChannelSummary>>> {
+    return this.search({
+      term: input.term,
+      channelLimit: input.limit,
+      ...(input.cursor === undefined ? {} : { channelCursor: input.cursor }),
+      programmeLimit: 1,
+    }).then((result) => {
+      if (!result.ok) {
+        return result;
+      }
+      return { ok: true, value: result.value.channels };
+    });
   }
 
   searchProgrammes(): Promise<ClientResult<Page<ProgrammeSummary>>> {
@@ -283,6 +295,7 @@ class FakeSparrowClient implements InstalledSparrowClient {
   }
 
   createPlaybackSession(): InstalledPlaybackSession {
+    this.installedSessionCount += 1;
     const transport: InstalledPlaybackTransport = {
       _tag: "tauri-native-stream",
       streamHandle: clientSchemas.nativeStreamHandle.parse(
@@ -1096,6 +1109,56 @@ describe("CatalogBrowser Split Stage", () => {
       ),
     ).toBeVisible();
     expect(screen.getByRole("button", { name: "More Channels" })).toBeEnabled();
+  });
+
+  it("Agent Control stop clears tune intent before the player commits", async () => {
+    const client = new FakeSparrowClient({ search: async () => success(clientSchemas.searchResults.parse({
+      generation: 7,
+      channels: { generation: 7, items: [WORLD_NEWS], next: null },
+      programmes: { generation: 7, items: [], next: null },
+    })) });
+    renderInstalledBrowser(client);
+    await screen.findByRole("button", { name: "Tune World News" });
+    const { dispatchAgentControl } = await import("../agent-control/agent-control-binding");
+    await act(async () => {
+      expect(await dispatchAgentControl({ _tag: "tune", term: "World News" })).toEqual({ ok: true, result: { _tag: "tuned", name: "World News" } });
+      expect(await dispatchAgentControl({ _tag: "stop" })).toEqual({ ok: true, result: { _tag: "stopped" } });
+    });
+    expect(client.installedSessionCount).toBe(0);
+    expect(screen.queryByText("Preparing live signal…")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stop stream" })).not.toBeInTheDocument();
+  });
+
+  it("tunes a Channel through Agent Control", async () => {
+    const client = new FakeSparrowClient({
+      search: async () =>
+        success(
+          clientSchemas.searchResults.parse({
+            generation: 7,
+            channels: {
+              generation: 7,
+              items: [WORLD_NEWS],
+              next: null,
+            },
+            programmes: { generation: 7, items: [], next: null },
+          }),
+        ),
+    });
+    renderInstalledBrowser(client);
+    await screen.findByRole("button", { name: "Tune World News" });
+
+    const { dispatchAgentControl } = await import(
+      "../agent-control/agent-control-binding"
+    );
+    await expect(
+      dispatchAgentControl({ _tag: "tune", term: "World News" }),
+    ).resolves.toEqual({
+      ok: true,
+      result: { _tag: "tuned", name: "World News" },
+    });
+    expect(
+      await screen.findByRole("heading", { level: 2, name: "World News" }),
+    ).toBeVisible();
   });
 });
 

@@ -22,6 +22,8 @@ import {
   type SourceState,
   type SparrowClient,
 } from "../../client/contracts";
+import { agentControlChannelLimit } from "../agent-control/agent-control";
+import { bindAgentControlCatalog } from "../agent-control/agent-control-binding";
 import { BoardSearch } from "../guide/board-search";
 import {
   resolvedActiveGroup,
@@ -182,6 +184,23 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     },
     [queryClient],
   );
+  useEffect(() => {
+    if (runtime !== "installed") {
+      return;
+    }
+    return bindAgentControlCatalog({
+      searchChannels: (term, signal) =>
+        client.searchChannels({
+          term,
+          limit: agentControlChannelLimit(),
+          ...(signal === undefined ? {} : { signal }),
+        }),
+      cancelPendingTune: () => setPlayingChannel(null),
+      tune: (channel) => {
+        tune(channel, null);
+      },
+    });
+  }, [client, runtime, tune]);
   const preparePlayback =
     runtime === "installed" ? loadInstalledPlayer : loadHostedPlayer;
   const { loadMore } = guideCatalog;

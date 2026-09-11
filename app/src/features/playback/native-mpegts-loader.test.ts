@@ -1,64 +1,11 @@
 import mpegts from "mpegts.js";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { clientSchemas, type ClientResult } from "../../client/contracts";
 import {
   createNativeMpegtsLoader,
   NATIVE_PLAYBACK_SENTINEL,
-  type NativeLoaderRuntime,
   type NativePlaybackClient,
 } from "./native-mpegts-loader";
-
-type RuntimeLoader = InstanceType<NativeLoaderRuntime["BaseLoader"]>;
-
-class FixtureBaseLoader {
-  _status: number = mpegts.LoaderStatus.kIdle;
-  _needStash: boolean = false;
-  readonly type: string;
-  onContentLengthKnown: RuntimeLoader["onContentLengthKnown"] = vi.fn();
-  onURLRedirect: RuntimeLoader["onURLRedirect"] = vi.fn();
-  onDataArrival: RuntimeLoader["onDataArrival"] = vi.fn();
-  onError: RuntimeLoader["onError"] = vi.fn();
-  onComplete: RuntimeLoader["onComplete"] = vi.fn();
-
-  constructor(typeName: string) {
-    this.type = typeName;
-  }
-
-  get status(): number {
-    return this._status;
-  }
-
-  get needStashBuffer(): boolean {
-    return this._needStash;
-  }
-
-  isWorking(): boolean {
-    return (
-      this._status === mpegts.LoaderStatus.kConnecting ||
-      this._status === mpegts.LoaderStatus.kBuffering
-    );
-  }
-
-  destroy(): void {
-    this._status = mpegts.LoaderStatus.kIdle;
-  }
-
-  open(
-    dataSource: Parameters<RuntimeLoader["open"]>[0],
-    range: Parameters<RuntimeLoader["open"]>[1],
-  ): void {
-    void dataSource;
-    void range;
-  }
-
-  abort(): void {}
-}
-
-const RUNTIME: NativeLoaderRuntime = {
-  BaseLoader: FixtureBaseLoader,
-  LoaderStatus: mpegts.LoaderStatus,
-  LoaderErrors: mpegts.LoaderErrors,
-};
 
 const DESCRIPTOR = clientSchemas.nativePlaybackDescriptor.parse({
   _tag: "tauri-native-stream",
@@ -68,134 +15,146 @@ const DESCRIPTOR = clientSchemas.nativePlaybackDescriptor.parse({
   tracks: [],
   selection: { _tag: "none" },
 });
+const SOURCE = { url: NATIVE_PLAYBACK_SENTINEL, duration: 0 };
+const RANGE = { from: 0, to: -1 };
 
-describe("native mpegts.js loader", () => {
+describe("native mpegts.js loader with the production BaseLoader", () => {
   it("pulls bounded chunks sequentially and preserves offsets through EOF", async () => {
     const chunks = [bytes(1, 2), bytes(3, 4, 5), new ArrayBuffer(0)];
     let activeReads = 0;
     let maximumReads = 0;
-    const read = vi.fn(async () => {
+    const handles: string[] = [];
+    const fixture = loaderFixture(async (input) => {
+      handles.push(input.streamHandle);
       activeReads += 1;
       maximumReads = Math.max(maximumReads, activeReads);
       await Promise.resolve();
       activeReads -= 1;
-      return success(chunks.shift() ?? new ArrayBuffer(0));
+      const chunk = chunks.shift();
+      if (chunk === undefined) throw new Error("fixture exhausted");
+      return success(chunk);
     });
-    const Loader = createNativeMpegtsLoader(
-      { read },
-      DESCRIPTOR,
-      RUNTIME,
-    );
-    const loader = new Loader({}, {});
-    loader.onDataArrival = vi.fn();
-    loader.onComplete = vi.fn();
-
-    loader.open(
-      { url: NATIVE_PLAYBACK_SENTINEL, duration: 0 },
-      { from: 0, to: -1 },
-    );
-    await until(() => vi.mocked(loader.onComplete).mock.calls.length === 1);
-
+    fixture.loader.open(SOURCE, RANGE);
+    await until(() => fixture.completions.length === 1);
     expect(maximumReads).toBe(1);
-    expect(read).toHaveBeenCalledTimes(3);
-    expect(read).toHaveBeenNthCalledWith(1, {
-      streamHandle: DESCRIPTOR.streamHandle,
-      signal: expect.any(AbortSignal),
-    });
-    expect(vi.mocked(loader.onDataArrival).mock.calls).toEqual([
+    expect(handles).toEqual(Array<string>(3).fill(DESCRIPTOR.streamHandle));
+    expect(fixture.arrivals).toEqual([
       [bytes(1, 2), 0, 2],
       [bytes(3, 4, 5), 2, 5],
     ]);
-    expect(loader.onComplete).toHaveBeenCalledWith(0, 4);
-    loader.abort();
-    loader.destroy();
+    expect(fixture.completions).toEqual([[0, 4]]);
+    fixture.loader.destroy();
   });
 
-  it("aborts only its in-flight native read and leaves session cleanup to the runner", async () => {
+  it.each([false, true])("parks an in-flight result across abort (early resume: %s)", async (earlyResume) => {
     const read = deferred<ClientResult<ArrayBuffer>>();
-    const readChunk = vi.fn(() => read.promise);
-    const Loader = createNativeMpegtsLoader(
-      { read: readChunk },
-      DESCRIPTOR,
-      RUNTIME,
-    );
-    const loader = new Loader({}, {});
-    loader.onDataArrival = vi.fn();
-    loader.onComplete = vi.fn();
-    loader.onError = vi.fn();
-    loader.open(
-      { url: NATIVE_PLAYBACK_SENTINEL, duration: 0 },
-      { from: 0, to: -1 },
-    );
-    const signal = requireSignal(readChunk);
-
-    loader.abort();
-    loader.abort();
-    expect(signal.aborted).toBe(true);
-
-    read.resolve({ ok: false, error: { _tag: "cancelled" } });
+    let reads = 0;
+    const fixture = loaderFixture(() => {
+      reads += 1;
+      return reads === 1 ? read.promise : Promise.resolve(success(new ArrayBuffer(0)));
+    });
+    fixture.loader.open(SOURCE, RANGE);
+    await until(() => reads === 1);
+    fixture.loader.abort();
+    fixture.loader.abort();
+    if (earlyResume) fixture.loader.open(SOURCE, RANGE);
+    read.resolve(success(bytes(9, 8, 7)));
     await read.promise;
     await Promise.resolve();
-    expect(loader.onDataArrival).not.toHaveBeenCalled();
-    expect(loader.onComplete).not.toHaveBeenCalled();
-    expect(loader.onError).not.toHaveBeenCalled();
-  });
-
-  it("maps transport failures to one fixed safe loader error", async () => {
-    const privateMessage = "https://user:secret@provider.invalid/live";
-    const read = vi.fn(async () => ({
-      ok: false as const,
-      error: {
-        _tag: "transport" as const,
-        retryable: false,
-        message: privateMessage,
-      },
-    }));
-    const Loader = createNativeMpegtsLoader(
-      { read },
-      DESCRIPTOR,
-      RUNTIME,
-    );
-    const loader = new Loader({}, {});
-    loader.onError = vi.fn();
-
-    loader.open(
-      { url: NATIVE_PLAYBACK_SENTINEL, duration: 0 },
-      { from: 0, to: -1 },
-    );
-    await until(() => vi.mocked(loader.onError).mock.calls.length === 1);
-
-    expect(JSON.stringify(vi.mocked(loader.onError).mock.calls)).not.toContain(
-      "provider.invalid",
-    );
-    expect(loader.onError).toHaveBeenCalledWith(
-      mpegts.LoaderErrors.EXCEPTION,
-      { code: 0, msg: "The native stream was interrupted." },
-    );
-  });
-
-  it("fails closed without reading for a forged URL or nonzero range", async () => {
-    for (const [url, from] of [
-      ["https://provider.invalid/live", 0],
-      [NATIVE_PLAYBACK_SENTINEL, 1],
-    ] as const) {
-      const client = fixtureClient();
-      const Loader = createNativeMpegtsLoader(client, DESCRIPTOR, RUNTIME);
-      const loader = new Loader({}, {});
-      loader.onError = vi.fn();
-      loader.open({ url, duration: 0 }, { from, to: -1 });
-      await until(() => vi.mocked(loader.onError).mock.calls.length === 1);
-      expect(client.read).not.toHaveBeenCalled();
+    if (!earlyResume) {
+      expect(fixture.arrivals).toEqual([]);
+      fixture.loader.open(SOURCE, RANGE);
     }
+    await until(() => fixture.completions.length === 1);
+    expect(fixture.arrivals).toEqual([[bytes(9, 8, 7), 0, 3]]);
+    expect(fixture.errors).toEqual([]);
+    expect(reads).toBe(2);
+    fixture.loader.destroy();
+  });
+
+  it.each(["eof", "failure"] as const)("retains %s received while paused instead of reading past it", async (outcome) => {
+    const read = deferred<ClientResult<ArrayBuffer>>();
+    let reads = 0;
+    const fixture = loaderFixture(() => { reads += 1; return read.promise; });
+    fixture.loader.open(SOURCE, RANGE);
+    await until(() => reads === 1);
+    fixture.loader.abort();
+    read.resolve(outcome === "eof" ? success(new ArrayBuffer(0)) : {
+      ok: false,
+      error: { _tag: "transport", retryable: true, message: "private detail" },
+    });
+    await read.promise;
+    await Promise.resolve();
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.completions).toEqual([]);
+    fixture.loader.open(SOURCE, RANGE);
+    await until(() => fixture.errors.length + fixture.completions.length === 1);
+    expect(reads).toBe(1);
+    expect(fixture.arrivals).toEqual([]);
+    expect(fixture.errors.length).toBe(outcome === "failure" ? 1 : 0);
+    fixture.loader.destroy();
+  });
+
+  it("does not revive a destroyed loader when its final read resolves", async () => {
+    const read = deferred<ClientResult<ArrayBuffer>>();
+    let reads = 0;
+    const fixture = loaderFixture(() => { reads += 1; return read.promise; });
+    fixture.loader.open(SOURCE, RANGE);
+    await until(() => reads === 1);
+    fixture.loader.destroy();
+    fixture.loader.open(SOURCE, RANGE);
+    read.resolve(success(bytes(1, 2, 3)));
+    await read.promise;
+    await Promise.resolve();
+    expect(fixture.arrivals).toEqual([]);
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.completions).toEqual([]);
+    expect(reads).toBe(1);
+  });
+
+  it.each([false, true])("maps boundary failures to one safe loader error (rejection: %s)", async (rejects) => {
+    const fixture = loaderFixture(async () => {
+      const message = "synthetic private provider detail";
+      if (rejects) throw new Error(message);
+      return { ok: false, error: { _tag: "transport", retryable: false, message } };
+    });
+    fixture.loader.open(SOURCE, RANGE);
+    await until(() => fixture.errors.length === 1);
+    expect(fixture.errors).toEqual([[mpegts.LoaderErrors.EXCEPTION, {
+      code: 0, msg: "The native stream was interrupted.",
+    }]]);
+    fixture.loader.destroy();
+  });
+
+  it.each([-1, 1, Number.NaN, Number.POSITIVE_INFINITY])("rejects unsupported byte range %s without reading", (from) => {
+    let reads = 0;
+    const fixture = loaderFixture(async () => { reads += 1; return success(new ArrayBuffer(0)); });
+    fixture.loader.open(SOURCE, { from, to: -1 });
+    expect(fixture.errors).toHaveLength(1);
+    expect(reads).toBe(0);
+    fixture.loader.destroy();
+  });
+
+  it("fails closed without reading for a forged URL", () => {
+    let reads = 0;
+    const fixture = loaderFixture(async () => { reads += 1; return success(new ArrayBuffer(0)); });
+    fixture.loader.open({ url: "https://fixture.invalid/synthetic.ts", duration: 0 }, RANGE);
+    expect(fixture.errors).toHaveLength(1);
+    expect(reads).toBe(0);
+    fixture.loader.destroy();
   });
 });
 
-function fixtureClient(): NativePlaybackClient & {
-  readonly read: ReturnType<typeof vi.fn>;
-} {
-  return {
-    read: vi.fn(async () => success(new ArrayBuffer(0))),
-  };
+function loaderFixture(read: NativePlaybackClient["read"]) {
+  const Loader = createNativeMpegtsLoader({ read }, DESCRIPTOR);
+  const loader = new Loader({}, {});
+  const arrivals: unknown[][] = [];
+  const errors: unknown[][] = [];
+  const completions: unknown[][] = [];
+  loader.onDataArrival = (...args) => { arrivals.push(args); };
+  loader.onError = (...args) => { errors.push(args); };
+  loader.onComplete = (...args) => { completions.push(args); };
+  return { loader, arrivals, errors, completions };
 }
 
 function bytes(...values: number[]): ArrayBuffer {
@@ -206,42 +165,21 @@ function success<Value>(value: Value): { readonly ok: true; readonly value: Valu
   return { ok: true, value };
 }
 
-function requireSignal(read: ReturnType<typeof vi.fn>): AbortSignal {
-  const first = read.mock.calls[0]?.[0];
-  if (typeof first !== "object" || first === null || !("signal" in first)) {
-    throw new Error("expected a native read signal");
-  }
-  const signal = first.signal;
-  if (!(signal instanceof AbortSignal)) {
-    throw new Error("expected an AbortSignal");
-  }
-  return signal;
-}
-
 async function until(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (predicate()) {
-      return;
-    }
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
     await Promise.resolve();
   }
   throw new Error("asynchronous fixture did not settle");
 }
 
-function deferred<Value>(): {
-  readonly promise: Promise<Value>;
-  readonly resolve: (value: Value) => void;
-} {
+function deferred<Value>() {
   let resolve: ((value: Value) => void) | undefined;
-  const promise = new Promise<Value>((next) => {
-    resolve = next;
-  });
+  const promise = new Promise<Value>((next) => { resolve = next; });
   return {
     promise,
-    resolve: (value) => {
-      if (resolve === undefined) {
-        throw new Error("deferred fixture was not initialized");
-      }
+    resolve: (value: Value) => {
+      if (resolve === undefined) throw new Error("deferred fixture was not initialized");
       resolve(value);
     },
   };

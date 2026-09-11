@@ -23,7 +23,7 @@ afterEach(() => {
 
 describe("installed mpegts.js adapter", () => {
   it.each(["stop", "error"] as const)(
-    "releases the live-buffer timer on %s before another catch-up",
+    "releases the stall timer on %s before another interruption",
     (reason) => {
       vi.useFakeTimers({
         toFake: ["setInterval", "clearInterval", "performance"],
@@ -32,32 +32,70 @@ describe("installed mpegts.js adapter", () => {
       const video = document.createElement("video");
       Object.defineProperties(video, {
         paused: { value: false },
-        buffered: { value: { length: 1, start: () => 0, end: () => 40 } },
+        seeking: { value: false },
+        readyState: { value: 2 },
+        currentTime: { value: 1, writable: true },
       });
+      const failure = vi.fn();
       const started = createNativeMpegtsPlaybackEngine(fixture.runtime).start({
         session: { read: vi.fn(async () => success(new ArrayBuffer(0))) },
         descriptor: DESCRIPTOR,
         video,
-        onFailure: vi.fn(),
+        onFailure: failure,
         onAutoplayBlocked: vi.fn(),
         onPlaying: vi.fn(),
       });
       if (typeof started === "string" || fixture.errorListener === undefined) {
         throw new Error("expected an active player");
       }
-      vi.advanceTimersByTime(2_000);
-      expect(fixture.calls.filter((call) => call.startsWith("seek:"))).toEqual([
-        "seek:35",
-      ]);
+      vi.advanceTimersByTime(250);
       if (reason === "stop") started.stop();
       else fixture.errorListener("media");
-      vi.advanceTimersByTime(31_000);
-      expect(fixture.calls.filter((call) => call.startsWith("seek:"))).toEqual([
-        "seek:35",
-      ]);
+      vi.advanceTimersByTime(5_000);
+      expect(failure).toHaveBeenCalledTimes(reason === "error" ? 1 : 0);
       expect(vi.getTimerCount()).toBe(0);
+      expect(started.mediaSnapshot?.()).toBeUndefined();
     },
   );
+
+  it("records a standstill without restarting the session", () => {
+    vi.useFakeTimers({
+      toFake: ["setInterval", "clearInterval", "performance"],
+    });
+    const fixture = runtimeFixture();
+    let currentTime = 1;
+    const video = document.createElement("video");
+    Object.defineProperties(video, {
+      paused: { value: false },
+      seeking: { value: false },
+      readyState: { value: 2 },
+      currentTime: {
+        get: () => currentTime,
+        set: (value: number) => {
+          currentTime = value;
+        },
+      },
+    });
+    const failure = vi.fn();
+    const started = createNativeMpegtsPlaybackEngine(fixture.runtime).start({
+      session: { read: vi.fn(async () => success(new ArrayBuffer(0))) },
+      descriptor: DESCRIPTOR,
+      video,
+      onFailure: failure,
+      onAutoplayBlocked: vi.fn(),
+      onPlaying: vi.fn(),
+    });
+    if (typeof started === "string") {
+      throw new Error("expected an active player");
+    }
+    currentTime += 0.25;
+    vi.advanceTimersByTime(250);
+    expect(failure).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(2_000);
+    expect(failure).not.toHaveBeenCalled();
+    expect(started.mediaSnapshot?.()?.standstills).toBe(1);
+    expect(fixture.calls.filter((call) => call.startsWith("seek:"))).toEqual([]);
+  });
   it("binds an opaque stream to a main-thread loader without final-stopping its session", async () => {
     const fixture = runtimeFixture();
     const read = vi.fn(async () => success(new ArrayBuffer(0)));
@@ -89,6 +127,8 @@ describe("installed mpegts.js adapter", () => {
       liveBufferLatencyChasing: false,
       autoCleanupSourceBuffer: true,
       enableWorker: false,
+      deferLoadAfterSourceOpen: false,
+      lazyLoadRecoverDuration: 3,
       customLoader: expect.any(Function),
     });
     expect(JSON.stringify(fixture.source)).not.toContain(DESCRIPTOR.sessionId);

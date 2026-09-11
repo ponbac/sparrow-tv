@@ -64,6 +64,8 @@ export interface MpegtsRuntime {
       readonly liveBufferLatencyChasing: boolean;
       readonly autoCleanupSourceBuffer: boolean;
       readonly enableWorker?: false;
+      readonly lazyLoadRecoverDuration?: number;
+      readonly deferLoadAfterSourceOpen?: boolean;
       readonly customLoader?: NativeLoaderConstructor;
     },
   ) => EnginePlayer;

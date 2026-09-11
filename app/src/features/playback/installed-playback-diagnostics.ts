@@ -3,14 +3,40 @@ import type {
   InstalledPlaybackPhase,
   InstalledPlaybackState,
 } from "./installed-playback-state";
+import type { NativeLiveMediaObservation } from "./native-live-buffer";
 
 const MAX_TRANSITIONS = 20;
 const MAX_DURATION_MS = 86_400_000;
+const MAX_MEDIA_COUNT = 99_999;
+const MAX_MEDIA_DIMENSION = 7_680;
+const MAX_MEDIA_FRAMES = 10_000_000;
+const MAX_READY_STATE = 4;
 
 /** Safe phase-only transition retained by the playback runner. */
 export interface InstalledPlaybackTransition {
   readonly from: InstalledPlaybackPhase["_tag"];
   readonly to: InstalledPlaybackPhase["_tag"];
+}
+
+/** Allowlisted numeric media counters copied with playback diagnostics. */
+export interface InstalledPlaybackMediaReport {
+  readonly readyState: number;
+  readonly paused: boolean;
+  readonly seeking: boolean;
+  readonly currentTimeMs: number;
+  readonly bufferAheadMs: number;
+  readonly bufferedRangeCount: number;
+  readonly waiting: number;
+  readonly stalledEvents: number;
+  readonly seekingEvents: number;
+  readonly seeked: number;
+  readonly standstills: number;
+  readonly msSinceTimeAdvance: number;
+  readonly width: number;
+  readonly height: number;
+  readonly totalVideoFrames: number;
+  readonly droppedVideoFrames: number;
+  readonly presentedFrames: number;
 }
 
 /** Minimal clipboard seam used by the installed diagnostics control. */
@@ -26,9 +52,10 @@ export function installedPlaybackDiagnostics(
   state: InstalledPlaybackState,
   transitions: readonly InstalledPlaybackTransition[],
   now: number,
+  media: NativeLiveMediaObservation | null = null,
 ): string {
   return JSON.stringify({
-    version: 1,
+    version: 2,
     engine: playbackEngine(state),
     phase: state.phase._tag,
     intent: safeIntent(state.phase),
@@ -52,6 +79,7 @@ export function installedPlaybackDiagnostics(
       selection: safeAudioSelection(state),
       preferenceStatus: state.audio.preferenceStatus ?? "none",
     },
+    media: projectMedia(media),
     transitions: transitions.slice(-MAX_TRANSITIONS).map((transition) => ({
       from: transition.from,
       to: transition.to,
@@ -65,10 +93,48 @@ export function copyInstalledPlaybackDiagnostics(
   state: InstalledPlaybackState,
   transitions: readonly InstalledPlaybackTransition[],
   now: number,
+  media: NativeLiveMediaObservation | null = null,
 ): Promise<void> {
   return clipboard.writeText(
-    installedPlaybackDiagnostics(state, transitions, now),
+    installedPlaybackDiagnostics(state, transitions, now, media),
   );
+}
+
+/** Projects a live media observation into the copyable allowlist. */
+export function projectInstalledPlaybackMedia(
+  media: NativeLiveMediaObservation,
+): InstalledPlaybackMediaReport {
+  return {
+    readyState: boundedInteger(media.readyState, MAX_READY_STATE),
+    paused: media.paused,
+    seeking: media.seeking,
+    currentTimeMs: boundedInteger(media.currentTime * 1_000, MAX_DURATION_MS),
+    bufferAheadMs: boundedInteger(media.bufferAhead * 1_000, MAX_DURATION_MS),
+    bufferedRangeCount: boundedInteger(media.bufferedRangeCount, 32),
+    waiting: boundedInteger(media.waiting, MAX_MEDIA_COUNT),
+    stalledEvents: boundedInteger(media.stalledEvents, MAX_MEDIA_COUNT),
+    seekingEvents: boundedInteger(media.seekingEvents, MAX_MEDIA_COUNT),
+    seeked: boundedInteger(media.seeked, MAX_MEDIA_COUNT),
+    standstills: boundedInteger(media.standstills, MAX_MEDIA_COUNT),
+    msSinceTimeAdvance: boundedInteger(
+      media.msSinceTimeAdvance,
+      MAX_DURATION_MS,
+    ),
+    width: boundedInteger(media.width, MAX_MEDIA_DIMENSION),
+    height: boundedInteger(media.height, MAX_MEDIA_DIMENSION),
+    totalVideoFrames: boundedInteger(media.totalVideoFrames, MAX_MEDIA_FRAMES),
+    droppedVideoFrames: boundedInteger(
+      media.droppedVideoFrames,
+      MAX_MEDIA_FRAMES,
+    ),
+    presentedFrames: boundedInteger(media.presentedFrames, MAX_MEDIA_FRAMES),
+  };
+}
+
+function projectMedia(
+  media: NativeLiveMediaObservation | null,
+): InstalledPlaybackMediaReport | null {
+  return media === null ? null : projectInstalledPlaybackMedia(media);
 }
 
 function safeIntent(phase: InstalledPlaybackPhase): string {

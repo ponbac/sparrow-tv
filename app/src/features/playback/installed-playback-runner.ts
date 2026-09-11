@@ -27,6 +27,7 @@ import {
   type InstalledPlaybackStartReason,
   type InstalledPlaybackState,
 } from "./installed-playback-state";
+import type { NativeLiveMediaObservation } from "./native-live-buffer";
 
 const DEFAULT_RECOVERY_DELAYS_MS = [1_000, 5_000, 15_000] as const;
 const DEFAULT_STABLE_RESET_MS = 60_000;
@@ -613,6 +614,7 @@ export class InstalledPlaybackRunner {
       this.#state,
       this.#transitions,
       this.#clock.now(),
+      this.#mediaObservation(),
     );
   }
 
@@ -623,6 +625,7 @@ export class InstalledPlaybackRunner {
       this.#state,
       this.#transitions,
       this.#clock.now(),
+      this.#mediaObservation(),
     );
   }
 
@@ -1074,6 +1077,12 @@ export class InstalledPlaybackRunner {
   #clearStableReset(): void {
     this.#cancelStableReset?.();
     this.#cancelStableReset = null;
+  }
+
+  #mediaObservation(): NativeLiveMediaObservation | null {
+    // `media` describes only the current transport. Reusing counters from a
+    // released generation makes failed/recovering/new sessions look healthy.
+    return this.#handle?.mediaSnapshot?.() ?? null;
   }
 
   #applyControls(): void {

@@ -15,6 +15,7 @@ import {
 } from "./native-mpegts-engine";
 import { installedClientPlaybackFailure } from "./playback-failure";
 import type { InstalledPlaybackFailure } from "./installed-playback-state";
+import type { NativeLiveMediaObservation } from "./native-live-buffer";
 
 const MPV_HEALTH_CHECK_INTERVAL_MS = 1_000;
 
@@ -38,6 +39,7 @@ export interface InstalledPlaybackHandle extends HostedPlaybackHandle {
     readonly muted: boolean;
   }) => void;
   readonly requestFullscreen?: (fullscreen: boolean) => Promise<boolean>;
+  readonly mediaSnapshot?: () => NativeLiveMediaObservation | undefined;
 }
 
 /** Deep platform seam selected by an opaque installed descriptor. */

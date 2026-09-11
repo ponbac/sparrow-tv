@@ -1002,6 +1002,72 @@ describe("InstalledPlaybackRunner", () => {
     expect(diagnostics).toContain('"muted":true');
     expect(diagnostics).toContain('"fullscreen":true');
   });
+
+  it.each(["stop", "pause", "replacement", "failure", "recovery"] as const)(
+    "does not expose released media as current after %s",
+    async (transition) => {
+      let request: InstalledPlaybackRequest | undefined;
+      let starts = 0;
+      const engine: InstalledPlaybackEngine = {
+        start: (input) => {
+          request = input;
+          starts += 1;
+          if (starts > 1) return { stop: () => undefined };
+          return {
+            stop: () => undefined,
+            mediaSnapshot: () => ({
+              readyState: 2,
+              paused: false,
+              seeking: false,
+              currentTime: 3,
+              bufferAhead: 6,
+              bufferedRangeCount: 1,
+              waiting: 4,
+              stalledEvents: 0,
+              seekingEvents: 0,
+              seeked: 0,
+              standstills: 1,
+              msSinceTimeAdvance: 2_500,
+              width: 1280,
+              height: 720,
+              totalVideoFrames: 50,
+              droppedVideoFrames: 0,
+              presentedFrames: 40,
+            }),
+          };
+        },
+      };
+      const runner = createInstalledPlaybackRunner({
+        client: clientFixture(() => sessionFixture(81).value),
+        engine,
+      });
+      await runner.select(CHANNEL_A, document.createElement("video"));
+      expect(runner.diagnostics()).toContain('"standstills":1');
+      expect(runner.diagnostics()).toContain('"waiting":4');
+      expect(runner.diagnostics()).toContain('"bufferAheadMs":6000');
+      if (transition === "stop") await runner.stop();
+      else if (transition === "pause") await runner.pause();
+      else if (transition === "replacement") {
+        await runner.select(CHANNEL_B, document.createElement("video"));
+      } else {
+        if (request === undefined) throw new Error("expected an engine request");
+        request.onFailure("stream-interrupted", transition === "recovery");
+        await runner.whenIdle();
+      }
+      expect(runner.diagnostics()).toContain('"media":null');
+      expect(runner.diagnostics()).not.toContain('"waiting":4');
+      const copied: string[] = [];
+      await runner.copyDiagnostics({
+        writeText: async (text) => { copied.push(text); },
+      });
+      expect(copied[0]).toContain('"media":null');
+      if (transition === "pause") {
+        await runner.resume();
+        expect(runner.diagnostics()).toContain('"media":null');
+      }
+      await runner.stop();
+    },
+  );
 });
 
 interface SessionOverrides {
