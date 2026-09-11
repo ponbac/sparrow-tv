@@ -64,7 +64,7 @@ async fn offline_restart_recovers_independent_snapshots_without_source_access() 
         recovered.status().epg(),
         Some(SourceState::Fresh { .. })
     ));
-    assert_eq!(channel_names(&recovered), ["Beta", "Alpha"]);
+    assert_eq!(channel_names(&recovered), ["Alpha", "Beta"]);
     let alpha = recovered
         .list_channels(all_channels())
         .expect("the recovered catalog is queryable")
@@ -120,7 +120,7 @@ async fn old_exact_deadline_and_future_snapshots_are_stale_but_remain_usable() {
                 next_attempt_at: Some(next_attempt_at),
             } if *actual == utc(validated_at) && *next_attempt_at == utc(now)
         ));
-        assert_eq!(channel_names(&recovered), ["Beta", "Alpha"]);
+        assert_eq!(channel_names(&recovered), ["Alpha", "Beta"]);
     }
 }
 
@@ -254,7 +254,7 @@ async fn adoption_failure_keeps_the_verified_fallback_published_and_reports_it()
 
     assert_eq!(offline.open_count(), 0);
     assert_eq!(recovered.status().generation(), generation);
-    assert_eq!(channel_names(&recovered), ["Beta", "Alpha"]);
+    assert_eq!(channel_names(&recovered), ["Alpha", "Beta"]);
     let status = recovered.status();
     let recovery = status
         .recovery(SourceKind::M3u)
@@ -367,7 +367,7 @@ async fn invalid_epg_snapshot_never_blocks_offline_m3u_recovery() {
     let recovered = bootstrap(offline.clone(), snapshots, true, SEEDED_AT, "primary").await;
 
     assert_eq!(offline.open_count(), 0);
-    assert_eq!(channel_names(&recovered), ["Beta", "Alpha"]);
+    assert_eq!(channel_names(&recovered), ["Alpha", "Beta"]);
     assert!(matches!(
         recovered.status().m3u(),
         SourceState::Fresh { .. }
@@ -413,7 +413,7 @@ async fn missing_epg_snapshot_keeps_an_offline_recovered_m3u_channel_only() {
     let recovered = bootstrap(offline.clone(), snapshots, true, SEEDED_AT, "primary").await;
 
     assert_eq!(offline.open_count(), 0);
-    assert_eq!(channel_names(&recovered), ["Beta", "Alpha"]);
+    assert_eq!(channel_names(&recovered), ["Alpha", "Beta"]);
     assert!(matches!(
         recovered.status().epg(),
         Some(SourceState::Unavailable { failure: None })

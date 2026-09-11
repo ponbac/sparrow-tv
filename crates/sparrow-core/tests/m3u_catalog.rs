@@ -44,8 +44,8 @@ async fn valid_m3u_is_activated_and_published_as_a_queryable_catalog() {
     assert_ne!(page.generation().get(), 0);
     assert_eq!(core.status().generation(), Some(page.generation()));
     assert_eq!(page.items().len(), 2);
-    assert_eq!(page.items()[0].name(), "Culture One");
-    assert_eq!(page.items()[0].group(), "Culture");
+    assert_eq!(page.items()[0].name(), "News One");
+    assert_eq!(page.items()[0].group(), "News");
     let parsed_id = ChannelId::parse(page.items()[0].id().as_str())
         .expect("a generated Channel Identifier round-trips at the public boundary");
     assert_eq!(&parsed_id, page.items()[0].id());
@@ -56,8 +56,8 @@ async fn valid_m3u_is_activated_and_published_as_a_queryable_catalog() {
     let repeated_page = core
         .list_channels(first_channels(10))
         .expect("catalog remains available");
-    assert_eq!(details.name(), "Culture One");
-    assert_eq!(details.group(), "Culture");
+    assert_eq!(details.name(), "News One");
+    assert_eq!(details.group(), "News");
     assert_eq!(page.items(), repeated_page.items());
     assert_eq!(source.open_count(), 1);
     assert_eq!(snapshots.activation_count(), 1);

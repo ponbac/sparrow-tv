@@ -53,6 +53,7 @@ impl ChannelCatalog {
         generation: CatalogGeneration,
     ) -> Self {
         let mut occurrences = HashMap::<[u8; 32], u32>::new();
+        let mut group_first_seen = HashMap::<Arc<str>, usize>::new();
         let mut pending = Vec::with_capacity(parsed.len());
 
         for (source_index, channel) in parsed.iter().enumerate() {
@@ -60,17 +61,22 @@ impl ChannelCatalog {
             let occurrence = occurrences.entry(seed).or_default();
             let id = identity::channel_id(&configuration.fingerprint, &seed, *occurrence);
             *occurrence = occurrence.saturating_add(1);
+            let group_order = *group_first_seen
+                .entry(Arc::clone(&channel.group))
+                .or_insert(source_index);
 
             pending.push(PendingChannel {
                 source_index,
-                group_order: identity::normalize_identity_field(&channel.group),
+                group_order,
                 name_order: identity::normalize_identity_field(&channel.name),
                 tvg_id: Arc::clone(&channel.tvg_id),
                 id,
             });
         }
 
-        pending.sort_unstable_by(|left, right| compare_channels(left, right, &parsed));
+        // Cluster by first-seen Channel Group so group pages stay contiguous
+        // ranges, then keep each group's M3U source order.
+        pending.sort_unstable_by(compare_channels);
 
         let (programmes, schedule_ranges) = build_programmes(&pending, guide.as_deref());
         let schedule_overlap_index = ScheduleOverlapIndex::build(&programmes, guide.as_deref());
@@ -459,7 +465,7 @@ impl ChannelCatalog {
 
 struct PendingChannel {
     source_index: usize,
-    group_order: String,
+    group_order: usize,
     name_order: String,
     tvg_id: Arc<str>,
     id: ChannelId,
@@ -470,19 +476,10 @@ struct CatalogChannel {
     source_index: usize,
 }
 
-fn compare_channels(
-    left: &PendingChannel,
-    right: &PendingChannel,
-    parsed: &[ParsedChannel],
-) -> Ordering {
-    let left_source = &parsed[left.source_index];
-    let right_source = &parsed[right.source_index];
+fn compare_channels(left: &PendingChannel, right: &PendingChannel) -> Ordering {
     left.group_order
         .cmp(&right.group_order)
-        .then_with(|| left_source.group.cmp(&right_source.group))
-        .then_with(|| left.name_order.cmp(&right.name_order))
-        .then_with(|| left_source.name.cmp(&right_source.name))
-        .then_with(|| left.id.as_str().cmp(right.id.as_str()))
+        .then_with(|| left.source_index.cmp(&right.source_index))
 }
 
 fn query_hash(tag: u8, discriminator: Option<&str>) -> CursorQueryHash {

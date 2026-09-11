@@ -45,7 +45,7 @@ fn hash_field(hasher: &mut Hasher, value: &[u8]) {
     hasher.update(value);
 }
 
-/// Returns the canonical comparison key used by identity and browse ordering.
+/// Returns the canonical comparison key used by identity and EPG name matching.
 pub(crate) fn normalize_identity_field(value: &str) -> String {
     let compatibility_normalized = value.nfkc().collect::<String>();
     let mut normalized = String::with_capacity(compatibility_normalized.len());

@@ -19,7 +19,7 @@ async fn source_groups_are_deterministically_ordered_counted_and_bounded() {
         .list_groups(PageRequest::first(page_limit(2)))
         .expect("the first group page is available");
 
-    assert_eq!(group_observations(&first), [("", 1), ("Culture", 1)]);
+    assert_eq!(group_observations(&first), [("Sports", 2), ("News", 3)]);
     assert_ne!(first.generation().get(), 0);
     assert!(first.generation().get() <= CatalogGeneration::MAX_SAFE_INTEGER);
     assert_eq!(core.status().generation(), Some(first.generation()));
@@ -27,12 +27,12 @@ async fn source_groups_are_deterministically_ordered_counted_and_bounded() {
     let second = core
         .list_groups(PageRequest::after(second_cursor, page_limit(2)))
         .expect("the second group page is available");
-    assert_eq!(group_observations(&second), [("Kids", 1), ("News", 3)]);
+    assert_eq!(group_observations(&second), [("Culture", 1), ("", 1)]);
     let third_cursor = round_trip(second.next().expect("one group remains"));
     let third = core
         .list_groups(PageRequest::after(third_cursor, page_limit(2)))
         .expect("the final group page is available");
-    assert_eq!(group_observations(&third), [("Sports", 2)]);
+    assert_eq!(group_observations(&third), [("Kids", 1)]);
     assert!(third.next().is_none());
     assert_eq!(source.open_count(), 1);
 }
@@ -62,14 +62,14 @@ async fn channel_pages_are_stable_filtered_and_cover_exact_boundaries() {
             .map(|(_, name, group)| (name.as_str(), group.as_str()))
             .collect::<Vec<_>>(),
         [
-            ("Ungrouped", ""),
-            ("Museum", "Culture"),
-            ("Junior", "Kids"),
-            ("Alpha", "News"),
-            ("Daily", "News"),
-            ("Daily", "News"),
             ("Arena", "Sports"),
             ("Arena Two", "Sports"),
+            ("Daily", "News"),
+            ("Daily", "News"),
+            ("Alpha", "News"),
+            ("Museum", "Culture"),
+            ("Ungrouped", ""),
+            ("Junior", "Kids"),
         ]
     );
     let mut ids = observed
@@ -91,7 +91,7 @@ async fn channel_pages_are_stable_filtered_and_cover_exact_boundaries() {
             .iter()
             .map(|channel| channel.name())
             .collect::<Vec<_>>(),
-        ["Alpha", "Daily", "Daily"]
+        ["Daily", "Daily", "Alpha"]
     );
     assert!(news.next().is_none());
 
@@ -121,6 +121,53 @@ async fn channel_pages_are_stable_filtered_and_cover_exact_boundaries() {
 }
 
 #[tokio::test]
+async fn browse_pages_keep_m3u_source_order_instead_of_alphabetical_names() {
+    let m3u = b"#EXTM3U\n\
+         #EXTINF:-1 group-title=\"Sweden\",SVT 1\n\
+         https://media.fixture.invalid/svt1.ts\n\
+         #EXTINF:-1 group-title=\"Sweden\",SVT 2\n\
+         https://media.fixture.invalid/svt2.ts\n\
+         #EXTINF:-1 group-title=\"Norway\",NRK 1\n\
+         https://media.fixture.invalid/nrk1.ts\n\
+         #EXTINF:-1 group-title=\"Sweden\",Al Jazeera\n\
+         https://media.fixture.invalid/aljazeera.ts\n";
+    let (core, _) = browse_core(m3u).await;
+
+    let groups = core
+        .list_groups(PageRequest::first(page_limit(10)))
+        .expect("source groups are available");
+    assert_eq!(group_observations(&groups), [("Sweden", 3), ("Norway", 1)]);
+
+    let sweden = core
+        .list_channels(ChannelQuery::in_group(
+            group_filter("Sweden"),
+            PageRequest::first(page_limit(10)),
+        ))
+        .expect("the Sweden group is queryable");
+    assert_eq!(
+        sweden
+            .items()
+            .iter()
+            .map(|channel| channel.name())
+            .collect::<Vec<_>>(),
+        ["SVT 1", "SVT 2", "Al Jazeera"]
+    );
+
+    let all = collect_all_channels(&core, 10);
+    assert_eq!(
+        all.iter()
+            .map(|(_, name, group)| (name.as_str(), group.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("SVT 1", "Sweden"),
+            ("SVT 2", "Sweden"),
+            ("Al Jazeera", "Sweden"),
+            ("NRK 1", "Norway"),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn every_source_derived_group_is_safe_to_round_trip_as_an_exact_filter() {
     let oversized_group = "x".repeat(1025);
     let m3u = format!(
@@ -137,7 +184,7 @@ async fn every_source_derived_group_is_safe_to_round_trip_as_an_exact_filter() {
         .list_groups(PageRequest::first(page_limit(10)))
         .expect("normalized source groups are available");
 
-    assert_eq!(group_observations(&groups), [("", 2), ("Valid", 1)]);
+    assert_eq!(group_observations(&groups), [("Valid", 1), ("", 2)]);
     for group in groups.items() {
         let filter = ChannelGroupFilter::parse(group.name().to_owned())
             .expect("every emitted group round-trips through the query boundary");

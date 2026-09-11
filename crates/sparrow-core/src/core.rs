@@ -182,12 +182,16 @@ impl SparrowCore {
         self.runtime.view.load().status.clone()
     }
 
-    /// Returns a deterministic bounded page of source-derived Channel Groups.
+    /// Returns a deterministic bounded page of Channel Groups in first-seen M3U order.
     pub fn list_groups(&self, request: PageRequest) -> Result<Page<ChannelGroupView>, CoreError> {
         self.query_catalog(|catalog| catalog.groups_page(&request))
     }
 
     /// Returns a deterministic bounded page of all Channels or one exact group.
+    ///
+    /// Channels keep M3U source order within each Channel Group. The unfiltered
+    /// catalog concatenates those groups in first-seen order rather than sorting
+    /// names alphabetically.
     pub fn list_channels(&self, query: ChannelQuery) -> Result<Page<ChannelSummary>, CoreError> {
         self.query_catalog(|catalog| catalog.channels_page(&query))
     }
