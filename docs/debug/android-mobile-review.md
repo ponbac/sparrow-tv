@@ -30,7 +30,7 @@ emulator -avd sparrow-mobile-review -no-window -no-audio \
 Use `adb devices` to select this emulator explicitly. Build from `app/`:
 
 ```sh
-CARGO_BUILD_JOBS=2 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_DEV_STRIP=symbols \
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_DEV_OPT_LEVEL=3 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_DEV_STRIP=symbols \
   mise exec -- bun run tauri android build --apk --debug --ci \
   --split-per-abi --target aarch64 x86_64
 ```
@@ -80,3 +80,5 @@ Session pause/replacement. An origin-restricted WebView message listener owns
 Android's [immersive system bars](https://developer.android.com/develop/ui/views/layout/immersive)
 and Back handling. While fullscreen, system bars can be revealed transiently
 by swiping from the edge; the picture keeps its full viewport.
+
+For large-catalog startup and offline checks, see [Catalog startup](catalog-startup.md).

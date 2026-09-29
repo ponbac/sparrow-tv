@@ -1,8 +1,9 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import { createSparrowRuntime } from "./client/runtime";
+import { createSparrowQueryClient } from "./client/query-client";
 import "@fontsource-variable/archivo";
 import "@fontsource-variable/newsreader";
 import "@fontsource-variable/jetbrains-mono";
@@ -10,18 +11,11 @@ import "./index.css";
 
 const rootElement = requireApplicationRoot();
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      retry: false,
-      refetchOnWindowFocus: false,
-    },
-  },
-});
 startApplication().catch(renderStartupFailure);
 
 async function startApplication(): Promise<void> {
   const runtime = await createSparrowRuntime();
+  const queryClient = createSparrowQueryClient(runtime._tag);
   createRoot(rootElement).render(
     <StrictMode>
       <QueryClientProvider client={queryClient}>

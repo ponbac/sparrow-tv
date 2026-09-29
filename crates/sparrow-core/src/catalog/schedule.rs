@@ -92,6 +92,7 @@ pub(super) fn build_programmes(
     (programmes, ranges)
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct ScheduleOverlapIndex {
     // Each entry points at the Programme with the latest end in its Channel's
     // schedule prefix. The pointed-to end times are therefore monotonic within
@@ -141,7 +142,9 @@ impl ScheduleOverlapIndex {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct CatalogProgramme {
+    #[serde(with = "super::cache::channel_id")]
     pub(super) channel_id: ChannelId,
     pub(super) source_index: usize,
 }

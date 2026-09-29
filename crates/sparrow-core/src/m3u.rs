@@ -7,6 +7,7 @@ use crate::domain::{
     ChannelGroupFilter, M3uFailureKind, SafeFailure, SnapshotOperation, SourceKind, StoreError,
 };
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct ParsedChannel {
     pub(crate) tvg_id: Arc<str>,
     pub(crate) name: Arc<str>,

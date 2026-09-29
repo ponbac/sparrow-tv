@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { type QueryClient, QueryClientProvider, onlineManager } from "@tanstack/react-query";
 import {
   act,
   cleanup,
@@ -9,6 +9,7 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { createSparrowQueryClient } from "../../client/query-client";
 import { type ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -333,6 +334,17 @@ class FakeSparrowClient implements InstalledSparrowClient {
 }
 
 describe("CatalogBrowser Split Stage", () => {
+  it("opens the installed saved guide while the device is offline", async () => {
+    onlineManager.setOnline(false);
+    try {
+      renderInstalledBrowser(new FakeSparrowClient());
+      expect(await screen.findByLabelText("Programme guide")).toBeVisible();
+      expect(screen.queryByRole("heading", { name: "Tuning catalog" })).not.toBeInTheDocument();
+    } finally {
+      onlineManager.setOnline(true);
+    }
+  });
+
   it("shows the one initial status loader before mounting the Split Stage", async () => {
     const status = deferred<ClientResult<CatalogStatus>>();
     const client = new FakeSparrowClient({ status: () => status.promise });
@@ -1208,15 +1220,12 @@ function renderInstalledBrowser(client: InstalledSparrowClient): QueryClient {
       runtime="installed"
       playbackEngine={TEST_INSTALLED_PLAYBACK_ENGINE}
     />,
+    "installed",
   );
 }
 
-function renderBrowser(browser: ReactElement): QueryClient {
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false, refetchOnWindowFocus: false },
-    },
-  });
+function renderBrowser(browser: ReactElement, runtime: "hosted" | "installed" = "hosted"): QueryClient {
+  const queryClient = createSparrowQueryClient(runtime);
   render(
     <QueryClientProvider client={queryClient}>{browser}</QueryClientProvider>,
   );

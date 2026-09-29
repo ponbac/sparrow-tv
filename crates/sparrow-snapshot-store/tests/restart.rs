@@ -274,6 +274,9 @@ struct CapturingSnapshotStore {
     requests: Arc<std::sync::Mutex<Vec<SnapshotStageRequest>>>,
     activations: Arc<AtomicUsize>,
     revalidations: Arc<AtomicUsize>,
+    candidate_opens: Arc<AtomicUsize>,
+    cache_writes: Arc<AtomicUsize>,
+    cache_gate: Option<Arc<CacheWriteGate>>,
 }
 
 impl CapturingSnapshotStore {
@@ -283,6 +286,9 @@ impl CapturingSnapshotStore {
             requests: Arc::new(std::sync::Mutex::new(Vec::new())),
             activations: Arc::new(AtomicUsize::new(0)),
             revalidations: Arc::new(AtomicUsize::new(0)),
+            candidate_opens: Arc::new(AtomicUsize::new(0)),
+            cache_writes: Arc::new(AtomicUsize::new(0)),
+            cache_gate: None,
         }
     }
 
@@ -312,6 +318,22 @@ impl CapturingSnapshotStore {
 
 #[async_trait]
 impl SnapshotStore for CapturingSnapshotStore {
+    fn catalog_cache_enabled(&self) -> bool {
+        true
+    }
+    fn read_catalog_cache(&self, key: &[u8; 32]) -> Option<Vec<u8>> {
+        self.inner.read_catalog_cache(key)
+    }
+    fn write_catalog_cache(&self, key: &[u8; 32], bytes: &[u8]) {
+        if let Some(gate) = &self.cache_gate {
+            gate.started.notify_one();
+            let ready = gate.ready.lock().unwrap();
+            drop(gate.changed.wait_while(ready, |ready| !*ready).unwrap());
+        }
+        self.inner.write_catalog_cache(key, bytes);
+        self.cache_writes.fetch_add(1, Ordering::SeqCst);
+    }
+
     async fn scan_candidates(&self, source: SnapshotSource) -> Result<SnapshotScan, StoreError> {
         self.inner.scan_candidates(source).await
     }
@@ -320,6 +342,7 @@ impl SnapshotStore for CapturingSnapshotStore {
         &self,
         candidate: &SnapshotCandidate,
     ) -> Result<Box<dyn std::io::BufRead + Send>, StoreError> {
+        self.candidate_opens.fetch_add(1, Ordering::SeqCst);
         self.inner.open_candidate(candidate).await
     }
 
@@ -474,6 +497,7 @@ impl SourceAccess for ConditionalFixtureSource {
 #[derive(Clone)]
 struct FixtureSource {
     available: bool,
+    channel_name: &'static str,
     m3u_opens: Arc<AtomicUsize>,
     epg_opens: Arc<AtomicUsize>,
 }
@@ -482,6 +506,7 @@ impl FixtureSource {
     fn online() -> Self {
         Self {
             available: true,
+            channel_name: "Alpha",
             m3u_opens: Arc::new(AtomicUsize::new(0)),
             epg_opens: Arc::new(AtomicUsize::new(0)),
         }
@@ -490,6 +515,7 @@ impl FixtureSource {
     fn rejecting() -> Self {
         Self {
             available: false,
+            channel_name: "Alpha",
             m3u_opens: Arc::new(AtomicUsize::new(0)),
             epg_opens: Arc::new(AtomicUsize::new(0)),
         }
@@ -531,9 +557,15 @@ impl SourceAccess for FixtureSource {
         if !self.available {
             return Err(SourceAccessError::Unavailable.into());
         }
-        let body: SourceByteStream = Box::pin(stream::iter([Ok(Bytes::from_static(payload))]));
+        let payload = if request.kind() == SourceKind::M3u {
+            Bytes::from(String::from_utf8_lossy(payload).replace("Alpha", self.channel_name))
+        } else {
+            Bytes::from_static(payload)
+        };
+        let length = payload.len();
+        let body: SourceByteStream = Box::pin(stream::iter([Ok(payload)]));
         Ok(SourceResponse::with_validators(
-            Some(payload.len() as u64),
+            Some(length as u64),
             body,
             validators,
         ))
@@ -686,4 +718,259 @@ fn parse_time(value: &str) -> DateTime<Utc> {
 
 fn limit(value: u16) -> PageLimit {
     PageLimit::new(value).expect("fixture page limit is valid")
+}
+
+async fn snapshot_restart(store: Arc<CapturingSnapshotStore>, progressive: bool) -> SparrowCore {
+    let adapters = CoreAdapters::new(
+        Arc::new(FixtureSource::rejecting()),
+        store,
+        Arc::new(FixedClock(parse_time("2026-08-29T12:00:00Z"))),
+    );
+    if progressive {
+        SparrowCore::bootstrap_installed(Some(configuration(M3U_URL, EPG_URL)), adapters).await
+    } else {
+        SparrowCore::bootstrap_from_snapshots(Some(configuration(M3U_URL, EPG_URL)), adapters).await
+    }
+    .expect("saved catalog opens offline")
+}
+
+#[tokio::test]
+async fn processed_catalog_reopens_without_reading_source_payloads_and_recovers_bad_caches() {
+    let directory = TempDir::new().unwrap();
+    let disk = Arc::new(AtomicFileSnapshotStore::open(directory.path()).unwrap());
+    let store = Arc::new(CapturingSnapshotStore::new(disk));
+    drop(
+        bootstrap(
+            configuration(M3U_URL, EPG_URL),
+            FixtureSource::online(),
+            Arc::clone(&store),
+        )
+        .await,
+    );
+    let first = snapshot_restart(Arc::clone(&store), false).await;
+    let generation = first.status().generation();
+    let channel = first
+        .list_channels(ChannelQuery::all(PageRequest::first(limit(10))))
+        .unwrap()
+        .items()[0]
+        .id()
+        .clone();
+    wait_for_cache_write(&store, 0).await;
+    drop(first);
+    let cache_path = directory.path().join("catalog-cache-v1");
+    let cache = std::fs::read(&cache_path).expect("processed catalog is persisted");
+    store.candidate_opens.store(0, Ordering::SeqCst);
+    let warm = snapshot_restart(Arc::clone(&store), true).await;
+    assert_eq!(channel_names(&warm), ["Alpha"]);
+    assert_eq!(programme_titles(&warm), ["Persisted Programme"]);
+    assert_eq!(warm.status().generation(), generation);
+    assert_eq!(
+        store.candidate_opens.load(Ordering::SeqCst),
+        0,
+        "warm startup must not parse raw sources"
+    );
+    assert_eq!(warm.channel(&channel).unwrap().name(), "Alpha");
+    let results = warm
+        .search_channels(
+            sparrow_core::SearchTerm::parse("alpha").unwrap(),
+            PageRequest::first(limit(10)),
+        )
+        .unwrap();
+    assert_eq!(
+        results.items().len(),
+        1,
+        "persisted search index remains usable"
+    );
+    drop(warm);
+
+    // Wrong key/version, checksum damage, truncation, and a valid checksum over
+    // malformed data all fall back to the still-valid Source Snapshots.
+    let mut wrong_key = cache.clone();
+    wrong_key[0] ^= 1;
+    let mut damaged = cache.clone();
+    *damaged.last_mut().unwrap() ^= 1;
+    let mut malformed = cache[..32].to_vec();
+    malformed.extend_from_slice(blake3::hash(b"{}").as_bytes());
+    malformed.extend_from_slice(b"{}");
+    for invalid in [wrong_key, damaged, cache[..40].to_vec(), malformed] {
+        std::fs::write(&cache_path, invalid).unwrap();
+        store.candidate_opens.store(0, Ordering::SeqCst);
+        let writes = store.cache_writes.load(Ordering::SeqCst);
+        let recovered = snapshot_restart(Arc::clone(&store), false).await;
+        wait_for_cache_write(&store, writes).await;
+        assert_eq!(programme_titles(&recovered), ["Persisted Programme"]);
+        assert_eq!(store.candidate_opens.load(Ordering::SeqCst), 2);
+    }
+    // Switching Source Configuration must never load the prior owner's catalog.
+    let other = SparrowCore::bootstrap_installed(
+        Some(configuration("https://other.fixture.invalid/list", EPG_URL)),
+        CoreAdapters::new(
+            Arc::new(FixtureSource::rejecting()),
+            store,
+            Arc::new(FixedClock(parse_time("2026-08-29T12:00:00Z"))),
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(other.status().generation().is_none());
+}
+
+#[tokio::test]
+async fn installed_cache_miss_opens_channels_before_restoring_the_saved_guide() {
+    let directory = TempDir::new().unwrap();
+    let disk = Arc::new(AtomicFileSnapshotStore::open(directory.path()).unwrap());
+    let store = Arc::new(CapturingSnapshotStore::new(disk));
+    drop(
+        bootstrap(
+            configuration(M3U_URL, EPG_URL),
+            FixtureSource::online(),
+            Arc::clone(&store),
+        )
+        .await,
+    );
+    let core = snapshot_restart(Arc::clone(&store), true).await;
+    assert_eq!(channel_names(&core), ["Alpha"]);
+    assert!(programme_titles(&core).is_empty());
+    assert_eq!(
+        store.candidate_opens.load(Ordering::SeqCst),
+        1,
+        "EPG payload must not delay opening Channels"
+    );
+    let mut events = core.subscribe();
+    core.activate_automation();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while programme_titles(&core).is_empty() {
+            events.recv().await.unwrap();
+        }
+    })
+    .await
+    .expect("saved guide publishes in the background while offline");
+    assert_eq!(programme_titles(&core), ["Persisted Programme"]);
+}
+
+async fn wait_for_cache_write(store: &CapturingSnapshotStore, previous: usize) {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while store.cache_writes.load(Ordering::SeqCst) <= previous {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("background cache write completes");
+}
+
+#[tokio::test]
+async fn changed_source_bytes_replace_the_processed_catalog_and_survive_restart() {
+    let directory = TempDir::new().unwrap();
+    let store = Arc::new(CapturingSnapshotStore::new(Arc::new(
+        AtomicFileSnapshotStore::open(directory.path()).unwrap(),
+    )));
+    drop(
+        bootstrap(
+            configuration(M3U_URL, EPG_URL),
+            FixtureSource::online(),
+            Arc::clone(&store),
+        )
+        .await,
+    );
+    let first = snapshot_restart(Arc::clone(&store), false).await;
+    wait_for_cache_write(&store, 0).await;
+    let old_generation = first.status().generation();
+    drop(first);
+    let source = FixtureSource {
+        channel_name: "Beta",
+        ..FixtureSource::online()
+    };
+    let core = SparrowCore::bootstrap_installed(
+        Some(configuration(M3U_URL, EPG_URL)),
+        CoreAdapters::new(
+            Arc::new(source),
+            store.clone(),
+            Arc::new(FixedClock(parse_time("2026-08-29T12:00:00Z"))),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(channel_names(&core), ["Alpha"]);
+    let writes = store.cache_writes.load(Ordering::SeqCst);
+    let report = core.refresh(RefreshTrigger::Manual).await;
+    assert_ne!(report.status().generation(), old_generation);
+    assert_eq!(channel_names(&core), ["Beta"]);
+    wait_for_cache_write(&store, writes).await;
+    drop(core);
+    store.candidate_opens.store(0, Ordering::SeqCst);
+    let reopened = snapshot_restart(Arc::clone(&store), true).await;
+    assert_eq!(channel_names(&reopened), ["Beta"]);
+    assert_eq!(programme_titles(&reopened), ["Persisted Programme"]);
+    assert_eq!(store.candidate_opens.load(Ordering::SeqCst), 0);
+}
+
+#[derive(Default)]
+struct CacheWriteGate {
+    started: tokio::sync::Notify,
+    ready: Mutex<bool>,
+    changed: std::sync::Condvar,
+}
+
+struct ReleaseCacheWrite(Arc<CacheWriteGate>);
+impl Drop for ReleaseCacheWrite {
+    fn drop(&mut self) {
+        *self.0.ready.lock().unwrap() = true;
+        self.0.changed.notify_all();
+    }
+}
+
+#[tokio::test]
+async fn slow_cache_storage_does_not_delay_installed_startup_or_refresh_completion() {
+    let directory = TempDir::new().unwrap();
+    let disk = Arc::new(AtomicFileSnapshotStore::open(directory.path()).unwrap());
+    drop(
+        bootstrap(
+            configuration(M3U_URL, EPG_URL),
+            FixtureSource::online(),
+            Arc::clone(&disk),
+        )
+        .await,
+    );
+    let gate = Arc::new(CacheWriteGate::default());
+    // Always release a worker even if an assertion fails, so runtime teardown
+    // cannot hang while diagnosing a regression.
+    let release = ReleaseCacheWrite(Arc::clone(&gate));
+    let store = Arc::new(CapturingSnapshotStore {
+        cache_gate: Some(Arc::clone(&gate)),
+        ..CapturingSnapshotStore::new(disk)
+    });
+    let config = SparrowCore::parse_source_configuration(SourceConfigurationInput::new(
+        M3U_URL,
+        None::<String>,
+    ))
+    .unwrap();
+    let opening = SparrowCore::bootstrap_installed(
+        Some(config),
+        CoreAdapters::new(
+            Arc::new(FixtureSource::online()),
+            store.clone(),
+            Arc::new(FixedClock(parse_time("2026-08-29T12:00:00Z"))),
+        ),
+    );
+    let core = tokio::time::timeout(std::time::Duration::from_secs(2), opening)
+        .await
+        .expect("startup never awaits the cache writer")
+        .unwrap();
+    assert_eq!(channel_names(&core), ["Alpha"]);
+    assert_eq!(store.cache_writes.load(Ordering::SeqCst), 0);
+    core.activate_automation();
+    tokio::time::timeout(std::time::Duration::from_secs(2), gate.started.notified())
+        .await
+        .unwrap();
+    let refresh = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        core.refresh(RefreshTrigger::Manual),
+    )
+    .await;
+    drop(release);
+    assert!(
+        refresh.is_ok(),
+        "a blocked cache write must not block refresh completion"
+    );
+    wait_for_cache_write(&store, 0).await;
 }

@@ -13,6 +13,7 @@ use crate::{
     xmltv::{ParsedGuide, ParsedProgramme},
 };
 
+pub(crate) mod cache;
 mod schedule;
 mod search;
 
@@ -30,18 +31,23 @@ const CHANNEL_SEARCH_QUERY_TAG: u8 = 4;
 const PROGRAMME_SEARCH_QUERY_TAG: u8 = 5;
 const GUIDE_WINDOW_QUERY_TAG: u8 = 6;
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct ChannelCatalog {
+    #[serde(with = "cache::generation")]
     generation: CatalogGeneration,
     source_channels: Arc<Vec<ParsedChannel>>,
     source_guide: Option<Arc<ParsedGuide>>,
+    #[serde(with = "cache::groups")]
     groups: Arc<[ChannelGroupView]>,
     channels: Box<[CatalogChannel]>,
     programmes: Box<[CatalogProgramme]>,
     channel_search: SearchIndex,
     programme_search: SearchIndex,
     group_ranges: HashMap<Arc<str>, Range<usize>>,
+    #[serde(with = "cache::channel_map")]
     schedule_ranges: HashMap<ChannelId, Range<usize>>,
     schedule_overlap_index: ScheduleOverlapIndex,
+    #[serde(with = "cache::channel_map")]
     by_id: HashMap<ChannelId, usize>,
 }
 
@@ -471,7 +477,9 @@ struct PendingChannel {
     id: ChannelId,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct CatalogChannel {
+    #[serde(with = "cache::channel_id")]
     id: ChannelId,
     source_index: usize,
 }

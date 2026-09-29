@@ -12,16 +12,19 @@ use crate::{
     m3u::normalize_presentation,
 };
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct ParsedGuide {
     pub(crate) channels: Vec<ParsedGuideChannel>,
     pub(crate) programmes: Vec<ParsedProgramme>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct ParsedGuideChannel {
     pub(crate) id: Arc<str>,
     pub(crate) display_names: Vec<Arc<str>>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct ParsedProgramme {
     pub(crate) guide_channel_id: Arc<str>,
     pub(crate) title: Arc<str>,
