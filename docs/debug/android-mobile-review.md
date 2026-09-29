@@ -57,8 +57,11 @@ configuration out of review screenshots and logs.
 - Fail a source refresh while playing, then restore it and refresh again. The
   native picture must follow the video slot when the retained-catalog banner
   appears and disappears, even when the slot's size stays unchanged.
-- Enter fullscreen, wait for the normal control-hide timer, and verify native
-  playback controls remain visible and tappable. Exit fullscreen.
+- Enter fullscreen in landscape and wait for the control-hide timer. The
+  native picture must fill the display with no reserved control rows or system
+  bars. Tap the picture to restore controls; pause and verify Resume stays
+  available. Check Back and the exit button while playing and paused, then
+  verify system bars and guide insets return.
 - Change Audio Track, switch Channel, pause/resume, and background/foreground
   the Activity. Check recovery and stop without overlapping Playback Sessions.
 
@@ -71,3 +74,9 @@ The native content view owns system-bar, display-cutout, and IME insets using
 [Android's inset APIs](https://developer.android.com/develop/ui/views/layout/edge-to-edge).
 Media3 geometry remains relative to the inset WebView, so CSS should not apply
 those Android insets a second time.
+
+Fullscreen follows the document's lifetime, independently of native Playback
+Session pause/replacement. An origin-restricted WebView message listener owns
+Android's [immersive system bars](https://developer.android.com/develop/ui/views/layout/immersive)
+and Back handling. While fullscreen, system bars can be revealed transiently
+by swiping from the edge; the picture keeps its full viewport.

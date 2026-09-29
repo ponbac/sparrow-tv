@@ -7,6 +7,7 @@ import {
   VolumeX,
 } from "lucide-react";
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -70,20 +71,38 @@ export function PlaybackSurface({
   const surfaceRef = useRef<HTMLElement>(null);
   const hideControls = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [controlsVisible, setControlsVisible] = useState(true);
+  const canHideControls = fullscreen && state._tag === "playing";
+  const hideWhenIdle = useCallback(function hideWhenIdle() {
+    const picker = surfaceRef.current?.querySelector("select:focus");
+    // A native picker receives no page events while open. Removing its select
+    // from layout would dismiss it before the viewer can choose a track.
+    const pickerOpen = picker != null && (
+      typeof CSS === "undefined" ||
+      !CSS.supports("selector(:open)") ||
+      picker.matches(":open")
+    );
+    const draggingVolume = surfaceRef.current?.querySelector('input[type="range"]:active');
+    if (pickerOpen || draggingVolume != null) {
+      hideControls.current = setTimeout(hideWhenIdle, 2500);
+      return;
+    }
+    hideControls.current = null;
+    setControlsVisible(false);
+  }, []);
   const revealControls = () => {
     setControlsVisible(true);
     if (hideControls.current !== null) clearTimeout(hideControls.current);
-    if (fullscreen)
-      hideControls.current = setTimeout(() => setControlsVisible(false), 2500);
+    if (canHideControls)
+      hideControls.current = setTimeout(hideWhenIdle, 2500);
   };
   useEffect(() => {
-    if (fullscreen)
-      hideControls.current = setTimeout(() => setControlsVisible(false), 2500);
-    else setControlsVisible(true);
+    setControlsVisible(true);
+    if (canHideControls)
+      hideControls.current = setTimeout(hideWhenIdle, 2500);
     return () => {
       if (hideControls.current !== null) clearTimeout(hideControls.current);
     };
-  }, [fullscreen]);
+  }, [canHideControls, hideWhenIdle]);
   const toggleFullscreen = () => {
     if (surfaceRef.current !== null) onRequestFullscreen(surfaceRef.current);
   };
@@ -100,12 +119,14 @@ export function PlaybackSurface({
       aria-labelledby="playback-player-heading"
       ref={surfaceRef}
       tabIndex={0}
-      data-controls-visible={controlsVisible}
+      data-controls-visible={controlsVisible || !canHideControls}
       data-native-video={nativeVideo}
       onPointerMove={revealControls}
       onPointerDown={revealControls}
       onFocusCapture={revealControls}
+      onChangeCapture={revealControls}
       onKeyDown={(event) => {
+        revealControls();
         if (
           event.target instanceof HTMLElement &&
           event.target.closest(

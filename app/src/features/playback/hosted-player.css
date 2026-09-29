@@ -333,6 +333,13 @@
   background: #0d0d0d;
 }
 
+/* Reclaim the control rows as well as their pixels while watching. A tap on
+   the picture restores them before native video is measured into its slot. */
+.hosted-player:fullscreen[data-native-video="true"][data-controls-visible="false"] .hosted-player__heading,
+.hosted-player:fullscreen[data-native-video="true"][data-controls-visible="false"] .hosted-player__controls {
+  display: none;
+}
+
 @media (max-width: 460px), (max-width: 1050px) and (max-height: 600px) and (orientation: landscape) {
   .hosted-player__primary-control:has(> span) {
     min-width: 2.75rem;
