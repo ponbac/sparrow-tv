@@ -36,6 +36,8 @@ export interface PlaybackSurfaceProps {
   readonly onVolumeChange: (volume: number) => void;
   readonly onToggleMuted: () => void;
   readonly onRequestFullscreen: (surface: HTMLElement) => void;
+  /** Native video occupies a separate Android surface above the WebView. */
+  readonly nativeVideo?: boolean;
   readonly showMediaControls?: boolean;
   readonly stopLabel?: string;
   readonly onStop: () => void;
@@ -59,6 +61,7 @@ export function PlaybackSurface({
   onVolumeChange,
   onToggleMuted,
   onRequestFullscreen,
+  nativeVideo = false,
   showMediaControls = true,
   stopLabel = "Stop stream",
   onStop,
@@ -98,7 +101,9 @@ export function PlaybackSurface({
       ref={surfaceRef}
       tabIndex={0}
       data-controls-visible={controlsVisible}
+      data-native-video={nativeVideo}
       onPointerMove={revealControls}
+      onPointerDown={revealControls}
       onFocusCapture={revealControls}
       onKeyDown={(event) => {
         if (
@@ -163,11 +168,19 @@ export function PlaybackSurface({
         aria-label="Playback controls"
       >
         {state._tag === "autoplay-blocked" ? (
-          <button type="button" onClick={beginBlockedPlayback}>
+          <button
+            className="hosted-player__primary-control"
+            type="button"
+            onClick={beginBlockedPlayback}
+          >
             Start audio &amp; video
           </button>
         ) : recoveryAction !== undefined ? (
-          <button type="button" onClick={recoveryAction.onAction}>
+          <button
+            className="hosted-player__primary-control"
+            type="button"
+            onClick={recoveryAction.onAction}
+          >
             <RotateCcw aria-hidden="true" />
             {recoveryAction.label}
           </button>
@@ -175,13 +188,18 @@ export function PlaybackSurface({
         {additionalControls}
         {showMediaControls ? (
           <>
-            <button type="button" aria-pressed={muted} onClick={onToggleMuted}>
+            <button
+              className="hosted-player__primary-control"
+              type="button"
+              aria-pressed={muted}
+              onClick={onToggleMuted}
+            >
               {muted ? (
                 <VolumeX aria-hidden="true" />
               ) : (
                 <Volume2 aria-hidden="true" />
               )}
-              {muted ? "Unmute" : "Mute"}
+              <span>{muted ? "Unmute" : "Mute"}</span>
             </button>
             <label className="hosted-player__volume">
               <span>Volume</span>
@@ -199,6 +217,7 @@ export function PlaybackSurface({
             </label>
             <button
               type="button"
+              className="hosted-player__primary-control"
               aria-pressed={fullscreen}
               onClick={toggleFullscreen}
               title={
@@ -212,13 +231,17 @@ export function PlaybackSurface({
               ) : (
                 <Maximize2 aria-hidden="true" />
               )}
-              {fullscreen ? "Exit fullscreen" : "Full screen"}
+              <span>{fullscreen ? "Exit fullscreen" : "Full screen"}</span>
             </button>
           </>
         ) : null}
-        <button type="button" onClick={onStop}>
+        <button
+          className="hosted-player__primary-control"
+          type="button"
+          onClick={onStop}
+        >
           <Square aria-hidden="true" />
-          {stopLabel}
+          <span>{stopLabel}</span>
         </button>
         <p>{privacyCopy}</p>
       </div>

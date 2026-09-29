@@ -1,13 +1,17 @@
 package xyz.ponbac.sparrow
 
 import android.os.Bundle
+import android.graphics.Color
 import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.WebView
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.SystemBarStyle
 import androidx.annotation.Keep
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import java.util.concurrent.TimeUnit
 
 class MainActivity : TauriActivity() {
@@ -23,8 +27,25 @@ class MainActivity : TauriActivity() {
     if (BuildConfig.DEBUG) {
       WebView.setWebContentsDebuggingEnabled(true)
     }
-    enableEdgeToEdge()
+    enableEdgeToEdge(
+      statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+      navigationBarStyle = SystemBarStyle.dark(Color.BLACK),
+    )
     super.onCreate(savedInstanceState)
+    val content = findViewById<View>(android.R.id.content)
+    content.setBackgroundColor(Color.BLACK)
+    ViewCompat.setOnApplyWindowInsetsListener(content) { view, insets ->
+      // Keep WebView controls clear of system bars, cutouts, and the keyboard.
+      // Native video already measures its position relative to this WebView.
+      val safe = insets.getInsets(
+        WindowInsetsCompat.Type.systemBars() or
+          WindowInsetsCompat.Type.displayCutout() or
+          WindowInsetsCompat.Type.ime(),
+      )
+      view.setPadding(safe.left, safe.top, safe.right, safe.bottom)
+      WindowInsetsCompat.CONSUMED
+    }
+    ViewCompat.requestApplyInsets(content)
   }
 
   override fun onPause() {

@@ -299,13 +299,89 @@
 @media (max-width: 760px) {
   .group-roster__backdrop,
   .group-roster__popup {
-    top: calc(2.375rem + 58dvh);
+    top: var(--mobile-panel-top);
     left: 0;
     width: 100%;
   }
 
   .group-roster__toolbar {
-    grid-template-columns: minmax(0, 1fr);
-    justify-items: start;
+    grid-template-columns: minmax(0, 1fr) auto;
+    justify-items: stretch;
+  }
+}
+
+@media (max-width: 760px) {
+  .group-roster__header {
+    gap: 0.75rem;
+    padding: 0.75rem;
+  }
+
+  .group-roster__close {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+    flex-shrink: 0;
+  }
+}
+
+@media (max-width: 1050px) and (max-height: 600px) and (orientation: landscape) {
+  .group-roster__backdrop,
+  .group-roster__popup {
+    top: 2.375rem;
+    left: 45%;
+    width: 55%;
+    min-height: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .group-roster__search {
+    grid-column: 1 / -1;
+  }
+
+  .group-roster__search input {
+    min-height: 2.75rem;
+  }
+}
+
+@media (max-width: 1050px) and (max-height: 600px) {
+  .group-roster__header p {
+    display: none;
+  }
+}
+
+/* With a landscape keyboard, reserve the sheet for the input and results. */
+@media (max-width: 1050px) and (max-height: 300px) and (orientation: landscape) {
+  .group-roster__popup,
+  .group-roster__backdrop {
+    top: 0;
+  }
+
+  .group-roster__header {
+    position: absolute;
+    z-index: 2;
+    top: 0.25rem;
+    right: 0.25rem;
+    padding: 0;
+    border: 0;
+    background: none;
+  }
+
+  .group-roster__header > div,
+  .group-roster__toolbar > :not(.group-roster__search) {
+    display: none;
+  }
+
+  .group-roster__close {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+
+  .group-roster__toolbar {
+    display: block;
+    padding: 0.25rem 3.25rem 0.25rem 0.5rem;
+  }
+
+  .group-roster__search input {
+    min-height: 2.75rem;
   }
 }

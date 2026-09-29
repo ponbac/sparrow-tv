@@ -1,7 +1,7 @@
 import { Autocomplete } from "@base-ui/react/autocomplete";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Search, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type {
   CatalogGeneration,
   ChannelSummary,
@@ -69,6 +69,10 @@ export function BoardSearch({
   onTune,
 }: BoardSearchProps) {
   const queryClient = useQueryClient();
+  const [searchBoundary, setSearchBoundary] = useState<HTMLElement | null>(null);
+  const bindSearchBoundary = useCallback((element: HTMLElement | null) => {
+    setSearchBoundary(element?.closest<HTMLElement>(".programme-guide") ?? null);
+  }, []);
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [deskOpen, setDeskOpen] = useState(false);
@@ -219,7 +223,11 @@ export function BoardSearch({
         openOnInputClick
         modal={false}
       >
-        <Autocomplete.InputGroup className="board-search" data-acceptance-search>
+        <Autocomplete.InputGroup
+          ref={bindSearchBoundary}
+          className="board-search"
+          data-acceptance-search
+        >
           <Search aria-hidden="true" />
           <Autocomplete.Input
             aria-label="Search Channels and Programmes"
@@ -237,6 +245,7 @@ export function BoardSearch({
             className="board-search__positioner"
             align="start"
             sideOffset={7}
+            collisionBoundary={searchBoundary ?? undefined}
           >
             <Autocomplete.Popup className="board-search__popup">
               {presentation === "invalid" ? (

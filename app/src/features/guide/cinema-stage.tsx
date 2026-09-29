@@ -1,5 +1,5 @@
 import { Play, Radio } from "lucide-react";
-import { useRef, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import type { ChannelSummary, ProgrammeSlot } from "../../client/contracts";
 import {
   clockLabel,
@@ -35,10 +35,16 @@ export function CinemaStage({
 }: CinemaStageProps) {
   const monitorRef = useRef<HTMLDivElement>(null);
   const heading = programme?.title ?? channel?.name ?? "Select a signal";
-  const beginPlayback = () => {
-    onPlay();
-    requestAnimationFrame(() => monitorRef.current?.focus());
-  };
+  const channelId = channel?.id;
+  useEffect(() => {
+    if (!playing) return;
+    // Let search dialogs restore focus first, then dismiss the soft keyboard
+    // without scrolling the fixed stage away from its native video viewport.
+    const frame = requestAnimationFrame(() => {
+      monitorRef.current?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [channelId, playing]);
 
   return (
     <section className="cinema-stage" aria-labelledby="cinema-stage-heading">
@@ -77,7 +83,7 @@ export function CinemaStage({
           <button
             className="cinema-stage__play"
             type="button"
-            onClick={beginPlayback}
+            onClick={onPlay}
           >
             <Play aria-hidden="true" />
             Play live

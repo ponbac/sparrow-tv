@@ -127,6 +127,8 @@ function declaration(
 ): string | undefined {
   let value: string | undefined;
   stylesheet.walkRules(selector, (rule) => {
+    // Desktop defaults exclude conditional phone and accessibility overrides.
+    if (rule.parent?.type !== "root") return;
     value = declarationsByProperty(rule).get(property) ?? value;
   });
   return value;

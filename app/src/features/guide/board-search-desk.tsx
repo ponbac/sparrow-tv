@@ -56,6 +56,10 @@ export function BoardSearchDesk({
 }: BoardSearchDeskProps) {
   const [includeExcluded, setIncludeExcluded] = useState(false);
   const termInput = useRef<HTMLInputElement>(null);
+  const closedByTune = useRef(false);
+  useEffect(() => {
+    if (open) closedByTune.current = false;
+  }, [open]);
   const requestTerm = canonicalSearchTerm(term);
   const requestValid = searchTermFits(term);
   const debouncedTerm = useDebounce(requestTerm, SEARCH_DEBOUNCE_MS);
@@ -136,6 +140,9 @@ export function BoardSearchDesk({
         <Dialog.Popup
           className="board-search-desk__popup"
           initialFocus={termInput}
+          // CinemaStage takes focus on tune; restoring the search input here
+          // would reopen Android's keyboard over the new Playback Session.
+          finalFocus={() => !closedByTune.current}
         >
           <header className="board-search-desk__header">
             <div>
@@ -247,7 +254,10 @@ export function BoardSearchDesk({
                       aria-label={`Tune ${channel.name}`}
                       onMouseEnter={onPreparePlayback}
                       onFocus={onPreparePlayback}
-                      onClick={() => onTune(channel, null)}
+                      onClick={() => {
+                        closedByTune.current = true;
+                        onTune(channel, null);
+                      }}
                     >
                       <span>{excluded ? "Excluded" : "Channel"}</span>
                       <strong>{channel.name}</strong>

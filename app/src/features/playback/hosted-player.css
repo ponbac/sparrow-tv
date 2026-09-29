@@ -154,6 +154,11 @@
   background: #050505;
 }
 
+/* Media3 owns the picture; the HTML video only supplies geometry and controls. */
+.hosted-player[data-native-video="true"] video {
+  opacity: 0;
+}
+
 .hosted-player__overlay {
   position: absolute;
   z-index: 3;
@@ -285,8 +290,66 @@
     display: none;
   }
 
+}
+
+/* A single scrollable control strip leaves native video room on phones. */
+@media (max-width: 760px), (max-width: 1050px) and (max-height: 600px) and (orientation: landscape) {
   .hosted-player__controls {
-    max-height: 5.375rem;
-    overflow: auto;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+  }
+
+  .hosted-player__primary-control {
+    order: -1;
+  }
+
+  .hosted-player__controls > * {
+    flex-shrink: 0;
+  }
+
+  .hosted-player__controls button,
+  .hosted-player__audio-track select,
+  .hosted-player__volume {
+    min-height: 2.75rem;
+  }
+
+  .hosted-player__audio-track select {
+    max-width: 11rem;
+  }
+}
+
+/* Android renders above the WebView: fullscreen controls need their own rows. */
+.hosted-player:fullscreen[data-native-video="true"] {
+  grid-template-rows: minmax(0, 1fr) auto auto;
+}
+
+.hosted-player:fullscreen[data-native-video="true"] .hosted-player__heading,
+.hosted-player:fullscreen[data-native-video="true"] .hosted-player__controls {
+  position: static;
+  padding: 0.375rem 0.625rem;
+  opacity: 1;
+  pointer-events: auto;
+  background: #0d0d0d;
+}
+
+@media (max-width: 460px), (max-width: 1050px) and (max-height: 600px) and (orientation: landscape) {
+  .hosted-player__primary-control:has(> span) {
+    min-width: 2.75rem;
+  }
+
+  .hosted-player__primary-control > span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .hosted-player__primary-control svg {
+    width: 1rem;
+    height: 1rem;
   }
 }

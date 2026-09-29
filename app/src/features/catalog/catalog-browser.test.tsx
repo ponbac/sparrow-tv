@@ -621,12 +621,13 @@ describe("CatalogBrowser Split Stage", () => {
     renderInstalledBrowser(client);
     const user = userEvent.setup();
 
-    await user.type(
+    await user.click(
       await screen.findByRole("combobox", {
         name: "Search Channels and Programmes",
       }),
-      "world",
     );
+    // This case owns generation reconciliation, not inter-keystroke debounce.
+    await user.paste("world");
     expect(
       await screen.findByText("The catalog changed while searching."),
     ).toBeVisible();
@@ -673,6 +674,38 @@ describe("CatalogBrowser Split Stage", () => {
     expect(client.channelListInputs).toHaveLength(0);
     expect(client.scheduleInputs).toHaveLength(0);
   });
+
+  it.each(["suggestion", "desk"] as const)(
+    "moves focus out of %s search when a Channel starts playing",
+    async (surface) => {
+      const client = new FakeSparrowClient({
+        search: async () => success(clientSchemas.searchResults.parse({
+          generation: 7,
+          channels: { generation: 7, items: [WORLD_NEWS], next: null },
+          programmes: { generation: 7, items: [], next: null },
+        })),
+      });
+      const user = userEvent.setup();
+      renderHostedBrowser(client);
+      const search = await screen.findByRole("combobox", {
+        name: "Search Channels and Programmes",
+      });
+      await user.click(search);
+      await user.paste("world");
+      if (surface === "desk") {
+        await user.click(await screen.findByRole("option", { name: /Open full Channel search/ }));
+        await user.click(await screen.findByRole("button", { name: "Tune World News" }));
+      } else {
+        await user.click(await screen.findByRole("option", { name: /World News/ }));
+      }
+      await waitFor(() => expect(client.playbackInputs).toHaveLength(1));
+      await waitFor(() => expect(search).not.toHaveFocus());
+      await waitFor(() => expect(
+        screen.getByRole("heading", { level: 1, name: "World News" })
+          .closest("section")?.contains(document.activeElement),
+      ).toBe(true));
+    },
+  );
 
   it("filters guide rows without unmounting or restarting active playback", async () => {
     const client = new FakeSparrowClient({

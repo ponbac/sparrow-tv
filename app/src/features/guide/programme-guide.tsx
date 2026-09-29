@@ -112,34 +112,24 @@ export function ProgrammeGuide({
         />
 
         <div className="programme-guide__panel">
-          <div className="programme-guide__ruler" aria-hidden="true">
-            <span />
-            <div>
-              {marks.map((mark, index) => (
-                <time
-                  key={mark.toISOString()}
-                  className={index % 2 === 0 ? "is-hour" : undefined}
-                  style={{ left: `${(index / marks.length) * 100}%` }}
-                >
-                  {clockLabel(mark)}
-                </time>
-              ))}
-            </div>
-          </div>
-
           <div
             className="programme-guide__board"
             aria-busy={loading || replacing}
           >
-            {rows.length > 0 ? (
-              <div
-                className="programme-guide__playhead"
-                aria-hidden="true"
-                style={{
-                  left: `calc(var(--guide-gutter) + (100% - var(--guide-gutter)) * ${playheadPercent(window, now) / 100})`,
-                }}
-              />
-            ) : null}
+            <div className="programme-guide__ruler" aria-hidden="true">
+              <span />
+              <div>
+                {marks.map((mark, index) => (
+                  <time
+                    key={mark.toISOString()}
+                    className={index % 2 === 0 ? "is-hour" : undefined}
+                    style={{ left: `${(index / marks.length) * 100}%` }}
+                  >
+                    {clockLabel(mark)}
+                  </time>
+                ))}
+              </div>
+            </div>
 
             {loading && rows.length === 0 ? (
               <GuideNotice tone="loading" title="Opening the guide window">
@@ -168,6 +158,13 @@ export function ProgrammeGuide({
             ) : (
               <Tooltip.Provider delay={400}>
                 <div className="programme-guide__rows">
+                  <div
+                    className="programme-guide__playhead"
+                    aria-hidden="true"
+                    style={{
+                      left: `calc(var(--guide-gutter) + (100% - var(--guide-gutter)) * ${playheadPercent(window, now) / 100})`,
+                    }}
+                  />
                   {rows.map((row, rowIndex) => {
                     const selected = selection?.channelId === row.channel.id;
                     return (

@@ -28,7 +28,8 @@
 }
 
 .programme-guide__panel {
-  grid-template-rows: 1.625rem minmax(0, 1fr);
+  --guide-board-min-width: 48.75rem;
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .programme-guide__lane {
@@ -155,7 +156,13 @@
 }
 
 .programme-guide__ruler {
+  position: sticky;
+  z-index: 6;
+  top: 0;
   display: grid;
+  height: 1.625rem;
+  min-width: var(--guide-board-min-width);
+  background: var(--ink-raised);
   grid-template-columns: var(--guide-gutter) minmax(0, 1fr);
   border-bottom: 1px solid var(--line);
 }
@@ -197,7 +204,7 @@
 
 .programme-guide__rows {
   position: relative;
-  min-width: 48.75rem;
+  min-width: var(--guide-board-min-width);
 }
 
 .programme-guide__row {
@@ -488,7 +495,38 @@
     padding: 0 0.5625rem;
   }
 
-  .programme-guide__rows {
-    min-width: 42.5rem;
+  .programme-guide__panel {
+    --guide-board-min-width: 42.5rem;
+  }
+}
+
+@media (max-width: 760px), (max-width: 1050px) and (max-height: 600px) and (orientation: landscape) {
+  .programme-guide {
+    grid-template-rows: 3.25rem minmax(0, 1fr);
+  }
+
+  .programme-guide__body {
+    grid-template-rows: 2.75rem minmax(0, 1fr);
+  }
+
+  .programme-guide__toolbar .board-search input,
+  .programme-guide__toolbar .feeds-trigger {
+    min-height: 2.75rem;
+  }
+
+  .programme-guide__toolbar .board-search button {
+    height: 2.625rem;
+    width: 2.75rem;
+  }
+}
+
+@media (max-width: 760px) {
+  .programme-guide__notice {
+    min-height: 0;
+    padding: 0.75rem;
+  }
+
+  .programme-guide__notice strong {
+    font-size: 1.25rem;
   }
 }
