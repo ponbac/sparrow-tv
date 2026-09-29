@@ -1,0 +1,8 @@
+{
+  "default": "sparrow-foreground.png",
+  "bg_color": "#101b28",
+  "android_bg": "sparrow-background.svg",
+  "android_fg": "sparrow-foreground.png",
+  "android_fg_scale": 85,
+  "android_monochrome": "sparrow-foreground.png"
+}

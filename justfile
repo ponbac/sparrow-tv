@@ -38,7 +38,7 @@ build-appimage:
 
 build-android-debug:
     cd app && bun install --frozen-lockfile
-    cd app && bun run tauri android build --apk --debug --ci
+    cd app && CARGO_PROFILE_DEV_OPT_LEVEL=3 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_DEV_STRIP=symbols bun run tauri android build --apk --debug --ci
 
 build-android-release:
     cd app && bun install --frozen-lockfile

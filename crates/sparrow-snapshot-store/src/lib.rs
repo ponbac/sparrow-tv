@@ -3,6 +3,7 @@
 //! The core owns snapshot policy and validation. This crate owns only the
 //! bounded two-slot filesystem protocol behind that seam.
 
+mod catalog_cache;
 mod disk;
 mod layout;
 mod manifest;
@@ -23,6 +24,7 @@ use sparrow_core::{
 /// A two-slot, crash-safe Source Snapshot store rooted in private app data.
 pub struct AtomicFileSnapshotStore {
     disk: Arc<DiskStore>,
+    catalog_cache: catalog_cache::CatalogCache,
 }
 
 impl AtomicFileSnapshotStore {
@@ -32,6 +34,7 @@ impl AtomicFileSnapshotStore {
         DiskStore::open(root.as_ref())
             .map(|disk| Self {
                 disk: Arc::new(disk),
+                catalog_cache: catalog_cache::CatalogCache::new(root.as_ref()),
             })
             .map_err(SnapshotStoreOpenError::from)
     }
@@ -46,6 +49,17 @@ impl fmt::Debug for AtomicFileSnapshotStore {
 
 #[async_trait]
 impl SnapshotStore for AtomicFileSnapshotStore {
+    fn catalog_cache_enabled(&self) -> bool {
+        true
+    }
+    fn read_catalog_cache(&self, key: &[u8; 32]) -> Option<Vec<u8>> {
+        self.catalog_cache.read(key)
+    }
+
+    fn write_catalog_cache(&self, key: &[u8; 32], bytes: &[u8]) {
+        self.catalog_cache.write(key, bytes);
+    }
+
     async fn scan_candidates(&self, source: SnapshotSource) -> Result<SnapshotScan, StoreError> {
         let scan = self
             .disk

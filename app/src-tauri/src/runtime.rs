@@ -188,7 +188,7 @@ impl InstalledRuntime {
                 .map_err(|_| InstalledStartupError::SnapshotAdapter)?,
         );
         let core = Arc::new(
-            SparrowCore::bootstrap_from_snapshots(
+            SparrowCore::bootstrap_installed(
                 configuration,
                 CoreAdapters::new(source, snapshots, Arc::new(SystemClock)),
             )

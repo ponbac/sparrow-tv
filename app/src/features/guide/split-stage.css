@@ -135,7 +135,7 @@
 }
 
 @media (max-width: 1050px) {
-  :root {
+  .split-stage {
     --guide-gutter: min(16rem, 36%);
   }
 
@@ -145,10 +145,33 @@
 }
 
 @media (max-width: 760px) {
+  :root {
+    --mobile-monitor-height: min(calc(56.25vw + 5.5rem), 42dvh);
+    --mobile-panel-top: 2.375rem;
+  }
+
+  :root:has(.hosted-player) {
+    --mobile-panel-top: calc(2.375rem + var(--mobile-monitor-height));
+  }
+
+  :root:has(.split-stage__retained) {
+    --mobile-panel-top: 4.375rem;
+  }
+
+  :root:has(.split-stage__retained):has(.hosted-player) {
+    --mobile-panel-top: calc(4.375rem + var(--mobile-monitor-height));
+  }
+
+  .split-stage__retained {
+    height: 2rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .split-stage {
-    height: auto;
-    min-height: 100dvh;
-    overflow: visible;
+    height: 100dvh;
+    min-height: 0;
   }
 
   .split-stage__masthead {
@@ -162,14 +185,15 @@
 
   .split-stage__workspace {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(28rem, 65dvh);
+    grid-template-rows: auto minmax(0, 1fr);
+    overflow: hidden;
   }
 
 }
 
 @media (max-width: 460px) {
-  :root {
-    --guide-gutter: min(13.5rem, 44%);
+  .split-stage {
+    --guide-gutter: min(13.5rem, 44vw);
   }
 
   .split-stage__masthead {
@@ -182,5 +206,59 @@
 
   .split-stage__identity > span {
     letter-spacing: 0.16em;
+  }
+}
+
+@media (max-width: 760px) and (max-height: 600px) {
+  :root {
+    --mobile-monitor-height: 32dvh;
+  }
+}
+
+/* Short landscape screens keep the monitor and guide visible together. */
+@media (max-width: 1050px) and (max-height: 600px) and (orientation: landscape) {
+  .split-stage {
+    --guide-gutter: 10rem;
+  }
+
+  .split-stage {
+    height: 100dvh;
+    min-height: 0;
+  }
+
+  .split-stage__freshness {
+    display: none;
+  }
+
+  .split-stage__workspace {
+    grid-template-columns: minmax(0, 45fr) minmax(0, 55fr);
+    grid-template-rows: minmax(0, 1fr);
+    overflow: hidden;
+  }
+
+  .split-stage__workspace > .cinema-stage,
+  .split-stage__workspace > .programme-guide {
+    grid-row: 1;
+  }
+
+  .split-stage__workspace > .cinema-stage {
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  .split-stage__workspace .cinema-stage__monitor {
+    height: auto;
+  }
+
+  .split-stage__workspace .cinema-stage__rundown {
+    display: none;
+  }
+
+  .split-stage__workspace .cinema-stage__metadata {
+    padding: 0.5rem 0.75rem;
+  }
+
+  .split-stage__workspace .cinema-stage__play {
+    position: static;
+    margin-top: 0.5rem;
   }
 }

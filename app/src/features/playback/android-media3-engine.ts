@@ -136,6 +136,9 @@ export function createAndroidMedia3PlaybackEngine(
           if (!active || current === null) {
             return;
           }
+          // Banners can move a fixed-size video without firing ResizeObserver.
+          // Reuse the status cadence; applyViewport skips unchanged geometry.
+          applyViewport(runtime.measureViewport(request.video));
           void current.status().then(
             (result) => {
               if (!active || presentation !== current) {

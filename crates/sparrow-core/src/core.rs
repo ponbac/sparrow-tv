@@ -128,6 +128,23 @@ impl SparrowCore {
         configuration: Option<SourceConfiguration>,
         adapters: CoreAdapters,
     ) -> Result<Self, CoreError> {
+        Self::bootstrap_snapshots(configuration, adapters, false).await
+    }
+
+    /// Opens a processed catalog when possible. On a miss, makes Channels usable
+    /// first and restores the saved EPG on a blocking worker after activation.
+    pub async fn bootstrap_installed(
+        configuration: Option<SourceConfiguration>,
+        adapters: CoreAdapters,
+    ) -> Result<Self, CoreError> {
+        Self::bootstrap_snapshots(configuration, adapters, true).await
+    }
+
+    async fn bootstrap_snapshots(
+        configuration: Option<SourceConfiguration>,
+        adapters: CoreAdapters,
+        progressive: bool,
+    ) -> Result<Self, CoreError> {
         let Some(configuration) = configuration else {
             return Ok(Self::from_runtime(CoreRuntime::new(
                 None,
@@ -137,18 +154,50 @@ impl SparrowCore {
             )));
         };
 
-        let recovered = recover_configuration(
-            &configuration,
-            &adapters,
-            RecoveredFreshness::PendingRevalidation,
-        )
-        .await;
+        let cached = recover_catalog_cache(&configuration, &adapters).await;
+        let cache_hit = cached.is_some();
+        let defer_epg = cached.is_none() && progressive && configuration.has_epg();
+        let mut recovered = match cached {
+            Some(view) => RecoveredConfiguration { view },
+            None => {
+                recover_configuration_parts(
+                    &configuration,
+                    &adapters,
+                    RecoveredFreshness::PendingRevalidation,
+                    !defer_epg,
+                )
+                .await
+            }
+        };
+        if defer_epg {
+            recovered.view.status.set_source_state(
+                SourceKind::Epg,
+                SourceState::Refreshing {
+                    validated_at: None,
+                    started_at: adapters.clock().now(),
+                },
+            );
+        }
         let core = Self::from_runtime(CoreRuntime::new(
             Some(configuration),
             adapters,
             recovered.view,
             BootstrapFailures::default(),
         ));
+        if defer_epg {
+            *core
+                .runtime
+                .pending_epg_restore
+                .lock()
+                .expect("recovery state poisoned") =
+                core.runtime.ready_configuration(SourceKind::Epg);
+        } else if !cache_hit {
+            if progressive {
+                core.runtime.cache_on_start.store(true, Ordering::Release);
+            } else {
+                core.runtime.queue_catalog_cache();
+            }
+        }
         Ok(core)
     }
 
@@ -400,6 +449,10 @@ struct CoreRuntime {
     shutdown: watch::Sender<bool>,
     events: broadcast::Sender<CoreEvent>,
     automation_started: AtomicBool,
+    pending_epg_restore: Mutex<Option<ConfigurationContext>>,
+    cache_on_start: AtomicBool,
+    cache_pending: Mutex<Option<(ConfigurationContext, Arc<CoreView>)>>,
+    cache_writing: AtomicBool,
 }
 
 struct ConfigurationState {
@@ -631,6 +684,10 @@ impl CoreRuntime {
             shutdown: watch::channel(false).0,
             events,
             automation_started: AtomicBool::new(false),
+            pending_epg_restore: Mutex::new(None),
+            cache_on_start: AtomicBool::new(false),
+            cache_pending: Mutex::new(None),
+            cache_writing: AtomicBool::new(false),
         };
         runtime.seed_bootstrap_failures(0, bootstrap_failures);
         runtime
@@ -911,11 +968,163 @@ impl CoreRuntime {
         if self.automation_started.swap(true, Ordering::AcqRel) {
             return;
         }
+        if self.cache_on_start.swap(false, Ordering::AcqRel) {
+            self.queue_catalog_cache();
+        }
+        let pending = self
+            .pending_epg_restore
+            .lock()
+            .expect("recovery state poisoned")
+            .take();
+        if let Some(context) = pending {
+            let weak = Arc::downgrade(self);
+            let adapters = self.adapters.clone();
+            let handle = tokio::runtime::Handle::current();
+            tokio::task::spawn_blocking(move || {
+                let source =
+                    SnapshotSource::epg(&context.configuration).expect("pending recovery has EPG");
+                let recovered = handle.block_on(recover_source(
+                    &adapters,
+                    source,
+                    EPG_DECODED_LIMIT,
+                    xmltv::parse,
+                ));
+                if let Some(runtime) = weak.upgrade() {
+                    runtime.restore_epg_snapshot(&context, recovered);
+                    runtime.launch_automation();
+                }
+            });
+        } else {
+            self.launch_automation();
+        }
+    }
+
+    fn launch_automation(self: &Arc<Self>) {
         self.spawn_scheduler(SourceKind::M3u);
         self.spawn_scheduler(SourceKind::Epg);
         if self.ready_configuration(SourceKind::M3u).is_some() {
             self.spawn_refresh(RefreshTrigger::Startup);
         }
+    }
+
+    fn restore_epg_snapshot(
+        self: &Arc<Self>,
+        context: &ConfigurationContext,
+        recovered: RecoveryAttempt<xmltv::ParsedGuide>,
+    ) {
+        {
+            let _publication = self.publication.lock().expect("publication lock poisoned");
+            let current = self.view.load_full();
+            // Configuration changes and manual refreshes win over delayed recovery.
+            if !self.epoch_is_current_ready(context.epoch) || current.sources.epg.is_some() {
+                return;
+            }
+            let mut sources = current.sources.clone();
+            let mut status = current.status.clone();
+            let state = match recovered.loaded {
+                Some(loaded) => {
+                    let state = recovered_source_state(
+                        loaded.validated_at,
+                        self.adapters.clock().now(),
+                        RecoveredFreshness::PendingRevalidation,
+                    );
+                    sources.epg = Some(SourceContribution {
+                        parsed: loaded.value,
+                        candidate: loaded.candidate,
+                    });
+                    state
+                }
+                None => SourceState::Unavailable {
+                    failure: recovered.terminal_failure,
+                },
+            };
+            status.set_source_state(SourceKind::Epg, state);
+            status.set_recovery(SourceKind::Epg, recovered.diagnostic);
+            let content_changed = sources.epg.is_some();
+            let (catalog, generation) =
+                self.build_catalog(&context.configuration, &sources, &current, content_changed);
+            status.set_generation(generation);
+            self.view.store(Arc::new(CoreView {
+                status: status.clone(),
+                catalog,
+                sources,
+            }));
+            let occurred_at = self.adapters.clock().now();
+            let _ = self.events.send(CoreEvent::CatalogStatusChanged {
+                occurred_at,
+                status,
+            });
+            if generation != current.status.generation()
+                && let Some(generation) = generation
+            {
+                let _ = self.events.send(CoreEvent::CatalogPublished {
+                    occurred_at,
+                    generation,
+                });
+            }
+        }
+        self.queue_catalog_cache();
+    }
+
+    fn queue_catalog_cache(self: &Arc<Self>) {
+        if !self.adapters.snapshot_store().catalog_cache_enabled() {
+            return;
+        }
+        let Some(context) = self.ready_configuration(SourceKind::M3u) else {
+            return;
+        };
+        let view = self.view.load_full();
+        if !self.context_is_current(&context) {
+            return;
+        }
+        // One worker, one latest pending view. A refresh never waits for encoding
+        // or fsync, and a burst of publications doesn't queue whole catalogs.
+        let mut pending = self.cache_pending.lock().expect("cache queue poisoned");
+        *pending = Some((context, view));
+        if self.cache_writing.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let weak = Arc::downgrade(self);
+        tokio::task::spawn_blocking(move || {
+            loop {
+                let Some(runtime) = weak.upgrade() else {
+                    break;
+                };
+                let next = {
+                    let mut pending = runtime.cache_pending.lock().expect("cache queue poisoned");
+                    let next = pending.take();
+                    if next.is_none() {
+                        runtime.cache_writing.store(false, Ordering::Release);
+                    }
+                    next
+                };
+                let Some((context, view)) = next else {
+                    break;
+                };
+                let adapters = runtime.adapters.clone();
+                let shutdown = runtime.shutdown.subscribe();
+                drop(runtime);
+                let Some(catalog) = &view.catalog else {
+                    continue;
+                };
+                let Some(m3u) = &view.sources.m3u else {
+                    continue;
+                };
+                let key = crate::catalog::cache::key(
+                    &context.configuration,
+                    m3u.candidate.metadata().checksum(),
+                    view.sources
+                        .epg
+                        .as_ref()
+                        .map(|epg| epg.candidate.metadata().checksum()),
+                );
+                if let Some(bytes) = catalog.encode_cache()
+                    && !*shutdown.borrow()
+                {
+                    adapters.snapshot_store().write_catalog_cache(&key, &bytes);
+                }
+            }
+        });
     }
 
     fn spawn_refresh(self: &Arc<Self>, trigger: RefreshTrigger) {
@@ -1188,6 +1397,9 @@ impl CoreRuntime {
             SourceKind::Epg => self.refresh_epg(&flight.context).await,
         };
         drop(automatic_admission);
+        if matches!(result, Ok(RefreshOutcome::Updated { .. })) {
+            self.queue_catalog_cache();
+        }
         match result {
             Ok(outcome) => {
                 if self.reset_policy(flight.context.epoch, kind) {
@@ -1706,10 +1918,119 @@ enum RecoveredFreshness {
     PendingRevalidation,
 }
 
+async fn recover_catalog_cache(
+    configuration: &SourceConfiguration,
+    adapters: &CoreAdapters,
+) -> Option<CoreView> {
+    let store = adapters.snapshot_store();
+    if !store.catalog_cache_enabled() {
+        return None;
+    }
+    let m3u_scan = store
+        .scan_candidates(SnapshotSource::m3u(configuration))
+        .await
+        .ok()?;
+    if !m3u_scan.diagnostics().is_empty() {
+        return None;
+    }
+    let m3u = m3u_scan
+        .into_candidates()
+        .next()
+        .filter(|c| !c.requires_adoption())?;
+    if m3u.metadata().source() != SnapshotSource::m3u(configuration) {
+        return None;
+    }
+    let epg = match SnapshotSource::epg(configuration) {
+        Some(source) => {
+            let scan = store.scan_candidates(source).await.ok()?;
+            if !scan.diagnostics().is_empty() {
+                return None;
+            }
+            let candidate = scan.into_candidates().next();
+            if candidate
+                .as_ref()
+                .is_some_and(|c| c.metadata().source() != source)
+            {
+                return None;
+            }
+            if candidate
+                .as_ref()
+                .is_some_and(SnapshotCandidate::requires_adoption)
+            {
+                return None;
+            }
+            candidate
+        }
+        None => None,
+    };
+    let generation = configuration.catalog_generation(
+        m3u.metadata().checksum(),
+        epg.as_ref().map(|e| e.metadata().checksum()),
+    );
+    let key = crate::catalog::cache::key(
+        configuration,
+        m3u.metadata().checksum(),
+        epg.as_ref().map(|e| e.metadata().checksum()),
+    );
+    // The independently checksummed derived copy is usable even if raw payloads
+    // later suffer damage; raw validation/adoption still runs on every cache miss.
+    let bytes = store.read_catalog_cache(&key)?;
+    let catalog = ChannelCatalog::decode_cache(&bytes, generation)?;
+    if catalog.cached_guide().is_some() != epg.is_some() {
+        return None;
+    }
+    let now = adapters.clock().now();
+    let m3u_state = recovered_source_state(
+        m3u.metadata().validated_at(),
+        now,
+        RecoveredFreshness::PendingRevalidation,
+    );
+    let epg_state = configuration.has_epg().then(|| {
+        epg.as_ref()
+            .map_or(SourceState::Unavailable { failure: None }, |e| {
+                recovered_source_state(
+                    e.metadata().validated_at(),
+                    now,
+                    RecoveredFreshness::PendingRevalidation,
+                )
+            })
+    });
+    let sources = PublishedSources {
+        m3u: Some(SourceContribution {
+            parsed: catalog.cached_channels(),
+            candidate: m3u,
+        }),
+        epg: epg
+            .zip(catalog.cached_guide())
+            .map(|(candidate, parsed)| SourceContribution { parsed, candidate }),
+    };
+    Some(CoreView {
+        status: CatalogStatus::published(
+            generation,
+            configuration.redacted(),
+            m3u_state,
+            epg_state,
+            None,
+            None,
+        ),
+        catalog: Some(Arc::new(catalog)),
+        sources,
+    })
+}
+
 async fn recover_configuration(
     configuration: &SourceConfiguration,
     adapters: &CoreAdapters,
     freshness: RecoveredFreshness,
+) -> RecoveredConfiguration {
+    recover_configuration_parts(configuration, adapters, freshness, true).await
+}
+
+async fn recover_configuration_parts(
+    configuration: &SourceConfiguration,
+    adapters: &CoreAdapters,
+    freshness: RecoveredFreshness,
+    include_epg: bool,
 ) -> RecoveredConfiguration {
     let m3u_recovery = recover_source(
         adapters,
@@ -1718,7 +2039,7 @@ async fn recover_configuration(
         m3u::parse,
     );
     let epg_recovery = async {
-        match SnapshotSource::epg(configuration) {
+        match SnapshotSource::epg(configuration).filter(|_| include_epg) {
             Some(source) => recover_source(adapters, source, EPG_DECODED_LIMIT, xmltv::parse).await,
             None => RecoveryAttempt {
                 loaded: None,

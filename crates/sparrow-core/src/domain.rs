@@ -360,7 +360,7 @@ impl CatalogGeneration {
         Self(value)
     }
 
-    const fn from_cursor(value: u64) -> Option<Self> {
+    pub(crate) const fn from_cursor(value: u64) -> Option<Self> {
         if value > Self::MAX_SAFE_INTEGER {
             return None;
         }

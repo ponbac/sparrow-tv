@@ -1,16 +1,23 @@
 package xyz.ponbac.sparrow
 
 import android.os.Bundle
+import android.graphics.Color
 import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.WebView
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.SystemBarStyle
 import androidx.annotation.Keep
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import java.util.concurrent.TimeUnit
 
 class MainActivity : TauriActivity() {
+  private var documentFullscreen = false
   private val nativePlayback by lazy {
     NativePlaybackController(
       this,
@@ -23,8 +30,48 @@ class MainActivity : TauriActivity() {
     if (BuildConfig.DEBUG) {
       WebView.setWebContentsDebuggingEnabled(true)
     }
-    enableEdgeToEdge()
+    enableEdgeToEdge(
+      statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+      navigationBarStyle = SystemBarStyle.dark(Color.BLACK),
+    )
     super.onCreate(savedInstanceState)
+    val content = findViewById<View>(android.R.id.content)
+    content.setBackgroundColor(Color.BLACK)
+    ViewCompat.setOnApplyWindowInsetsListener(content) { view, insets ->
+      // Keep WebView controls clear of system bars, cutouts, and the keyboard.
+      // Native video already measures its position relative to this WebView.
+      val insetTypes = if (documentFullscreen) {
+        WindowInsetsCompat.Type.ime() or WindowInsetsCompat.Type.displayCutout()
+      } else {
+        WindowInsetsCompat.Type.systemBars() or
+          WindowInsetsCompat.Type.displayCutout() or
+          WindowInsetsCompat.Type.ime()
+      }
+      val safe = insets.getInsets(insetTypes)
+      view.setPadding(safe.left, safe.top, safe.right, safe.bottom)
+      WindowInsetsCompat.CONSUMED
+    }
+    ViewCompat.requestApplyInsets(content)
+  }
+
+  override fun onWebViewCreate(webView: WebView) {
+    super.onWebViewCreate(webView)
+    WebViewFullscreen(this, webView) { fullscreen ->
+      documentFullscreen = fullscreen
+      applyFullscreenSystemBars()
+      ViewCompat.requestApplyInsets(findViewById(android.R.id.content))
+    }
+  }
+
+  private fun applyFullscreenSystemBars() {
+    val controller = WindowCompat.getInsetsController(window, window.decorView)
+    controller.systemBarsBehavior =
+      WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+    if (documentFullscreen) {
+      controller.hide(WindowInsetsCompat.Type.systemBars())
+    } else {
+      controller.show(WindowInsetsCompat.Type.systemBars())
+    }
   }
 
   override fun onPause() {
@@ -37,6 +84,7 @@ class MainActivity : TauriActivity() {
 
   override fun onResume() {
     super.onResume()
+    applyFullscreenSystemBars()
     nativePlayback.resumeForLifecycle()
     clearPlaybackKeepScreenOn()
   }

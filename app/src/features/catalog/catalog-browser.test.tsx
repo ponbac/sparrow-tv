@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { type QueryClient, QueryClientProvider, onlineManager } from "@tanstack/react-query";
 import {
   act,
   cleanup,
@@ -9,6 +9,7 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { createSparrowQueryClient } from "../../client/query-client";
 import { type ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -333,6 +334,17 @@ class FakeSparrowClient implements InstalledSparrowClient {
 }
 
 describe("CatalogBrowser Split Stage", () => {
+  it("opens the installed saved guide while the device is offline", async () => {
+    onlineManager.setOnline(false);
+    try {
+      renderInstalledBrowser(new FakeSparrowClient());
+      expect(await screen.findByLabelText("Programme guide")).toBeVisible();
+      expect(screen.queryByRole("heading", { name: "Tuning catalog" })).not.toBeInTheDocument();
+    } finally {
+      onlineManager.setOnline(true);
+    }
+  });
+
   it("shows the one initial status loader before mounting the Split Stage", async () => {
     const status = deferred<ClientResult<CatalogStatus>>();
     const client = new FakeSparrowClient({ status: () => status.promise });
@@ -621,12 +633,13 @@ describe("CatalogBrowser Split Stage", () => {
     renderInstalledBrowser(client);
     const user = userEvent.setup();
 
-    await user.type(
+    await user.click(
       await screen.findByRole("combobox", {
         name: "Search Channels and Programmes",
       }),
-      "world",
     );
+    // This case owns generation reconciliation, not inter-keystroke debounce.
+    await user.paste("world");
     expect(
       await screen.findByText("The catalog changed while searching."),
     ).toBeVisible();
@@ -673,6 +686,38 @@ describe("CatalogBrowser Split Stage", () => {
     expect(client.channelListInputs).toHaveLength(0);
     expect(client.scheduleInputs).toHaveLength(0);
   });
+
+  it.each(["suggestion", "desk"] as const)(
+    "moves focus out of %s search when a Channel starts playing",
+    async (surface) => {
+      const client = new FakeSparrowClient({
+        search: async () => success(clientSchemas.searchResults.parse({
+          generation: 7,
+          channels: { generation: 7, items: [WORLD_NEWS], next: null },
+          programmes: { generation: 7, items: [], next: null },
+        })),
+      });
+      const user = userEvent.setup();
+      renderHostedBrowser(client);
+      const search = await screen.findByRole("combobox", {
+        name: "Search Channels and Programmes",
+      });
+      await user.click(search);
+      await user.paste("world");
+      if (surface === "desk") {
+        await user.click(await screen.findByRole("option", { name: /Open full Channel search/ }));
+        await user.click(await screen.findByRole("button", { name: "Tune World News" }));
+      } else {
+        await user.click(await screen.findByRole("option", { name: /World News/ }));
+      }
+      await waitFor(() => expect(client.playbackInputs).toHaveLength(1));
+      await waitFor(() => expect(search).not.toHaveFocus());
+      await waitFor(() => expect(
+        screen.getByRole("heading", { level: 1, name: "World News" })
+          .closest("section")?.contains(document.activeElement),
+      ).toBe(true));
+    },
+  );
 
   it("filters guide rows without unmounting or restarting active playback", async () => {
     const client = new FakeSparrowClient({
@@ -1175,15 +1220,12 @@ function renderInstalledBrowser(client: InstalledSparrowClient): QueryClient {
       runtime="installed"
       playbackEngine={TEST_INSTALLED_PLAYBACK_ENGINE}
     />,
+    "installed",
   );
 }
 
-function renderBrowser(browser: ReactElement): QueryClient {
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false, refetchOnWindowFocus: false },
-    },
-  });
+function renderBrowser(browser: ReactElement, runtime: "hosted" | "installed" = "hosted"): QueryClient {
+  const queryClient = createSparrowQueryClient(runtime);
   render(
     <QueryClientProvider client={queryClient}>{browser}</QueryClientProvider>,
   );

@@ -145,6 +145,48 @@ describe("Android Media3 playback adapter", () => {
     expect(fixture.released).toBe(true);
   });
 
+  it("realigns native video after a position-only layout shift without resending unchanged geometry", async () => {
+    const fixture = runtimeFixture();
+    const measureViewport = vi.fn(() => INITIAL_VIEWPORT);
+    const presentation = presentationFixture({ value: {
+      state: "playing",
+      decodedFrames: 100,
+      droppedFrames: 0,
+      bufferedDurationMs: 1_000,
+      silent: true,
+    } });
+    const started = createAndroidMedia3PlaybackEngine({
+      ...fixture.runtime,
+      measureViewport,
+    }).start({
+      session: { startAndroidPresentation: async () => success(presentation) },
+      descriptor: DESCRIPTOR,
+      video: document.createElement("video"),
+      onFailure: vi.fn(),
+      onAutoplayBlocked: vi.fn(),
+      onPlaying: vi.fn(),
+    });
+    if (typeof started === "string") throw new Error("expected a Media3 handle");
+    await flushPromises();
+    presentation.setViewport.mockClear();
+
+    // A banner moves the slot without resizing it or emitting a viewport event.
+    const shifted = { ...INITIAL_VIEWPORT, top: INITIAL_VIEWPORT.top + 84 };
+    measureViewport.mockReturnValue(shifted);
+    fixture.runNextTask();
+    await flushPromises();
+    expect(presentation.setViewport).toHaveBeenLastCalledWith(shifted);
+    fixture.runNextTask();
+    await flushPromises();
+    expect(presentation.setViewport).toHaveBeenCalledTimes(1);
+
+    measureViewport.mockReturnValue(INITIAL_VIEWPORT);
+    fixture.runNextTask();
+    await flushPromises();
+    expect(presentation.setViewport).toHaveBeenLastCalledWith(INITIAL_VIEWPORT);
+    started.stop();
+  });
+
   it("reduces a native failure to safe player vocabulary without reflecting details", async () => {
     const fixture = runtimeFixture();
     const failure = vi.fn();

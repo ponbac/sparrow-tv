@@ -436,7 +436,7 @@ function CatalogLoading({
       <span aria-hidden="true" />
       <p>{runtime === "hosted" ? "Hosted desk" : "Installed receiver"}</p>
       <h1>Tuning catalog</h1>
-      <small>Opening one generation-bound guide window</small>
+      <small>Opening your saved channels…</small>
     </main>
   );
 }

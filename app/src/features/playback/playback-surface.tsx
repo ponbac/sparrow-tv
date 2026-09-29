@@ -7,6 +7,7 @@ import {
   VolumeX,
 } from "lucide-react";
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -36,6 +37,8 @@ export interface PlaybackSurfaceProps {
   readonly onVolumeChange: (volume: number) => void;
   readonly onToggleMuted: () => void;
   readonly onRequestFullscreen: (surface: HTMLElement) => void;
+  /** Native video occupies a separate Android surface above the WebView. */
+  readonly nativeVideo?: boolean;
   readonly showMediaControls?: boolean;
   readonly stopLabel?: string;
   readonly onStop: () => void;
@@ -59,6 +62,7 @@ export function PlaybackSurface({
   onVolumeChange,
   onToggleMuted,
   onRequestFullscreen,
+  nativeVideo = false,
   showMediaControls = true,
   stopLabel = "Stop stream",
   onStop,
@@ -67,20 +71,38 @@ export function PlaybackSurface({
   const surfaceRef = useRef<HTMLElement>(null);
   const hideControls = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [controlsVisible, setControlsVisible] = useState(true);
+  const canHideControls = fullscreen && state._tag === "playing";
+  const hideWhenIdle = useCallback(function hideWhenIdle() {
+    const picker = surfaceRef.current?.querySelector("select:focus");
+    // A native picker receives no page events while open. Removing its select
+    // from layout would dismiss it before the viewer can choose a track.
+    const pickerOpen = picker != null && (
+      typeof CSS === "undefined" ||
+      !CSS.supports("selector(:open)") ||
+      picker.matches(":open")
+    );
+    const draggingVolume = surfaceRef.current?.querySelector('input[type="range"]:active');
+    if (pickerOpen || draggingVolume != null) {
+      hideControls.current = setTimeout(hideWhenIdle, 2500);
+      return;
+    }
+    hideControls.current = null;
+    setControlsVisible(false);
+  }, []);
   const revealControls = () => {
     setControlsVisible(true);
     if (hideControls.current !== null) clearTimeout(hideControls.current);
-    if (fullscreen)
-      hideControls.current = setTimeout(() => setControlsVisible(false), 2500);
+    if (canHideControls)
+      hideControls.current = setTimeout(hideWhenIdle, 2500);
   };
   useEffect(() => {
-    if (fullscreen)
-      hideControls.current = setTimeout(() => setControlsVisible(false), 2500);
-    else setControlsVisible(true);
+    setControlsVisible(true);
+    if (canHideControls)
+      hideControls.current = setTimeout(hideWhenIdle, 2500);
     return () => {
       if (hideControls.current !== null) clearTimeout(hideControls.current);
     };
-  }, [fullscreen]);
+  }, [canHideControls, hideWhenIdle]);
   const toggleFullscreen = () => {
     if (surfaceRef.current !== null) onRequestFullscreen(surfaceRef.current);
   };
@@ -97,10 +119,14 @@ export function PlaybackSurface({
       aria-labelledby="playback-player-heading"
       ref={surfaceRef}
       tabIndex={0}
-      data-controls-visible={controlsVisible}
+      data-controls-visible={controlsVisible || !canHideControls}
+      data-native-video={nativeVideo}
       onPointerMove={revealControls}
+      onPointerDown={revealControls}
       onFocusCapture={revealControls}
+      onChangeCapture={revealControls}
       onKeyDown={(event) => {
+        revealControls();
         if (
           event.target instanceof HTMLElement &&
           event.target.closest(
@@ -163,11 +189,19 @@ export function PlaybackSurface({
         aria-label="Playback controls"
       >
         {state._tag === "autoplay-blocked" ? (
-          <button type="button" onClick={beginBlockedPlayback}>
+          <button
+            className="hosted-player__primary-control"
+            type="button"
+            onClick={beginBlockedPlayback}
+          >
             Start audio &amp; video
           </button>
         ) : recoveryAction !== undefined ? (
-          <button type="button" onClick={recoveryAction.onAction}>
+          <button
+            className="hosted-player__primary-control"
+            type="button"
+            onClick={recoveryAction.onAction}
+          >
             <RotateCcw aria-hidden="true" />
             {recoveryAction.label}
           </button>
@@ -175,13 +209,18 @@ export function PlaybackSurface({
         {additionalControls}
         {showMediaControls ? (
           <>
-            <button type="button" aria-pressed={muted} onClick={onToggleMuted}>
+            <button
+              className="hosted-player__primary-control"
+              type="button"
+              aria-pressed={muted}
+              onClick={onToggleMuted}
+            >
               {muted ? (
                 <VolumeX aria-hidden="true" />
               ) : (
                 <Volume2 aria-hidden="true" />
               )}
-              {muted ? "Unmute" : "Mute"}
+              <span>{muted ? "Unmute" : "Mute"}</span>
             </button>
             <label className="hosted-player__volume">
               <span>Volume</span>
@@ -199,6 +238,7 @@ export function PlaybackSurface({
             </label>
             <button
               type="button"
+              className="hosted-player__primary-control"
               aria-pressed={fullscreen}
               onClick={toggleFullscreen}
               title={
@@ -212,13 +252,17 @@ export function PlaybackSurface({
               ) : (
                 <Maximize2 aria-hidden="true" />
               )}
-              {fullscreen ? "Exit fullscreen" : "Full screen"}
+              <span>{fullscreen ? "Exit fullscreen" : "Full screen"}</span>
             </button>
           </>
         ) : null}
-        <button type="button" onClick={onStop}>
+        <button
+          className="hosted-player__primary-control"
+          type="button"
+          onClick={onStop}
+        >
           <Square aria-hidden="true" />
-          {stopLabel}
+          <span>{stopLabel}</span>
         </button>
         <p>{privacyCopy}</p>
       </div>

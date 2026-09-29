@@ -150,61 +150,6 @@ describe("InstalledPlayer", () => {
     }
   });
 
-  it("brings a newly mounted player into the mobile viewport before playback starts", async () => {
-    const originalMatchMedia = Object.getOwnPropertyDescriptor(
-      window,
-      "matchMedia",
-    );
-    const originalScrollIntoView = Object.getOwnPropertyDescriptor(
-      HTMLVideoElement.prototype,
-      "scrollIntoView",
-    );
-    const scrollIntoView = vi.fn();
-    Object.defineProperty(window, "matchMedia", {
-      configurable: true,
-      value: (query: string): MediaQueryList => ({
-        matches: query === "(max-width: 760px)",
-        media: query,
-        onchange: null,
-        addListener: vi.fn(),
-        removeListener: vi.fn(),
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-        dispatchEvent: vi.fn(() => true),
-      }),
-    });
-    Object.defineProperty(HTMLVideoElement.prototype, "scrollIntoView", {
-      configurable: true,
-      value: scrollIntoView,
-    });
-
-    try {
-      const session = fixtureSession();
-      render(
-        <InstalledPlayer
-          channel={CHANNEL}
-          client={fixtureClient(() => session.value)}
-          engine={playingEngine().value}
-          onStop={vi.fn()}
-        />,
-      );
-
-      await waitFor(() => expect(session.start).toHaveBeenCalledTimes(1));
-      expect(scrollIntoView).toHaveBeenCalledWith({
-        behavior: "auto",
-        block: "center",
-        inline: "nearest",
-      });
-    } finally {
-      restoreProperty(window, "matchMedia", originalMatchMedia);
-      restoreProperty(
-        HTMLVideoElement.prototype,
-        "scrollIntoView",
-        originalScrollIntoView,
-      );
-    }
-  });
-
   it("owns pause, live-edge resume, controls, diagnostics, and confirmed stop", async () => {
     const session = fixtureSession();
     const client = fixtureClient(() => session.value);
@@ -544,18 +489,6 @@ describe("InstalledPlayer", () => {
     ).toBeVisible();
   });
 });
-
-function restoreProperty(
-  target: object,
-  property: string,
-  descriptor: PropertyDescriptor | undefined,
-): void {
-  if (descriptor === undefined) {
-    Reflect.deleteProperty(target, property);
-  } else {
-    Object.defineProperty(target, property, descriptor);
-  }
-}
 
 function lifecycleFixture(): {
   readonly value: InstalledLifecycleEvents;

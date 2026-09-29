@@ -103,7 +103,6 @@ export function InstalledPlayer({
     if (video === null) {
       return;
     }
-    revealPlayerOnMobile(video);
     void runner.select({ id: channel.id, name: channel.name }, video);
     return () => {
       void runner.stop();
@@ -294,9 +293,13 @@ export function InstalledPlayer({
             </span>
           )}
           {canPause ? (
-            <button type="button" onClick={() => void runner.pause()}>
+            <button
+              className="hosted-player__primary-control"
+              type="button"
+              onClick={() => void runner.pause()}
+            >
               <Pause aria-hidden="true" />
-              Pause
+              <span>Pause</span>
             </button>
           ) : null}
           {canRestart && recoveryAction === undefined ? (
@@ -322,6 +325,7 @@ export function InstalledPlayer({
       onVolumeChange={(volume) => runner.setVolume(volume)}
       onToggleMuted={() => runner.toggleMuted()}
       onRequestFullscreen={(surface) => void runner.requestFullscreen(surface)}
+      nativeVideo={state.presentation === "android-media3"}
       showMediaControls={!transportReleased}
       stopLabel={
         transportReleased
@@ -360,20 +364,6 @@ function audioCodecLabel(codec: AudioCodec): string {
     case "ac-3":
       return "AC-3";
   }
-}
-
-function revealPlayerOnMobile(video: HTMLVideoElement): void {
-  if (
-    typeof window.matchMedia !== "function" ||
-    !window.matchMedia("(max-width: 760px)").matches
-  ) {
-    return;
-  }
-  video.scrollIntoView?.({
-    behavior: "auto",
-    block: "center",
-    inline: "nearest",
-  });
 }
 
 function installedAudioStatus(

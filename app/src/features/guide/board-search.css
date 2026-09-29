@@ -410,13 +410,89 @@
 @media (max-width: 760px) {
   .board-search-desk__backdrop,
   .board-search-desk__popup {
-    top: calc(2.375rem + 58dvh);
+    top: var(--mobile-panel-top);
     left: 0;
     width: 100%;
   }
 
   .board-search-desk__toolbar {
-    grid-template-columns: minmax(0, 1fr);
-    justify-items: start;
+    grid-template-columns: minmax(0, 1fr) auto;
+    justify-items: stretch;
+  }
+}
+
+@media (max-width: 760px) {
+  .board-search-desk__header {
+    gap: 0.75rem;
+    padding: 0.75rem;
+  }
+
+  .board-search-desk__close {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+    flex-shrink: 0;
+  }
+}
+
+@media (max-width: 1050px) and (max-height: 600px) and (orientation: landscape) {
+  .board-search-desk__backdrop,
+  .board-search-desk__popup {
+    top: 2.375rem;
+    left: 45%;
+    width: 55%;
+    min-height: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .board-search-desk__search {
+    grid-column: 1 / -1;
+  }
+
+  .board-search-desk__search input {
+    min-height: 2.75rem;
+  }
+}
+
+@media (max-width: 1050px) and (max-height: 600px) {
+  .board-search-desk__header p {
+    display: none;
+  }
+}
+
+/* With a landscape keyboard, reserve the sheet for the input and results. */
+@media (max-width: 1050px) and (max-height: 300px) and (orientation: landscape) {
+  .board-search-desk__popup,
+  .board-search-desk__backdrop {
+    top: 0;
+  }
+
+  .board-search-desk__header {
+    position: absolute;
+    z-index: 2;
+    top: 0.25rem;
+    right: 0.25rem;
+    padding: 0;
+    border: 0;
+    background: none;
+  }
+
+  .board-search-desk__header > div,
+  .board-search-desk__toolbar > :not(.board-search-desk__search) {
+    display: none;
+  }
+
+  .board-search-desk__close {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+
+  .board-search-desk__toolbar {
+    display: block;
+    padding: 0.25rem 3.25rem 0.25rem 0.5rem;
+  }
+
+  .board-search-desk__search input {
+    min-height: 2.75rem;
   }
 }

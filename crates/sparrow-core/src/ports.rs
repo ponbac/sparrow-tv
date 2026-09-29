@@ -685,6 +685,18 @@ impl Debug for ValidatedStage {
 
 #[async_trait]
 pub trait SnapshotStore: Send + Sync {
+    fn catalog_cache_enabled(&self) -> bool {
+        false
+    }
+
+    /// Optional private, disposable derived catalog. Implementations must bound
+    /// reads and atomically replace writes. Failure is always a cache miss.
+    fn read_catalog_cache(&self, _key: &[u8; 32]) -> Option<Vec<u8>> {
+        None
+    }
+
+    fn write_catalog_cache(&self, _key: &[u8; 32], _bytes: &[u8]) {}
+
     /// Returns at most two candidates in adapter preference order.
     async fn scan_candidates(&self, _source: SnapshotSource) -> Result<SnapshotScan, StoreError> {
         Ok(SnapshotScan::default())
