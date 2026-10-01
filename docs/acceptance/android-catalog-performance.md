@@ -52,8 +52,10 @@ process-cold offline launches. The timer starts before the
 activity launch and stops only when the installed UI exposes local IPC, a
 retained catalog, its complete 40-Channel guide page, group controls, and search.
 It does not use Android's `am start -W` timing as the readiness result. It then
-tunes the first Channel row without reading its content and waits for that row's
-pressed state, covering the Split Stage interaction without an extra detail read.
+tunes the first marked Channel button without reading its content and waits for
+its pressed state, covering the tune interaction without an extra detail read.
+The guide marks one button per Channel: the row's own button, or each quality
+chip on a row that folds Quality Variants.
 
 During load and browse, the tool samples the main process's `VmHWM` and `VmRSS`
 through its own UID. `VmHWM` is gated at 524,288 KiB; total PSS and cgroup memory

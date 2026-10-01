@@ -1,0 +1,19 @@
+#EXTM3U
+#EXTINF:-1 group-title="Sweden",SVT1 SD SE
+https://media.fixture.invalid/sweden/svt1-sd
+#EXTINF:-1 group-title="Sweden",SVT1 HD SE
+https://media.fixture.invalid/sweden/svt1-hd
+#EXTINF:-1 group-title="Sport",Arena HD
+https://media.fixture.invalid/sport/arena-hd
+#EXTINF:-1 group-title="Sweden",svt1 [FHD] se
+https://media.fixture.invalid/sweden/svt1-fhd
+#EXTINF:-1 group-title="Sweden",SVT2 HD SE
+https://media.fixture.invalid/sweden/svt2-hd
+#EXTINF:-1 group-title="Sweden",Kunskapskanalen
+https://media.fixture.invalid/sweden/kunskapskanalen
+#EXTINF:-1 group-title="Sport",Arena 4K
+https://media.fixture.invalid/sport/arena-uhd
+#EXTINF:-1 group-title="Sport",Arena HD
+https://media.fixture.invalid/sport/arena-hd-backup
+#EXTINF:-1 group-title="Sport",HD
+https://media.fixture.invalid/sport/hd

@@ -37,6 +37,7 @@ type GuideWindowCorrelationInput = Pick<
   | "channelLimit"
   | "group"
   | "cursor"
+  | "around"
   | "previousCursors"
 >;
 
@@ -210,6 +211,12 @@ export function createGuideContractSchemas(
             ),
           ),
         { message: "Guide Programmes must overlap the requested UTC window." },
+      )
+      .refine(
+        (page) =>
+          input.around === undefined ||
+          page.items.some((row) => row.channel.id === input.around),
+        { message: "A guide page around a Channel must contain that Channel." },
       );
 
   return Object.freeze({ guideWindow, guideWindowFor });

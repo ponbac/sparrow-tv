@@ -37,7 +37,7 @@ describe("PlaybackLoadBoundary", () => {
     expect(screen.getByText("Catalog remains available")).toBeVisible();
     expect(
       await screen.findByRole("heading", {
-        name: "The live player could not be loaded",
+        name: "The player could not load",
       }),
     ).toBeVisible();
 
@@ -60,7 +60,7 @@ describe("PlaybackLoadBoundary", () => {
       </PlaybackLoadBoundary>,
     );
     expect(
-      screen.getByText("The live player could not be loaded"),
+      screen.getByText("The player could not load"),
     ).toBeVisible();
 
     view.rerender(

@@ -7,6 +7,7 @@ import {
   type InstalledPlaybackTransport,
   type NativePlaybackDescriptor,
 } from "../../client/contracts";
+import { channelFixture } from "../../test/channel-fixture";
 import {
   createInstalledPlaybackRunner,
   type InstalledPlaybackClock,
@@ -1345,15 +1346,7 @@ function channel(
   readonly id: ChannelId;
   readonly name: string;
 } {
-  const parsed = clientSchemas.channel.safeParse({
-    id,
-    name,
-    group: "Fixtures",
-  });
-  if (!parsed.success) {
-    throw new Error("expected a valid Channel fixture");
-  }
-  return { id: parsed.data.id, name };
+  return { id: channelFixture({ id, name, group: "Fixtures" }).id, name };
 }
 
 function cancellationAwareStart(

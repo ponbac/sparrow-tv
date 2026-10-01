@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use sparrow_core::{ChannelGroupFilter, ChannelQuery, GuideWindowQuery};
+use sparrow_core::{ChannelGroupFilter, ChannelId, ChannelQuery, GuideWindowQuery};
 
 use super::{PageLimitInput, page_request};
 use crate::ipc::dto::ClientErrorDto;
@@ -12,6 +12,7 @@ pub(crate) struct GuideWindowInput {
     channel_limit: PageLimitInput,
     group: Option<String>,
     cursor: Option<String>,
+    around: Option<String>,
 }
 
 impl GuideWindowInput {
@@ -24,8 +25,14 @@ impl GuideWindowInput {
             ),
             None => ChannelQuery::all(page),
         };
-        GuideWindowQuery::parse(self.starts_at, self.ends_at, channels)
-            .map_err(ClientErrorDto::from)
+        let query = GuideWindowQuery::parse(self.starts_at, self.ends_at, channels)
+            .map_err(ClientErrorDto::from)?;
+        match self.around {
+            Some(around) => query
+                .around(ChannelId::parse(around).map_err(ClientErrorDto::from)?)
+                .map_err(ClientErrorDto::from),
+            None => Ok(query),
+        }
     }
 }
 
@@ -103,5 +110,56 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn around_refines_a_channel_id_and_excludes_group_and_cursor() {
+        let channel_id = format!("ch1_{}", "a".repeat(64));
+        let cursor = format!("pc1.1.1.{}", "0".repeat(64));
+        let input = |around: Option<&str>, group: Option<&str>, cursor: Option<&str>| {
+            serde_json::from_value::<GuideWindowInput>(json!({
+                "startsAt": "2026-08-30T19:00:00Z",
+                "endsAt": "2026-08-30T22:00:00Z",
+                "channelLimit": 61,
+                "around": around,
+                "group": group,
+                "cursor": cursor
+            }))
+            .expect("the guide input shape parses")
+        };
+
+        let around = input(Some(&channel_id), None, None)
+            .into_core()
+            .expect("a first all-Channels page can be placed around a Channel");
+        assert_eq!(
+            around.around_channel().map(ChannelId::as_str),
+            Some(channel_id.as_str())
+        );
+
+        for (input, field, reason) in [
+            (
+                input(Some("not-a-channel-id"), None, None),
+                "channel-id",
+                "invalid-format",
+            ),
+            (
+                input(Some(&channel_id), Some("News"), None),
+                "channel-group",
+                "out-of-range",
+            ),
+            (
+                input(Some(&channel_id), None, Some(&cursor)),
+                "page-cursor",
+                "cursor-query-mismatch",
+            ),
+        ] {
+            assert!(matches!(
+                input.into_core(),
+                Err(ClientErrorDto::InvalidInput {
+                    field: actual_field,
+                    reason: actual_reason,
+                }) if actual_field == field && actual_reason == reason
+            ));
+        }
     }
 }

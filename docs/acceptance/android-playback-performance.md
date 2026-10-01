@@ -63,9 +63,11 @@ rather than worked around with a system-wide setting.
 ## What the harness exercises
 
 After resetting `dumpsys gfxinfo`, the harness launches Sparrow process-cold,
-waits for at least two private Channel cards, selects the first without reading
+waits for at least two marked Channel buttons, selects the first without reading
 its text, and requires `android-media3` to reach a buffered playing state. It
 then samples aggregate native status once per second for at least 120 seconds.
+The guide marks one button per Channel, so when the first guide row folds
+Quality Variants the first two Channels are two qualities of that row.
 
 The sustained gate requires uninterrupted playing state, a nonzero Media3
 buffer at every sample, and monotonic counters. When the candidate exposes the

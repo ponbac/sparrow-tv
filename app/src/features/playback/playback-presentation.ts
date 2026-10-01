@@ -35,44 +35,44 @@ export function playerPresentation(state: PlayerState): {
   switch (state._tag) {
     case "starting":
       return {
-        status: "TUNING",
+        status: "Tuning",
         title: "Opening the live signal",
-        detail: "Sparrow is connecting this Channel to the monitor.",
+        detail: "Sparrow is connecting this channel.",
       };
     case "playing":
       return {
-        status: "ON AIR",
+        status: "On air",
         title: "Live signal",
-        detail: "The selected Channel is playing.",
+        detail: "This channel is playing.",
       };
     case "autoplay-blocked":
       return {
-        status: "READY",
+        status: "Ready",
         title: "The signal is ready",
         detail: "Your browser needs one more gesture before playing sound.",
       };
     case "suspending":
       return {
-        status: "RELEASING",
+        status: "Releasing",
         title: "Releasing the live signal",
         detail: "Sparrow is confirming that transport work has stopped.",
       };
     case "paused":
       return {
-        status: "PAUSED",
+        status: "Paused",
         title: "Live playback is paused",
         detail: "The provider request is released. Resume to return at the live edge.",
       };
     case "recovering":
       return {
-        status: "RECONNECTING",
+        status: "Reconnecting",
         title: `Recovery attempt ${state.attempt}`,
         detail: "The prior request is released before Sparrow reconnects.",
       };
     case "stopping":
       return {
-        status: "STOPPING",
-        title: "Closing the Playback Session",
+        status: "Stopping",
+        title: "Closing the player",
         detail: "Sparrow is confirming final resource cleanup.",
       };
     case "failed":
@@ -136,75 +136,75 @@ function failurePresentation(
   switch (failure) {
     case "authentication-required":
       return {
-        status: "ACCESS NEEDED",
+        status: "Access needed",
         title: "Playback needs authentication",
         detail: "Authenticate with this Sparrow deployment, then try the signal again.",
       };
     case "channel-not-found":
       return {
-        status: "CHANNEL GONE",
-        title: "That Channel left the catalog",
-        detail: "Choose a Channel from the current catalog generation.",
+        status: "Channel gone",
+        title: "That channel left the catalog",
+        detail: "Choose a channel from the guide.",
       };
     case "source-rejected":
       return {
-        status: "SOURCE REJECTED",
+        status: "Source rejected",
         title: "The provider refused this signal",
-        detail: "Choose another Channel or refresh the source configuration.",
+        detail: "Choose another channel or refresh the sources.",
       };
     case "source-invalid":
       return {
-        status: "INVALID SIGNAL",
+        status: "Invalid signal",
         title: "The provider returned an invalid signal",
-        detail: "Choose another Channel; retrying this response will not repair it.",
+        detail: "Choose another channel. Trying this one again will not repair it.",
       };
     case "source-timeout":
       return {
-        status: "SOURCE TIMEOUT",
+        status: "Source timeout",
         title: "The signal took too long to answer",
-        detail: "Retry the Channel when the provider is responsive.",
+        detail: "Try the channel again when the provider is responsive.",
       };
     case "source-unavailable":
       return {
-        status: "SOURCE OFFLINE",
+        status: "Source offline",
         title: "The live signal is unavailable",
         detail: retryable
-          ? "Retry this Channel or choose another signal."
-          : "Choose another Channel or refresh the catalog status.",
+          ? "Try this channel again or choose another."
+          : "Choose another channel or refresh the sources.",
       };
     case "stream-interrupted":
       return {
-        status: "SIGNAL LOST",
+        status: "Signal lost",
         title: "The live stream was interrupted",
         detail: "Reconnect to resume at the live edge.",
       };
     case "media-unsupported":
       return {
-        status: "FORMAT MISSED",
+        status: "Format missed",
         title: "This signal cannot play in the browser",
-        detail: "The Channel answered, but its media format is not supported here.",
+        detail: "The channel answered, but its media format is not supported here.",
       };
     case "browser-unsupported":
       return {
-        status: "PLAYER MISSING",
+        status: "Player missing",
         title: "This browser cannot play MPEG-TS",
         detail: "Open Sparrow in a browser with Media Source live playback support.",
       };
     case "system-player-missing":
       return {
-        status: "MPV MISSING",
+        status: "mpv missing",
         title: "System mpv is required for Linux playback",
         detail: "Install mpv, then restart playback.",
       };
     case "system-player-incompatible":
       return {
-        status: "MPV UPDATE NEEDED",
+        status: "mpv update needed",
         title: "System mpv is not supported",
         detail: "Update mpv to a supported version, then restart playback.",
       };
     case "system-player-unavailable":
       return {
-        status: "PLAYER UNAVAILABLE",
+        status: "Player unavailable",
         title: "The system player stopped",
         detail: retryable
           ? "Retry playback to reopen the system player at the live edge."
@@ -212,7 +212,7 @@ function failurePresentation(
       };
     case "cleanup-unconfirmed":
       return {
-        status: "CLEANUP NEEDED",
+        status: "Cleanup needed",
         title: "Playback cleanup was not confirmed",
         detail: "Sparrow will not open another request until the installed receiver confirms cleanup.",
       };

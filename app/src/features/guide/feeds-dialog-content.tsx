@@ -27,7 +27,7 @@ export type FeedsDialogContentProps = {
     }
 );
 
-/** Heavy source diagnostics loaded only when the Feeds sheet is requested. */
+/** Heavy source diagnostics loaded only when the Sources sheet is requested. */
 export function FeedsDialogContent(props: FeedsDialogContentProps) {
   return (
     <>

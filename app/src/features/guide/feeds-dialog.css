@@ -4,26 +4,27 @@
   height: 1.8125rem;
   flex: 0 0 auto;
   align-items: center;
-  gap: 0.375rem;
-  padding: 0 0.6875rem;
-  color: var(--bone-dim);
-  border: 1px solid #2e2e2e;
-  background: transparent;
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
+  gap: 0.4375rem;
+  padding: 0 0.75rem;
+  color: var(--paper);
+  border: 0;
+  background: var(--cell);
+  font-size: 0.8125rem;
+  font-weight: 600;
 }
 
 .feeds-trigger:hover,
-.feeds-trigger[data-popup-open],
+.feeds-trigger[data-popup-open] {
+  background: var(--cell-live);
+}
+
 .feeds-trigger[data-attention="true"] {
-  color: var(--bone);
-  border-color: var(--tomato);
+  color: var(--on-amber);
+  background: var(--amber);
 }
 
 .feeds-trigger svg {
-  width: 0.8125rem;
+  width: 0.9375rem;
 }
 
 .feeds-dialog__backdrop {
@@ -33,7 +34,7 @@
   right: 0;
   bottom: 0;
   left: 52%;
-  background: rgb(0 0 0 / 54%);
+  background: rgb(0 0 0 / 55%);
 }
 
 .feeds-dialog__popup {
@@ -45,12 +46,11 @@
   width: 48%;
   min-width: 0;
   overflow: auto;
-  color: var(--bone);
+  color: var(--paper);
   border: 0;
-  border-left: 1px solid #3a3835;
+  border-left: 1px solid var(--hair);
   outline: none;
-  background: #141414;
-  box-shadow: -24px 0 60px rgb(0 0 0 / 36%);
+  background: var(--panel);
 }
 
 .feeds-dialog__header {
@@ -61,54 +61,44 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 1.5rem;
-  padding: 1.375rem;
-  border-bottom: 1px solid var(--line);
-  background: #141414;
-}
-
-.feeds-dialog__header p {
-  margin: 0 0 0.3125rem;
-  color: var(--tomato);
-  font-family: var(--mono);
-  font-size: 0.68rem;
-  font-weight: 750;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--hair);
+  background: var(--panel);
 }
 
 .feeds-dialog__header h2 {
   margin: 0;
-  font-family: var(--display);
-  font-size: clamp(1.8rem, 3vw, 2.8rem);
-  font-style: italic;
-  line-height: 0.95;
+  font-size: 1.75rem;
+  font-stretch: 84%;
+  font-weight: 700;
+  line-height: 1.1;
 }
 
-.feeds-dialog__header p:last-child {
+.feeds-dialog__header p {
   max-width: 58ch;
-  margin: 0.5rem 0 0;
-  color: var(--bone-dim);
-  font-family: inherit;
-  font-size: 0.8rem;
-  font-weight: 400;
-  letter-spacing: normal;
+  margin: 0.375rem 0 0;
+  color: var(--dim);
+  font-size: 0.9375rem;
   line-height: 1.5;
-  text-transform: none;
 }
 
 .feeds-dialog__close {
   display: grid;
-  width: 2.25rem;
-  height: 2.25rem;
+  width: 2.5rem;
+  height: 2.5rem;
   flex: 0 0 auto;
   place-items: center;
-  color: var(--bone-dim);
-  border: 1px solid #35322f;
-  background: transparent;
+  color: var(--paper);
+  border: 0;
+  background: var(--cell);
+}
+
+.feeds-dialog__close:hover {
+  background: var(--cell-live);
 }
 
 .feeds-dialog__close svg {
-  width: 1rem;
+  width: 1.125rem;
 }
 
 .feeds-dialog__content {
@@ -117,63 +107,9 @@
 
 .feeds-dialog__loading {
   margin: 0;
-  padding: 1.5rem 1.375rem;
-  color: var(--bone-dim);
-  font-family: var(--mono);
-  font-size: 0.8rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.feeds-dialog__content .installed-settings,
-.feeds-dialog__content .source-desk {
-  padding: 1.5rem 1.375rem;
-  border-bottom: 1px solid var(--line);
-  background: transparent;
-}
-
-.feeds-dialog__content .installed-settings__heading,
-.feeds-dialog__content .installed-settings__body,
-.feeds-dialog__content .source-desk__heading {
-  max-width: none;
-}
-
-.feeds-dialog__content .installed-settings__heading,
-.feeds-dialog__content .source-desk__heading {
-  grid-template-columns: auto minmax(0, 1fr);
-}
-
-.feeds-dialog__content .installed-settings__privacy,
-.feeds-dialog__content .source-desk__refresh {
-  grid-column: 1 / -1;
-  justify-self: start;
-}
-
-.feeds-dialog__content .installed-settings__body {
-  grid-template-columns: 1fr;
-}
-
-.feeds-dialog__content .installed-settings__form {
-  grid-template-columns: 1fr;
-}
-
-.feeds-dialog__content .installed-settings__form button,
-.feeds-dialog__content .installed-settings__note,
-.feeds-dialog__content .installed-settings__feedback {
-  grid-column: 1;
-}
-
-.feeds-dialog__content .source-desk__grid {
-  grid-template-columns: 1fr;
-}
-
-.feeds-dialog__content .source-card {
-  border-right: 0;
-  border-bottom: 1px solid rgb(239 231 220 / 22%);
-}
-
-.feeds-dialog__content .source-desk__diagnostics > div {
-  grid-template-columns: 1fr;
+  padding: 1.5rem;
+  color: var(--dim);
+  font-size: 0.9375rem;
 }
 
 @media (max-width: 760px) {

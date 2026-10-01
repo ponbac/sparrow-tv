@@ -17,6 +17,7 @@ pub(crate) struct CapabilitiesDto {
     playback_transport: &'static str,
     audio_track_selection: bool,
     mpv_failover: bool,
+    picture_overlay: bool,
 }
 
 impl CapabilitiesDto {
@@ -26,6 +27,7 @@ impl CapabilitiesDto {
             playback_transport: "same-origin-http",
             audio_track_selection: false,
             mpv_failover: false,
+            picture_overlay: true,
         }
     }
 }

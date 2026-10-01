@@ -1,12 +1,14 @@
 use std::{cmp::Ordering, collections::HashMap, ops::Range, sync::Arc};
 
+use chrono::{DateTime, Utc};
+
 use crate::{
     domain::{
-        CatalogGeneration, ChannelDetails, ChannelGroupView, ChannelId, ChannelQuery,
-        ChannelSummary, CoreError, CursorQueryHash, GuideProgramme, GuideWindowChannel,
-        GuideWindowQuery, Page, PageRequest, ProgrammeSearchHit, ProgrammeSummary,
-        ResolvedPlaybackSource, ScheduleQuery, SearchRequest, SearchResults, SearchTerm,
-        SecretPlaybackLocation, SourceConfiguration,
+        CatalogGeneration, ChannelDetails, ChannelGroupView, ChannelId, ChannelQuality,
+        ChannelQuery, ChannelSummary, ChannelVariant, CoreError, CursorQueryHash, GuideProgramme,
+        GuideWindowChannel, GuideWindowQuery, Page, PageRequest, ProgrammeSearchHit,
+        ProgrammeSummary, ResolvedPlaybackSource, ScheduleQuery, SearchRequest, SearchResults,
+        SearchTerm, SecretPlaybackLocation, SelectionPrefix, SourceConfiguration,
     },
     identity,
     m3u::ParsedChannel,
@@ -16,6 +18,7 @@ use crate::{
 pub(crate) mod cache;
 mod schedule;
 mod search;
+mod variants;
 
 use schedule::{CatalogProgramme, ScheduleOverlapIndex, build_programmes};
 #[cfg(test)]
@@ -87,15 +90,22 @@ impl ChannelCatalog {
         let (programmes, schedule_ranges) = build_programmes(&pending, guide.as_deref());
         let schedule_overlap_index = ScheduleOverlapIndex::build(&programmes, guide.as_deref());
 
+        let placements = variants::placements(pending.iter().map(|channel| {
+            let source = &parsed[channel.source_index];
+            (&*source.name, &*source.group)
+        }));
+
         let mut channels = Vec::with_capacity(pending.len());
         let mut by_id = HashMap::with_capacity(pending.len());
-        for channel in &pending {
+        for (channel, placement) in pending.iter().zip(placements) {
             let index = channels.len();
             let previous = by_id.insert(channel.id.clone(), index);
             debug_assert!(previous.is_none());
             channels.push(CatalogChannel {
                 id: channel.id.clone(),
                 source_index: channel.source_index,
+                number: placement.number,
+                quality: placement.quality,
             });
         }
 
@@ -245,14 +255,48 @@ impl ChannelCatalog {
             .get(query.channel_id())
             .cloned()
             .unwrap_or(0..0);
-        Page::from_projection(
+        let Some(from) = query.from() else {
+            return Page::from_projection(
+                self.generation,
+                &self.programmes,
+                collection,
+                query.page(),
+                schedule_query_hash(query),
+                |programme| self.programme_summary(programme),
+            );
+        };
+        Page::from_bounded_selection_projection(
             self.generation,
             &self.programmes,
-            collection,
             query.page(),
-            query_hash(SCHEDULE_QUERY_TAG, Some(query.channel_id().as_str())),
+            schedule_query_hash(query),
+            |prefix_len| Ok(self.programmes_ending_after(&collection, from, prefix_len)),
             |programme| self.programme_summary(programme),
         )
+    }
+
+    /// Selects the Programmes of one schedule that end after `from`, in start
+    /// order. A long Programme can outlast shorter ones that start after it,
+    /// so the selection is not a contiguous range and every candidate is
+    /// checked.
+    fn programmes_ending_after(
+        &self,
+        schedule: &Range<usize>,
+        from: DateTime<Utc>,
+        prefix_len: usize,
+    ) -> SelectionPrefix {
+        let first_possible = self.first_possible_overlap(schedule, from);
+        let mut indices = Vec::with_capacity(prefix_len.min(schedule.end - first_possible));
+        let mut total_len = 0;
+        for index in first_possible..schedule.end {
+            if self.source_programme(&self.programmes[index]).ends_at > from {
+                total_len += 1;
+                if indices.len() < prefix_len {
+                    indices.push(index);
+                }
+            }
+        }
+        SelectionPrefix::new(indices, total_len)
     }
 
     pub(crate) fn guide_window(
@@ -260,14 +304,29 @@ impl ChannelCatalog {
         query: &GuideWindowQuery,
     ) -> Result<Page<GuideWindowChannel>, CoreError> {
         let channels = query.channels();
-        Page::from_projection(
+        let Some(around) = query.around_channel() else {
+            return Page::from_projection(
+                self.generation,
+                &self.channels,
+                self.channel_range(channels.group()),
+                channels.page(),
+                guide_window_query_hash(query),
+                |channel| self.guide_window_channel(channel, query),
+            );
+        };
+        let position = *self
+            .by_id
+            .get(around)
+            .ok_or_else(|| CoreError::ChannelNotFound { id: around.clone() })?;
+        let limit = channels.page().limit();
+        Ok(Page::from_position_projection(
             self.generation,
             &self.channels,
-            self.channel_range(channels.group()),
-            channels.page(),
+            position.saturating_sub(usize::from(limit.get()) / 2),
+            limit,
             guide_window_query_hash(query),
             |channel| self.guide_window_channel(channel, query),
-        )
+        ))
     }
 
     pub(crate) fn search(&self, request: &SearchRequest) -> Result<SearchResults, CoreError> {
@@ -385,6 +444,8 @@ impl ChannelCatalog {
             channel.id.clone(),
             Arc::clone(&source.name),
             Arc::clone(&source.group),
+            channel.number,
+            self.channel_variant(channel),
         )
     }
 
@@ -394,7 +455,17 @@ impl ChannelCatalog {
             channel.id.clone(),
             Arc::clone(&source.name),
             Arc::clone(&source.group),
+            channel.number,
+            self.channel_variant(channel),
         )
+    }
+
+    /// Derives the base name only for a Quality Variant, so projecting any
+    /// other Channel allocates nothing.
+    fn channel_variant(&self, channel: &CatalogChannel) -> Option<ChannelVariant> {
+        let quality = channel.quality?;
+        let (_, base_name) = variants::split(&self.source_channel(channel).name)?;
+        Some(ChannelVariant::new(quality, Arc::from(base_name)))
     }
 
     fn programme_summary(&self, programme: &CatalogProgramme) -> ProgrammeSummary {
@@ -435,6 +506,20 @@ impl ChannelCatalog {
             .programmes[programme.source_index]
     }
 
+    /// Finds the first Programme of one schedule that can still end after
+    /// `instant`; every Programme before it has already ended by then.
+    fn first_possible_overlap(&self, schedule: &Range<usize>, instant: DateTime<Utc>) -> usize {
+        self.schedule_overlap_index
+            .first_possible_overlap(schedule, |source_index| {
+                self.source_guide
+                    .as_ref()
+                    .expect("catalogued Programmes have a parsed EPG Source")
+                    .programmes[source_index]
+                    .ends_at
+                    <= instant
+            })
+    }
+
     fn guide_window_channel(
         &self,
         channel: &CatalogChannel,
@@ -448,16 +533,7 @@ impl ChannelCatalog {
             .get(channel_id)
             .cloned()
             .unwrap_or(0..0);
-        let first_possible_overlap =
-            self.schedule_overlap_index
-                .first_possible_overlap(&schedule, |source_index| {
-                    self.source_guide
-                        .as_ref()
-                        .expect("catalogued Programmes have a parsed EPG Source")
-                        .programmes[source_index]
-                        .ends_at
-                        <= starts_at
-                });
+        let first_possible_overlap = self.first_possible_overlap(&schedule, starts_at);
         let programmes = self.programmes[first_possible_overlap..schedule.end]
             .iter()
             .take_while(|programme| self.source_programme(programme).starts_at < ends_at)
@@ -482,6 +558,9 @@ struct CatalogChannel {
     #[serde(with = "cache::channel_id")]
     id: ChannelId,
     source_index: usize,
+    number: u32,
+    #[serde(with = "cache::quality")]
+    quality: Option<ChannelQuality>,
 }
 
 fn compare_channels(left: &PendingChannel, right: &PendingChannel) -> Ordering {
@@ -501,6 +580,30 @@ fn query_hash(tag: u8, discriminator: Option<&str>) -> CursorQueryHash {
     CursorQueryHash::new(*hasher.finalize().as_bytes())
 }
 
+/// Scopes a schedule cursor to its Channel and to the instant the schedule is
+/// read from, so a continuation cannot be replayed against another selection.
+fn schedule_query_hash(query: &ScheduleQuery) -> CursorQueryHash {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(CURSOR_QUERY_DOMAIN);
+    hasher.update(&[SCHEDULE_QUERY_TAG]);
+    let channel_id = query.channel_id().as_str();
+    hasher.update(&(channel_id.len() as u64).to_le_bytes());
+    hasher.update(channel_id.as_bytes());
+    match query.from() {
+        Some(from) => {
+            hasher.update(&[1]);
+            hasher.update(&from.timestamp().to_le_bytes());
+            hasher.update(&from.timestamp_subsec_nanos().to_le_bytes());
+        }
+        None => {
+            hasher.update(&[0]);
+        }
+    }
+    CursorQueryHash::new(*hasher.finalize().as_bytes())
+}
+
+/// A page placed around a Channel shares this hash with the ordinary
+/// all-Channels window, which is what makes its continuation an ordinary cursor.
 fn guide_window_query_hash(query: &GuideWindowQuery) -> CursorQueryHash {
     let mut hasher = blake3::Hasher::new();
     hasher.update(CURSOR_QUERY_DOMAIN);

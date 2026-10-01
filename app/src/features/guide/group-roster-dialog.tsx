@@ -5,7 +5,7 @@ import type { ChannelGroup } from "../../client/contracts";
 import { groupDisplayName } from "./board-group-roster";
 import "./group-roster-dialog.css";
 
-/** Inputs for the Channel Group directory and exclusion cabinet. */
+/** Inputs for the Channel Group list where groups are picked or hidden. */
 export interface GroupRosterDialogProps {
   readonly groups: readonly ChannelGroup[];
   readonly activeGroup: string | null;
@@ -17,8 +17,8 @@ export interface GroupRosterDialogProps {
 }
 
 /**
- * Opens a searchable Channel Group roster over the guide pane so operators can
- * jump to a group or exclude it from the board.
+ * Opens a searchable Channel Group roster over the guide pane so the viewer can
+ * jump to a group or hide it from the guide.
  */
 export function GroupRosterDialog({
   groups,
@@ -45,28 +45,24 @@ export function GroupRosterDialog({
         }
       }}
     >
-      <Dialog.Trigger
-        className="group-roster-trigger"
-        aria-label="Channel Group roster"
-      >
+      <Dialog.Trigger className="group-roster-trigger">
         <ListFilter aria-hidden="true" />
-        Roster
+        Choose groups
       </Dialog.Trigger>
       <Dialog.Portal>
         <Dialog.Backdrop className="group-roster__backdrop" />
         <Dialog.Popup className="group-roster__popup">
           <header className="group-roster__header">
             <div>
-              <p>Board roster</p>
-              <Dialog.Title>Channel Groups</Dialog.Title>
+              <Dialog.Title>Channel groups</Dialog.Title>
               <Dialog.Description>
-                Search the catalog groups, patch one onto the guide, or exclude
-                the dumps you never want on this desk.
+                Pick a group to show in the guide, or hide the ones you never
+                watch.
               </Dialog.Description>
             </div>
             <Dialog.Close
               className="group-roster__close"
-              aria-label="Close Channel Group roster"
+              aria-label="Close channel groups"
             >
               <X aria-hidden="true" />
             </Dialog.Close>
@@ -83,16 +79,15 @@ export function GroupRosterDialog({
                 autoComplete="off"
                 autoCapitalize="none"
                 spellCheck={false}
-                aria-label="Search Channel Groups"
+                aria-label="Search channel groups"
                 onChange={(event) => setQuery(event.target.value)}
               />
             </label>
             <p className="group-roster__tally">
-              <b>{visibleCount}</b> on the board
+              <b>{visibleCount}</b> shown
               {excludedCount > 0 ? (
                 <>
-                  <i aria-hidden="true" />
-                  <b>{excludedCount}</b> excluded
+                  , <b>{excludedCount}</b> hidden
                 </>
               ) : null}
             </p>
@@ -102,7 +97,7 @@ export function GroupRosterDialog({
                 type="button"
                 onClick={onRestoreAll}
               >
-                Restore all
+                Show all
               </button>
             ) : null}
           </div>
@@ -134,7 +129,7 @@ export function GroupRosterDialog({
             })}
             {query.trim().length > 0 && matches.length === 0 ? (
               <p className="group-roster__empty" role="status">
-                No Channel Group matches that search.
+                No group matches that search.
               </p>
             ) : null}
           </div>
@@ -158,13 +153,12 @@ function RosterAllRow({
       <Dialog.Close
         className="group-roster__pick"
         type="button"
-        aria-label="All Channel Groups"
+        aria-label="All channel groups"
         onMouseEnter={onPrefetch}
         onFocus={onPrefetch}
         onClick={onSelect}
       >
-        <span>All</span>
-        <strong>Every group still on the board</strong>
+        <strong>All channels</strong>
       </Dialog.Close>
     </div>
   );
@@ -201,7 +195,6 @@ function RosterGroupRow({
         onFocus={onPrefetch}
         onClick={onSelect}
       >
-        <span>{excluded ? "Excluded" : "Group"}</span>
         <strong>{label}</strong>
         <em>{group.channelCount}</em>
       </Dialog.Close>
@@ -209,12 +202,10 @@ function RosterGroupRow({
         className="group-roster__exclude"
         type="button"
         aria-pressed={excluded}
-        aria-label={
-          excluded ? `Restore ${label} to the board` : `Exclude ${label}`
-        }
+        aria-label={excluded ? `Show ${label}` : `Hide ${label}`}
         onClick={() => onSetExcluded(group.name, !excluded)}
       >
-        {excluded ? "Restore" : "Exclude"}
+        {excluded ? "Show" : "Hide"}
       </button>
     </div>
   );

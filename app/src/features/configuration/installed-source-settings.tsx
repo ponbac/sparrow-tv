@@ -127,88 +127,76 @@ export function InstalledSourceSettings({
       aria-labelledby="installed-settings-heading"
     >
       <header className="installed-settings__heading">
-        <div className="installed-settings__index" aria-hidden="true">
-          CFG
-        </div>
-        <div>
-          <p className="eyebrow">On-device source cabinet</p>
-          <h2 id="installed-settings-heading">
-            {configured ? "Replace local sources" : "Tune this receiver"}
-          </h2>
-        </div>
+        <h2 id="installed-settings-heading">
+          {configured ? "Replace sources" : "Add your sources"}
+        </h2>
         <span className="installed-settings__privacy">
           <LockKeyhole aria-hidden="true" />
-          Device private
+          Stays on this device
         </span>
       </header>
 
-      <div className="installed-settings__body">
-        <div className="installed-settings__brief">
-          <RadioTower aria-hidden="true" />
-          <p>
-            Add one M3U source and, if available, one XMLTV guide. Sparrow stores
-            them in the installed app and returns only safe catalog status to this
-            screen.
-          </p>
-        </div>
+      <p className="installed-settings__brief">
+        Add one M3U source and, if you have one, an XMLTV guide. Sparrow keeps
+        the locations on this device and shows only their status here.
+      </p>
 
-        <form
-          className="installed-settings__form"
-          autoComplete="off"
-          aria-busy={saveState._tag === "saving"}
-          onSubmit={submit}
-        >
-          <label htmlFor="installed-m3u-source">
-            <span>Required / Channel source</span>
-            <input
-              ref={m3uRef}
-              id="installed-m3u-source"
-              type="url"
-              inputMode="url"
-              autoComplete="off"
-              autoCapitalize="none"
-              spellCheck={false}
-              maxLength={16_384}
-              required
-              placeholder="https://…/channels.m3u"
-              onInput={resetFeedback}
-            />
-          </label>
-          <label htmlFor="installed-epg-source">
-            <span>Optional / Guide source</span>
-            <input
-              ref={epgRef}
-              id="installed-epg-source"
-              type="url"
-              inputMode="url"
-              autoComplete="off"
-              autoCapitalize="none"
-              spellCheck={false}
-              maxLength={16_384}
-              placeholder="https://…/guide.xml"
-              onInput={resetFeedback}
-            />
-          </label>
-          <button type="submit" disabled={saveState._tag === "saving"}>
-            {saveState._tag === "saving" ? (
-              <HardDriveDownload aria-hidden="true" />
-            ) : saveState._tag === "saved" ? (
-              <Check aria-hidden="true" />
-            ) : (
-              <RadioTower aria-hidden="true" />
-            )}
-            {saveState._tag === "saving"
-              ? "Validating & saving"
-              : saveState._tag === "saved"
-                ? "Sources saved"
-                : configured
-                  ? "Replace sources"
-                  : "Build local catalog"}
-          </button>
-        </form>
+      <form
+        className="installed-settings__form"
+        autoComplete="off"
+        aria-busy={saveState._tag === "saving"}
+        onSubmit={submit}
+      >
+        <label htmlFor="installed-m3u-source">
+          <span>Channel source (required)</span>
+          <input
+            ref={m3uRef}
+            id="installed-m3u-source"
+            type="url"
+            inputMode="url"
+            autoComplete="off"
+            autoCapitalize="none"
+            spellCheck={false}
+            maxLength={16_384}
+            required
+            placeholder="https://…/channels.m3u"
+            onInput={resetFeedback}
+          />
+        </label>
+        <label htmlFor="installed-epg-source">
+          <span>Guide source (optional)</span>
+          <input
+            ref={epgRef}
+            id="installed-epg-source"
+            type="url"
+            inputMode="url"
+            autoComplete="off"
+            autoCapitalize="none"
+            spellCheck={false}
+            maxLength={16_384}
+            placeholder="https://…/guide.xml"
+            onInput={resetFeedback}
+          />
+        </label>
+        <button type="submit" disabled={saveState._tag === "saving"}>
+          {saveState._tag === "saving" ? (
+            <HardDriveDownload aria-hidden="true" />
+          ) : saveState._tag === "saved" ? (
+            <Check aria-hidden="true" />
+          ) : (
+            <RadioTower aria-hidden="true" />
+          )}
+          {saveState._tag === "saving"
+            ? "Checking and saving"
+            : saveState._tag === "saved"
+              ? "Sources saved"
+              : configured
+                ? "Replace sources"
+                : "Save sources"}
+        </button>
+      </form>
 
-        <SaveFeedback state={saveState} />
-      </div>
+      <SaveFeedback state={saveState} />
     </section>
   );
 }
@@ -217,15 +205,14 @@ function SaveFeedback({ state }: { readonly state: SaveState }) {
   if (state._tag === "idle" || state._tag === "saving") {
     return (
       <p className="installed-settings__note">
-        Source locations are never placed in browser history or diagnostics.
+        Source locations never appear in history or diagnostics.
       </p>
     );
   }
   if (state._tag === "saved") {
     return (
       <p className="installed-settings__feedback" data-tone="saved" role="status">
-        Configuration saved. Safe catalog status will update as the local build
-        completes.
+        Sources saved. The source status updates as the catalog is built.
       </p>
     );
   }
@@ -239,14 +226,14 @@ function SaveFeedback({ state }: { readonly state: SaveState }) {
 function configurationErrorCopy(error: ClientError | null): string {
   if (error?._tag === "invalid-input") {
     if (error.field === "m3u" && error.reason === "required") {
-      return "Enter a Channel source before building the local catalog.";
+      return "Enter a channel source first.";
     }
     return "One source location is not supported. Check it and try again.";
   }
   if (error?._tag === "catalog-unavailable") {
-    return "The sources were saved, but no valid local catalog is available yet.";
+    return "The sources were saved, but no catalog is available yet.";
   }
-  return "The installed app could not save this configuration. Try again.";
+  return "Sparrow could not save these sources. Try again.";
 }
 
 function clearSourceFields(

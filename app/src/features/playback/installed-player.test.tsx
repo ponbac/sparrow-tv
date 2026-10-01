@@ -14,6 +14,7 @@ import {
   type InstalledPlaybackSession,
   type InstalledPlaybackTransport,
 } from "../../client/contracts";
+import { channelFixture } from "../../test/channel-fixture";
 import { InstalledPlayer, type InstalledPlayerProps } from "./installed-player";
 import { dispatchAgentControl } from "../agent-control/agent-control-binding";
 import type {
@@ -27,7 +28,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const CHANNEL = clientSchemas.channel.parse({
+const CHANNEL = channelFixture({
   id: "installed-news",
   name: "Installed News",
   group: "News",
@@ -109,7 +110,7 @@ describe("InstalledPlayer", () => {
         onStop={vi.fn()}
       />,
     );
-    await screen.findByText("ON AIR");
+    await screen.findByText("On air");
     const surface = screen.getByRole("region", { name: CHANNEL.name });
     const request = vi.fn(async () => {
       Object.defineProperty(document, "fullscreenElement", {
@@ -150,6 +151,30 @@ describe("InstalledPlayer", () => {
     }
   });
 
+  it("shows fullscreen that began before the player mounted", async () => {
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      value: document.documentElement,
+    });
+    try {
+      render(
+        <InstalledPlayer
+          channel={CHANNEL}
+          client={fixtureClient(() => fixtureSession().value)}
+          engine={playingEngine().value}
+          onStop={vi.fn()}
+        />,
+      );
+      await screen.findByText("On air");
+
+      expect(
+        screen.getByRole("button", { name: "Exit fullscreen" }),
+      ).toHaveAttribute("aria-pressed", "true");
+    } finally {
+      Reflect.deleteProperty(document, "fullscreenElement");
+    }
+  });
+
   it("owns pause, live-edge resume, controls, diagnostics, and confirmed stop", async () => {
     const session = fixtureSession();
     const client = fixtureClient(() => session.value);
@@ -172,19 +197,19 @@ describe("InstalledPlayer", () => {
       />,
     );
 
-    expect(await screen.findByText("ON AIR")).toBeVisible();
+    expect(await screen.findByText("On air")).toBeVisible();
     expect(client.createPlaybackSession).toHaveBeenCalledWith({
       id: CHANNEL.id,
     });
     expect(session.start).toHaveBeenCalledTimes(1);
 
     await user.click(screen.getByRole("button", { name: "Pause" }));
-    expect(await screen.findByText("PAUSED")).toBeVisible();
+    expect(await screen.findByText("Paused")).toBeVisible();
     expect(engine.stops).toBe(1);
     expect(session.suspend).toHaveBeenCalledTimes(1);
 
     await user.click(screen.getByRole("button", { name: "Resume" }));
-    expect(await screen.findByText("ON AIR")).toBeVisible();
+    expect(await screen.findByText("On air")).toBeVisible();
     expect(session.reopen).toHaveBeenCalledTimes(1);
 
     expect(screen.getByRole("button", { name: "Mute" })).toHaveAttribute(
@@ -233,13 +258,13 @@ describe("InstalledPlayer", () => {
         onStop={onStop}
       />,
     );
-    expect(await screen.findByText("ON AIR")).toBeVisible();
+    expect(await screen.findByText("On air")).toBeVisible();
 
     await userEvent
       .setup()
       .click(screen.getByRole("button", { name: "Stop stream" }));
 
-    expect(await screen.findByText("CLEANUP NEEDED")).toBeVisible();
+    expect(await screen.findByText("Cleanup needed")).toBeVisible();
     expect(onStop).not.toHaveBeenCalled();
     expect(
       screen.queryByRole("button", { name: "Restart" }),
@@ -258,12 +283,12 @@ describe("InstalledPlayer", () => {
     let dismissed = false;
     render(<InstalledPlayer channel={CHANNEL} client={client} engine={playingEngine().value}
       onStop={() => { dismissed = true; }} />);
-    await screen.findByText("ON AIR");
+    await screen.findByText("On air");
     await act(async () => {
       expect(await dispatchAgentControl({ _tag: "stop" })).toEqual({ ok: false, error: { _tag: "cleanup-failed" } });
     });
     expect(dismissed).toBe(false);
-    expect(await screen.findByText("CLEANUP NEEDED")).toBeVisible();
+    expect(await screen.findByText("Cleanup needed")).toBeVisible();
   });
 
   it("enumerates Audio Tracks, selects without opaque UI, and confirms persistence", async () => {
@@ -279,14 +304,14 @@ describe("InstalledPlayer", () => {
         onStop={vi.fn()}
       />,
     );
-    expect(await screen.findByText("ON AIR")).toBeVisible();
+    expect(await screen.findByText("On air")).toBeVisible();
     const selector = screen.getByRole("combobox", { name: "Audio track" });
     expect(selector).toHaveValue(ENGLISH_AUDIO_ID);
     expect(
-      screen.getByRole("option", { name: "Original · ENG · AAC" }),
+      screen.getByRole("option", { name: "Original, ENG, AAC" }),
     ).toBeVisible();
     expect(
-      screen.getByRole("option", { name: "Audio 2 · AC-3" }),
+      screen.getByRole("option", { name: "Audio 2, AC-3" }),
     ).toBeVisible();
     expect(document.body.textContent).not.toContain(ENGLISH_AUDIO_ID);
     expect(document.body.textContent).not.toContain(SPANISH_AUDIO_ID);
@@ -353,7 +378,7 @@ describe("InstalledPlayer", () => {
         />
       </StrictMode>,
     );
-    expect(await screen.findByText("ON AIR")).toBeVisible();
+    expect(await screen.findByText("On air")).toBeVisible();
 
     view.unmount();
     await act(async () => {
@@ -379,7 +404,7 @@ describe("InstalledPlayer", () => {
       onStop: vi.fn(),
     } satisfies InstalledPlayerProps;
     const view = render(<InstalledPlayer {...props} />);
-    expect(await screen.findByText("ON AIR")).toBeVisible();
+    expect(await screen.findByText("On air")).toBeVisible();
     await waitFor(() => expect(lifecycle.subscribe).toHaveBeenCalledTimes(1));
 
     fireEvent(window, new Event("resize"));
@@ -393,13 +418,13 @@ describe("InstalledPlayer", () => {
     expect(session.start).toHaveBeenCalledTimes(1);
 
     await act(async () => lifecycle.emit("suspended"));
-    expect(await screen.findByText("PAUSED")).toBeVisible();
+    expect(await screen.findByText("Paused")).toBeVisible();
     expect(session.suspend).toHaveBeenCalledTimes(1);
     await act(async () => lifecycle.emit("suspended"));
     expect(session.suspend).toHaveBeenCalledTimes(1);
 
     await act(async () => lifecycle.emit("resumed"));
-    expect(await screen.findByText("ON AIR")).toBeVisible();
+    expect(await screen.findByText("On air")).toBeVisible();
     expect(session.reopen).toHaveBeenCalledTimes(1);
     await act(async () => lifecycle.emit("resumed"));
     expect(session.reopen).toHaveBeenCalledTimes(1);
@@ -426,8 +451,9 @@ describe("InstalledPlayer", () => {
       />,
     );
 
-    expect(await screen.findByText("ON AIR")).toBeVisible();
-    expect(screen.getByText("Live monitor · system mpv")).toBeVisible();
+    expect(await screen.findByText("On air")).toBeVisible();
+    expect(screen.getByText("Playing in mpv")).toBeVisible();
+    expect(screen.getByText("The picture is in the mpv window.")).toBeVisible();
     expect(screen.getByRole("button", { name: "Mute" })).toBeVisible();
     expect(screen.getByRole("slider", { name: "Volume" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Full screen" })).toBeVisible();
@@ -457,7 +483,7 @@ describe("InstalledPlayer", () => {
       />,
     );
 
-    expect(await screen.findByText("FORMAT MISSED")).toBeVisible();
+    expect(await screen.findByText("Format missed")).toBeVisible();
     expect(screen.getByRole("button", { name: "Open in mpv" })).toBeEnabled();
   });
 
@@ -480,7 +506,7 @@ describe("InstalledPlayer", () => {
       />,
     );
 
-    expect(await screen.findByText("MPV MISSING")).toBeVisible();
+    expect(await screen.findByText("mpv missing")).toBeVisible();
     expect(
       screen.getByText("System mpv is required for Linux playback"),
     ).toBeVisible();
@@ -527,6 +553,7 @@ function fixtureClient(
         playbackTransport: "platform-native",
         audioTrackSelection: true,
         mpvFailover: true,
+        pictureOverlay: true,
       }),
   };
 }

@@ -23,6 +23,7 @@ pub(crate) struct CapabilitiesDto {
     playback_transport: &'static str,
     audio_track_selection: bool,
     mpv_failover: bool,
+    picture_overlay: bool,
 }
 
 impl CapabilitiesDto {
@@ -32,6 +33,8 @@ impl CapabilitiesDto {
             playback_transport: "platform-native",
             audio_track_selection: true,
             mpv_failover: cfg!(target_os = "linux"),
+            // Android presents the picture on a native surface that page content cannot cover.
+            picture_overlay: !cfg!(target_os = "android"),
         }
     }
 }
@@ -576,6 +579,7 @@ const fn input_field(field: InputField) -> &'static str {
         InputField::ChannelGroup => "channel-group",
         InputField::GuideWindowStartsAt => "guide-starts-at",
         InputField::GuideWindowEndsAt => "guide-ends-at",
+        InputField::ScheduleFrom => "schedule-from",
         InputField::SearchTerm => "search-term",
         InputField::PageLimit => "page-limit",
         InputField::PageCursor => "page-cursor",
@@ -659,6 +663,7 @@ mod tests {
                 "playbackTransport": "platform-native",
                 "audioTrackSelection": true,
                 "mpvFailover": cfg!(target_os = "linux"),
+                "pictureOverlay": !cfg!(target_os = "android"),
             })
         );
     }

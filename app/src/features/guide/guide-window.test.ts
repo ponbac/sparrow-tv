@@ -3,11 +3,10 @@ import { clientSchemas, type ProgrammeSummary } from "../../client/contracts";
 import {
   clockMarks,
   clockWindow,
+  liveProgramme,
   playheadPercent,
-  programmeAt,
   programmeKey,
   programmeLayout,
-  programmeTiming,
   type ClockWindow,
 } from "./guide-window";
 
@@ -73,43 +72,28 @@ describe("guide window presentation", () => {
     );
     const now = new Date("2026-09-01T21:00:00.000Z");
 
-    expect(programmeAt([ending, next], now)).toBe(next);
+    expect(liveProgramme([ending, next], now)).toBe(next);
     expect(programmeLayout(ending, WINDOW, now)?.live).toBe(false);
     expect(programmeLayout(next, WINDOW, now)?.live).toBe(true);
   });
 
-  it("falls back deterministically and keeps duplicate schedule entries distinct", () => {
+  it("finds no live Programme in a gap and keeps duplicate schedule entries distinct", () => {
     const duplicate = programme(
       "Untitled",
       "2026-09-01T21:00:00.000Z",
       "2026-09-01T21:30:00.000Z",
     );
 
-    expect(programmeAt([duplicate], new Date("2026-09-01T20:00:00.000Z"))).toBe(
-      duplicate,
-    );
-    expect(programmeAt([], new Date())).toBeNull();
+    expect(
+      liveProgramme([duplicate], new Date("2026-09-01T20:00:00.000Z")),
+    ).toBeNull();
+    expect(liveProgramme([], new Date())).toBeNull();
     expect(programmeKey(duplicate, 0)).not.toBe(programmeKey(duplicate, 1));
   });
 
-  it("clamps the playhead and describes live, future, and earlier slots", () => {
-    const live = programme(
-      "Live",
-      "2026-09-01T21:00:00.000Z",
-      "2026-09-01T21:30:00.000Z",
-    );
-
+  it("clamps the playhead to the visible window", () => {
     expect(playheadPercent(WINDOW, new Date("2026-09-01T20:00:00.000Z"))).toBe(0);
     expect(playheadPercent(WINDOW, new Date("2026-09-02T00:00:00.000Z"))).toBe(100);
-    expect(programmeTiming(live, new Date("2026-09-01T21:10:00.000Z"))).toContain(
-      "20 min left",
-    );
-    expect(programmeTiming(live, new Date("2026-09-01T20:50:00.000Z"))).toContain(
-      "starts in 10 min",
-    );
-    expect(programmeTiming(live, new Date("2026-09-01T22:00:00.000Z"))).toContain(
-      "earlier",
-    );
   });
 });
 

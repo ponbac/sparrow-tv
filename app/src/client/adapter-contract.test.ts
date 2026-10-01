@@ -14,6 +14,7 @@ import {
   type NativeChannel,
   type NativeIpc,
 } from "./native";
+import { channelFixture } from "../test/channel-fixture";
 
 const STATUS = clientSchemas.status.parse({
   generation: 7,
@@ -24,7 +25,14 @@ const STATUS = clientSchemas.status.parse({
 
 const CHANNEL_PAGE = clientSchemas.channelsPage.parse({
   generation: 7,
-  items: [{ id: "world-news", name: "World News", group: "News" }],
+  items: [
+    channelFixture({
+      id: "world-news",
+      name: "World News HD",
+      group: "News",
+      variant: { quality: "hd", baseName: "World News" },
+    }),
+  ],
   next: null,
 });
 
@@ -157,6 +165,46 @@ describe("hosted and installed query-adapter contract", () => {
     expect(hostedResults[1]).toEqual({ ok: true, value: GUIDE_WINDOW });
   });
 
+  it("correlates a page around a Channel and a schedule from an instant alike", async () => {
+    const payloads = [
+      GUIDE_WINDOW_PAYLOAD,
+      PROGRAMME_PAGE,
+      GUIDE_WINDOW_PAYLOAD,
+      PROGRAMME_PAGE,
+    ] as const;
+    const http = createHttpSparrowClient({ fetch: queuedFetch(payloads) });
+    const native = createNativeSparrowClient({
+      ipc: new CommandNativeIpc(
+        new Map<string, unknown>([
+          [NATIVE_COMMANDS.guideWindow, GUIDE_WINDOW_PAYLOAD],
+          [NATIVE_COMMANDS.schedule, PROGRAMME_PAGE],
+        ]),
+      ),
+    });
+    const id = parsedChannelId("world-news");
+    const absent = parsedChannelId("cinema-one");
+    const window = {
+      startsAt: GUIDE_START,
+      endsAt: GUIDE_END,
+      channelLimit: 1,
+    } as const;
+
+    for (const client of [http, native]) {
+      await expect(
+        client.guideWindow({ ...window, around: id }),
+      ).resolves.toEqual({ ok: true, value: GUIDE_WINDOW });
+      await expect(
+        client.schedule({ id, limit: 1, from: GUIDE_START }),
+      ).resolves.toEqual({ ok: true, value: PROGRAMME_PAGE });
+      await expect(
+        client.guideWindow({ ...window, around: absent }),
+      ).resolves.toMatchObject({ ok: false, error: { _tag: "transport" } });
+      await expect(
+        client.schedule({ id, limit: 1, from: GUIDE_END }),
+      ).resolves.toMatchObject({ ok: false, error: { _tag: "transport" } });
+    }
+  });
+
   it("returns the same typed failures for every shared query operation", async () => {
     const failures = [
       { _tag: "service-unavailable" },
@@ -284,13 +332,9 @@ function queuedFetch(
 }
 
 function parsedChannelId(value: string): ChannelId {
-  const parsed = clientSchemas.channel.safeParse({
+  return channelFixture({
     id: value,
     name: "Fixture Channel",
     group: "Fixture",
-  });
-  if (!parsed.success) {
-    throw new Error("expected a valid Channel Identifier fixture");
-  }
-  return parsed.data.id;
+  }).id;
 }

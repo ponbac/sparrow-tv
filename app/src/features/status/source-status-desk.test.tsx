@@ -34,9 +34,9 @@ describe("SourceStatusDesk", () => {
   it("presents Channel freshness independently from a retained Guide failure", () => {
     renderDesk(INDEPENDENT_GUIDE_FAILURE);
 
-    expect(screen.getByText("FRESH")).toBeVisible();
-    expect(screen.getByText("FAILED / RETAINED")).toBeVisible();
-    expect(screen.getByText("failure / epg / malformed-xml")).toBeVisible();
+    expect(screen.getByText("Fresh")).toBeVisible();
+    expect(screen.getByText("Failed, showing the saved copy")).toBeVisible();
+    expect(screen.getByText("Reason: malformed xml")).toBeVisible();
     expect(screen.getByRole("button", { name: "Refresh sources" })).toBeEnabled();
   });
 
@@ -60,8 +60,8 @@ describe("SourceStatusDesk", () => {
       />,
     );
 
-    expect(screen.getByText("FRESH")).toBeVisible();
-    expect(screen.getByText("REFRESHING / RETAINED")).toBeVisible();
+    expect(screen.getByText("Fresh")).toBeVisible();
+    expect(screen.getByText("Refreshing, showing the saved copy")).toBeVisible();
     expect(
       screen.getByRole("button", { name: "Refresh in progress" }),
     ).toBeDisabled();
@@ -85,14 +85,14 @@ describe("SourceStatusDesk", () => {
 
     renderDesk(unavailable);
 
-    expect(screen.getByText("UNAVAILABLE")).toBeVisible();
-    expect(screen.getByText("NOT CONFIGURED")).toBeVisible();
+    expect(screen.getByText("Unavailable")).toBeVisible();
+    expect(screen.getByText("Not set up")).toBeVisible();
     expect(
-      screen.getByText("failure / m3u / timed-out / retry 45s"),
+      screen.getByText("Reason: timed out, retry in 45 s"),
     ).toBeVisible();
     expect(
       screen.getByText(
-        /Browse, search, and playback require a validated Channel snapshot/,
+        /Browsing, search and playback start once the channel source loads/,
       ),
     ).toBeVisible();
   });
@@ -107,7 +107,7 @@ describe("SourceStatusDesk", () => {
     renderDesk(withoutGuide);
 
     expect(
-      screen.getByText(/Channel browse, search, and playback remain available/),
+      screen.getByText(/You can still browse, search and play channels/),
     ).toBeVisible();
   });
 
@@ -143,10 +143,10 @@ describe("SourceStatusDesk", () => {
     const feedback = screen.getByRole("alert");
     expect(within(feedback).getByText("Guide source refresh failed")).toBeVisible();
     expect(
-      within(feedback).getByText(/Channel source: updated/),
+      within(feedback).getByText(/Channel source updated\./),
     ).toBeVisible();
     expect(
-      within(feedback).getByText(/Guide source: failed \/ epg \/ activate \/ corrupt/),
+      within(feedback).getByText(/Guide source failed: corrupt during activate\./),
     ).toBeVisible();
     expect(within(feedback).getByText(/Browsing and playback stay available/)).toBeVisible();
   });
@@ -255,17 +255,17 @@ describe("SourceStatusDesk", () => {
       expect(
         within(feedback).getByText(
           guideFailed
-            ? "Channel source and Guide source refresh failed"
+            ? "Channel and guide source refresh failed"
             : "Channel source refresh failed",
         ),
       ).toBeVisible();
       expect(
         within(feedback).getByText(
-          /The Channel source failed, but its last validated snapshot remains in service/,
+          /The channel source failed, but its saved copy stays in use/,
         ),
       ).toBeVisible();
       expect(
-        within(feedback).queryByText(/because the Channel source completed independently/),
+        within(feedback).queryByText(/because the channel source loaded/),
       ).not.toBeInTheDocument();
       expect(within(feedback).queryByText(/playback/i)).not.toBeInTheDocument();
     },
@@ -303,11 +303,11 @@ describe("SourceStatusDesk", () => {
 
     const feedback = screen.getByRole("status");
     expect(within(feedback).getByText("Manual refresh complete")).toBeVisible();
-    expect(within(feedback).getByText(/Channel source: updated/)).toBeVisible();
+    expect(within(feedback).getByText(/Channel source updated\./)).toBeVisible();
     expect(
-      within(feedback).getByText(/Guide source: validated \/ unchanged/),
+      within(feedback).getByText(/Guide source checked, unchanged\./),
     ).toBeVisible();
-    expect(within(feedback).getByText(/Catalog generation 8/)).toBeVisible();
+    expect(within(feedback).getByText(/The catalog is up to date\./)).toBeVisible();
   });
 
   it("treats a missing transport response as ambiguous and points to reconciled status", () => {
@@ -365,7 +365,7 @@ describe("SourceStatusDesk", () => {
         onRefresh={() => undefined}
       />,
     );
-    await user.click(screen.getByText("Safe diagnostics / copyable"));
+    await user.click(screen.getByText("Diagnostics you can copy"));
     expect(
       screen.getByRole("region", { name: "Safe source diagnostics" }),
     ).toBeVisible();

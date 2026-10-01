@@ -65,7 +65,7 @@ export interface GuideCatalogRead {
   readonly prefetchGroup: (group: string | null) => void;
 }
 
-/** Owns generation-bound group and guide pagination for the Split Stage. */
+/** Owns generation-bound group and guide pagination for the shell. */
 export function useGuideCatalog({
   client,
   enabled,

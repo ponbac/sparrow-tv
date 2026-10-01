@@ -4,9 +4,7 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import { createSparrowRuntime } from "./client/runtime";
 import { createSparrowQueryClient } from "./client/query-client";
-import "@fontsource-variable/archivo";
-import "@fontsource-variable/newsreader";
-import "@fontsource-variable/jetbrains-mono";
+import "@fontsource-variable/saira/wdth.css";
 import "./index.css";
 
 const rootElement = requireApplicationRoot();
@@ -28,6 +26,7 @@ async function startApplication(): Promise<void> {
 function renderStartupFailure(): void {
   rootElement.replaceChildren();
   const message = document.createElement("p");
+  message.className = "startup-failure";
   message.setAttribute("role", "alert");
   message.textContent = "Sparrow could not start. Close the app and try again.";
   rootElement.append(message);

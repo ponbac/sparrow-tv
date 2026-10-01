@@ -40,6 +40,14 @@ _Avoid_: Channel URL, tvg-id, stream ID
 A category from the M3U Source used to organize Channels in the Channel Catalog.
 _Avoid_: Category, folder, bouquet
 
+**Channel Number**:
+The 1-based position of a Channel's guide row in Channel Catalog order. Quality Variants of one Channel share a Channel Number. It changes when the M3U Source reorders.
+_Avoid_: LCN, channel index, tvg-chno
+
+**Quality Variant**:
+One of several adjacent Channels in one Channel Group whose names differ only by a picture-quality token; the viewer sees them as one guide row with a quality switch. Each stays its own Channel with its own Channel Identifier and Playback Source.
+_Avoid_: Duplicate, alternate stream, resolution
+
 **Programme**:
 Scheduled content associated with a Channel by the EPG Source.
 _Avoid_: Show, event, media

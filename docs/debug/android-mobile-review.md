@@ -1,6 +1,8 @@
 # Android mobile review
 
-Browser resizing can check the shared guide layout, but Android verification
+Android always uses the stacked layout ([ADR 0006](../adr/0006-use-a-theater-layout-on-desktop-and-number-channels-in-core.md)).
+A browser window narrower than 1051 px or shorter than 601 px shows the same
+layout and can check the shared guide, but Android verification
 must use the installed APK: Media3 draws a native surface above the WebView.
 Check rotation, fullscreen controls, system bars, the soft keyboard, and
 background/resume on Android. Emulator frame timing is not a physical-device
@@ -48,8 +50,8 @@ configuration out of review screenshots and logs.
 
 - Check unconfigured setup, then the populated guide in portrait and landscape.
 - Start a Playback Session; verify increasing Media3 frame counters.
-- Open Channel search, Channel Groups, and Feeds during playback. The native
-  picture must not cover any panel controls.
+- Open the full channel search, **Choose groups**, and **Sources** during
+  playback. The native picture must not cover any panel controls.
 - Open the soft keyboard and confirm the input, close action, and results remain
   usable. Check both orientations.
 - Scroll the guide horizontally and vertically. The time ruler and playhead

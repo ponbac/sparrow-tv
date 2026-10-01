@@ -1,8 +1,8 @@
 use chrono::{DateTime, Datelike, SecondsFormat, Utc};
 use serde::Serialize;
 use sparrow_core::{
-    ChannelDetails, ChannelGroupView, ChannelSummary, GuideProgramme, GuideWindowChannel, Page,
-    ProgrammeSearchHit, ProgrammeSummary, SearchResults,
+    ChannelDetails, ChannelGroupView, ChannelQuality, ChannelSummary, ChannelVariant,
+    GuideProgramme, GuideWindowChannel, Page, ProgrammeSearchHit, ProgrammeSummary, SearchResults,
 };
 
 /// A generation-bound page shared by HTTP and installed IPC clients.
@@ -70,6 +70,8 @@ pub struct ChannelSummaryDto {
     id: String,
     name: String,
     group: String,
+    number: u32,
+    variant: Option<ChannelVariantDto>,
 }
 
 impl From<&ChannelSummary> for ChannelSummaryDto {
@@ -78,6 +80,8 @@ impl From<&ChannelSummary> for ChannelSummaryDto {
             id: channel.id().as_str().to_owned(),
             name: channel.name().to_owned(),
             group: channel.group().to_owned(),
+            number: channel.number(),
+            variant: channel.variant().map(ChannelVariantDto::from),
         }
     }
 }
@@ -90,8 +94,41 @@ impl From<&ChannelDetails> for ChannelSummaryDto {
             id: channel.id().as_str().to_owned(),
             name: channel.name().to_owned(),
             group: channel.group().to_owned(),
+            number: channel.number(),
+            variant: channel.variant().map(ChannelVariantDto::from),
         }
     }
+}
+
+/// The Quality Variant facts of a Channel; `null` on the wire when it has none.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelVariantDto {
+    quality: ChannelQualityDto,
+    base_name: String,
+}
+
+impl From<&ChannelVariant> for ChannelVariantDto {
+    fn from(variant: &ChannelVariant) -> Self {
+        Self {
+            quality: match variant.quality() {
+                ChannelQuality::Sd => ChannelQualityDto::Sd,
+                ChannelQuality::Hd => ChannelQualityDto::Hd,
+                ChannelQuality::Fhd => ChannelQualityDto::Fhd,
+                ChannelQuality::Uhd => ChannelQualityDto::Uhd,
+            },
+            base_name: variant.base_name().to_owned(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum ChannelQualityDto {
+    Sd,
+    Hd,
+    Fhd,
+    Uhd,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]

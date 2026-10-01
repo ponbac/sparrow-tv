@@ -1,21 +1,28 @@
 :root {
-  color: #efe7dc;
-  background: #101010;
-  font-family: "Archivo Variable", sans-serif;
+  color: var(--paper);
+  background: var(--black);
+  font-family: "Saira Variable", sans-serif;
+  font-stretch: 92%;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   color-scheme: dark;
-  --ink: #101010;
-  --ink-deep: #0a0a0a;
-  --ink-raised: #171717;
-  --bone: #efe7dc;
-  --bone-dim: #8f8880;
-  --tomato: #ff4d3a;
-  --acid: #d7ff65;
-  --line: rgb(239 231 220 / 10%);
+  --black: #000; /* picture surround, shell background */
+  --panel: #14171c; /* guide, dialogs */
+  --cell: #1e2229; /* programme cell, inputs */
+  --cell-live: #2c313b; /* live programme cell, hover */
+  --cell-hover: #363c48;
+  --paper: #f7f5f0; /* text */
+  --dim: rgb(247 245 240 / 64%);
+  --faint: rgb(247 245 240 / 16%);
+  --hair: rgb(247 245 240 / 9%);
+  --amber: #ffb627; /* the one accent: tuned Channel, progress, now-line, focus */
+  --on-amber: #171204;
+  --ok: #6fd39a; /* fresh source */
+  --bad: #ff6b5e; /* failures only */
+  --scrim: rgb(14 16 20 / 88%);
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --bar-h: 2.375rem; /* masthead height */
   --guide-gutter: min(20rem, 38%);
-  --display: "Newsreader Variable", Georgia, serif;
-  --mono: "JetBrains Mono Variable", monospace;
 }
 
 *,
@@ -27,15 +34,15 @@
 html {
   min-width: 320px;
   min-height: 100%;
-  background: var(--ink);
-  font-size: clamp(100%, 0.75vw, 150%);
+  background: var(--black);
+  font-size: clamp(100%, 0.8vw, 150%);
 }
 
 body {
   min-width: 320px;
   min-height: 100vh;
   margin: 0;
-  background: var(--ink);
+  background: var(--black);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -56,52 +63,47 @@ button:disabled {
 }
 
 :focus-visible {
-  outline: 2px solid var(--tomato);
+  outline: 2px solid var(--amber);
   outline-offset: 2px;
 }
 
 ::selection {
-  color: #140806;
-  background: var(--tomato);
+  color: var(--on-amber);
+  background: var(--amber);
 }
 
-.catalog-loading {
+.catalog-loading,
+.startup-failure {
   display: grid;
   min-height: 100vh;
   place-content: center;
   justify-items: center;
-  padding: 32px;
+  gap: 1rem;
+  margin: 0;
+  padding: 2rem;
   text-align: center;
-  background:
-    radial-gradient(circle at center, rgb(255 77 58 / 10%), transparent 32%),
-    var(--ink-deep);
+  background: var(--black);
 }
 
 .catalog-loading > span {
-  width: 9px;
-  height: 9px;
+  width: 0.5625rem;
+  height: 0.5625rem;
   border-radius: 50%;
-  background: var(--tomato);
-  box-shadow: 0 0 24px rgb(255 77 58 / 72%);
+  background: var(--amber);
   animation: catalog-pulse 1.4s ease-in-out infinite;
 }
 
-.catalog-loading p,
-.catalog-loading small {
-  color: var(--bone-dim);
-  font-family: var(--mono);
-  font-size: 0.64rem;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
+.catalog-loading h1 {
+  margin: 0;
+  font-size: clamp(1.75rem, 4vw, 2.75rem);
+  font-stretch: 84%;
+  font-weight: 700;
+  line-height: 1.1;
 }
 
-.catalog-loading h1 {
-  margin: 10px 0 4px;
-  font-family: var(--display);
-  font-size: clamp(2.4rem, 7vw, 5rem);
-  font-style: italic;
-  font-weight: 650;
-  letter-spacing: -0.045em;
+.startup-failure {
+  font-size: 1.0625rem;
+  line-height: 1.5;
 }
 
 @keyframes catalog-pulse {

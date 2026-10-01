@@ -42,6 +42,7 @@ pub(crate) struct GuideWindowHttpQuery {
     channel_limit: String,
     group: Option<String>,
     cursor: Option<String>,
+    around: Option<String>,
 }
 
 impl GuideWindowHttpQuery {
@@ -54,7 +55,14 @@ impl GuideWindowHttpQuery {
             ),
             None => ChannelQuery::all(page),
         };
-        GuideWindowQuery::parse(self.starts_at, self.ends_at, channels).map_err(ApiError::from)
+        let query = GuideWindowQuery::parse(self.starts_at, self.ends_at, channels)
+            .map_err(ApiError::from)?;
+        match self.around {
+            Some(around) => query
+                .around(ChannelId::parse(around).map_err(ApiError::from)?)
+                .map_err(ApiError::from),
+            None => Ok(query),
+        }
     }
 }
 
@@ -106,14 +114,22 @@ impl SearchPageQuery {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ScheduleHttpQuery {
+    cursor: Option<String>,
+    limit: Option<String>,
+    from: Option<String>,
+}
+
 pub(crate) fn schedule_query(
     path: Result<Path<String>, PathRejection>,
-    query: Result<Query<PageQuery>, QueryRejection>,
+    query: Result<Query<ScheduleHttpQuery>, QueryRejection>,
 ) -> Result<ScheduleQuery, ApiError> {
-    Ok(ScheduleQuery::new(
-        channel_id(path)?,
-        extract(query)?.page_request()?,
-    ))
+    let channel_id = channel_id(path)?;
+    let query = extract(query)?;
+    let page = page_request(query.cursor, query.limit)?;
+    ScheduleQuery::parse(channel_id, query.from, page).map_err(ApiError::from)
 }
 
 pub(crate) fn extract<T>(query: Result<Query<T>, QueryRejection>) -> Result<T, ApiError> {

@@ -1,0 +1,799 @@
+/*
+ * Theater layout: the picture fills the window with the chrome laid over it
+ * (watch mode), or docks top-left above the guide (guide mode).
+ *
+ * Every selector is scoped to the Theater layout: in-tree elements through
+ * `.shell[data-layout="theater"]`, portalled ones through the root. The
+ * player's stylesheet loads after this one, so overrides of its rules win by
+ * specificity, never by order. Nothing here animates, and the picture's box
+ * changes place without a transition: installed Linux composites in software.
+ */
+
+/* Portalled sheets read the masthead height from the root. */
+:root:has(.shell[data-layout="theater"]) {
+  --bar-h: 3.5rem;
+}
+
+.shell[data-layout="theater"] {
+  --pad: 2.5rem;
+  /* Where the guide begins. The floor keeps the docked info block whole in a
+     short window. */
+  --split: max(36vh, 19rem);
+  --banner-h: 0rem;
+  --top: calc(var(--bar-h) + var(--banner-h));
+  --dock-h: calc(var(--split) - var(--top) - 1rem);
+  --dock-w: calc(var(--dock-h) * 16 / 9);
+  /* Space under the lower third for the row of nearby Channels and the key hints. */
+  --rail-room: 10.25rem;
+  --guide-gutter: 18.5rem;
+  grid-template-rows: var(--bar-h) auto minmax(0, 1fr);
+}
+
+.shell[data-layout="theater"]:has(.shell__retained) {
+  --banner-h: 2rem;
+}
+
+/* Masthead */
+
+.shell[data-layout="theater"] .shell__masthead {
+  position: relative;
+  justify-content: flex-start;
+  gap: 1.6rem;
+  padding: 0 var(--pad);
+}
+
+.shell[data-layout="theater"][data-mode="watch"] .shell__masthead {
+  background: none;
+}
+
+/* A fade taller than the bar keeps its text readable over a bright picture. */
+.shell[data-layout="theater"][data-mode="watch"] .shell__masthead::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0 0 auto;
+  height: 9rem;
+  pointer-events: none;
+  background: linear-gradient(rgb(0 0 0 / 55%), transparent);
+  content: "";
+}
+
+.shell[data-layout="theater"] .shell__wordmark,
+.shell[data-layout="theater"] .shell__clock {
+  font-size: 1.05rem;
+}
+
+.shell[data-layout="theater"] .shell__search {
+  display: flex;
+  width: 22rem;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.shell[data-layout="theater"] .shell__search:focus-within {
+  width: 30rem;
+}
+
+.shell[data-layout="theater"] .shell__search .board-search > svg {
+  left: 0.75rem;
+  width: 1rem;
+}
+
+.shell[data-layout="theater"] .shell__search .board-search input {
+  height: 2.25rem;
+  padding-left: 2.375rem;
+  font-size: 0.9375rem;
+}
+
+.shell[data-layout="theater"] .shell__search .board-search button {
+  height: 2.125rem;
+  background: none;
+}
+
+.shell[data-layout="theater"][data-mode="watch"]
+  .shell__search
+  .board-search
+  input:not(:focus) {
+  border-color: transparent;
+  background: var(--scrim);
+}
+
+.shell[data-layout="theater"] .shell__guide-toggle {
+  display: flex;
+  height: 2.25rem;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0;
+  color: var(--dim);
+  border: 0;
+  background: none;
+  font-size: 1rem;
+}
+
+.shell[data-layout="theater"] .shell__guide-toggle:hover,
+.shell[data-layout="theater"] .shell__guide-toggle[aria-pressed="true"] {
+  color: var(--paper);
+}
+
+/* An amber rule under the word while the guide is open. */
+.shell[data-layout="theater"] .shell__guide-toggle[aria-pressed="true"] {
+  box-shadow: 0 0.45rem 0 -0.3rem var(--amber);
+}
+
+.shell[data-layout="theater"] .shell__guide-toggle svg {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+/* A key cap. */
+.shell[data-layout="theater"] .shell__guide-toggle kbd,
+.shell[data-layout="theater"] .stage__keys kbd {
+  display: inline-grid;
+  min-width: 1.5rem;
+  height: 1.5rem;
+  place-items: center;
+  padding: 0 0.35rem;
+  color: var(--paper);
+  border: 1px solid var(--faint);
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.shell[data-layout="theater"] .shell__guide-toggle kbd {
+  margin-left: 0.15rem;
+}
+
+/* Above the masthead, whose watch-mode fade would otherwise dim it. */
+.shell[data-layout="theater"] .shell__retained {
+  z-index: 21;
+  padding: 0 var(--pad);
+}
+
+/* Everything below the masthead is placed against the window. */
+.shell[data-layout="theater"] .shell__workspace {
+  overflow: hidden;
+}
+
+/* Picture */
+
+.shell[data-layout="theater"] .stage__monitor {
+  position: fixed;
+  inset: 0;
+  width: auto;
+  height: auto;
+}
+
+.shell[data-layout="theater"][data-mode="guide"] .stage__monitor {
+  inset: var(--top) auto auto var(--pad);
+  width: var(--dock-w);
+  height: var(--dock-h);
+}
+
+/* Focus rests here between uses of the chrome; it is not a control to mark. */
+.shell[data-layout="theater"] .stage__monitor:focus-visible {
+  outline: 0;
+}
+
+/* The player is all picture here: its controls sit in the info block. */
+.shell[data-layout="theater"] .hosted-player {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+/* Clipped, not removed: the heading names the player and its state is read out. */
+.shell[data-layout="theater"] .hosted-player .hosted-player__heading {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.shell[data-layout="theater"][data-mode="guide"] .hosted-player__overlay p {
+  font-size: 1.25rem;
+}
+
+.shell[data-layout="theater"][data-mode="guide"] .hosted-player__overlay span {
+  font-size: 0.875rem;
+}
+
+/* Info block */
+
+.shell[data-layout="theater"] .now-playing {
+  position: fixed;
+  z-index: 2;
+}
+
+.shell[data-layout="theater"] .now-playing__channel {
+  gap: 0.7rem;
+}
+
+.shell[data-layout="theater"] .now-playing__meter {
+  height: 1.5rem;
+  gap: 0.8rem;
+  margin-top: 0;
+  font-size: 0.92rem;
+  line-height: 1.5rem;
+}
+
+.shell[data-layout="theater"] .now-playing__progress {
+  min-width: 8rem;
+  max-width: none;
+  height: 0.28rem;
+}
+
+/* With nothing playing the line holds a sentence, not a meter. */
+.shell[data-layout="theater"]
+  .now-playing
+  h1:first-child
+  + .now-playing__meter {
+  color: var(--dim);
+  font-size: 1rem;
+}
+
+.shell[data-layout="theater"] .now-playing .quality-switch button,
+.shell[data-layout="theater"] .programme-guide .quality-switch button {
+  padding: 0.05rem 0.42rem;
+  font-size: 0.76rem;
+}
+
+/* Watch mode: a lower third over the picture, on a gradient of its own. */
+
+.shell[data-layout="theater"][data-mode="watch"] .now-playing {
+  inset: auto 0 0;
+  grid-template-columns: auto minmax(0, max-content) max-content;
+  justify-content: start;
+  align-items: stretch;
+  column-gap: 0;
+  padding: 10rem var(--pad) var(--rail-room);
+  pointer-events: none;
+  background: linear-gradient(
+    to top,
+    rgb(0 0 0 / 90%),
+    rgb(0 0 0 / 62%) 46%,
+    transparent
+  );
+}
+
+/* The gradient lets clicks through to the picture; its contents take them. */
+.shell[data-layout="theater"][data-mode="watch"] .now-playing > * {
+  pointer-events: auto;
+}
+
+.shell[data-layout="theater"][data-mode="watch"] .now-playing__number {
+  display: grid;
+  min-width: 7.2rem;
+  place-items: center;
+  padding: 0 1.1rem;
+  font-size: 2.9rem;
+  font-stretch: 112%;
+  line-height: 1;
+}
+
+.shell[data-layout="theater"][data-mode="watch"] .now-playing__body {
+  display: block;
+  min-width: 30rem;
+  max-width: 46rem;
+  padding: 0.9rem 1.5rem 1rem;
+  overflow: hidden;
+  background: var(--scrim);
+}
+
+.shell[data-layout="theater"][data-mode="watch"] .now-playing__channel {
+  font-size: 0.95rem;
+}
+
+.shell[data-layout="theater"][data-mode="watch"] .now-playing h1 {
+  margin: 0 0 0.4rem;
+  font-size: 3.1rem;
+}
+
+.shell[data-layout="theater"][data-mode="watch"] .now-playing__next {
+  margin-top: 0.5rem;
+  font-size: 0.95rem;
+}
+
+.shell[data-layout="theater"][data-mode="watch"] .now-playing__controls {
+  grid-area: 1 / 3;
+  align-self: end;
+  margin-left: 1.25rem;
+}
+
+/* A narrower window puts the controls on a line of their own under the card. */
+@media (max-width: 1599px) {
+  .shell[data-layout="theater"][data-mode="watch"] .now-playing {
+    grid-template-columns: auto minmax(0, 1fr);
+    row-gap: 0.5rem;
+  }
+
+  .shell[data-layout="theater"][data-mode="watch"] .now-playing__body {
+    min-width: min(30rem, 100%);
+    justify-self: start;
+  }
+
+  .shell[data-layout="theater"][data-mode="watch"] .now-playing__controls {
+    grid-area: 2 / 1 / auto / -1;
+    margin-left: 0;
+  }
+}
+
+/* Nearby Channels and the key hints, in the room under the lower third. */
+
+.shell[data-layout="theater"] .zap-rail {
+  position: fixed;
+  z-index: 3;
+  right: var(--pad);
+  bottom: 4rem;
+  left: var(--pad);
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* A sixth of the row each, however few there are. */
+.shell[data-layout="theater"] .zap-rail button {
+  display: block;
+  min-width: 0;
+  flex: 0 1 calc((100% - 2.5rem) / 6);
+  padding: 0.7rem 0.9rem 0.75rem;
+  color: var(--paper);
+  border: 0;
+  border-top: 2px solid transparent;
+  background: rgb(14 16 20 / 62%);
+  text-align: left;
+}
+
+.shell[data-layout="theater"] .zap-rail button:hover {
+  background: var(--scrim);
+}
+
+.shell[data-layout="theater"] .zap-rail button[aria-current="true"] {
+  border-top-color: var(--amber);
+  background: var(--scrim);
+}
+
+.shell[data-layout="theater"] .zap-rail__channel {
+  display: flex;
+  align-items: baseline;
+  gap: 0.55rem;
+  color: var(--dim);
+  font-size: 0.86rem;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.shell[data-layout="theater"] .zap-rail__channel b {
+  color: var(--paper);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.shell[data-layout="theater"] .zap-rail__channel span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.shell[data-layout="theater"] .zap-rail__channel em {
+  margin-left: auto;
+  font-size: 0.76rem;
+  font-style: normal;
+  font-weight: 600;
+}
+
+.shell[data-layout="theater"] .zap-rail strong {
+  display: block;
+  margin: 0.15rem 0 0.5rem;
+  overflow: hidden;
+  font-size: 1.08rem;
+  font-weight: 600;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell[data-layout="theater"] .zap-rail__progress {
+  display: block;
+  height: 2px;
+  background: var(--faint);
+}
+
+.shell[data-layout="theater"] .zap-rail__progress::after {
+  display: block;
+  width: var(--progress);
+  height: 100%;
+  background: var(--dim);
+  content: "";
+}
+
+.shell[data-layout="theater"]
+  .zap-rail
+  button[aria-current="true"]
+  .zap-rail__progress::after {
+  background: var(--amber);
+}
+
+.shell[data-layout="theater"] .stage__keys {
+  position: fixed;
+  z-index: 3;
+  right: var(--pad);
+  bottom: 1.6rem;
+  display: flex;
+  gap: 1.6rem;
+  margin: 0;
+  color: var(--dim);
+  font-size: 0.86rem;
+  pointer-events: none;
+}
+
+.shell[data-layout="theater"] .stage__keys span {
+  display: flex;
+  align-items: center;
+}
+
+.shell[data-layout="theater"] .stage__keys kbd {
+  margin-right: 0.4rem;
+}
+
+/* A short window has no room for the rail; the arrows still change Channel. */
+@media (max-height: 719px) {
+  .shell[data-layout="theater"] {
+    --rail-room: 4.5rem;
+  }
+
+  .shell[data-layout="theater"] .zap-rail {
+    display: none;
+  }
+}
+
+/* Guide mode: a panel beside the docked picture. The body's lines join the
+   panel's grid, so the controls and the upcoming Programmes share its foot. */
+
+.shell[data-layout="theater"][data-mode="guide"] .now-playing {
+  inset: var(--top) var(--pad) auto calc(var(--pad) + var(--dock-w) + 2rem);
+  height: var(--dock-h);
+  grid-template-columns: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  column-gap: 0.7rem;
+  padding: 0;
+}
+
+.shell[data-layout="theater"][data-mode="guide"] .now-playing__number {
+  grid-area: 1 / 1;
+  padding: 0 0.45rem;
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+.shell[data-layout="theater"][data-mode="guide"] .now-playing__channel {
+  grid-area: 1 / 2 / auto / -1;
+  font-size: 1rem;
+}
+
+.shell[data-layout="theater"][data-mode="guide"] .now-playing h1 {
+  grid-area: 2 / 1 / auto / -1;
+  margin: 0.25rem 0 0.4rem;
+  font-size: 2.9rem;
+}
+
+.shell[data-layout="theater"][data-mode="guide"] .now-playing__meter {
+  max-width: 32rem;
+  grid-area: 3 / 1 / auto / -1;
+}
+
+.shell[data-layout="theater"][data-mode="guide"] .now-playing__about {
+  display: -webkit-box;
+  max-width: 44rem;
+  grid-area: 4 / 1 / auto / -1;
+  max-height: 100%;
+  align-self: start;
+  margin: 0;
+  padding-top: 0.8rem;
+  overflow: hidden;
+  color: var(--paper);
+  font-size: 1rem;
+  line-height: 1.5;
+  opacity: 0.8;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+/* Spanning the two fitted columns sizes them to the control strip. */
+.shell[data-layout="theater"][data-mode="guide"] .now-playing__controls {
+  grid-area: 5 / 1 / auto / span 2;
+}
+
+/* One line of upcoming Programmes, level with the buttons; those that do not
+   fit wrap out of sight. */
+.shell[data-layout="theater"][data-mode="guide"] .now-playing__next {
+  display: flex;
+  height: 2.75rem;
+  grid-area: 5 / 3;
+  flex-wrap: wrap;
+  align-self: start;
+  column-gap: 1.75rem;
+  margin: 0 0 0 1.3rem;
+  overflow: hidden;
+  font-size: 0.95rem;
+  line-height: 2.75rem;
+}
+
+.shell[data-layout="theater"][data-mode="guide"] .now-playing__next li {
+  display: block;
+  max-width: 100%;
+}
+
+.shell[data-layout="theater"][data-mode="guide"]
+  .hosted-player__controls[data-variant="compact"] {
+  --control-size: 2.75rem;
+  --control-fill: var(--cell);
+}
+
+/* A narrower window has no room beside the controls: the upcoming
+   Programmes take a line above them, and the description gives one up. */
+@media (max-width: 1599px) {
+  .shell[data-layout="theater"][data-mode="guide"] .now-playing {
+    grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+  }
+
+  .shell[data-layout="theater"][data-mode="guide"] .now-playing__about {
+    -webkit-line-clamp: 1;
+  }
+
+  .shell[data-layout="theater"][data-mode="guide"] .now-playing__next {
+    height: 1.5rem;
+    grid-area: 5 / 1 / auto / -1;
+    margin: 0 0 0.5rem;
+    line-height: 1.5rem;
+  }
+
+  .shell[data-layout="theater"][data-mode="guide"] .now-playing__controls {
+    grid-area: 6 / 1 / auto / -1;
+  }
+}
+
+/* Guide */
+
+.shell[data-layout="theater"] .programme-guide {
+  position: fixed;
+  z-index: 3;
+  inset: var(--split) 0 0;
+  grid-template-columns: 16.5rem minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto auto;
+}
+
+/* Hidden, not unmounted: it also leaves the focus order and takes no clicks. */
+.shell[data-layout="theater"][data-mode="watch"] .programme-guide {
+  visibility: hidden;
+}
+
+/* The lane's parts become cells of the guide's own grid: the groups fill the
+   left column, the roster trigger and the toolbar sit at its foot. */
+.shell[data-layout="theater"] .programme-guide__body,
+.shell[data-layout="theater"] .programme-guide__lane {
+  display: contents;
+}
+
+.shell[data-layout="theater"] .programme-guide__lane-step {
+  display: none;
+}
+
+.shell[data-layout="theater"]
+  .programme-guide
+  .programme-guide__lane
+  .programme-guide__groups-scroller {
+  grid-area: 1 / 1;
+  padding: 0.7rem 0 0.5rem 1.5rem;
+  overflow: hidden auto;
+  mask-image: none;
+  -webkit-mask-image: none;
+}
+
+.shell[data-layout="theater"] .programme-guide__groups {
+  display: block;
+  padding: 0;
+}
+
+.shell[data-layout="theater"] .programme-guide__group {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.42rem 1rem;
+  border-bottom: 0;
+  font-size: 1rem;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.shell[data-layout="theater"] .programme-guide__group[data-checked] {
+  box-shadow: inset 3px 0 0 var(--amber);
+  font-weight: 600;
+}
+
+.shell[data-layout="theater"] .programme-guide__group em {
+  font-size: 0.86rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.shell[data-layout="theater"] .group-roster-trigger,
+.shell[data-layout="theater"] .feeds-trigger {
+  height: auto;
+  justify-content: flex-start;
+  gap: 0.5rem;
+  padding: 0;
+  background: none;
+  font-size: 0.95rem;
+  font-weight: 500;
+}
+
+.shell[data-layout="theater"] .group-roster-trigger:hover,
+.shell[data-layout="theater"] .group-roster-trigger[data-popup-open],
+.shell[data-layout="theater"] .feeds-trigger:hover,
+.shell[data-layout="theater"] .feeds-trigger[data-popup-open],
+.shell[data-layout="theater"] .feeds-trigger[data-attention="true"] {
+  color: var(--amber);
+  background: none;
+}
+
+.shell[data-layout="theater"] .group-roster-trigger {
+  grid-area: 2 / 1;
+  margin: 0 1rem 0 var(--pad);
+  padding: 0.7rem 0 0.35rem;
+  border-top: 1px solid var(--hair);
+  border-left: 0;
+}
+
+.shell[data-layout="theater"] .programme-guide__toolbar {
+  grid-area: 3 / 1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+  padding: 0 1rem 0.9rem var(--pad);
+  border-bottom: 0;
+}
+
+.shell[data-layout="theater"] .programme-guide__status {
+  display: grid;
+  gap: 0;
+  padding: 0;
+}
+
+.shell[data-layout="theater"] .programme-guide__status .shell__status {
+  gap: 0.5rem;
+  font-size: 0.86rem;
+  line-height: 1.55;
+}
+
+.shell[data-layout="theater"] .programme-guide__panel {
+  grid-area: 1 / 2 / -1 / auto;
+  border-left: 1px solid var(--hair);
+}
+
+.shell[data-layout="theater"] .programme-guide__ruler {
+  height: 2.5rem;
+}
+
+.shell[data-layout="theater"] .programme-guide__ruler > span:first-child,
+.shell[data-layout="theater"] .programme-guide__channel-cell {
+  border-right: 0;
+}
+
+.shell[data-layout="theater"] .programme-guide__ruler time {
+  font-size: 0.9rem;
+}
+
+.shell[data-layout="theater"] .programme-guide__now {
+  padding: 0 0.45rem;
+  font-size: 0.82rem;
+}
+
+/* Tall enough for a Programme's title over its times. */
+.shell[data-layout="theater"] .programme-guide__row {
+  height: 3.7rem;
+  contain-intrinsic-size: 3.7rem;
+}
+
+.shell[data-layout="theater"] .programme-guide__channel-cell {
+  gap: 0.8rem;
+  padding: 0 1rem 0 1.5rem;
+}
+
+.shell[data-layout="theater"] .programme-guide__number {
+  min-width: 2.3rem;
+  font-size: 0.86rem;
+}
+
+.shell[data-layout="theater"] .programme-guide__channel strong {
+  font-size: 1.08rem;
+}
+
+.shell[data-layout="theater"] .programme-guide__programme {
+  padding: 0 0.75rem;
+}
+
+.shell[data-layout="theater"] .programme-guide__programme-copy b {
+  font-size: 1rem;
+}
+
+.shell[data-layout="theater"] .programme-guide__programme-copy small {
+  display: block;
+  overflow: hidden;
+  color: var(--dim);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell[data-layout="theater"]
+  .programme-guide__row[data-playing="true"]
+  .programme-guide__programme[data-live="true"]
+  small {
+  color: var(--on-amber);
+  opacity: 0.72;
+}
+
+.shell[data-layout="theater"] .programme-guide__no-programmes,
+.shell[data-layout="theater"] .programme-guide__truncated {
+  left: 0.75rem;
+  font-size: 0.95rem;
+}
+
+.shell[data-layout="theater"] .programme-guide__truncated {
+  right: 0.75rem;
+  left: auto;
+}
+
+/* Sheets: one right-hand panel under the masthead, over a dimmed window. */
+
+:root:has(.shell[data-layout="theater"]) .feeds-dialog__backdrop,
+:root:has(.shell[data-layout="theater"]) .group-roster__backdrop,
+:root:has(.shell[data-layout="theater"]) .board-search-desk__backdrop {
+  top: 0;
+  left: 0;
+}
+
+:root:has(.shell[data-layout="theater"]) .feeds-dialog__popup,
+:root:has(.shell[data-layout="theater"]) .group-roster__popup,
+:root:has(.shell[data-layout="theater"]) .board-search-desk__popup {
+  top: var(--bar-h);
+  width: min(34rem, 92vw);
+}
+
+/* Idle: the picture alone. The chrome fades and takes no pointer; nothing
+   moves, and the picture's own box is untouched. */
+
+.shell[data-layout="theater"] .shell__masthead,
+.shell[data-layout="theater"] .shell__retained,
+.shell[data-layout="theater"] .now-playing,
+.shell[data-layout="theater"] .zap-rail,
+.shell[data-layout="theater"] .stage__keys {
+  transition: opacity 180ms var(--ease);
+}
+
+.shell[data-layout="theater"][data-chrome="hidden"] {
+  cursor: none;
+}
+
+.shell[data-layout="theater"][data-chrome="hidden"] .shell__masthead,
+.shell[data-layout="theater"][data-chrome="hidden"] .shell__retained,
+.shell[data-layout="theater"][data-chrome="hidden"] .now-playing,
+.shell[data-layout="theater"][data-chrome="hidden"] .now-playing > *,
+.shell[data-layout="theater"][data-chrome="hidden"] .zap-rail,
+.shell[data-layout="theater"][data-chrome="hidden"] .stage__keys {
+  pointer-events: none;
+}
+
+.shell[data-layout="theater"][data-chrome="hidden"] .shell__masthead,
+.shell[data-layout="theater"][data-chrome="hidden"] .shell__retained,
+.shell[data-layout="theater"][data-chrome="hidden"] .now-playing,
+.shell[data-layout="theater"][data-chrome="hidden"] .zap-rail,
+.shell[data-layout="theater"][data-chrome="hidden"] .stage__keys {
+  opacity: 0;
+}

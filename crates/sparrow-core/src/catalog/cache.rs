@@ -6,7 +6,9 @@ use std::{collections::HashMap, sync::Arc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error, ser::SerializeMap};
 
 use super::ChannelCatalog;
-use crate::domain::{CatalogGeneration, ChannelGroupView, ChannelId, SourceConfiguration};
+use crate::domain::{
+    CatalogGeneration, ChannelGroupView, ChannelId, ChannelQuality, SourceConfiguration,
+};
 
 pub(crate) fn key(
     configuration: &SourceConfiguration,
@@ -105,6 +107,36 @@ pub(super) mod channel_id {
     pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<ChannelId, D::Error> {
         ChannelId::parse(String::deserialize(deserializer)?)
             .map_err(|_| D::Error::custom("invalid channel identifier"))
+    }
+}
+
+pub(super) mod quality {
+    use super::*;
+    pub fn serialize<S: Serializer>(
+        value: &Option<ChannelQuality>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        value
+            .map(|quality| match quality {
+                ChannelQuality::Sd => 0_u8,
+                ChannelQuality::Hd => 1,
+                ChannelQuality::Fhd => 2,
+                ChannelQuality::Uhd => 3,
+            })
+            .serialize(serializer)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<ChannelQuality>, D::Error> {
+        Option::<u8>::deserialize(deserializer)?
+            .map(|level| match level {
+                0 => Ok(ChannelQuality::Sd),
+                1 => Ok(ChannelQuality::Hd),
+                2 => Ok(ChannelQuality::Fhd),
+                3 => Ok(ChannelQuality::Uhd),
+                _ => Err(D::Error::custom("invalid channel quality")),
+            })
+            .transpose()
     }
 }
 

@@ -6,7 +6,7 @@ Sparrow Next is a complete replacement built on `rewrite/sparrow-next`. One deep
 
 The installed application is fully on-device. It never calls the hosted Sparrow deployment or a localhost server. Linux and Android use `mpegts.js` over a Tauri-native byte stream as the Primary Playback Engine; Linux alone offers system mpv as an explicit Fallback Playback Engine. Raw Source Snapshots persist atomically on installed devices, while the hosted process uses memory-only snapshots. The old implementation is replaced rather than adapted.
 
-This handoff reconciles [ADR 0001](../adr/0001-shared-native-http-playback.md), [ADR 0002](../adr/0002-persist-independent-raw-source-snapshots.md), [ADR 0003](../adr/0003-share-one-core-across-sibling-adapters.md), [ADR 0004](../adr/0004-rewrite-on-a-replacement-branch.md), and [ADR 0005](../adr/0005-build-candidates-on-tags-and-publish-after-device-acceptance.md). It is decision-complete and ready to split into implementation issues.
+This handoff reconciles [ADR 0001](../adr/0001-shared-native-http-playback.md), [ADR 0002](../adr/0002-persist-independent-raw-source-snapshots.md), [ADR 0003](../adr/0003-share-one-core-across-sibling-adapters.md), [ADR 0004](../adr/0004-rewrite-on-a-replacement-branch.md), and [ADR 0005](../adr/0005-build-candidates-on-tags-and-publish-after-device-acceptance.md). It is decision-complete and ready to split into implementation issues. [ADR 0006](../adr/0006-use-a-theater-layout-on-desktop-and-number-channels-in-core.md) later added Channel Numbers, Quality Variants, the `pictureOverlay` capability and two optional read inputs; the sketches below include them.
 
 ## Context and current state
 
@@ -128,6 +128,8 @@ pub struct ChannelSummary {
     pub id: ChannelId,
     pub name: String,
     pub group: String,
+    pub number: u32, // Channel Number, shared by the Quality Variants of one guide row
+    pub variant: Option<ChannelVariant>,
     pub now: Option<ProgrammeSummary>,
 }
 
@@ -135,6 +137,15 @@ pub struct ChannelDetails {
     pub id: ChannelId,
     pub name: String,
     pub group: String,
+    pub number: u32,
+    pub variant: Option<ChannelVariant>,
+}
+
+pub enum ChannelQuality { Sd, Hd, Fhd, Uhd }
+
+pub struct ChannelVariant {
+    pub quality: ChannelQuality,
+    pub base_name: String, // the name without its picture-quality token
 }
 
 pub struct ProgrammeSummary {
@@ -285,6 +296,7 @@ export type Capabilities = Readonly<{
   playbackTransport: "tauri-native-stream" | "same-origin-http";
   audioTrackSelection: boolean;
   mpvFailover: boolean;
+  pictureOverlay: boolean; // whether page content may be drawn over the picture
 }>;
 
 export type PlaybackDescriptor =
@@ -537,6 +549,8 @@ POST /api/v1/refresh
 GET  /api/v1/events
 GET  /api/v1/play/{channelId}
 ```
+
+The schedule route accepts `from=<RFC 3339 instant>` and returns only the Programmes that end after it; a bad value is the `schedule-from` input error. The guide route accepts `around=<channelId>` and starts the page half a page before that Channel in Channel Catalog order; it is rejected together with a group or a cursor. The Tauri commands `catalog_schedule` and `catalog_guide_window` take the same optional inputs.
 
 The root redirects to `/app/`. Raw M3U/EPG download routes and the arbitrary `/proxy/*` route are deleted. HTTP errors use a versioned safe error DTO. Tauri exposes equivalent catalog queries/status/refresh plus installed-only configuration and playback commands; unsolicited changes use Tauri events rather than polling a local server.
 

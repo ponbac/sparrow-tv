@@ -20,6 +20,8 @@ export interface ProgrammeLayout {
   readonly widthPercent: number;
   readonly elapsedPercent: number;
   readonly live: boolean;
+  /** The visible part spans at least half an hour: room for the time range line. */
+  readonly timesFit: boolean;
 }
 
 /** Creates the guide window containing `now` without changing every minute. */
@@ -74,24 +76,16 @@ export function programmeLayout(
     widthPercent: ((visibleEnd - visibleStart) / span) * 100,
     elapsedPercent: ((elapsed - visibleStart) / (visibleEnd - visibleStart)) * 100,
     live: programmeStart <= nowTime && nowTime < programmeEnd,
+    timesFit: visibleEnd - visibleStart >= HALF_HOUR_MS,
   };
 }
 
-/** Returns the current Programme, or the first visible Programme as a fallback. */
-export function programmeAt<Programme extends ProgrammeSlot>(
+/** Returns the Programme airing at `now`, or null between Programmes. */
+export function liveProgramme<Programme extends ProgrammeSlot>(
   programmes: readonly Programme[],
   now: Date,
 ): Programme | null {
-  const nowTime = now.getTime();
-  return (
-    programmes.find(
-      (programme) =>
-        Date.parse(programme.startsAt) <= nowTime &&
-        nowTime < Date.parse(programme.endsAt),
-    ) ??
-    programmes[0] ??
-    null
-  );
+  return programmes.find((programme) => isProgrammeLive(programme, now)) ?? null;
 }
 
 /** Builds a stable identity for a Programme inside its owning Channel row. */
@@ -108,24 +102,6 @@ export function clockLabel(instant: Date | string): string {
   return CLOCK_FORMATTER.format(date);
 }
 
-/** Describes when a Programme airs relative to the current clock. */
-export function programmeTiming(
-  programme: ProgrammeSlot,
-  now: Date,
-): string {
-  const start = Date.parse(programme.startsAt);
-  const end = Date.parse(programme.endsAt);
-  const slot = `${clockLabel(programme.startsAt)}–${clockLabel(programme.endsAt)}`;
-  const nowTime = now.getTime();
-  if (start <= nowTime && nowTime < end) {
-    return `${slot} · ${Math.max(1, Math.ceil((end - nowTime) / 60_000))} min left`;
-  }
-  if (nowTime < start) {
-    return `${slot} · starts in ${Math.max(1, Math.ceil((start - nowTime) / 60_000))} min`;
-  }
-  return `${slot} · earlier`;
-}
-
 /** Reports whether a Programme is airing at the supplied instant. */
 export function isProgrammeLive(
   programme: ProgrammeSlot,
@@ -135,19 +111,6 @@ export function isProgrammeLive(
   return (
     Date.parse(programme.startsAt) <= instant &&
     instant < Date.parse(programme.endsAt)
-  );
-}
-
-/** Compares Programme identity without depending on its owning response shape. */
-export function sameProgramme(
-  left: ProgrammeSlot,
-  right: ProgrammeSlot | null,
-): boolean {
-  return (
-    right !== null &&
-    left.startsAt === right.startsAt &&
-    left.endsAt === right.endsAt &&
-    left.title === right.title
   );
 }
 

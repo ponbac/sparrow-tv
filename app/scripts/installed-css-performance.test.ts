@@ -7,44 +7,63 @@ import postcss, { type Rule } from "postcss";
 import { describe, expect, it } from "vitest";
 
 const installedStylesRoot = fileURLToPath(new URL("../src/", import.meta.url));
+const THEATER_STYLESHEET = "features/stage/theater.css";
+const THEATER_SCOPE = '.shell[data-layout="theater"]';
 
 describe("installed app repaint contract", () => {
-  it("scales Split Stage chrome with large-desktop typography", async () => {
+  it("scales shell chrome with large-desktop typography", async () => {
     const stylesheets = new Map(await installedStylesheets());
-    const indexStyles = stylesheets.get("index.css");
-    const splitStageStyles = stylesheets.get("features/guide/split-stage.css");
-    const guideStyles = stylesheets.get("features/guide/programme-guide.css");
-    const cinemaStyles = stylesheets.get("features/guide/cinema-stage.css");
+    const indexStyles = requireStylesheet(stylesheets, "index.css");
+    const shellStyles = requireStylesheet(
+      stylesheets,
+      "features/stage/shell.css",
+    );
+    const stageStyles = requireStylesheet(
+      stylesheets,
+      "features/stage/stage.css",
+    );
+    const guideStyles = requireStylesheet(
+      stylesheets,
+      "features/guide/programme-guide.css",
+    );
+    const theaterStyles = requireStylesheet(stylesheets, THEATER_STYLESHEET);
 
-    expect(indexStyles).toBeDefined();
-    expect(splitStageStyles).toBeDefined();
-    expect(guideStyles).toBeDefined();
-    expect(cinemaStyles).toBeDefined();
-
-    expect(declaration(indexStyles!, ":root", "--guide-gutter")).toBe(
+    expect(declaration(indexStyles, ":root", "--guide-gutter")).toBe(
       "min(20rem, 38%)",
     );
-    expect(declaration(indexStyles!, "html", "font-size")).toBe(
-      "clamp(100%, 0.75vw, 150%)",
+    // Android dialogs anchor below the stacked masthead at this height.
+    expect(declaration(indexStyles, ":root", "--bar-h")).toBe("2.375rem");
+    expect(declaration(indexStyles, "html", "font-size")).toBe(
+      "clamp(100%, 0.8vw, 150%)",
     );
-    expect(declaration(splitStageStyles!, ".split-stage", "font-size")).toBe(
-      "0.8125rem",
+    expect(declaration(shellStyles, ".shell", "font-size")).toBe("0.8125rem");
+    expect(declaration(shellStyles, ".shell", "grid-template-rows")).toBe(
+      "2.375rem auto minmax(0, 1fr)",
     );
     expect(
-      declaration(splitStageStyles!, ".split-stage", "grid-template-rows"),
-    ).toBe("2.375rem auto minmax(0, 1fr)");
-    expect(
-      declaration(guideStyles!, ".programme-guide", "grid-template-rows"),
+      declaration(guideStyles, ".programme-guide", "grid-template-rows"),
     ).toBe("2.75rem minmax(0, 1fr)");
-    expect(declaration(guideStyles!, ".programme-guide__row", "height")).toBe(
+    expect(declaration(guideStyles, ".programme-guide__row", "height")).toBe(
       "2.75rem",
     );
+    expect(declaration(stageStyles, ".stage", "grid-template-rows")).toBe(
+      "auto auto",
+    );
+    // Theater has its own masthead and its own, taller guide rows; the
+    // stacked values above are untouched by it.
     expect(
-      declaration(cinemaStyles!, ".cinema-stage", "grid-template-rows"),
-    ).toBe("auto auto auto");
+      declaration(theaterStyles, `:root:has(${THEATER_SCOPE})`, "--bar-h"),
+    ).toBe("3.5rem");
+    expect(
+      declaration(
+        theaterStyles,
+        `${THEATER_SCOPE} .programme-guide__row`,
+        "height",
+      ),
+    ).toBe("3.7rem");
   });
 
-  it("keeps persistent Split Stage chrome static", async () => {
+  it("keeps persistent shell chrome static", async () => {
     const continuousChromeSelectors: string[] = [];
     let persistentChromeRules = 0;
 
@@ -89,6 +108,84 @@ describe("installed app repaint contract", () => {
 
     expect(fullWindowBlendSelectors).toEqual([]);
   });
+
+  it("never blurs what lies behind a panel", async () => {
+    const blurred: string[] = [];
+
+    for (const [path, stylesheet] of await installedStylesheets()) {
+      stylesheet.walkRules((rule) => {
+        rule.walkDecls(/^(-webkit-)?backdrop-filter$/u, () => {
+          blurred.push(`${path}: ${rule.selector}`);
+        });
+      });
+    }
+
+    expect(blurred).toEqual([]);
+  });
+
+  it("scopes every Theater rule to the Theater layout", async () => {
+    const theaterStyles = requireStylesheet(
+      new Map(await installedStylesheets()),
+      THEATER_STYLESHEET,
+    );
+    const unscoped: string[] = [];
+    let rules = 0;
+
+    theaterStyles.walkRules((rule) => {
+      rules += 1;
+      // In-tree elements hang off the shell; portalled ones off the root
+      // that holds it.
+      unscoped.push(
+        ...rule.selectors.filter(
+          (selector) => !selector.includes(THEATER_SCOPE),
+        ),
+      );
+    });
+
+    expect(rules).toBeGreaterThan(0);
+    expect(unscoped).toEqual([]);
+  });
+
+  it("lets Theater change nothing over time but opacity", async () => {
+    const theaterStyles = requireStylesheet(
+      new Map(await installedStylesheets()),
+      THEATER_STYLESHEET,
+    );
+    const moving: string[] = [];
+
+    theaterStyles.walkAtRules("keyframes", (keyframes) => {
+      moving.push(`@keyframes ${keyframes.params}`);
+    });
+    theaterStyles.walkRules((rule) => {
+      rule.walkDecls((declaration) => {
+        if (
+          declaration.prop.startsWith("animation") ||
+          ((declaration.prop === "transition" ||
+            declaration.prop === "transition-property") &&
+            !transitionsOnlyOpacity(declaration.value))
+        ) {
+          moving.push(`${rule.selector} { ${declaration} }`);
+        }
+      });
+    });
+
+    expect(moving).toEqual([]);
+  });
+
+  it("never transitions or animates the picture's box", async () => {
+    const moving: string[] = [];
+
+    for (const [path, stylesheet] of await installedStylesheets()) {
+      stylesheet.walkRules((rule) => {
+        if (!rule.selectors.some(containsPicture)) return;
+        rule.walkDecls(/^(transition|animation)/u, (declaration) => {
+          moving.push(`${path}: ${rule.selector} { ${declaration} }`);
+        });
+      });
+    }
+
+    expect(moving).toEqual([]);
+  });
 });
 
 async function installedStylesheets(): Promise<
@@ -106,10 +203,38 @@ async function installedStylesheets(): Promise<
   );
 }
 
+function requireStylesheet(
+  stylesheets: ReadonlyMap<string, postcss.Root>,
+  path: string,
+): postcss.Root {
+  const stylesheet = stylesheets.get(path);
+  if (stylesheet === undefined) {
+    throw new Error(`Missing stylesheet: ${path}`);
+  }
+  return stylesheet;
+}
+
 function containsPersistentChrome(selector: string): boolean {
-  return /(^|[\s>+~,(])\.split-stage__(?:masthead|identity|freshness|status)(?=$|[\s>+~.:#,[)])/u.test(
+  return /(^|[\s>+~,(])\.shell__(?:masthead|wordmark|clock|status)(?=$|[\s>+~.:#,[)])/u.test(
     selector,
   );
+}
+
+/** The picture's containers and the video element itself. */
+function containsPicture(selector: string): boolean {
+  return /(^|[\s>+~,(])(?:\.stage__monitor|\.hosted-player__screen|video)(?=$|[\s>+~.:#,[)])/u.test(
+    selector,
+  );
+}
+
+/**
+ * Whether a `transition` or `transition-property` value names opacity and
+ * nothing else. A value that names no property transitions everything.
+ */
+function transitionsOnlyOpacity(value: string): boolean {
+  return value
+    .split(",")
+    .every((transition) => /^opacity(\s|$)/u.test(transition.trim()));
 }
 
 function declarationsByProperty(rule: Rule): ReadonlyMap<string, string> {

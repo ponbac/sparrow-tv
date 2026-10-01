@@ -1,7 +1,7 @@
 const textEncoder = new TextEncoder();
 
 /** Maximum UTF-8 size of a catalog search term, matching the core contract. */
-export const MAX_SEARCH_TERM_BYTES = 256;
+const MAX_SEARCH_TERM_BYTES = 256;
 
 /** Delay before a typed board-search term is sent to the catalog. */
 export const SEARCH_DEBOUNCE_MS = 90;

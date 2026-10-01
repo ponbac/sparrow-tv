@@ -1,0 +1,191 @@
+.shell {
+  display: grid;
+  height: 100dvh;
+  min-height: 32.5rem;
+  grid-template-rows: 2.375rem auto minmax(0, 1fr);
+  overflow: hidden;
+  color: var(--paper);
+  background: var(--black);
+  font-size: 0.8125rem;
+}
+
+.shell__masthead {
+  z-index: 20;
+  display: flex;
+  grid-row: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.25rem;
+  padding: 0 0.75rem;
+  background: var(--black);
+}
+
+.shell__wordmark {
+  font-size: 0.9375rem;
+  font-stretch: 125%;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.shell__clock {
+  font-size: 0.9375rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.shell__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4375rem;
+  color: var(--dim);
+  font-size: 0.8125rem;
+  white-space: nowrap;
+}
+
+.shell__status::before {
+  width: 0.375rem;
+  height: 0.375rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--dim);
+  content: "";
+}
+
+.shell__status[data-state="fresh"]::before {
+  background: var(--ok);
+}
+
+.shell__status[data-state="stale"]::before {
+  background: var(--amber);
+}
+
+.shell__status[data-state="failed"]::before {
+  background: var(--bad);
+}
+
+.shell__retained {
+  z-index: 19;
+  grid-row: 2;
+  height: 2rem;
+  padding: 0 0.75rem;
+  overflow: hidden;
+  color: var(--on-amber);
+  background: var(--amber);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 2rem;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell__workspace {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-row: 3;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(18rem, 1fr);
+  overflow-y: auto;
+}
+
+@media (max-width: 1050px) {
+  .shell {
+    --guide-gutter: min(16rem, 36%);
+  }
+}
+
+@media (max-width: 760px) {
+  :root {
+    --mobile-monitor-height: min(calc(56.25vw + 5.5rem), 42dvh);
+    --mobile-panel-top: 2.375rem;
+  }
+
+  :root:has(.hosted-player) {
+    --mobile-panel-top: calc(2.375rem + var(--mobile-monitor-height));
+  }
+
+  :root:has(.shell__retained) {
+    --mobile-panel-top: 4.375rem;
+  }
+
+  :root:has(.shell__retained):has(.hosted-player) {
+    --mobile-panel-top: calc(4.375rem + var(--mobile-monitor-height));
+  }
+
+  .shell {
+    height: 100dvh;
+    min-height: 0;
+  }
+
+  .shell__masthead {
+    position: sticky;
+    top: 0;
+  }
+
+  .shell__retained {
+    font-size: 0.75rem;
+  }
+
+  .shell__workspace {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    overflow: hidden;
+  }
+}
+
+@media (max-width: 460px) {
+  .shell {
+    --guide-gutter: min(13.5rem, 44vw);
+  }
+}
+
+@media (max-width: 760px) and (max-height: 600px) {
+  :root {
+    --mobile-monitor-height: 32dvh;
+  }
+}
+
+/* Short landscape screens keep the monitor and guide visible together. */
+@media (max-width: 1050px) and (max-height: 600px) and (orientation: landscape) {
+  .shell {
+    --guide-gutter: 10rem;
+  }
+
+  .shell {
+    height: 100dvh;
+    min-height: 0;
+  }
+
+  .shell__workspace {
+    grid-template-columns: minmax(0, 45fr) minmax(0, 55fr);
+    grid-template-rows: minmax(0, 1fr);
+    overflow: hidden;
+  }
+
+  .shell__workspace > .stage,
+  .shell__workspace > .programme-guide {
+    grid-row: 1;
+  }
+
+  /* The monitor gives way here, so the stage must be free to shrink. */
+  .shell__workspace > .stage {
+    min-height: 0;
+    grid-template-rows: minmax(0, 1fr) auto;
+    overflow: hidden;
+  }
+
+  .shell__workspace .stage__monitor {
+    height: auto;
+  }
+
+  .shell__workspace .now-playing {
+    padding: 0.5rem 0.75rem;
+  }
+
+  .shell__workspace .now-playing__next {
+    display: none;
+  }
+}
