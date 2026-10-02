@@ -220,6 +220,9 @@ class HttpSparrowClient implements SparrowClient {
     if (input.cursor !== undefined) {
       query.set("cursor", input.cursor);
     }
+    if (input.around !== undefined) {
+      query.set("around", input.around);
+    }
 
     return this.#request(
       `${API_ROOT}/guide?${query.toString()}`,
@@ -253,6 +256,9 @@ class HttpSparrowClient implements SparrowClient {
     query.set("limit", String(input.limit));
     if (input.cursor !== undefined) {
       query.set("cursor", input.cursor);
+    }
+    if (input.from !== undefined) {
+      query.set("from", input.from);
     }
 
     return this.#request(

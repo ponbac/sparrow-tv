@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { clientSchemas } from "../../client/contracts";
+import { channelFixture } from "../../test/channel-fixture";
 import { installedPlaybackDiagnostics } from "./installed-playback-diagnostics";
 import {
   createInstalledPlaybackState,
@@ -7,7 +8,7 @@ import {
   type InstalledPlaybackEvent,
 } from "./installed-playback-state";
 
-const PRIVATE_CHANNEL = clientSchemas.channel.parse({
+const PRIVATE_CHANNEL = channelFixture({
   id: "private-channel-canary",
   name: "Private Provider Canary",
   group: "Private",

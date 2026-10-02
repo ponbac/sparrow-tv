@@ -6,7 +6,6 @@ import type {
   CatalogGeneration,
   ChannelSummary,
   ProgrammeSearchHit,
-  ProgrammeSlot,
   SparrowClient,
 } from "../../client/contracts";
 import {
@@ -14,6 +13,7 @@ import {
   generationBoundResult,
 } from "../../client/query-result";
 import { useDebounce } from "../../hooks/useDebounce";
+import { groupDisplayName } from "./board-group-roster";
 import { BoardSearchDesk } from "./board-search-desk";
 import {
   visibleSearchChannels,
@@ -21,15 +21,16 @@ import {
 } from "./board-search-scope";
 import {
   canonicalSearchTerm,
-  MAX_SEARCH_TERM_BYTES,
   SEARCH_DEBOUNCE_MS,
   searchTermFits,
 } from "./board-search-term";
+import { channelTitle, qualityLabel } from "./guide-families";
 import { clockLabel } from "./guide-window";
 import "./board-search.css";
 
 const SEARCH_RESULT_LIMIT = 8;
 const SEARCH_FETCH_LIMIT = 40;
+const DESK_CHOICE_LABEL = "Open full channel search";
 
 type SearchChoice =
   | { readonly _tag: "desk" }
@@ -53,10 +54,7 @@ export interface BoardSearchProps {
   readonly excludedGroups: ReadonlySet<string>;
   readonly onGenerationMismatch: () => void;
   readonly onPreparePlayback: () => void;
-  readonly onTune: (
-    channel: ChannelSummary,
-    programme: ProgrammeSlot | null,
-  ) => void;
+  readonly onTune: (channel: ChannelSummary) => void;
 }
 
 /** Searches the complete catalog while keeping results inside the guide pane. */
@@ -71,7 +69,13 @@ export function BoardSearch({
   const queryClient = useQueryClient();
   const [searchBoundary, setSearchBoundary] = useState<HTMLElement | null>(null);
   const bindSearchBoundary = useCallback((element: HTMLElement | null) => {
-    setSearchBoundary(element?.closest<HTMLElement>(".programme-guide") ?? null);
+    // In the stacked layout the results must stay inside the guide pane,
+    // below the native picture.
+    setSearchBoundary(
+      element?.closest<HTMLElement>(".programme-guide") ??
+        element?.closest<HTMLElement>(".shell") ??
+        null,
+    );
   }, []);
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
@@ -193,13 +197,7 @@ export function BoardSearch({
       return;
     }
     onPreparePlayback();
-    if (choice._tag === "channel") {
-      onTune(choice.channel, null);
-      clear();
-      return;
-    }
-
-    onTune(choice.programme.channel, choice.programme);
+    onTune(choiceChannel(choice));
     clear();
   };
 
@@ -230,8 +228,8 @@ export function BoardSearch({
         >
           <Search aria-hidden="true" />
           <Autocomplete.Input
-            aria-label="Search Channels and Programmes"
-            placeholder="Search the board"
+            aria-label="Search channels and programmes"
+            placeholder="Search channels and programmes"
             autoComplete="off"
             spellCheck={false}
           />
@@ -250,11 +248,11 @@ export function BoardSearch({
             <Autocomplete.Popup className="board-search__popup">
               {presentation === "invalid" ? (
                 <p className="board-search__state" role="alert">
-                  Keep the search within {MAX_SEARCH_TERM_BYTES} UTF-8 bytes.
+                  That search is too long. Shorten it and try again.
                 </p>
               ) : presentation === "unavailable" ? (
                 <p className="board-search__state" role="status">
-                  Search opens after a catalog is ready.
+                  Search is ready once the channels have loaded.
                 </p>
               ) : (
                 <>
@@ -268,9 +266,13 @@ export function BoardSearch({
                           value={choice}
                           onClick={() => choose(choice)}
                         >
-                          <span>Search</span>
-                          <strong>Open full Channel search</strong>
-                          <small>Full list</small>
+                          <span className="board-search__number">
+                            <Search aria-hidden="true" />
+                          </span>
+                          <span className="board-search__name">
+                            <strong>{DESK_CHOICE_LABEL}</strong>
+                          </span>
+                          <small>All matches</small>
                         </Autocomplete.Item>
                       ) : (
                         <Autocomplete.Item
@@ -282,36 +284,49 @@ export function BoardSearch({
                           onFocus={prepareChoice}
                           onClick={() => choose(choice)}
                         >
-                          <span>
-                            {choice._tag === "channel"
-                              ? "Channel"
-                              : "Programme"}
+                          <span className="board-search__number">
+                            {choiceChannel(choice).number}
                           </span>
-                          <strong>{choiceLabel(choice)}</strong>
+                          {choice._tag === "channel" ? (
+                            <span className="board-search__name">
+                              <strong>{channelTitle(choice.channel)}</strong>
+                              {choice.channel.variant === null ? null : (
+                                <span className="board-search__quality">
+                                  {qualityLabel(choice.channel.variant.quality)}
+                                </span>
+                              )}
+                            </span>
+                          ) : (
+                            <span className="board-search__name">
+                              <strong>{choice.programme.title}</strong>
+                            </span>
+                          )}
                           <small>{choiceDetail(choice)}</small>
                         </Autocomplete.Item>
                       ),
                     )}
                   </Autocomplete.List>
                   {presentation === "loading" ? (
-                    <p className="board-search__state">Scanning the catalog…</p>
+                    <p className="board-search__state">Searching…</p>
                   ) : presentation === "generation-mismatch" ? (
                     <div className="board-search__state" role="alert">
-                      The catalog changed while searching.
+                      The channels changed while you searched.
                       <button type="button" onClick={onGenerationMismatch}>
-                        Rescan
+                        Search again
                       </button>
                     </div>
                   ) : presentation === "error" ? (
                     <p className="board-search__state" role="alert">
-                      Search is temporarily unavailable.
+                      Search is not available right now. Try again in a moment.
                     </p>
                   ) : presentation === "hidden" ? (
                     <p className="board-search__state">
-                      Matching signals are in excluded groups.
+                      The only matches are in hidden groups.
                     </p>
                   ) : presentation === "empty" ? (
-                    <p className="board-search__state">No matching signals.</p>
+                    <p className="board-search__state">
+                      Nothing matches that search.
+                    </p>
                   ) : null}
                 </>
               )}
@@ -329,8 +344,8 @@ export function BoardSearch({
         onTermChange={setQuery}
         onGenerationMismatch={onGenerationMismatch}
         onPreparePlayback={onPreparePlayback}
-        onTune={(channel, programme) => {
-          onTune(channel, programme);
+        onTune={(channel) => {
+          onTune(channel);
           clear();
         }}
       />
@@ -391,19 +406,25 @@ function choiceKey(choice: SearchChoice, occurrence: number): string {
 
 function choiceLabel(choice: SearchChoice): string {
   if (choice._tag === "desk") {
-    return "Open full Channel search";
+    return DESK_CHOICE_LABEL;
   }
   return choice._tag === "channel"
     ? choice.channel.name
     : choice.programme.title;
 }
 
-function choiceDetail(choice: SearchChoice): string {
-  if (choice._tag === "desk") {
-    return "Full list";
-  }
+/** The Channel a hit tunes: itself, or the one airing the Programme. */
+function choiceChannel(
+  choice: Exclude<SearchChoice, { readonly _tag: "desk" }>,
+): ChannelSummary {
+  return choice._tag === "channel" ? choice.channel : choice.programme.channel;
+}
+
+function choiceDetail(
+  choice: Exclude<SearchChoice, { readonly _tag: "desk" }>,
+): string {
   if (choice._tag === "channel") {
-    return choice.channel.group === "" ? "Ungrouped" : choice.channel.group;
+    return groupDisplayName(choice.channel.group);
   }
-  return `${clockLabel(choice.programme.startsAt)}–${clockLabel(choice.programme.endsAt)}`;
+  return `${choice.programme.channel.name}, ${clockLabel(choice.programme.startsAt)} to ${clockLabel(choice.programme.endsAt)}`;
 }

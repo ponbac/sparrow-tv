@@ -12,6 +12,7 @@ describe("browser HTTP Sparrow client", () => {
           playbackTransport: "same-origin-http",
           audioTrackSelection: false,
           mpvFailover: false,
+          pictureOverlay: true,
         }),
         {
           status: 200,

@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { clientSchemas, type PageCursor } from "./contracts";
 import { createHttpSparrowClient } from "./http";
+import { channelFixture } from "../test/channel-fixture";
 
 const startsAt = clientSchemas.isoInstant.parse("2026-08-30T19:00:00Z");
 const endsAt = clientSchemas.isoInstant.parse("2026-08-30T22:00:00Z");
@@ -16,7 +17,11 @@ const guideWindow = {
   generation: 11,
   items: [
     {
-      channel: { id: "channel-one", name: "World News", group: "News" },
+      channel: channelFixture({
+        id: "channel-one",
+        name: "World News",
+        group: "News",
+      }),
       programmes: [programme],
       programmesTruncated: false,
     },
@@ -153,6 +158,41 @@ describe("hosted HTTP guide-window client", () => {
       expect(result).toEqual(invalidResponse());
       expect(JSON.stringify(result)).not.toContain(privateValue);
     }
+  });
+
+  it("asks for the page around a Channel and requires that Channel in it", async () => {
+    const around = guideWindow.items[0].channel.id;
+    const elsewhere = {
+      ...guideWindow,
+      items: [
+        {
+          ...guideWindow.items[0],
+          channel: channelFixture({
+            id: "channel-two",
+            name: "Cinema One",
+            group: "Cinema",
+          }),
+        },
+      ],
+    };
+    const requests: string[] = [];
+    const client = createHttpSparrowClient({
+      fetch: queuedFetch([guideWindow, elsewhere], requests),
+    });
+
+    await expect(
+      client.guideWindow({ startsAt, endsAt, channelLimit: 1, around }),
+    ).resolves.toEqual({
+      ok: true,
+      value: clientSchemas.guideWindow.parse(guideWindow),
+    });
+    await expect(
+      client.guideWindow({ startsAt, endsAt, channelLimit: 1, around }),
+    ).resolves.toEqual(invalidResponse());
+
+    expect(requests[0]).toBe(
+      "/api/v1/guide?startsAt=2026-08-30T19%3A00%3A00Z&endsAt=2026-08-30T22%3A00%3A00Z&channelLimit=1&around=channel-one",
+    );
   });
 
   it("rejects guide continuation cycles and accepts typed guide input errors", async () => {

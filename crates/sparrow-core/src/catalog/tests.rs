@@ -202,6 +202,48 @@ fn a_cursor_from_an_older_catalog_generation_returns_typed_invalidation() {
 }
 
 #[test]
+fn a_cached_catalog_keeps_channel_numbers_and_quality_variants() {
+    let built = catalog(
+        [
+            "World News",
+            "Arena SD",
+            "Arena HD",
+            "Arena FHD",
+            "Arena 4K",
+        ]
+        .into_iter()
+        .map(|name| parsed_channel(name, "Sport"))
+        .collect(),
+        generation(1),
+    );
+    let bytes = built.encode_cache().expect("a built catalog encodes");
+    let reopened =
+        ChannelCatalog::decode_cache(&bytes, generation(1)).expect("the encoded catalog decodes");
+    let query = ChannelQuery::all(PageRequest::first(
+        PageLimit::new(10).expect("fixture limit is valid"),
+    ));
+
+    let expected = built
+        .channels_page(&query)
+        .expect("the built catalog is queryable");
+    assert_eq!(
+        expected
+            .items()
+            .iter()
+            .map(|channel| channel.number())
+            .collect::<Vec<_>>(),
+        [1, 2, 2, 2, 2]
+    );
+    assert_eq!(
+        reopened
+            .channels_page(&query)
+            .expect("the reopened catalog is queryable")
+            .items(),
+        expected.items()
+    );
+}
+
+#[test]
 fn catalog_generation_covers_configuration_m3u_and_optional_epg_content() {
     let first_configuration = configuration();
     let other_configuration = SourceConfiguration::parse(SourceConfigurationInput::new(
@@ -511,6 +553,18 @@ fn configuration() -> SourceConfiguration {
         None::<String>,
     ))
     .expect("fixture Source Configuration is valid")
+}
+
+fn parsed_channel(name: &str, group: &str) -> ParsedChannel {
+    ParsedChannel {
+        tvg_id: Arc::from(""),
+        name: Arc::from(name),
+        group: Arc::from(group),
+        playback: Arc::new(
+            Url::parse("https://media.fixture.invalid/channel")
+                .expect("fixture playback location is valid"),
+        ),
+    }
 }
 
 fn unique_channels(count: usize, reversed: bool) -> Vec<ParsedChannel> {

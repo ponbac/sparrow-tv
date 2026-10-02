@@ -212,11 +212,15 @@ impl GuideWindowChannel {
 }
 
 /// Selects a bounded page of Channels and their Programmes in one UTC window.
+///
+/// The page is the first or a continuing one of its Channel selection, or the
+/// one placed around a chosen Channel in Channel Catalog order.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GuideWindowQuery {
     starts_at: DateTime<Utc>,
     ends_at: DateTime<Utc>,
     channels: ChannelQuery,
+    around: Option<ChannelId>,
 }
 
 impl GuideWindowQuery {
@@ -231,8 +235,8 @@ impl GuideWindowQuery {
         ends_at: String,
         channels: ChannelQuery,
     ) -> Result<Self, CoreError> {
-        let starts_at = parse_guide_instant(starts_at, InputField::GuideWindowStartsAt)?;
-        let ends_at = parse_guide_instant(ends_at, InputField::GuideWindowEndsAt)?;
+        let starts_at = parse_instant(starts_at, InputField::GuideWindowStartsAt)?;
+        let ends_at = parse_instant(ends_at, InputField::GuideWindowEndsAt)?;
         Self::new(starts_at, ends_at, channels)
     }
 
@@ -254,7 +258,32 @@ impl GuideWindowQuery {
             starts_at,
             ends_at,
             channels,
+            around: None,
         })
+    }
+
+    /// Places the page around one Channel instead of at the start of the
+    /// Channel Catalog: the Channel sits half a page in when enough Channels
+    /// precede it.
+    ///
+    /// Only a first page across every Channel Group can be placed. Its
+    /// continuation is the ordinary all-Channels cursor, so a query that
+    /// already has a group or a cursor is rejected.
+    pub fn around(mut self, channel: ChannelId) -> Result<Self, CoreError> {
+        if self.channels.group().is_some() {
+            return Err(CoreError::InvalidInput {
+                field: InputField::ChannelGroup,
+                reason: InputReason::OutOfRange,
+            });
+        }
+        if self.channels.page().cursor().is_some() {
+            return Err(CoreError::InvalidInput {
+                field: InputField::PageCursor,
+                reason: InputReason::CursorQueryMismatch,
+            });
+        }
+        self.around = Some(channel);
+        Ok(self)
     }
 
     /// Returns the inclusive start of the half-open guide interval.
@@ -271,9 +300,15 @@ impl GuideWindowQuery {
     pub const fn channels(&self) -> &ChannelQuery {
         &self.channels
     }
+
+    /// Returns the Channel the page is placed around, when one was chosen.
+    pub const fn around_channel(&self) -> Option<&ChannelId> {
+        self.around.as_ref()
+    }
 }
 
-fn parse_guide_instant(value: String, field: InputField) -> Result<DateTime<Utc>, CoreError> {
+/// Parses one bounded untrusted RFC 3339 instant and normalizes it to UTC.
+pub(super) fn parse_instant(value: String, field: InputField) -> Result<DateTime<Utc>, CoreError> {
     if value.len() > GuideWindowQuery::MAX_INSTANT_BYTES {
         return Err(CoreError::InvalidInput {
             field,

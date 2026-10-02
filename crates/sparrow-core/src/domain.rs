@@ -15,6 +15,7 @@ use url::Url;
 
 mod programmes;
 
+use programmes::parse_instant;
 pub use programmes::{
     GuideProgramme, GuideWindowChannel, GuideWindowQuery, ProgrammeSearchHit, ProgrammeSummary,
 };
@@ -274,6 +275,7 @@ pub enum InputField {
     ChannelGroup,
     GuideWindowStartsAt,
     GuideWindowEndsAt,
+    ScheduleFrom,
     SearchTerm,
     PageLimit,
     PageCursor,
@@ -288,6 +290,7 @@ impl Display for InputField {
             InputField::ChannelGroup => "channel group",
             InputField::GuideWindowStartsAt => "guide window start",
             InputField::GuideWindowEndsAt => "guide window end",
+            InputField::ScheduleFrom => "schedule start",
             InputField::SearchTerm => "search term",
             InputField::PageLimit => "page limit",
             InputField::PageCursor => "page cursor",
@@ -716,16 +719,62 @@ impl ChannelGroupView {
     }
 }
 
+/// The picture quality named by a Quality Variant, ordered from lowest to highest.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ChannelQuality {
+    Sd,
+    Hd,
+    Fhd,
+    Uhd,
+}
+
+/// What makes a Channel a Quality Variant: its picture quality and the name it
+/// shares with the other Quality Variants on its guide row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChannelVariant {
+    quality: ChannelQuality,
+    base_name: Arc<str>,
+}
+
+impl ChannelVariant {
+    pub(crate) fn new(quality: ChannelQuality, base_name: Arc<str>) -> Self {
+        Self { quality, base_name }
+    }
+
+    pub const fn quality(&self) -> ChannelQuality {
+        self.quality
+    }
+
+    /// Returns the Channel name without its picture-quality token.
+    pub fn base_name(&self) -> &str {
+        &self.base_name
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChannelSummary {
     id: ChannelId,
     name: Arc<str>,
     group: Arc<str>,
+    number: u32,
+    variant: Option<ChannelVariant>,
 }
 
 impl ChannelSummary {
-    pub(crate) fn new(id: ChannelId, name: Arc<str>, group: Arc<str>) -> Self {
-        Self { id, name, group }
+    pub(crate) fn new(
+        id: ChannelId,
+        name: Arc<str>,
+        group: Arc<str>,
+        number: u32,
+        variant: Option<ChannelVariant>,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            group,
+            number,
+            variant,
+        }
     }
 
     pub fn id(&self) -> &ChannelId {
@@ -738,6 +787,17 @@ impl ChannelSummary {
 
     pub fn group(&self) -> &str {
         &self.group
+    }
+
+    /// Returns the Channel Number: the 1-based position of this Channel's guide
+    /// row in Channel Catalog order, shared by its Quality Variants.
+    pub const fn number(&self) -> u32 {
+        self.number
+    }
+
+    /// Returns the Quality Variant facts, or `None` for a Channel without one.
+    pub const fn variant(&self) -> Option<&ChannelVariant> {
+        self.variant.as_ref()
     }
 }
 
@@ -746,11 +806,25 @@ pub struct ChannelDetails {
     id: ChannelId,
     name: Arc<str>,
     group: Arc<str>,
+    number: u32,
+    variant: Option<ChannelVariant>,
 }
 
 impl ChannelDetails {
-    pub(crate) fn new(id: ChannelId, name: Arc<str>, group: Arc<str>) -> Self {
-        Self { id, name, group }
+    pub(crate) fn new(
+        id: ChannelId,
+        name: Arc<str>,
+        group: Arc<str>,
+        number: u32,
+        variant: Option<ChannelVariant>,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            group,
+            number,
+            variant,
+        }
     }
 
     pub fn id(&self) -> &ChannelId {
@@ -763,6 +837,16 @@ impl ChannelDetails {
 
     pub fn group(&self) -> &str {
         &self.group
+    }
+
+    /// Returns the Channel Number shared by this Channel's Quality Variants.
+    pub const fn number(&self) -> u32 {
+        self.number
+    }
+
+    /// Returns the Quality Variant facts, or `None` for a Channel without one.
+    pub const fn variant(&self) -> Option<&ChannelVariant> {
+        self.variant.as_ref()
     }
 }
 
@@ -821,11 +905,13 @@ pub struct ChannelQuery {
     page: PageRequest,
 }
 
-/// Selects one Channel's deterministic, paginated Programme schedule.
+/// Selects one Channel's deterministic, paginated Programme schedule,
+/// optionally only the Programmes that end after one instant.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScheduleQuery {
     channel_id: ChannelId,
     page: PageRequest,
+    from: Option<DateTime<Utc>>,
 }
 
 /// Selects independently bounded Channel and Programme search pages.
@@ -861,12 +947,44 @@ impl SearchRequest {
 impl ScheduleQuery {
     /// Creates a bounded schedule query for one parsed Channel Identifier.
     pub const fn new(channel_id: ChannelId, page: PageRequest) -> Self {
-        Self { channel_id, page }
+        Self {
+            channel_id,
+            page,
+            from: None,
+        }
+    }
+
+    /// Creates a schedule query after parsing an optional untrusted RFC 3339
+    /// `from` instant with the parser guide windows use.
+    pub fn parse(
+        channel_id: ChannelId,
+        from: Option<String>,
+        page: PageRequest,
+    ) -> Result<Self, CoreError> {
+        let from = from
+            .map(|value| parse_instant(value, InputField::ScheduleFrom))
+            .transpose()?;
+        Ok(Self {
+            channel_id,
+            page,
+            from,
+        })
+    }
+
+    /// Keeps only the Programmes that end after `from`.
+    pub const fn with_from(mut self, from: DateTime<Utc>) -> Self {
+        self.from = Some(from);
+        self
     }
 
     /// Returns the Channel whose Programme schedule is requested.
     pub const fn channel_id(&self) -> &ChannelId {
         &self.channel_id
+    }
+
+    /// Returns the instant every returned Programme ends after, when present.
+    pub const fn from(&self) -> Option<DateTime<Utc>> {
+        self.from
     }
 
     /// Returns this query's bounded page request.
@@ -975,6 +1093,30 @@ impl<T> Page<T> {
         })
     }
 
+    /// Projects one bounded window starting at an explicit collection position.
+    ///
+    /// The continuation is the ordinary cursor for `query` at the following
+    /// position, so later pages need nothing from the request that chose it.
+    pub(crate) fn from_position_projection<U>(
+        generation: CatalogGeneration,
+        source: &[U],
+        position: usize,
+        limit: PageLimit,
+        query: CursorQueryHash,
+        project: impl FnMut(&U) -> T,
+    ) -> Self {
+        debug_assert!(position <= source.len());
+
+        let window = window_at(generation, source.len(), position, limit, query);
+        let items = source[window.range].iter().map(project).collect::<Vec<_>>();
+
+        Self {
+            generation,
+            items: Arc::from(items),
+            next: window.next,
+        }
+    }
+
     /// Selects only the prefix needed for this page, then projects its bounded window.
     pub(crate) fn from_bounded_selection_projection<U>(
         generation: CatalogGeneration,
@@ -1052,15 +1194,31 @@ fn page_window(
             reason: InputReason::CursorPositionOutOfRange,
         });
     }
+    Ok(window_at(
+        generation,
+        collection_len,
+        offset,
+        request.limit(),
+        query,
+    ))
+}
+
+fn window_at(
+    generation: CatalogGeneration,
+    collection_len: usize,
+    offset: usize,
+    limit: PageLimit,
+    query: CursorQueryHash,
+) -> PageWindow {
     let end = offset
-        .saturating_add(usize::from(request.limit().get()))
+        .saturating_add(usize::from(limit.get()))
         .min(collection_len);
     let next = (end < collection_len).then(|| PageCursor::generated(generation, end, query));
 
-    Ok(PageWindow {
+    PageWindow {
         range: offset..end,
         next,
-    })
+    }
 }
 
 impl<T: Debug> Debug for Page<T> {

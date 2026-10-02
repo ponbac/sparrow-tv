@@ -4,18 +4,17 @@ import { useEffect, useRef, useState } from "react";
 import type {
   CatalogGeneration,
   ChannelSummary,
-  ProgrammeSlot,
   SparrowClient,
 } from "../../client/contracts";
 import { useDebounce } from "../../hooks/useDebounce";
 import { groupDisplayName } from "./board-group-roster";
+import { channelTitle, qualityLabel } from "./guide-families";
 import {
   shouldAdvancePastExcludedSearchHits,
   visibleSearchChannels,
 } from "./board-search-scope";
 import {
   canonicalSearchTerm,
-  MAX_SEARCH_TERM_BYTES,
   SEARCH_DEBOUNCE_MS,
   searchTermFits,
 } from "./board-search-term";
@@ -32,15 +31,12 @@ export interface BoardSearchDeskProps {
   readonly onTermChange: (term: string) => void;
   readonly onGenerationMismatch: () => void;
   readonly onPreparePlayback: () => void;
-  readonly onTune: (
-    channel: ChannelSummary,
-    programme: ProgrammeSlot | null,
-  ) => void;
+  readonly onTune: (channel: ChannelSummary) => void;
 }
 
 /**
  * Full Channel search over the guide pane. Ranking stays catalog-wide; the
- * desk hides excluded Channel Groups until the operator includes them.
+ * desk leaves out hidden Channel Groups until the viewer includes them.
  */
 export function BoardSearchDesk({
   client,
@@ -140,22 +136,21 @@ export function BoardSearchDesk({
         <Dialog.Popup
           className="board-search-desk__popup"
           initialFocus={termInput}
-          // CinemaStage takes focus on tune; restoring the search input here
+          // Stage takes focus on tune; restoring the search input here
           // would reopen Android's keyboard over the new Playback Session.
           finalFocus={() => !closedByTune.current}
         >
           <header className="board-search-desk__header">
             <div>
-              <p>Board search</p>
-              <Dialog.Title>Find a Channel</Dialog.Title>
+              <Dialog.Title>Find a channel</Dialog.Title>
               <Dialog.Description>
-                Search Channels still on this desk. Include excluded groups
-                when you need a dump you already hid.
+                Search every channel by name. Hidden groups are left out
+                unless you include them.
               </Dialog.Description>
             </div>
             <Dialog.Close
               className="board-search-desk__close"
-              aria-label="Close Channel search"
+              aria-label="Close channel search"
             >
               <X aria-hidden="true" />
             </Dialog.Close>
@@ -172,20 +167,19 @@ export function BoardSearchDesk({
                 id="board-search-desk-term"
                 type="search"
                 value={term}
-                placeholder="Search Channels"
+                placeholder="Search channels"
                 autoComplete="off"
                 autoCapitalize="none"
                 spellCheck={false}
-                aria-label="Search Channels on the board"
+                aria-label="Search channels"
                 onChange={(event) => onTermChange(event.target.value)}
               />
             </label>
             <p className="board-search-desk__tally">
-              <b>{visibleChannels.length}</b> on the board
+              <b>{visibleChannels.length}</b> found
               {hiddenCount > 0 ? (
                 <>
-                  <i aria-hidden="true" />
-                  <b>{hiddenCount}</b> excluded
+                  , <b>{hiddenCount}</b> hidden
                 </>
               ) : null}
             </p>
@@ -196,7 +190,7 @@ export function BoardSearchDesk({
                 aria-pressed={includeExcluded}
                 onClick={() => setIncludeExcluded((current) => !current)}
               >
-                Include excluded
+                Include hidden
               </button>
             ) : null}
           </div>
@@ -204,39 +198,40 @@ export function BoardSearchDesk({
           <div className="board-search-desk__list" role="list">
             {presentation === "invalid" ? (
               <p className="board-search-desk__state" role="alert">
-                Keep the search within {MAX_SEARCH_TERM_BYTES} UTF-8 bytes.
+                That search is too long. Shorten it and try again.
               </p>
             ) : presentation === "unavailable" ? (
               <p className="board-search-desk__state" role="status">
-                Search opens after a catalog is ready.
+                Search is ready once the channels have loaded.
               </p>
             ) : presentation === "idle" ? (
               <p className="board-search-desk__state" role="status">
-                Type a Channel name to scan the board.
+                Type a channel name to search.
               </p>
             ) : presentation === "loading" ? (
-              <p className="board-search-desk__state">Scanning the catalog…</p>
+              <p className="board-search-desk__state">Searching…</p>
             ) : presentation === "generation-mismatch" ? (
               <div className="board-search-desk__state" role="alert">
-                The catalog changed while searching.
+                The channels changed while you searched.
                 <button type="button" onClick={onGenerationMismatch}>
-                  Rescan
+                  Search again
                 </button>
               </div>
             ) : presentation === "error" ? (
               <div className="board-search-desk__state" role="alert">
-                Search is temporarily unavailable.
+                Search is not available right now.
                 <button type="button" onClick={retry}>
-                  Retry
+                  Try again
                 </button>
               </div>
             ) : presentation === "hidden" ? (
               <p className="board-search-desk__state" role="status">
-                Matching Channels are in excluded groups.
+                The only matches are in hidden groups. Choose Include hidden to
+                see them.
               </p>
             ) : presentation === "empty" ? (
               <p className="board-search-desk__state" role="status">
-                No matching Channels.
+                No channel matches that search.
               </p>
             ) : (
               visibleChannels.map((channel) => {
@@ -256,11 +251,21 @@ export function BoardSearchDesk({
                       onFocus={onPreparePlayback}
                       onClick={() => {
                         closedByTune.current = true;
-                        onTune(channel, null);
+                        onTune(channel);
                       }}
                     >
-                      <span>{excluded ? "Excluded" : "Channel"}</span>
-                      <strong>{channel.name}</strong>
+                      <span className="board-search__number">
+                        {channel.number}
+                      </span>
+                      <strong>{channelTitle(channel)}</strong>
+                      {channel.variant === null ? null : (
+                        <span className="board-search__quality">
+                          {qualityLabel(channel.variant.quality)}
+                        </span>
+                      )}
+                      {excluded ? (
+                        <span className="board-search-desk__hidden">Hidden</span>
+                      ) : null}
                       <small>{groupDisplayName(channel.group)}</small>
                     </Dialog.Close>
                   </div>
@@ -274,7 +279,7 @@ export function BoardSearchDesk({
                 disabled={loadingMore}
                 onClick={loadMore}
               >
-                {loadingMore ? "Opening more Channels…" : "More Channels"}
+                {loadingMore ? "Loading more channels…" : "More channels"}
               </button>
             ) : null}
           </div>

@@ -169,6 +169,155 @@ async fn guide_window_refines_times_and_scopes_continuations_to_the_query() {
 }
 
 #[tokio::test]
+async fn guide_window_around_projects_the_ordinary_page_at_the_channel_position() {
+    const WINDOW: &str = "startsAt=2026-08-29T07%3A00%3A00Z&endsAt=2026-08-29T12%3A00%3A00Z";
+    let app = TestApp::fixture_with_guide(PROGRAMME_M3U, PROGRAMME_EPG).await;
+    let catalog = get_json(
+        &app.router,
+        &format!("/api/v1/guide?{WINDOW}&channelLimit=100"),
+    )
+    .await;
+    let rows = catalog["items"]
+        .as_array()
+        .expect("the guide response contains rows");
+    assert_eq!(rows.len(), 7);
+    let id = |position: usize| {
+        rows[position]["channel"]["id"]
+            .as_str()
+            .expect("a guide row carries its Channel Identifier")
+    };
+
+    let around = get_json(
+        &app.router,
+        &format!("/api/v1/guide?{WINDOW}&channelLimit=3&around={}", id(3)),
+    )
+    .await;
+    assert_eq!(around["items"], json!(rows[2..5]));
+    assert_eq!(around["generation"], catalog["generation"]);
+    let cursor = around["next"]
+        .as_str()
+        .expect("Channels follow the page around the fourth Channel");
+    let continued = get_json(
+        &app.router,
+        &format!("/api/v1/guide?{WINDOW}&channelLimit=3&cursor={cursor}"),
+    )
+    .await;
+    assert_eq!(continued["items"], json!(rows[5..]));
+    assert_eq!(continued["next"], Value::Null);
+
+    let missing_id = format!("ch1_{}", "0".repeat(64));
+    let missing = send(
+        &app.router,
+        request(
+            Method::GET,
+            &format!("/api/v1/guide?{WINDOW}&channelLimit=3&around={missing_id}"),
+            Some(PASSWORD),
+        ),
+    )
+    .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        missing.json,
+        json!({
+            "error": { "_tag": "not-found", "resource": "channel" }
+        })
+    );
+    assert!(!missing.text.contains(&missing_id));
+
+    for (uri, field, reason) in [
+        (
+            format!("/api/v1/guide?{WINDOW}&channelLimit=3&around=not-an-id"),
+            "channel-id",
+            "invalid-format",
+        ),
+        (
+            format!(
+                "/api/v1/guide?{WINDOW}&channelLimit=3&group=News&around={}",
+                id(3)
+            ),
+            "channel-group",
+            "out-of-range",
+        ),
+        (
+            format!(
+                "/api/v1/guide?{WINDOW}&channelLimit=3&cursor={cursor}&around={}",
+                id(3)
+            ),
+            "page-cursor",
+            "cursor-query-mismatch",
+        ),
+    ] {
+        let response = send(&app.router, request(Method::GET, &uri, Some(PASSWORD))).await;
+        assert_invalid_input(&response, field, reason);
+    }
+}
+
+#[tokio::test]
+async fn schedule_from_projects_only_programmes_still_to_end() {
+    let app = TestApp::fixture_with_guide(PROGRAMME_M3U, PROGRAMME_EPG).await;
+    let channels = get_json(&app.router, "/api/v1/channels?limit=100").await;
+    let exact_id = channel_id_named(&channels, "Misleading Name");
+    let titles = |schedule: &Value| {
+        schedule["items"]
+            .as_array()
+            .expect("the schedule response contains Programmes")
+            .iter()
+            .map(|programme| programme["title"].clone())
+            .collect::<Vec<_>>()
+    };
+
+    let ended = get_json(
+        &app.router,
+        &format!("/api/v1/channels/{exact_id}/schedule?limit=10&from=2026-08-29T08%3A00%3A00Z"),
+    )
+    .await;
+    assert_eq!(titles(&ended), ["Later Programme"]);
+    assert_eq!(ended["next"], Value::Null);
+
+    let still_on = get_json(
+        &app.router,
+        &format!(
+            "/api/v1/channels/{exact_id}/schedule?limit=1&from=2026-08-29T09%3A59%3A59%2B02%3A00"
+        ),
+    )
+    .await;
+    assert_eq!(titles(&still_on), ["Earlier & First"]);
+    let cursor = still_on["next"]
+        .as_str()
+        .expect("a later Programme remains from the same instant");
+    let continued = get_json(
+        &app.router,
+        &format!(
+            "/api/v1/channels/{exact_id}/schedule?limit=1&from=2026-08-29T07%3A59%3A59Z&cursor={cursor}"
+        ),
+    )
+    .await;
+    assert_eq!(titles(&continued), ["Later Programme"]);
+
+    let oversized = "x".repeat(65);
+    for (uri, field, reason) in [
+        (
+            format!("/api/v1/channels/{exact_id}/schedule?limit=1&cursor={cursor}"),
+            "page-cursor",
+            "cursor-query-mismatch",
+        ),
+        (
+            format!("/api/v1/channels/{exact_id}/schedule?limit=1&from=not-an-instant"),
+            "schedule-from",
+            "invalid-format",
+        ),
+        (
+            format!("/api/v1/channels/{exact_id}/schedule?limit=1&from={oversized}"),
+            "schedule-from",
+            "too-long",
+        ),
+    ] {
+        let response = send(&app.router, request(Method::GET, &uri, Some(PASSWORD))).await;
+        assert_invalid_input(&response, field, reason);
+    }
+}
+
+#[tokio::test]
 async fn schedule_and_search_project_the_enriched_core_fixture_exactly() {
     let app = TestApp::fixture_with_guide(PROGRAMME_M3U, PROGRAMME_EPG).await;
     let channels = get_json(&app.router, "/api/v1/channels?limit=100").await;
@@ -229,6 +378,8 @@ async fn schedule_and_search_project_the_enriched_core_fixture_exactly() {
                 "id": fallback_id,
                 "name": "FALLBACK One",
                 "group": "News",
+                "number": 2,
+                "variant": null,
             },
             "title": "Fallback Programme",
             "titleTruncated": false,

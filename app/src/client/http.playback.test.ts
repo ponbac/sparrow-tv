@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import { clientSchemas, type ChannelId } from "./contracts";
+import { channelFixture } from "../test/channel-fixture";
 import { createHttpSparrowClient } from "./http";
 
 describe("hosted HTTP playback client", () => {
@@ -99,7 +100,7 @@ describe("hosted HTTP playback client", () => {
 });
 
 function parsedChannelId(value: string): ChannelId {
-  return clientSchemas.channel.parse({
+  return channelFixture({
     id: value,
     name: "Fixture Channel",
     group: "Fixtures",

@@ -6,6 +6,7 @@ import {
   createHttpSparrowClient,
   type HttpEventSource,
 } from "./http";
+import { channelFixture } from "../test/channel-fixture";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -29,6 +30,7 @@ const capabilities = {
   playbackTransport: "same-origin-http",
   audioTrackSelection: false,
   mpvFailover: false,
+  pictureOverlay: true,
 };
 
 const freshStatus = {
@@ -44,16 +46,16 @@ const groupsPage = {
   next: "groups-next",
 };
 
-const channelsPage = {
-  generation: 7,
-  items: [{ id: "channel-one", name: "World News", group: "News" }],
-  next: "channels-next",
-};
-
-const channelDetails = {
+const channelDetails = channelFixture({
   id: "channel-one",
   name: "World News",
   group: "News",
+});
+
+const channelsPage = {
+  generation: 7,
+  items: [channelDetails],
+  next: "channels-next",
 };
 
 describe("hosted HTTP Sparrow client", () => {
@@ -434,6 +436,55 @@ describe("hosted HTTP Sparrow client", () => {
     ).toBe(false);
   });
 
+  it("requires a Channel Number and a stated Quality Variant on every Channel", async () => {
+    const page = {
+      generation: 7,
+      items: [
+        {
+          id: "arena-uhd",
+          name: "Arena 4K",
+          group: "Sport",
+          number: 4,
+          variant: { quality: "uhd", baseName: "Arena" },
+        },
+        { id: "arena", name: "Arena", group: "Sport", number: 5, variant: null },
+      ],
+      next: null,
+    };
+    const http = createFakeHttp([{ body: page }]);
+    const client = createHttpSparrowClient({ fetch: http.fetch });
+
+    await expect(client.listChannels({ limit: 24 })).resolves.toEqual({
+      ok: true,
+      value: page,
+    });
+
+    const plain = { id: "arena", name: "Arena", group: "Sport" };
+    const variant = { quality: "hd", baseName: "Arena" };
+    for (const malformed of [
+      { ...plain, variant: null },
+      { ...plain, number: 1 },
+      { ...plain, number: 0, variant: null },
+      { ...plain, number: 1.5, variant: null },
+      { ...plain, number: 4_294_967_296, variant: null },
+      { ...plain, number: "1", variant: null },
+      { ...plain, number: 1, variant: { ...variant, quality: "4k" } },
+      { ...plain, number: 1, variant: { ...variant, baseName: "" } },
+      { ...plain, number: 1, variant: { quality: "hd" } },
+      { ...plain, number: 1, variant: { ...variant, level: 2 } },
+    ]) {
+      expect(
+        clientSchemas.channel.safeParse(malformed).success,
+        JSON.stringify(malformed),
+      ).toBe(false);
+      expect(
+        clientSchemas.channelsPage.safeParse({ ...page, items: [malformed] })
+          .success,
+        JSON.stringify(malformed),
+      ).toBe(false);
+    }
+  });
+
   it("returns a safe transport failure for malformed success payloads", async () => {
     const http = createFakeHttp([
       {
@@ -659,7 +710,7 @@ describe("hosted HTTP Sparrow client", () => {
     };
     const opaqueChannelsPage = {
       generation: 7,
-      items: [{ id: "channel /?&=☃", name: "Encoded", group: "" }],
+      items: [channelFixture({ id: "channel /?&=☃", name: "Encoded", group: "" })],
       next: null,
     };
     const parsedGroups = clientSchemas.groupsPage.safeParse(opaqueGroupsPage);

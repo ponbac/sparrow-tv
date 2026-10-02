@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { clientSchemas, type PageCursor } from "./contracts";
 import { createHttpSparrowClient } from "./http";
+import { channelFixture } from "../test/channel-fixture";
 
 interface JsonFixture {
   readonly body: unknown;
@@ -19,11 +20,11 @@ interface FakeHttp {
   readonly requests: readonly RecordedRequest[];
 }
 
-const channel = {
+const channel = channelFixture({
   id: "channel-one",
   name: "World News",
   group: "News",
-};
+});
 
 const programme = {
   channelId: "channel-one",

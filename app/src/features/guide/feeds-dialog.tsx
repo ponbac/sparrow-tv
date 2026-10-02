@@ -22,22 +22,24 @@ export function FeedsDialog(props: FeedsDialogContentProps) {
         onFocus={loadFeedsDialogContent}
       >
         <RadioTower aria-hidden="true" />
-        Feeds
+        Sources
       </Dialog.Trigger>
       <Dialog.Portal>
         <Dialog.Backdrop className="feeds-dialog__backdrop" />
         <Dialog.Popup className="feeds-dialog__popup">
           <header className="feeds-dialog__header">
             <div>
-              <p>Source cabinet</p>
-              <Dialog.Title>Feeds &amp; signal health</Dialog.Title>
+              <Dialog.Title>Sources</Dialog.Title>
               <Dialog.Description>
                 {props.runtime === "installed"
-                  ? "Source locations stay inside this receiver. Only safe catalog status appears here."
-                  : "This hosted desk can inspect and refresh its deployment-managed sources."}
+                  ? "Source locations stay on this device. Only their status is shown here."
+                  : "The sources are set on the server. You can check and refresh them here."}
               </Dialog.Description>
             </div>
-            <Dialog.Close className="feeds-dialog__close" aria-label="Close Feeds">
+            <Dialog.Close
+              className="feeds-dialog__close"
+              aria-label="Close sources"
+            >
               <X aria-hidden="true" />
             </Dialog.Close>
           </header>
@@ -45,7 +47,7 @@ export function FeedsDialog(props: FeedsDialogContentProps) {
             <Suspense
               fallback={
                 <p className="feeds-dialog__loading" role="status">
-                  Opening source controls…
+                  Opening sources…
                 </p>
               }
             >

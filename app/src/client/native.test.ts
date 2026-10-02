@@ -7,6 +7,7 @@ import {
   type InstalledPlaybackTransport,
   type NativeStreamPlaybackTransport,
 } from "./contracts";
+import { channelFixture } from "../test/channel-fixture";
 import {
   createNativeSparrowClient,
   NATIVE_COMMANDS,
@@ -21,6 +22,7 @@ const INSTALLED_CAPABILITIES = {
   playbackTransport: "platform-native",
   audioTrackSelection: true,
   mpvFailover: true,
+  pictureOverlay: true,
 } as const;
 
 const EMPTY_AUDIO = {
@@ -48,16 +50,16 @@ const GROUPS_PAGE = clientSchemas.groupsPage.parse({
   next: null,
 });
 
-const CHANNELS_PAGE = clientSchemas.channelsPage.parse({
-  generation: 7,
-  items: [{ id: "world-news", name: "World News", group: "News" }],
-  next: null,
-});
-
-const CHANNEL = clientSchemas.channel.parse({
+const CHANNEL = channelFixture({
   id: "world-news",
   name: "World News",
   group: "News",
+});
+
+const CHANNELS_PAGE = clientSchemas.channelsPage.parse({
+  generation: 7,
+  items: [CHANNEL],
+  next: null,
 });
 
 const PROGRAMME_PAYLOAD = {
@@ -224,12 +226,23 @@ describe("installed Tauri Sparrow client", () => {
       }),
     ).resolves.toEqual({ ok: true, value: GUIDE_WINDOW });
     await expect(
+      client.guideWindow({
+        startsAt: GUIDE_START,
+        endsAt: GUIDE_END,
+        channelLimit: 1,
+        around: CHANNEL.id,
+      }),
+    ).resolves.toEqual({ ok: true, value: GUIDE_WINDOW });
+    await expect(
       client.schedule({
         id: CHANNEL.id,
         limit: 1,
         afterStartsAt: PROGRAMME.startsAt,
         previousCursors: [],
       }),
+    ).resolves.toEqual({ ok: true, value: SCHEDULE_PAGE });
+    await expect(
+      client.schedule({ id: CHANNEL.id, limit: 1, from: GUIDE_START }),
     ).resolves.toEqual({ ok: true, value: SCHEDULE_PAGE });
     await expect(
       client.search({
@@ -283,8 +296,23 @@ describe("installed Tauri Sparrow client", () => {
         },
       },
       {
+        command: NATIVE_COMMANDS.guideWindow,
+        args: {
+          input: {
+            startsAt: GUIDE_START,
+            endsAt: GUIDE_END,
+            channelLimit: 1,
+            around: CHANNEL.id,
+          },
+        },
+      },
+      {
         command: NATIVE_COMMANDS.schedule,
         args: { input: { id: CHANNEL.id, limit: 1 } },
+      },
+      {
+        command: NATIVE_COMMANDS.schedule,
+        args: { input: { id: CHANNEL.id, limit: 1, from: GUIDE_START } },
       },
       {
         command: NATIVE_COMMANDS.search,
@@ -510,6 +538,7 @@ describe("installed Tauri Sparrow client", () => {
         playbackTransport: "same-origin-http",
         audioTrackSelection: false,
         mpvFailover: false,
+        pictureOverlay: true,
       }),
     );
     const client = createNativeSparrowClient({ ipc });

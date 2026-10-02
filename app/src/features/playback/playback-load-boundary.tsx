@@ -1,4 +1,5 @@
 import { Component, type ReactNode } from "react";
+import "./playback-load-boundary.css";
 
 interface PlaybackLoadBoundaryProps {
   readonly children: ReactNode;
@@ -34,21 +35,18 @@ export class PlaybackLoadBoundary extends Component<
     }
 
     return (
-      <section className="error-notice" role="alert">
-        <div>
-          <p className="eyebrow">Player module unavailable</p>
-          <h2>The live player could not be loaded</h2>
-          <p>
-            Browsing remains available. Restore this connection, then reload
-            Sparrow before selecting the Channel again.
-          </p>
-        </div>
-        <div className="playback-load-actions">
-          <button type="button" onClick={this.props.onStop}>
-            Close player
-          </button>
+      <section className="playback-load-notice" role="alert">
+        <h2>The player could not load</h2>
+        <p>
+          You can keep browsing. Check the connection, then reload Sparrow and
+          choose the channel again.
+        </p>
+        <div className="playback-load-notice__actions">
           <button type="button" onClick={this.props.onReload}>
             Reload Sparrow
+          </button>
+          <button type="button" onClick={this.props.onStop}>
+            Close player
           </button>
         </div>
       </section>

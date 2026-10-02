@@ -1,15 +1,18 @@
 import { Tooltip } from "@base-ui/react/tooltip";
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import type {
   ChannelGroup,
   ChannelId,
   ChannelSummary,
   ClientError,
   GuideWindowChannel,
-  GuideProgramme,
-  ProgrammeSlot,
 } from "../../client/contracts";
 import { ChannelGroupLane } from "./channel-group-lane";
+import {
+  guideFamilies,
+  preferredVariant,
+  type VariantPreferences,
+} from "./guide-families";
 import {
   clockLabel,
   clockMarks,
@@ -19,21 +22,18 @@ import {
 import { ProgrammeGuideRow } from "./programme-guide-row";
 import "./programme-guide.css";
 
-/** The Programme currently highlighted in the guide. */
-export interface GuideSelection {
-  readonly channelId: ChannelId;
-  readonly programme: ProgrammeSlot | null;
-}
-
-/** Inputs for the dense Split Stage timetable. */
+/** Inputs for the dense shell timetable. */
 export interface ProgrammeGuideProps {
   readonly rows: readonly GuideWindowChannel[];
   readonly groups: readonly ChannelGroup[];
   readonly activeGroup: string | null;
   readonly window: ClockWindow;
   readonly now: Date;
-  readonly selection: GuideSelection | null;
   readonly playingChannel: ChannelId | null;
+  /** The picture quality chosen per guide row. */
+  readonly variantPreferences: VariantPreferences;
+  /** Theater docks the guide under the picture; stacked puts it below the stage. */
+  readonly layout: "theater" | "stacked";
   readonly loading: boolean;
   readonly replacing: boolean;
   readonly error: ClientError | null;
@@ -49,14 +49,16 @@ export interface ProgrammeGuideProps {
   readonly onSetGroupExcluded: (name: string, exclude: boolean) => void;
   readonly onRestoreExcludedGroups: () => void;
   readonly onPreparePlayback: () => void;
-  readonly onTune: (
-    channel: ChannelSummary,
-    programme: GuideProgramme | null,
-  ) => void;
+  readonly onTune: (channel: ChannelSummary) => void;
+  /** Tunes one Quality Variant and keeps it as its row's choice. */
+  readonly onTuneVariant: (channel: ChannelSummary) => void;
   readonly onRetry: () => void;
   readonly onLoadMore: () => void;
+  /** The search field, or null when the shell shows it elsewhere. */
   readonly search: ReactNode;
   readonly feeds: ReactNode;
+  /** Source freshness readouts, shown beside the guide's own controls. */
+  readonly status: ReactNode;
 }
 
 /** Renders channel groups, the shared time axis, and overlapping Programme cells. */
@@ -66,8 +68,9 @@ export function ProgrammeGuide({
   activeGroup,
   window,
   now,
-  selection,
   playingChannel,
+  variantPreferences,
+  layout,
   loading,
   replacing,
   error,
@@ -81,12 +84,17 @@ export function ProgrammeGuide({
   onRestoreExcludedGroups,
   onPreparePlayback,
   onTune,
+  onTuneVariant,
   onRetry,
   onLoadMore,
   search,
   feeds,
+  status,
 }: ProgrammeGuideProps) {
   const marks = clockMarks(window);
+  const families = useMemo(() => guideFamilies(rows), [rows]);
+  const nowFraction = playheadPercent(window, now) / 100;
+  const nowLeft = `calc(var(--guide-gutter) + (100% - var(--guide-gutter)) * ${nowFraction})`;
   const [channelNameTooltip] = useState(() => Tooltip.createHandle<string>());
   const boardEmpty =
     emptyState === undefined &&
@@ -94,10 +102,15 @@ export function ProgrammeGuide({
     excludedGroups.size === groups.length;
 
   return (
-    <section className="programme-guide" aria-label="Programme guide">
+    <section
+      className="programme-guide"
+      data-layout={layout}
+      aria-label="Programme guide"
+    >
       <header className="programme-guide__toolbar">
         {search}
         {feeds}
+        <div className="programme-guide__status">{status}</div>
       </header>
 
       <div className="programme-guide__body">
@@ -119,24 +132,33 @@ export function ProgrammeGuide({
             <div className="programme-guide__ruler" aria-hidden="true">
               <span />
               <div>
-                {marks.map((mark, index) => (
-                  <time
-                    key={mark.toISOString()}
-                    className={index % 2 === 0 ? "is-hour" : undefined}
-                    style={{ left: `${(index / marks.length) * 100}%` }}
-                  >
-                    {clockLabel(mark)}
-                  </time>
-                ))}
+                {marks.map((mark, index) => {
+                  const fraction = index / marks.length;
+                  return (
+                    <time
+                      key={mark.toISOString()}
+                      className={mark.getMinutes() === 0 ? "is-hour" : undefined}
+                      style={{
+                        left: `${fraction * 100}%`,
+                        "--from-now": fraction - nowFraction,
+                      }}
+                    >
+                      {clockLabel(mark)}
+                    </time>
+                  );
+                })}
               </div>
+              <span className="programme-guide__now" style={{ left: nowLeft }}>
+                {clockLabel(now)}
+              </span>
             </div>
 
             {loading && rows.length === 0 ? (
-              <GuideNotice tone="loading" title="Opening the guide window">
-                Resolving Channels and Programme times from one catalog generation.
+              <GuideNotice tone="loading" title="Opening the guide">
+                Loading channels and programme times.
               </GuideNotice>
             ) : error !== null && rows.length === 0 ? (
-              <GuideNotice tone="error" title="The guide window is unavailable">
+              <GuideNotice tone="error" title="The guide is unavailable">
                 <span>{guideErrorCopy(error)}</span>
                 <button type="button" onClick={onRetry}>
                   Try again
@@ -147,13 +169,13 @@ export function ProgrammeGuide({
                 tone="empty"
                 title={
                   emptyState?.title ??
-                  (boardEmpty ? "The board is empty" : "Nothing is patched here")
+                  (boardEmpty ? "Every group is hidden" : "No channels here")
                 }
               >
                 {emptyState?.detail ??
                   (boardEmpty
-                    ? "Restore a Channel Group from the roster to patch this guide."
-                    : "This group has no Channels in the current catalog window.")}
+                    ? "Open Choose groups and show a group to fill the guide."
+                    : "This group has no channels right now.")}
               </GuideNotice>
             ) : (
               <Tooltip.Provider delay={400}>
@@ -161,30 +183,28 @@ export function ProgrammeGuide({
                   <div
                     className="programme-guide__playhead"
                     aria-hidden="true"
-                    style={{
-                      left: `calc(var(--guide-gutter) + (100% - var(--guide-gutter)) * ${playheadPercent(window, now) / 100})`,
-                    }}
+                    style={{ left: nowLeft }}
                   />
-                  {rows.map((row, rowIndex) => {
-                    const selected = selection?.channelId === row.channel.id;
-                    return (
-                      <ProgrammeGuideRow
-                        key={row.channel.id}
-                        row={row}
-                        rowIndex={rowIndex}
-                        window={window}
-                        now={now}
-                        selected={selected}
-                        selectedProgramme={
-                          selected ? (selection?.programme ?? null) : null
-                        }
-                        playing={playingChannel === row.channel.id}
-                        channelNameTooltip={channelNameTooltip}
-                        onPreparePlayback={onPreparePlayback}
-                        onTune={onTune}
-                      />
-                    );
-                  })}
+                  {families.map((family) => (
+                    <ProgrammeGuideRow
+                      key={family.number}
+                      family={family}
+                      preferred={preferredVariant(family, variantPreferences)}
+                      window={window}
+                      now={now}
+                      playingChannel={
+                        family.variants.some(
+                          (variant) => variant.channel.id === playingChannel,
+                        )
+                          ? playingChannel
+                          : null
+                      }
+                      channelNameTooltip={channelNameTooltip}
+                      onPreparePlayback={onPreparePlayback}
+                      onTune={onTune}
+                      onTuneVariant={onTuneVariant}
+                    />
+                  ))}
                 </div>
                 <ChannelNameTooltip handle={channelNameTooltip} />
               </Tooltip.Provider>
@@ -192,9 +212,9 @@ export function ProgrammeGuide({
 
             {error !== null && rows.length > 0 ? (
               <div className="programme-guide__retained" role="alert">
-                Guide refresh failed; the visible window is retained.
+                The guide could not update. These are the last loaded channels.
                 <button type="button" onClick={onRetry}>
-                  Retry
+                  Try again
                 </button>
               </div>
             ) : null}
@@ -207,10 +227,10 @@ export function ProgrammeGuide({
                 onClick={onLoadMore}
               >
                 {replacing
-                  ? "Updating generation…"
+                  ? "Updating the guide…"
                   : loadingMore
-                    ? "Opening more Channels…"
-                    : "More Channels"}
+                    ? "Loading more channels…"
+                    : "More channels"}
               </button>
             ) : null}
           </div>
@@ -264,7 +284,6 @@ function GuideNotice({
       data-tone={tone}
       role={tone === "error" ? "alert" : "status"}
     >
-      <span aria-hidden="true">{tone === "loading" ? "◌" : "⌁"}</span>
       <strong>{title}</strong>
       <p>{children}</p>
     </div>
@@ -274,21 +293,21 @@ function GuideNotice({
 function guideErrorCopy(error: ClientError): string {
   switch (error._tag) {
     case "cancelled":
-      return "The previous guide request was replaced.";
+      return "A newer guide request replaced this one.";
     case "authentication-required":
-      return "Sign in again to read the private catalog.";
+      return "Sign in again to see your channels.";
     case "not-configured":
-      return "Configure this receiver before opening the guide.";
+      return "Add your sources before opening the guide.";
     case "catalog-unavailable":
-      return "No validated catalog generation is available yet.";
+      return "The channels have not loaded yet.";
     case "invalid-input":
     case "not-found":
     case "stale-cursor":
-      return "The catalog changed while this window was opening.";
+      return "The channels changed while the guide was opening.";
     case "mpv-failed":
     case "playback-failed":
     case "service-unavailable":
     case "transport":
-      return "Sparrow could not reach the guide service.";
+      return "Sparrow could not reach the guide.";
   }
 }

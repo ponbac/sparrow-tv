@@ -1,64 +1,47 @@
 :where(.source-desk) {
-  position: relative;
-  z-index: 1;
-  padding: 30px clamp(24px, 4vw, 70px) 34px;
-  color: var(--bone);
-  border-bottom: 1px solid var(--ink);
-  background:
-    linear-gradient(100deg, rgba(215, 255, 101, 0.07), transparent 38%),
-    var(--ink-raised);
+  padding: 1.5rem;
+  color: var(--paper);
+  border-bottom: 1px solid var(--hair);
 }
 
 :where(.source-desk) .source-desk__heading {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  align-items: end;
-  gap: 18px;
-  margin-bottom: 20px;
-}
-
-:where(.source-desk) .source-desk__index {
-  color: var(--tomato);
-  font-family: "Newsreader Variable", serif;
-  font-size: 2.5rem;
-  font-style: italic;
-  font-weight: 760;
-  line-height: 0.8;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  margin-bottom: 1rem;
 }
 
 :where(.source-desk) h2 {
   margin: 0;
-  font-family: "Newsreader Variable", serif;
-  font-size: clamp(1.8rem, 3vw, 3.2rem);
-  font-style: italic;
-  font-variation-settings: "opsz" 60, "wght" 690;
-  letter-spacing: -0.045em;
-  line-height: 0.86;
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.2;
 }
 
 :where(.source-desk) .source-desk__refresh,
 :where(.source-desk) .source-desk__diagnostics button {
   display: inline-flex;
-  cursor: pointer;
+  height: 2.5rem;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  min-height: 40px;
-  padding: 9px 12px;
-  color: var(--ink);
-  border: 1px solid var(--acid);
-  background: var(--acid);
-  font-family: "JetBrains Mono Variable", monospace;
-  font-size: 0.62rem;
-  font-weight: 850;
-  letter-spacing: 0.055em;
-  text-transform: uppercase;
+  gap: 0.5rem;
+  padding: 0 1rem;
+  color: var(--on-amber);
+  border: 0;
+  background: var(--amber);
+  font-size: 0.9375rem;
+  font-weight: 600;
 }
 
 :where(.source-desk) button svg {
-  width: 15px;
-  height: 15px;
-  stroke-width: 2.4;
+  width: 1rem;
+  height: 1rem;
+}
+
+:where(.source-desk) .source-desk__refresh[aria-busy="true"] {
+  cursor: progress;
 }
 
 :where(.source-desk) .source-desk__refresh[aria-busy="true"] svg {
@@ -66,200 +49,160 @@
 }
 
 :where(.source-desk) .source-desk__refresh:disabled {
-  cursor: wait;
   opacity: 0.55;
 }
 
 :where(.source-desk) .source-desk__grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  border: 1px solid rgba(243, 237, 223, 0.28);
+  gap: 0.5rem;
 }
 
 :where(.source-desk) .source-card {
-  position: relative;
   min-width: 0;
-  min-height: 166px;
-  padding: 18px 20px 20px;
-  overflow: hidden;
-  border-right: 1px solid rgba(243, 237, 223, 0.28);
-  background: rgba(8, 10, 7, 0.22);
+  padding: 1rem 1.125rem;
+  background: var(--cell);
 }
 
-:where(.source-desk) .source-card:last-child {
-  border-right: 0;
-}
-
-:where(.source-desk) .source-card::after {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  height: 5px;
-  content: "";
-  background: var(--acid);
-}
-
-:where(.source-desk) .source-card[data-state="stale"]::after,
-:where(.source-desk) .source-card[data-state="failed"]::after,
-:where(.source-desk) .source-card[data-state="unavailable"]::after {
-  background: var(--tomato);
-}
-
-:where(.source-desk) .source-card[data-state="checking"]::after,
-:where(.source-desk) .source-card[data-state="refreshing"]::after,
-:where(.source-desk) .source-card[data-state="deferred"]::after {
-  background: repeating-linear-gradient(
-    90deg,
-    var(--acid) 0 18px,
-    transparent 18px 28px
-  );
-}
-
-:where(.source-desk) .source-card[data-state="absent"]::after {
-  background: rgba(243, 237, 223, 0.28);
-}
-
-:where(.source-desk) .source-card__topline {
+:where(.source-desk) .source-card__head {
   display: flex;
-  align-items: center;
+  flex-wrap: wrap;
+  align-items: baseline;
   justify-content: space-between;
-  gap: 14px;
-  margin-bottom: 28px;
-  font-family: "JetBrains Mono Variable", monospace;
-  font-size: 0.57rem;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-}
-
-:where(.source-desk) .source-card__topline > span {
-  display: grid;
-  width: 36px;
-  height: 24px;
-  place-items: center;
-  color: var(--ink);
-  background: var(--tomato);
-}
-
-:where(.source-desk) .source-card__topline strong {
-  color: var(--acid);
-}
-
-:where(.source-desk) .source-card[data-state="failed"] .source-card__topline strong,
-:where(.source-desk) .source-card[data-state="unavailable"] .source-card__topline strong,
-:where(.source-desk) .source-card[data-state="stale"] .source-card__topline strong {
-  color: var(--tomato);
-}
-
-:where(.source-desk) .source-card h3,
-:where(.source-desk) .source-card p {
-  margin: 0;
+  gap: 0.25rem 1rem;
 }
 
 :where(.source-desk) .source-card h3 {
-  font-family: "Newsreader Variable", serif;
-  font-size: 1.5rem;
-  font-style: italic;
+  margin: 0;
+  font-size: 1.0625rem;
+  font-weight: 600;
+}
+
+:where(.source-desk) .source-card__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+:where(.source-desk) .source-card__state::before {
+  width: 0.5rem;
+  height: 0.5rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--ok);
+  content: "";
+}
+
+:where(.source-desk) .source-card[data-state="stale"] .source-card__state::before {
+  background: var(--amber);
+}
+
+:where(.source-desk) .source-card[data-state="failed"] .source-card__state::before,
+:where(.source-desk) .source-card[data-state="unavailable"] .source-card__state::before {
+  background: var(--bad);
+}
+
+:where(.source-desk) .source-card[data-state="checking"] .source-card__state::before,
+:where(.source-desk) .source-card[data-state="refreshing"] .source-card__state::before,
+:where(.source-desk) .source-card[data-state="deferred"] .source-card__state::before {
+  background: var(--dim);
+}
+
+:where(.source-desk) .source-card[data-state="absent"] .source-card__state::before {
+  background: var(--faint);
 }
 
 :where(.source-desk) .source-card p {
   max-width: 58ch;
-  margin-top: 5px;
-  color: rgba(243, 237, 223, 0.68);
-  font-size: 0.72rem;
+  margin: 0.375rem 0 0;
+  color: var(--dim);
+  font-size: 0.9375rem;
   line-height: 1.5;
 }
 
 :where(.source-desk) .source-card time,
 :where(.source-desk) .source-card code {
   display: block;
-  margin-top: 10px;
-  color: rgba(243, 237, 223, 0.62);
-  font-family: "JetBrains Mono Variable", monospace;
-  font-size: 0.56rem;
-  letter-spacing: 0.03em;
+  margin-top: 0.375rem;
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
 }
 
 :where(.source-desk) .source-card code {
-  width: fit-content;
-  padding: 3px 6px;
-  color: var(--tomato);
-  background: rgba(255, 90, 31, 0.13);
+  color: var(--bad);
 }
 
 :where(.source-desk) .refresh-feedback {
-  display: flex;
-  align-items: baseline;
-  gap: 14px;
-  padding: 12px 14px;
-  color: var(--ink);
-  border: 1px solid var(--ink);
-  border-top: 0;
-  background: var(--acid);
+  margin-top: 0.5rem;
+  padding: 0.875rem 1.125rem;
+  background: var(--cell);
+  box-shadow: inset 3px 0 0 var(--ok);
 }
 
 :where(.source-desk) .refresh-feedback[data-tone="failed"] {
-  color: var(--bone);
-  background: #8e2e15;
+  box-shadow: inset 3px 0 0 var(--bad);
 }
 
 :where(.source-desk) .refresh-feedback strong {
-  flex: 0 0 auto;
-  font-family: "JetBrains Mono Variable", monospace;
-  font-size: 0.64rem;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  display: block;
+  font-size: 0.9375rem;
+  font-weight: 600;
 }
 
 :where(.source-desk) .refresh-feedback p {
-  margin: 0;
-  font-size: 0.7rem;
-  line-height: 1.45;
+  margin: 0.25rem 0 0;
+  color: var(--dim);
+  font-size: 0.9375rem;
+  line-height: 1.5;
 }
 
 :where(.source-desk) .source-desk__diagnostics {
-  margin-top: 14px;
-  border-top: 1px solid rgba(243, 237, 223, 0.24);
+  margin-top: 1rem;
 }
 
 :where(.source-desk) .source-desk__diagnostics summary {
   width: fit-content;
   cursor: pointer;
-  padding-top: 12px;
-  color: rgba(243, 237, 223, 0.65);
-  font-family: "JetBrains Mono Variable", monospace;
-  font-size: 0.57rem;
-  font-weight: 800;
-  letter-spacing: 0.075em;
-  text-transform: uppercase;
+  color: var(--dim);
+  font-size: 0.9375rem;
+}
+
+:where(.source-desk) .source-desk__diagnostics summary:hover {
+  color: var(--paper);
 }
 
 :where(.source-desk) .source-desk__diagnostics > div {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 12px;
-  padding-top: 12px;
+  justify-items: start;
+  gap: 0.75rem;
+  padding-top: 0.75rem;
 }
 
 :where(.source-desk) .source-desk__diagnostics pre {
-  max-height: 220px;
+  width: 100%;
+  max-height: 13.75rem;
   margin: 0;
-  padding: 14px;
+  padding: 0.875rem;
   overflow: auto;
-  color: var(--acid);
-  border: 1px solid rgba(243, 237, 223, 0.2);
-  background: #080a07;
-  font-family: "JetBrains Mono Variable", monospace;
-  font-size: 0.58rem;
+  color: var(--dim);
+  background: var(--black);
+  font-family: inherit;
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
   line-height: 1.6;
   white-space: pre-wrap;
 }
 
 :where(.source-desk) .source-desk__diagnostics button {
-  color: var(--bone);
-  border-color: rgba(243, 237, 223, 0.4);
-  background: transparent;
+  color: var(--paper);
+  background: var(--cell);
+}
+
+:where(.source-desk) .source-desk__diagnostics button:hover {
+  background: var(--cell-live);
 }
 
 @keyframes source-desk-dial-turn {
@@ -269,29 +212,16 @@
 }
 
 @media (max-width: 760px) {
-  :where(.source-desk) .source-desk__heading {
-    grid-template-columns: auto 1fr;
+  :where(.source-desk) {
+    padding: 1rem 0.75rem;
   }
 
   :where(.source-desk) .source-desk__refresh {
-    grid-column: 1 / -1;
     width: 100%;
+    min-height: 2.75rem;
   }
 
-  :where(.source-desk) .source-desk__grid {
-    grid-template-columns: 1fr;
-  }
-
-  :where(.source-desk) .source-card {
-    border-right: 0;
-    border-bottom: 1px solid rgba(243, 237, 223, 0.28);
-  }
-
-  :where(.source-desk) .source-card:last-child {
-    border-bottom: 0;
-  }
-
-  :where(.source-desk) .source-desk__diagnostics > div {
-    grid-template-columns: 1fr;
+  :where(.source-desk) .source-desk__diagnostics button {
+    min-height: 2.75rem;
   }
 }

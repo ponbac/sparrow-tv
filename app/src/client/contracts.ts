@@ -88,6 +88,8 @@ export interface HostedCapabilities {
   readonly playbackTransport: "same-origin-http";
   readonly audioTrackSelection: false;
   readonly mpvFailover: false;
+  /** Whether page content may be drawn over the picture. */
+  readonly pictureOverlay: boolean;
 }
 
 /** Installed deployment capabilities exposed by the local Tauri shell. */
@@ -96,6 +98,8 @@ export interface InstalledCapabilities {
   readonly playbackTransport: "platform-native";
   readonly audioTrackSelection: true;
   readonly mpvFailover: boolean;
+  /** Whether page content may be drawn over the picture. */
+  readonly pictureOverlay: boolean;
 }
 
 /** Audio codecs that the native MPEG-TS selector can safely forward. */
@@ -303,11 +307,24 @@ export interface ChannelGroup {
   readonly channelCount: number;
 }
 
+/** The picture quality named by a Quality Variant, lowest first. */
+export type ChannelQuality = "sd" | "hd" | "fhd" | "uhd";
+
+/** What makes a Channel a Quality Variant of its guide row. */
+export interface ChannelVariant {
+  readonly quality: ChannelQuality;
+  /** The Channel name without its picture-quality token. */
+  readonly baseName: string;
+}
+
 /** The browser-safe identity and grouping fields for a catalog channel. */
 export interface ChannelSummary {
   readonly id: ChannelId;
   readonly name: string;
   readonly group: string;
+  /** The Channel Number, shared by the Quality Variants of one guide row. */
+  readonly number: number;
+  readonly variant: ChannelVariant | null;
 }
 
 /** Complete channel metadata currently exposed by the browse contract. */
@@ -315,6 +332,9 @@ export interface ChannelDetails {
   readonly id: ChannelId;
   readonly name: string;
   readonly group: string;
+  /** The Channel Number, shared by the Quality Variants of one guide row. */
+  readonly number: number;
+  readonly variant: ChannelVariant | null;
 }
 
 /** The time-bound Programme fields shared by full schedules and guide rows. */
@@ -387,6 +407,12 @@ export interface GuideWindowInput extends ClientRequestOptions {
   /** Omit for every group; use an empty string for the ungrouped bucket. */
   readonly group?: string;
   readonly cursor?: PageCursor;
+  /**
+   * Places the page around this Channel in Channel Catalog order instead of at
+   * its start. Only valid without `group` and `cursor`; the page's `next` is an
+   * ordinary all-groups cursor.
+   */
+  readonly around?: ChannelId;
   /** Earlier submitted cursors; used only to reject malformed response cycles. */
   readonly previousCursors?: readonly PageCursor[];
 }
@@ -401,6 +427,8 @@ export interface ScheduleInput extends ClientRequestOptions {
   readonly id: ChannelId;
   readonly limit: number;
   readonly cursor?: PageCursor;
+  /** Keeps only the Programmes that end after this instant. */
+  readonly from?: IsoInstant;
   /** Last Programme start from the preceding page; used only for response correlation. */
   readonly afterStartsAt?: IsoInstant;
   /** Earlier submitted cursors; used only to reject malformed response cycles. */
@@ -622,6 +650,7 @@ export type ClientError =
         | "channel-group"
         | "guide-starts-at"
         | "guide-ends-at"
+        | "schedule-from"
         | "search-term"
         | "page-limit"
         | "page-cursor";
@@ -810,6 +839,7 @@ const hostedCapabilitiesSchema: z.ZodType<HostedCapabilities> = z.strictObject({
   playbackTransport: z.literal("same-origin-http"),
   audioTrackSelection: z.literal(false),
   mpvFailover: z.literal(false),
+  pictureOverlay: z.boolean(),
 });
 const installedCapabilitiesSchema: z.ZodType<InstalledCapabilities> =
   z.strictObject({
@@ -817,6 +847,7 @@ const installedCapabilitiesSchema: z.ZodType<InstalledCapabilities> =
     playbackTransport: z.literal("platform-native"),
     audioTrackSelection: z.literal(true),
     mpvFailover: z.boolean(),
+    pictureOverlay: z.boolean(),
   });
 const capabilitiesSchema: z.ZodType<Capabilities> = z.union([
   hostedCapabilitiesSchema,
@@ -1051,16 +1082,26 @@ const channelGroupSchema: z.ZodType<ChannelGroup> = z.strictObject({
   channelCount: z.number().int().nonnegative().max(4_294_967_295),
 });
 
+const channelNumberSchema = z.number().int().positive().max(4_294_967_295);
+const channelVariantSchema: z.ZodType<ChannelVariant> = z.strictObject({
+  quality: z.enum(["sd", "hd", "fhd", "uhd"]),
+  baseName: z.string().min(1),
+});
+
 const channelSummarySchema: z.ZodType<ChannelSummary> = z.strictObject({
   id: channelIdSchema,
   name: z.string(),
   group: channelGroupNameSchema,
+  number: channelNumberSchema,
+  variant: channelVariantSchema.nullable(),
 });
 
 const channelDetailsSchema: z.ZodType<ChannelDetails> = z.strictObject({
   id: channelIdSchema,
   name: z.string(),
   group: channelGroupNameSchema,
+  number: channelNumberSchema,
+  variant: channelVariantSchema.nullable(),
 });
 
 const programmeSummarySchema: z.ZodType<ProgrammeSummary> = z
@@ -1245,7 +1286,7 @@ const guideContractSchemas = createGuideContractSchemas({
 const schedulePageSchemaFor = (
   input: Pick<
     ScheduleInput,
-    "id" | "limit" | "cursor" | "afterStartsAt" | "previousCursors"
+    "id" | "limit" | "cursor" | "from" | "afterStartsAt" | "previousCursors"
   >,
 ): z.ZodType<Page<ProgrammeSummary>> =>
   requestedPageSchema(programmeSummarySchema, input.limit)
@@ -1270,6 +1311,21 @@ const schedulePageSchemaFor = (
         page.items[0] === undefined ||
         !isInstantBefore(page.items[0].startsAt, input.afterStartsAt),
       { message: "A schedule continuation cannot precede its prior page." },
+    )
+    .refine(
+      (page) => {
+        const from = input.from;
+        return (
+          from === undefined ||
+          page.items.every((programme) =>
+            isInstantBefore(from, programme.endsAt),
+          )
+        );
+      },
+      {
+        message:
+          "Every scheduled Programme must end after the requested instant.",
+      },
     );
 
 const groupsPageSchemaFor = (
@@ -1393,6 +1449,7 @@ const serverClientErrorSchema: z.ZodType<ServerClientError> =
         "channel-group",
         "guide-starts-at",
         "guide-ends-at",
+        "schedule-from",
         "search-term",
         "page-limit",
         "page-cursor",

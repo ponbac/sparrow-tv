@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { clientSchemas, type ChannelSummary } from "../../client/contracts";
+import { channelFixture } from "../../test/channel-fixture";
 import {
   executeAgentControl,
   parseAgentControlRequest,
@@ -8,13 +9,13 @@ import {
   type AgentControlPlayback,
 } from "./agent-control";
 
-const EUROSPORT = clientSchemas.channel.parse({
+const EUROSPORT = channelFixture({
   id: "eurosport-1-fhd-se",
   name: "Eurosport 1 FHD SE",
   group: "Sport",
 });
 
-const EUROSPORT_2 = clientSchemas.channel.parse({
+const EUROSPORT_2 = channelFixture({
   id: "eurosport-2-fhd-se",
   name: "Eurosport 2 FHD SE",
   group: "Sport",

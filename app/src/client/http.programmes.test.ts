@@ -7,6 +7,7 @@ import {
   type PageCursor,
 } from "./contracts";
 import { createHttpSparrowClient } from "./http";
+import { channelFixture } from "../test/channel-fixture";
 
 interface JsonFixture {
   readonly body: unknown;
@@ -23,7 +24,11 @@ interface FakeHttp {
   readonly requests: readonly RecordedRequest[];
 }
 
-const channel = { id: "channel-one", name: "World News", group: "News" };
+const channel = channelFixture({
+  id: "channel-one",
+  name: "World News",
+  group: "News",
+});
 
 const channelOnlySearch = {
   generation: 11,
@@ -248,7 +253,11 @@ describe("hosted HTTP Programme client", () => {
         ...channelOnlySearch.channels,
         items: [
           ...channelOnlySearch.channels.items,
-          { id: "channel-two", name: "Local News", group: "News" },
+          channelFixture({
+            id: "channel-two",
+            name: "Local News",
+            group: "News",
+          }),
         ],
       },
     };
@@ -324,6 +333,51 @@ describe("hosted HTTP Programme client", () => {
     );
     await expect(client.schedule({ id, limit: 2 })).resolves.toEqual(
       invalidResponse(false),
+    );
+  });
+
+  it("reads a schedule from an instant and rejects Programmes over by then", async () => {
+    const page = { ...schedulePage, next: null };
+    const http = createFakeHttp([
+      { body: page },
+      { body: page },
+      {
+        status: 400,
+        body: {
+          error: {
+            _tag: "invalid-input",
+            field: "schedule-from",
+            reason: "invalid-format",
+          },
+        },
+      },
+    ]);
+    const client = createHttpSparrowClient({ fetch: http.fetch });
+    const id = parsedChannelId("channel-one");
+    const duringProgramme = clientSchemas.isoInstant.parse(
+      "2026-08-30T21:30:00+02:00",
+    );
+    const atProgrammeEnd = clientSchemas.isoInstant.parse(programme.endsAt);
+
+    await expect(
+      client.schedule({ id, limit: 8, from: duringProgramme }),
+    ).resolves.toEqual({ ok: true, value: page });
+    await expect(
+      client.schedule({ id, limit: 8, from: atProgrammeEnd }),
+    ).resolves.toEqual(invalidResponse(false));
+    await expect(
+      client.schedule({ id, limit: 8, from: duringProgramme }),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        _tag: "invalid-input",
+        field: "schedule-from",
+        reason: "invalid-format",
+      },
+    });
+
+    expect(requestAt(http, 0).url).toBe(
+      "/api/v1/channels/channel-one/schedule?limit=8&from=2026-08-30T21%3A30%3A00%2B02%3A00",
     );
   });
 
@@ -502,15 +556,7 @@ describe("hosted HTTP Programme client", () => {
 });
 
 function parsedChannelId(value: string): ChannelId {
-  const parsed = clientSchemas.channel.safeParse({
-    id: value,
-    name: "Fixture Channel",
-    group: "",
-  });
-  if (!parsed.success) {
-    throw new Error("expected the fixture Channel Identifier to parse");
-  }
-  return parsed.data.id;
+  return channelFixture({ id: value, name: "Fixture Channel", group: "" }).id;
 }
 
 function parsedCursor(value: string): PageCursor {

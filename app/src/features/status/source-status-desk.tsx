@@ -13,7 +13,7 @@ import type {
 } from "../../client/contracts";
 import "./source-status-desk.css";
 
-/** Inputs for independent source telemetry and an optional manual refresh control. */
+/** Inputs for independent source status and an optional manual refresh control. */
 export interface SourceStatusDeskProps {
   readonly status: CatalogStatus | null;
   readonly refreshing: boolean;
@@ -79,13 +79,7 @@ export function SourceStatusDesk({
   return (
     <section className="source-desk" aria-labelledby="source-desk-heading">
       <header className="source-desk__heading">
-        <div className="source-desk__index" aria-hidden="true">
-          RX
-        </div>
-        <div>
-          <p className="eyebrow">Independent source telemetry</p>
-          <h2 id="source-desk-heading">Signal condition</h2>
-        </div>
+        <h2 id="source-desk-heading">Source status</h2>
         {manualRefresh ? (
           <button
             className="source-desk__refresh"
@@ -102,12 +96,10 @@ export function SourceStatusDesk({
 
       <div className="source-desk__grid" aria-live="polite">
         <SourceCard
-          code="M3U"
           title="Channel source"
           state={status?.m3u ?? null}
         />
         <SourceCard
-          code="EPG"
           title="Guide source"
           state={status?.epg ?? null}
           configured={status?.configuration.epgConfigured ?? null}
@@ -123,7 +115,7 @@ export function SourceStatusDesk({
       />
 
       <details className="source-desk__diagnostics">
-        <summary>Safe diagnostics / copyable</summary>
+        <summary>Diagnostics you can copy</summary>
         <div>
           <pre
             role="region"
@@ -151,7 +143,6 @@ export function SourceStatusDesk({
 }
 
 function SourceCard({
-  code,
   title,
   state,
   configured = true,
@@ -159,7 +150,6 @@ function SourceCard({
   playbackAvailable = true,
   sourceScope,
 }: {
-  readonly code: "M3U" | "EPG";
   readonly title: string;
   readonly state: SourceState | null;
   readonly configured?: boolean | null;
@@ -176,11 +166,10 @@ function SourceCard({
   );
   return (
     <article className="source-card" data-state={presentation.tone}>
-      <div className="source-card__topline">
-        <span>{code}</span>
-        <strong>{presentation.label}</strong>
-      </div>
-      <h3>{title}</h3>
+      <header className="source-card__head">
+        <h3>{title}</h3>
+        <strong className="source-card__state">{presentation.label}</strong>
+      </header>
       <p>{presentation.detail}</p>
       {presentation.time === null ? null : (
         <time dateTime={presentation.time.value}>
@@ -193,7 +182,7 @@ function SourceCard({
         </time>
       )}
       {presentation.failure === null ? null : (
-        <code>failure / {presentation.failure}</code>
+        <code>Reason: {presentation.failure}</code>
       )}
     </article>
   );
@@ -219,36 +208,37 @@ function RefreshFeedback({
     );
   }
 
-  const failed = [
-    result.value.m3u._tag === "failed" ? "Channel source" : null,
-    result.value.epg?._tag === "failed" ? "Guide source" : null,
-  ].filter((source): source is string => source !== null);
-  const outcomes = [
-    `Channel source: ${refreshOutcomeSummary(result.value.m3u)}`,
-    `Guide source: ${
-      result.value.epg === null
-        ? "not configured"
-        : refreshOutcomeSummary(result.value.epg)
-    }`,
-  ].join(" · ");
+  const failureTitle = refreshFailureTitle(result.value);
+  const outcomes = `Channel source ${refreshOutcomeSummary(result.value.m3u)}. Guide source ${
+    result.value.epg === null
+      ? "not set up"
+      : refreshOutcomeSummary(result.value.epg)
+  }.`;
   return (
     <div
       className="refresh-feedback"
-      data-tone={failed.length === 0 ? "complete" : "failed"}
-      role={failed.length === 0 ? "status" : "alert"}
+      data-tone={failureTitle === null ? "complete" : "failed"}
+      role={failureTitle === null ? "status" : "alert"}
     >
-      <strong>
-        {failed.length === 0
-          ? "Manual refresh complete"
-          : `${failed.join(" and ")} refresh failed`}
-      </strong>
+      <strong>{failureTitle ?? "Manual refresh complete"}</strong>
       <p>
-        {failed.length === 0
-          ? `${outcomes}. ${refreshSuccessCopy(result.value)}`
-          : `${outcomes}. ${refreshFailureDetail(result.value, playbackAvailable)}`}
+        {failureTitle === null
+          ? `${outcomes} ${refreshSuccessCopy(result.value)}`
+          : `${outcomes} ${refreshFailureDetail(result.value, playbackAvailable)}`}
       </p>
     </div>
   );
+}
+
+function refreshFailureTitle(report: RefreshReport): string | null {
+  const channelFailed = report.m3u._tag === "failed";
+  const guideFailed = report.epg?._tag === "failed";
+  if (channelFailed) {
+    return guideFailed
+      ? "Channel and guide source refresh failed"
+      : "Channel source refresh failed";
+  }
+  return guideFailed ? "Guide source refresh failed" : null;
 }
 
 interface SourcePresentation {
@@ -281,15 +271,15 @@ function sourcePresentation(
   if (configured === false) {
     return sourcePresentationValue(
       "absent",
-      "NOT CONFIGURED",
+      "Not set up",
       absentGuideCopy(sourceScope, catalogAvailable, playbackAvailable),
     );
   }
   if (state === null || configured === null) {
     return sourcePresentationValue(
       "checking",
-      "CHECKING",
-      "Waiting for a safe status snapshot from Sparrow.",
+      "Checking",
+      "Waiting for Sparrow to report this source.",
     );
   }
 
@@ -297,41 +287,43 @@ function sourcePresentation(
     case "fresh":
       return sourcePresentationValue(
         "fresh",
-        "FRESH",
-        "The latest validated snapshot is in service.",
-        { time: { label: "Validated", value: state.validatedAt } },
+        "Fresh",
+        "The latest copy is in use.",
+        { time: { label: "Checked", value: state.validatedAt } },
       );
     case "stale":
       return sourcePresentationValue(
         "stale",
-        "STALE / RETAINED",
-        "The last validated snapshot remains usable while Sparrow awaits a fresh one.",
+        "Stale, showing the saved copy",
+        "Sparrow keeps using the saved copy until a fresh one arrives.",
         {
-          time: { label: "Last validated", value: state.validatedAt },
+          time: { label: "Last checked", value: state.validatedAt },
           nextAttemptAt: state.nextAttemptAt,
         },
       );
     case "refreshing":
       return sourcePresentationValue(
         "refreshing",
-        state.validatedAt === null ? "REFRESHING" : "REFRESHING / RETAINED",
         state.validatedAt === null
-          ? "The first validated snapshot is being prepared."
-          : "The last validated snapshot remains in service during refresh.",
+          ? "Refreshing"
+          : "Refreshing, showing the saved copy",
+        state.validatedAt === null
+          ? "Sparrow is loading this source for the first time."
+          : "The saved copy stays in use while the refresh runs.",
         { time: { label: "Started", value: state.startedAt } },
       );
     case "failed":
       return sourcePresentationValue(
         "failed",
-        state.validatedAt === null ? "FAILED" : "FAILED / RETAINED",
+        state.validatedAt === null ? "Failed" : "Failed, showing the saved copy",
         state.validatedAt === null
-          ? "No validated snapshot is available yet."
-          : "Refresh failed; the last validated snapshot remains in service.",
+          ? "This source has not loaded yet."
+          : "The refresh failed. The saved copy stays in use.",
         {
           time:
             state.validatedAt === null
               ? null
-              : { label: "Last validated", value: state.validatedAt },
+              : { label: "Last checked", value: state.validatedAt },
           nextAttemptAt: state.nextAttemptAt,
           failure: safeFailureSummary(state.failure),
         },
@@ -339,8 +331,8 @@ function sourcePresentation(
     case "unavailable":
       return sourcePresentationValue(
         "unavailable",
-        "UNAVAILABLE",
-        "No validated snapshot is available for this configured source.",
+        "Unavailable",
+        "This source has not loaded, so Sparrow has no copy of it.",
         {
           failure:
             state.failure === null ? null : safeFailureSummary(state.failure),
@@ -349,11 +341,11 @@ function sourcePresentation(
     case "deferred":
       return sourcePresentationValue(
         "deferred",
-        state.validatedAt === null ? "DEFERRED" : "DEFERRED / RETAINED",
+        state.validatedAt === null ? "Waiting" : "Waiting, showing the saved copy",
         state.validatedAt === null
-          ? "Source work is deferred until Sparrow can safely continue."
-          : "The last validated snapshot remains in service while refresh is deferred.",
-        { time: { label: "Deferred", value: state.deferredAt } },
+          ? "The refresh starts when Sparrow is free to run it."
+          : "The saved copy stays in use until the refresh can run.",
+        { time: { label: "Waiting since", value: state.deferredAt } },
       );
   }
 }
@@ -363,15 +355,15 @@ function absentGuideCopy(
   catalogAvailable: boolean,
   playbackAvailable: boolean,
 ): string {
-  const owner = sourceScope === "device" ? "This device" : "This deployment";
+  const owner = sourceScope === "device" ? "This device" : "This server";
   if (catalogAvailable) {
     return playbackAvailable
-      ? `${owner} has no Guide source. Channel browse, search, and playback remain available.`
-      : `${owner} has no Guide source. Channel browse and search remain available.`;
+      ? `${owner} has no guide source. You can still browse, search and play channels.`
+      : `${owner} has no guide source. You can still browse and search channels.`;
   }
   return playbackAvailable
-    ? `${owner} has no Guide source. Browse, search, and playback require a validated Channel snapshot.`
-    : `${owner} has no Guide source. Browse and search require a validated Channel snapshot.`;
+    ? `${owner} has no guide source. Browsing, search and playback start once the channel source loads.`
+    : `${owner} has no guide source. Browsing and search start once the channel source loads.`;
 }
 
 function sourcePresentationValue(
@@ -395,12 +387,14 @@ function sourcePresentationValue(
 
 function refreshSuccessCopy(report: RefreshReport): string {
   if (report.m3u._tag === "skipped" && report.m3u.reason === "fresh") {
-    return "The Channel source was already fresh; Guide work completed independently.";
+    return "The channel source was already fresh, so only the guide was refreshed.";
   }
   if (report.m3u._tag === "not-modified") {
-    return "The Channel source was revalidated without replacing its snapshot.";
+    return "The channel source has not changed since the last check.";
   }
-  return `Catalog generation ${report.status.generation ?? "unavailable"} now reflects the completed source outcomes.`;
+  return report.status.generation === null
+    ? "No catalog is available yet."
+    : "The catalog is up to date.";
 }
 
 function refreshFailureDetail(
@@ -414,54 +408,64 @@ function refreshFailureDetail(
 
   if (report.m3u._tag !== "failed") {
     return catalogAvailable
-      ? `Any last validated Guide snapshot remains in service. ${availableFeatures} stay available because the Channel source completed independently.`
-      : `The Guide failed independently, but no validated Channel snapshot is available. ${availableFeatures} remain unavailable.`;
+      ? `Any saved guide copy stays in use. ${availableFeatures} stay available because the channel source loaded.`
+      : `The guide source failed and no channel source has loaded. ${availableFeatures} are unavailable.`;
   }
 
   return catalogAvailable
-    ? `The Channel source failed, but its last validated snapshot remains in service. ${availableFeatures} stay available from that retained snapshot.`
-    : `The Channel source failed without a retained snapshot. ${availableFeatures} remain unavailable until a Channel refresh succeeds.`;
+    ? `The channel source failed, but its saved copy stays in use. ${availableFeatures} stay available from that copy.`
+    : `The channel source failed and there is no saved copy. ${availableFeatures} are unavailable until a refresh succeeds.`;
 }
 
 function refreshOutcomeSummary(outcome: RefreshOutcome): string {
   switch (outcome._tag) {
     case "not-configured":
-      return "not configured";
+      return "not set up";
     case "updated":
       return "updated";
     case "not-modified":
-      return "validated / unchanged";
+      return "checked, unchanged";
     case "skipped":
-      return `skipped / ${outcome.reason}`;
+      return outcome.reason === "fresh"
+        ? "skipped, already fresh"
+        : "skipped, waiting to retry";
     case "failed":
-      return `failed / ${safeFailureSummary(outcome.failure)}`;
+      return `failed: ${safeFailureSummary(outcome.failure)}`;
   }
 }
 
+/** Words for one closed failure value; the source is named by the caller. */
 function safeFailureSummary(failure: SafeFailure): string {
   switch (failure._tag) {
     case "source-access":
-      return `${failure.source} / ${failure.reason}${
+      return `${codeWords(failure.reason)}${
         failure.retryAfterSeconds === null
           ? ""
-          : ` / retry ${failure.retryAfterSeconds}s`
+          : `, retry in ${failure.retryAfterSeconds} s`
       }`;
     case "source-read":
     case "snapshot-recovery":
-      return `${failure.source} / ${failure.reason}`;
-    case "snapshot":
-      return `${failure.source} / ${failure.operation} / ${failure.reason}`;
-    case "decoded-limit-exceeded":
-      return `${failure.source} / decoded limit ${failure.limitBytes} bytes`;
-    case "invalid-format":
-      return `m3u / ${failure.reason} / entry ${failure.entry ?? "unknown"}`;
     case "invalid-epg-format":
-      return `epg / ${failure.reason}`;
+      return codeWords(failure.reason);
+    case "snapshot":
+      return `${codeWords(failure.reason)} during ${codeWords(failure.operation)}`;
+    case "decoded-limit-exceeded":
+      return `larger than ${failure.limitBytes} bytes`;
+    case "invalid-format":
+      return `${codeWords(failure.reason)}${
+        failure.entry === null ? "" : ` at entry ${failure.entry}`
+      }`;
     case "invalid-encoding":
+      return "invalid encoding";
     case "no-playable-channels":
+      return "no playable channels";
     case "no-epg-channels":
-      return `${failure.source} / ${failure._tag}`;
+      return "no guide channels";
   }
+}
+
+function codeWords(code: string): string {
+  return code.replace(/-/gu, " ");
 }
 
 function refreshErrorCopy(error: ClientError): {
@@ -471,29 +475,29 @@ function refreshErrorCopy(error: ClientError): {
   switch (error._tag) {
     case "authentication-required":
       return {
-        title: "Refresh needs authentication",
-        detail: "Authenticate with this Sparrow deployment, then request refresh again.",
+        title: "Sign in to refresh",
+        detail: "Sign in to this Sparrow server, then refresh again.",
       };
     case "not-configured":
       return {
-        title: "No Channel source is configured",
-        detail: "This hosted deployment has no source to refresh.",
+        title: "No channel source is set up",
+        detail: "This server has no source to refresh.",
       };
     case "service-unavailable":
       return {
         title: "Refresh did not complete",
-        detail: "The current catalog is unchanged and can remain in use. Try again shortly.",
+        detail: "The current catalog is unchanged and still in use. Try again shortly.",
       };
     case "transport":
       return {
         title: "Refresh result was not received",
         detail:
-          "The request may still have completed. Sparrow is checking source status; use the source cards above as the current record before trying again.",
+          "The refresh may still have completed. Sparrow is checking the sources; read their status above before trying again.",
       };
     case "catalog-unavailable":
       return {
-        title: "No validated catalog is available",
-        detail: "Sparrow retained the safe source status. Request refresh again when the source is available.",
+        title: "No catalog is available",
+        detail: "Refresh again when the source can be reached.",
       };
     case "invalid-input":
     case "not-found":
@@ -502,13 +506,13 @@ function refreshErrorCopy(error: ClientError): {
     case "mpv-failed":
       return {
         title: "Refresh returned an unexpected result",
-        detail: "No private source detail was retained in the browser. Check Sparrow again.",
+        detail: "Read the source status above, then try again.",
       };
     case "cancelled":
       return {
         title: "Refresh was cancelled",
         detail:
-          "The request may still have completed. Sparrow is checking source status before another refresh.",
+          "The refresh may still have completed. Sparrow is checking the sources before another refresh.",
       };
   }
 }
@@ -517,6 +521,7 @@ function formatTime(value: IsoInstant): string {
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
     timeStyle: "short",
+    hourCycle: "h23",
   }).format(new Date(value));
 }
 

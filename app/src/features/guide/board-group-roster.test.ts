@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { clientSchemas, type ChannelGroup } from "../../client/contracts";
+import type { ChannelGroup } from "../../client/contracts";
+import { channelFixture } from "../../test/channel-fixture";
 import {
   BOARD_GROUP_EXCLUSIONS_STORAGE_KEY,
   groupDisplayName,
@@ -18,12 +19,12 @@ const NEWS: ChannelGroup = { name: "News", channelCount: 4 };
 const CINEMA: ChannelGroup = { name: "Cinema", channelCount: 2 };
 const UNGROUPED: ChannelGroup = { name: "", channelCount: 1 };
 
-const WORLD_NEWS = clientSchemas.channel.parse({
+const WORLD_NEWS = channelFixture({
   id: "world-news",
   name: "World News",
   group: "News",
 });
-const CINEMA_ONE = clientSchemas.channel.parse({
+const CINEMA_ONE = channelFixture({
   id: "cinema-one",
   name: "Cinema One",
   group: "Cinema",

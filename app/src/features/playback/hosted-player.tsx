@@ -104,12 +104,14 @@ export function HostedPlayer({
   }, [attempt, channel.id, client, engine]);
 
   useEffect(() => {
+    // The video element is rekeyed per Channel and attempt; each new one
+    // starts at full volume until the viewer's level is applied again.
     const video = videoRef.current;
     if (video !== null) {
       video.volume = volume;
       video.muted = muted;
     }
-  }, [attempt, muted, volume]);
+  }, [attempt, channel.id, muted, volume]);
 
   useEffect(() => {
     const updateFullscreen = () => {
@@ -119,6 +121,8 @@ export function HostedPlayer({
       );
     };
     document.addEventListener("fullscreenchange", updateFullscreen);
+    // Fullscreen on the document root outlives the player that asked for it.
+    updateFullscreen();
     return () =>
       document.removeEventListener("fullscreenchange", updateFullscreen);
   }, []);
@@ -149,7 +153,6 @@ export function HostedPlayer({
       state={state}
       videoKey={`${channel.id}:${attempt}`}
       videoRef={videoRef}
-      transportLabel="same-origin relay"
       privacyCopy="Provider details remain behind the Sparrow relay."
       onPlaying={() => setState({ _tag: "playing" })}
       {...(recoveryAction === undefined ? {} : { recoveryAction })}

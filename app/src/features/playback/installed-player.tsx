@@ -1,10 +1,4 @@
-import {
-  ExternalLink,
-  MonitorPlay,
-  Pause,
-  RotateCcw,
-  ScrollText,
-} from "lucide-react";
+import { AudioLines, RotateCcw, ScrollText } from "lucide-react";
 import {
   useEffect,
   useMemo,
@@ -32,7 +26,10 @@ import {
   installedPlaybackEngine,
   type InstalledPlaybackEngine,
 } from "./installed-playback-engine";
-import { PlaybackSurface } from "./playback-surface";
+import {
+  PlaybackSurface,
+  type PlaybackSecondaryAction,
+} from "./playback-surface";
 
 export interface InstalledPlayerProps {
   readonly channel: { readonly id: ChannelId; readonly name: string };
@@ -152,6 +149,8 @@ export function InstalledPlayer({
       );
     };
     document.addEventListener("fullscreenchange", updateFullscreen);
+    // Fullscreen on the document root outlives the player that asked for it.
+    updateFullscreen();
     return () =>
       document.removeEventListener("fullscreenchange", updateFullscreen);
   }, [runner]);
@@ -211,19 +210,38 @@ export function InstalledPlayer({
       .catch(() => undefined);
   };
 
+  const secondaryActions: readonly PlaybackSecondaryAction[] = [
+    ...(canRestart && recoveryAction === undefined
+      ? [
+          {
+            key: "restart",
+            label: "Restart",
+            icon: <RotateCcw aria-hidden="true" />,
+            onSelect: () => void runner.restart(),
+          },
+        ]
+      : []),
+    {
+      key: "copy-diagnostics",
+      label: "Copy diagnostics",
+      icon: <ScrollText aria-hidden="true" />,
+      onSelect: copyDiagnostics,
+    },
+  ];
+  const switchPlayer = () => {
+    const switchTo = async () => {
+      if (document.fullscreenElement !== null) await document.exitFullscreen();
+      await runner.switchPlayer(usesMpv ? "in-app" : "mpv");
+    };
+    void switchTo().catch(() => undefined);
+  };
+
   return (
     <PlaybackSurface
       channel={channel}
       state={installedPlayerState(state)}
       videoKey={channel.id}
       videoRef={videoRef}
-      transportLabel={
-        usesMpv
-          ? "system mpv"
-          : state.presentation === "android-media3"
-            ? "Android Media3"
-            : "native receiver"
-      }
       privacyCopy={
         usesMpv
           ? "Provider details pass privately from the installed receiver to mpv over local IPC."
@@ -231,94 +249,72 @@ export function InstalledPlayer({
       }
       onPlaying={() => undefined}
       {...(recoveryAction === undefined ? {} : { recoveryAction })}
-      additionalControls={
-        <>
-          {canOpenMpv ? (
-            <button
-              type="button"
-              disabled={
+      {...(canPause ? { pause: { onPause: () => void runner.pause() } } : {})}
+      {...(state.audio.tracks.length === 0
+        ? {}
+        : {
+            audio: (
+              <label className="hosted-player__audio-track">
+                <AudioLines aria-hidden="true" />
+                <span>Audio</span>
+                <select
+                  aria-label="Audio track"
+                  value={selectedAudioTrack?.id ?? ""}
+                  disabled={!canSelectAudio}
+                  onChange={(event) => {
+                    const parsed = clientSchemas.audioTrackId.safeParse(
+                      event.currentTarget.value,
+                    );
+                    if (parsed.success) {
+                      void runner.selectAudio(parsed.data);
+                    }
+                  }}
+                >
+                  {state.audio.tracks.map((track, index) => (
+                    <option key={track.id} value={track.id}>
+                      {audioTrackLabel(track, index)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ),
+          })}
+      {...(audioStatus === null && copyStatus === null
+        ? {}
+        : {
+            status: (
+              <>
+                {audioStatus === null ? null : (
+                  <span
+                    className="hosted-player__audio-status"
+                    data-fallback={state.audio.selection._tag === "fallback"}
+                    role="status"
+                  >
+                    {audioStatus}
+                  </span>
+                )}
+                {copyStatus === null ? null : (
+                  <span className="hosted-player__copy-status" role="status">
+                    {copyStatus}
+                  </span>
+                )}
+              </>
+            ),
+          })}
+      {...(canOpenMpv
+        ? {
+            playerSwitch: {
+              label: usesMpv ? "Play in app" : "Open in mpv",
+              onSwitch: switchPlayer,
+              disabled:
                 phase._tag === "stopping" ||
                 phase._tag === "starting" ||
                 phase._tag === "suspending" ||
-                phase._tag === "replacing-audio"
-              }
-              onClick={() => {
-                const switchPlayer = async () => {
-                  if (document.fullscreenElement !== null)
-                    await document.exitFullscreen();
-                  await runner.switchPlayer(usesMpv ? "in-app" : "mpv");
-                };
-                void switchPlayer().catch(() => undefined);
-              }}
-            >
-              {usesMpv ? (
-                <MonitorPlay aria-hidden="true" />
-              ) : (
-                <ExternalLink aria-hidden="true" />
-              )}
-              {usesMpv ? "Play in app" : "Open in mpv"}
-            </button>
-          ) : null}
-          {state.audio.tracks.length === 0 ? null : (
-            <label className="hosted-player__audio-track">
-              <span>Audio</span>
-              <select
-                aria-label="Audio track"
-                value={selectedAudioTrack?.id ?? ""}
-                disabled={!canSelectAudio}
-                onChange={(event) => {
-                  const parsed = clientSchemas.audioTrackId.safeParse(
-                    event.currentTarget.value,
-                  );
-                  if (parsed.success) {
-                    void runner.selectAudio(parsed.data);
-                  }
-                }}
-              >
-                {state.audio.tracks.map((track, index) => (
-                  <option key={track.id} value={track.id}>
-                    {audioTrackLabel(track, index)}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          {audioStatus === null ? null : (
-            <span
-              className="hosted-player__audio-status"
-              data-fallback={state.audio.selection._tag === "fallback"}
-              role="status"
-            >
-              {audioStatus}
-            </span>
-          )}
-          {canPause ? (
-            <button
-              className="hosted-player__primary-control"
-              type="button"
-              onClick={() => void runner.pause()}
-            >
-              <Pause aria-hidden="true" />
-              <span>Pause</span>
-            </button>
-          ) : null}
-          {canRestart && recoveryAction === undefined ? (
-            <button type="button" onClick={() => void runner.restart()}>
-              <RotateCcw aria-hidden="true" />
-              Restart
-            </button>
-          ) : null}
-          <button type="button" onClick={copyDiagnostics}>
-            <ScrollText aria-hidden="true" />
-            Copy diagnostics
-          </button>
-          {copyStatus === null ? null : (
-            <span className="hosted-player__copy-status" role="status">
-              {copyStatus}
-            </span>
-          )}
-        </>
-      }
+                phase._tag === "replacing-audio",
+            },
+          }
+        : {})}
+      secondaryActions={secondaryActions}
       volume={state.controls.volume}
       muted={state.controls.muted}
       fullscreen={state.controls.fullscreen}
@@ -326,6 +322,7 @@ export function InstalledPlayer({
       onToggleMuted={() => runner.toggleMuted()}
       onRequestFullscreen={(surface) => void runner.requestFullscreen(surface)}
       nativeVideo={state.presentation === "android-media3"}
+      external={usesMpv}
       showMediaControls={!transportReleased}
       stopLabel={
         transportReleased
@@ -348,7 +345,7 @@ function audioTrackLabel(track: AudioTrack, index: number): string {
   return [
     ...(metadata.length === 0 ? [`Audio ${index + 1}`] : metadata),
     audioCodecLabel(track.codec),
-  ].join(" · ");
+  ].join(", ");
 }
 
 function audioCodecLabel(codec: AudioCodec): string {

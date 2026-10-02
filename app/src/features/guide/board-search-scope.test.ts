@@ -1,17 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { clientSchemas } from "../../client/contracts";
+import { channelFixture } from "../../test/channel-fixture";
 import {
   shouldAdvancePastExcludedSearchHits,
   visibleSearchChannels,
   visibleSearchProgrammes,
 } from "./board-search-scope";
 
-const WORLD_NEWS = clientSchemas.channel.parse({
+const WORLD_NEWS = channelFixture({
   id: "world-news",
   name: "World News",
   group: "News",
 });
-const CINEMA_ONE = clientSchemas.channel.parse({
+const CINEMA_ONE = channelFixture({
   id: "cinema-one",
   name: "Cinema One",
   group: "Cinema",

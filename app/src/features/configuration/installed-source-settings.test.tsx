@@ -53,14 +53,14 @@ describe("installed source settings", () => {
       </QueryClientProvider>,
     );
 
-    const m3u = screen.getByLabelText("Required / Channel source");
-    const epg = screen.getByLabelText("Optional / Guide source");
+    const m3u = screen.getByLabelText("Channel source (required)");
+    const epg = screen.getByLabelText("Guide source (optional)");
     expect(m3u).not.toHaveAttribute("name");
     expect(epg).not.toHaveAttribute("name");
     await user.type(m3u, sourceLocation);
     await user.type(epg, guideLocation);
     await user.click(
-      screen.getByRole("button", { name: "Build local catalog" }),
+      screen.getByRole("button", { name: "Save sources" }),
     );
 
     expect(inputs).toHaveLength(1);
@@ -82,7 +82,7 @@ describe("installed source settings", () => {
     expect(epg).toHaveValue("");
     expect(onApplied).toHaveBeenCalledWith(FRESH_STATUS);
     expect(screen.getByRole("status")).toHaveTextContent(
-      "Configuration saved",
+      "Sources saved",
     );
     expect(JSON.stringify(queryClient.getQueryCache().getAll())).not.toContain(
       "provider.invalid",
@@ -108,15 +108,15 @@ describe("installed source settings", () => {
       />,
     );
     const m3u = screen.getByLabelText<HTMLInputElement>(
-      "Required / Channel source",
+      "Channel source (required)",
     );
     const epg = screen.getByLabelText<HTMLInputElement>(
-      "Optional / Guide source",
+      "Guide source (optional)",
     );
     await user.type(m3u, "https://provider.invalid/private.m3u");
     await user.type(epg, "https://provider.invalid/private.xml");
     await user.click(
-      screen.getByRole("button", { name: "Build local catalog" }),
+      screen.getByRole("button", { name: "Save sources" }),
     );
 
     const submitted = requireFirst(inputs);
@@ -145,11 +145,11 @@ describe("installed source settings", () => {
     );
 
     await user.type(
-      screen.getByLabelText("Required / Channel source"),
+      screen.getByLabelText("Channel source (required)"),
       "https://provider.invalid/list.m3u",
     );
     await user.click(
-      screen.getByRole("button", { name: "Build local catalog" }),
+      screen.getByRole("button", { name: "Save sources" }),
     );
 
     expect(requireFirst(inputs).epgLocation).toBeNull();

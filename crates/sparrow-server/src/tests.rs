@@ -45,6 +45,8 @@ const EPG_SOURCE_LOCATION: &str = "https://guide-user:guide-secret@private-guide
 const BROWSE_M3U: &[u8] = include_bytes!("../../sparrow-core/tests/fixtures/browse_channels.m3u");
 const REORDERED_BROWSE_M3U: &[u8] =
     include_bytes!("../../sparrow-core/tests/fixtures/browse_channels_reordered.m3u");
+const QUALITY_VARIANTS_M3U: &[u8] =
+    include_bytes!("../../sparrow-core/tests/fixtures/quality_variants.m3u");
 const PROGRAMME_M3U: &[u8] =
     include_bytes!("../../sparrow-core/tests/fixtures/programme_channels.m3u");
 const PROGRAMME_EPG: &[u8] =
@@ -324,6 +326,7 @@ async fn capabilities_status_and_browse_match_the_real_core_fixture() {
             "playbackTransport": "same-origin-http",
             "audioTrackSelection": false,
             "mpvFailover": false,
+            "pictureOverlay": true,
         })
     );
 
@@ -385,6 +388,8 @@ async fn capabilities_status_and_browse_match_the_real_core_fixture() {
                     "id": channel.id().as_str(),
                     "name": channel.name(),
                     "group": channel.group(),
+                    "number": channel.number(),
+                    "variant": null,
                 }))
                 .collect()
         )
@@ -410,8 +415,66 @@ async fn capabilities_status_and_browse_match_the_real_core_fixture() {
             "id": direct_details.id().as_str(),
             "name": direct_details.name(),
             "group": direct_details.group(),
+            "number": direct_details.number(),
+            "variant": null,
         })
     );
+}
+
+#[tokio::test]
+async fn channel_json_carries_the_channel_number_and_quality_variant() {
+    let app = TestApp::fixture(QUALITY_VARIANTS_M3U).await;
+
+    let channels = get_json(&app.router, "/api/v1/channels?limit=10&group=Sport").await;
+    let id = |index: usize| channels["items"][index]["id"].clone();
+    assert_eq!(
+        channels["items"],
+        json!([
+            {
+                "id": id(0),
+                "name": "Arena HD",
+                "group": "Sport",
+                "number": 4,
+                "variant": { "quality": "hd", "baseName": "Arena" },
+            },
+            {
+                "id": id(1),
+                "name": "Arena 4K",
+                "group": "Sport",
+                "number": 4,
+                "variant": { "quality": "uhd", "baseName": "Arena" },
+            },
+            {
+                "id": id(2),
+                "name": "Arena HD",
+                "group": "Sport",
+                "number": 5,
+                "variant": { "quality": "hd", "baseName": "Arena" },
+            },
+            {
+                "id": id(3),
+                "name": "HD",
+                "group": "Sport",
+                "number": 6,
+                "variant": null,
+            },
+        ])
+    );
+
+    let uhd = &channels["items"][1];
+    let uhd_id = uhd["id"].as_str().expect("the Channel has an identifier");
+    assert_eq!(
+        &get_json(&app.router, &format!("/api/v1/channels/{uhd_id}")).await,
+        uhd
+    );
+    let guide = get_json(
+        &app.router,
+        "/api/v1/guide?startsAt=2026-08-29T07%3A30%3A00Z&endsAt=2026-08-29T10%3A30%3A00Z&channelLimit=10&group=Sport",
+    )
+    .await;
+    assert_eq!(&guide["items"][1]["channel"], uhd);
+    let search = get_json(&app.router, "/api/v1/search/channels?term=4k&limit=10").await;
+    assert_eq!(search["items"], json!([uhd]));
 }
 
 #[tokio::test]

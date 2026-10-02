@@ -1,8 +1,16 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { clientSchemas, type ChannelId } from "../../client/contracts";
+import type { ChannelId } from "../../client/contracts";
+import { channelFixture } from "../../test/channel-fixture";
 import { createHttpSparrowClient } from "../../client/http";
 import { HostedPlayer } from "./hosted-player";
 import type { HostedPlaybackEngine } from "./mpegts-engine";
@@ -31,7 +39,7 @@ describe("HostedPlayer", () => {
       </StrictMode>,
     );
 
-    expect(await screen.findByText("ON AIR")).toBeVisible();
+    expect(await screen.findByText("On air")).toBeVisible();
     expect(engine.events).toEqual(["start:/api/v1/play/channel-one"]);
     expect(fetchCalls).toBe(0);
     expect(document.body.textContent).not.toContain("provider.invalid");
@@ -49,7 +57,7 @@ describe("HostedPlayer", () => {
         onStop={vi.fn()}
       />,
     );
-    await screen.findByText("ON AIR");
+    await screen.findByText("On air");
 
     view.rerender(
       <HostedPlayer
@@ -70,11 +78,70 @@ describe("HostedPlayer", () => {
     expect(screen.getByRole("heading", { name: "Cinema One" })).toBeVisible();
   });
 
+  it("keeps the viewer's volume when the Channel changes", async () => {
+    const engine = recordingEngine();
+    const client = createHttpSparrowClient();
+    const view = render(
+      <HostedPlayer
+        channel={channel("channel-one", "World News")}
+        client={client}
+        engine={engine.value}
+        onStop={vi.fn()}
+      />,
+    );
+    await screen.findByText("On air");
+    fireEvent.change(screen.getByRole("slider", { name: "Volume" }), {
+      target: { value: "35" },
+    });
+    expect(screen.getByLabelText("World News live video")).toHaveProperty(
+      "volume",
+      0.35,
+    );
+
+    view.rerender(
+      <HostedPlayer
+        channel={channel("channel-two", "Cinema One")}
+        client={client}
+        engine={engine.value}
+        onStop={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("slider", { name: "Volume" })).toHaveValue("35");
+    expect(screen.getByLabelText("Cinema One live video")).toHaveProperty(
+      "volume",
+      0.35,
+    );
+  });
+
+  it("shows fullscreen that began before the player mounted", async () => {
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      value: document.documentElement,
+    });
+    try {
+      render(
+        <HostedPlayer
+          channel={channel("channel-one", "World News")}
+          client={createHttpSparrowClient()}
+          engine={recordingEngine().value}
+          onStop={vi.fn()}
+        />,
+      );
+
+      expect(
+        await screen.findByRole("button", { name: "Exit fullscreen" }),
+      ).toHaveAttribute("aria-pressed", "true");
+    } finally {
+      Reflect.deleteProperty(document, "fullscreenElement");
+    }
+  });
+
   it("releases playback when the user stops the monitor", async () => {
     const user = userEvent.setup();
     const engine = recordingEngine();
     render(<StoppingHarness engine={engine.value} />);
-    await screen.findByText("ON AIR");
+    await screen.findByText("On air");
 
     await user.click(screen.getByRole("button", { name: "Stop stream" }));
 
@@ -129,11 +196,11 @@ describe("HostedPlayer", () => {
         onStop={vi.fn()}
       />,
     );
-    expect(await screen.findByText("ON AIR")).toBeVisible();
+    expect(await screen.findByText("On air")).toBeVisible();
 
     act(() => interrupt?.());
 
-    expect(await screen.findByText("SIGNAL LOST")).toBeVisible();
+    expect(await screen.findByText("Signal lost")).toBeVisible();
     expect(
       screen.getByRole("button", { name: /Reconnect signal/ }),
     ).toBeVisible();
@@ -180,9 +247,9 @@ describe("HostedPlayer", () => {
       />,
     );
 
-    expect(await screen.findByText("SOURCE OFFLINE")).toBeVisible();
+    expect(await screen.findByText("Source offline")).toBeVisible();
     expect(
-      screen.getByText("Choose another Channel or refresh the catalog status."),
+      screen.getByText("Choose another channel or refresh the sources."),
     ).toBeVisible();
     expect(
       screen.queryByRole("button", { name: /Try signal again/ }),
@@ -228,7 +295,7 @@ function channel(id: string, name: string): {
   readonly name: string;
 } {
   return {
-    id: clientSchemas.channel.parse({ id, name, group: "Fixtures" }).id,
+    id: channelFixture({ id, name, group: "Fixtures" }).id,
     name,
   };
 }

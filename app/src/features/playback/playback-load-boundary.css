@@ -1,0 +1,56 @@
+/* Fills the monitor in place of the player that failed to load. */
+.playback-load-notice {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 0.5rem;
+  padding: 1rem 1.5rem;
+  overflow: auto;
+  color: var(--paper);
+  background: var(--panel);
+  text-align: center;
+}
+
+.playback-load-notice h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.playback-load-notice p {
+  max-width: 44ch;
+  margin: 0;
+  color: var(--dim);
+  font-size: 0.9375rem;
+  line-height: 1.5;
+}
+
+.playback-load-notice__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.playback-load-notice__actions button {
+  min-height: 2.75rem;
+  padding: 0 1rem;
+  color: var(--paper);
+  border: 0;
+  background: var(--cell);
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.playback-load-notice__actions button:hover {
+  background: var(--cell-live);
+}
+
+.playback-load-notice__actions button:first-child {
+  color: var(--on-amber);
+  background: var(--amber);
+}

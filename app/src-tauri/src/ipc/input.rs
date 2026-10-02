@@ -424,13 +424,14 @@ pub(crate) struct ScheduleInput {
     id: String,
     limit: PageLimitInput,
     cursor: Option<String>,
+    from: Option<String>,
 }
 
 impl ScheduleInput {
     pub(crate) fn into_core(self) -> Result<ScheduleQuery, ClientErrorDto> {
         let channel_id = ChannelId::parse(self.id).map_err(ClientErrorDto::from)?;
         let page = page_request(self.limit, self.cursor)?;
-        Ok(ScheduleQuery::new(channel_id, page))
+        ScheduleQuery::parse(channel_id, self.from, page).map_err(ClientErrorDto::from)
     }
 }
 
@@ -625,6 +626,43 @@ mod tests {
                 reason: "invalid-format"
             })
         ));
+
+        let channel_id = format!("ch1_{}", "a".repeat(64));
+        let schedule_from: ScheduleInput = serde_json::from_value(json!({
+            "id": channel_id,
+            "limit": 8,
+            "from": "2026-08-30T21:00:00+02:00"
+        }))
+        .expect("schedule shape parses with an instant");
+        assert_eq!(
+            schedule_from
+                .into_core()
+                .expect("the offset instant refines in core")
+                .from()
+                .map(|from| from.to_rfc3339()),
+            Some("2026-08-30T19:00:00+00:00".to_owned())
+        );
+        let invalid_from: ScheduleInput = serde_json::from_value(json!({
+            "id": channel_id,
+            "limit": 8,
+            "from": "not-an-instant"
+        }))
+        .expect("schedule shape parses");
+        assert!(matches!(
+            invalid_from.into_core(),
+            Err(ClientErrorDto::InvalidInput {
+                field: "schedule-from",
+                reason: "invalid-format"
+            })
+        ));
+        assert!(
+            serde_json::from_value::<ScheduleInput>(json!({
+                "id": channel_id,
+                "limit": 8,
+                "startsAt": "2026-08-30T19:00:00Z"
+            }))
+            .is_err()
+        );
 
         let invalid_search: SearchInput = serde_json::from_value(json!({
             "requestId": "srch1_0123456789abcdef0123456789abcdef_1",

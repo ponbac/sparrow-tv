@@ -3,13 +3,15 @@ mod support;
 use std::collections::BTreeMap;
 
 use sparrow_core::{
-    CatalogGeneration, ChannelGroupFilter, ChannelQuery, CoreError, InputField, InputReason,
-    PageCursor, PageLimit, PageRequest, SourceConfigurationInput, SparrowCore,
+    CatalogGeneration, ChannelGroupFilter, ChannelQuality, ChannelQuery, ChannelSummary, CoreError,
+    InputField, InputReason, PageCursor, PageLimit, PageRequest, SourceConfigurationInput,
+    SparrowCore,
 };
 use support::{MemorySnapshotStore, ScriptedSource, adapters};
 
 const BROWSE_M3U: &[u8] = include_bytes!("fixtures/browse_channels.m3u");
 const REORDERED_BROWSE_M3U: &[u8] = include_bytes!("fixtures/browse_channels_reordered.m3u");
+const QUALITY_VARIANTS_M3U: &[u8] = include_bytes!("fixtures/quality_variants.m3u");
 const SOURCE_LOCATION: &str = "https://source-user:source-secret@private-provider.fixture.invalid/browse.m3u?token=source-canary";
 
 #[tokio::test]
@@ -165,6 +167,49 @@ async fn browse_pages_keep_m3u_source_order_instead_of_alphabetical_names() {
             ("NRK 1", "Norway"),
         ]
     );
+}
+
+#[tokio::test]
+async fn quality_variants_share_a_channel_number_counted_in_channel_catalog_order() {
+    use ChannelQuality::{Fhd, Hd, Sd, Uhd};
+
+    let (core, _) = browse_core(QUALITY_VARIANTS_M3U).await;
+    let all = core
+        .list_channels(ChannelQuery::all(PageRequest::first(page_limit(20))))
+        .expect("the Channel page is available");
+
+    // The Sport entries interleave with Sweden in the M3U Source; numbers
+    // follow the group-clustered order "All channels" browses in.
+    assert_eq!(
+        placements(all.items()),
+        [
+            (1, "SVT1 SD SE", Some((Sd, "SVT1 SE"))),
+            (1, "SVT1 HD SE", Some((Hd, "SVT1 SE"))),
+            (1, "svt1 [FHD] se", Some((Fhd, "svt1 se"))),
+            (2, "SVT2 HD SE", Some((Hd, "SVT2 SE"))),
+            (3, "Kunskapskanalen", None),
+            (4, "Arena HD", Some((Hd, "Arena"))),
+            (4, "Arena 4K", Some((Uhd, "Arena"))),
+            (5, "Arena HD", Some((Hd, "Arena"))),
+            (6, "HD", None),
+        ]
+    );
+
+    let sport = core
+        .list_channels(ChannelQuery::in_group(
+            group_filter("Sport"),
+            PageRequest::first(page_limit(20)),
+        ))
+        .expect("the Sport group is queryable");
+    assert_eq!(placements(sport.items()), placements(&all.items()[5..]));
+
+    let uhd = &all.items()[6];
+    let details = core
+        .channel(uhd.id())
+        .expect("a listed Channel has details");
+    assert_eq!(details.name(), "Arena 4K");
+    assert_eq!(details.number(), 4);
+    assert_eq!(details.variant(), uhd.variant());
 }
 
 #[tokio::test]
@@ -384,6 +429,24 @@ fn collect_all_channels(core: &SparrowCore, limit: u16) -> Vec<(String, String, 
         request = PageRequest::after(round_trip(next), page_limit(limit));
     }
     observed
+}
+
+/// A Channel's number, name and Quality Variant facts as a comparable tuple.
+type Placement<'a> = (u32, &'a str, Option<(ChannelQuality, &'a str)>);
+
+fn placements(channels: &[ChannelSummary]) -> Vec<Placement<'_>> {
+    channels
+        .iter()
+        .map(|channel| {
+            (
+                channel.number(),
+                channel.name(),
+                channel
+                    .variant()
+                    .map(|variant| (variant.quality(), variant.base_name())),
+            )
+        })
+        .collect()
 }
 
 fn ids_by_recognizable_seed(core: &SparrowCore) -> BTreeMap<(String, String), Vec<String>> {

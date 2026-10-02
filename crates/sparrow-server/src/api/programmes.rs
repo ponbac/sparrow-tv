@@ -7,7 +7,8 @@ use super::{
     ApiError, AppState,
     dto::{ChannelSummaryDto, GuideWindowChannelDto, PageDto, ProgrammeDto, SearchResultsDto},
     query::{
-        GuideWindowHttpQuery, PageQuery, SearchPageQuery, SearchQuery, extract, schedule_query,
+        GuideWindowHttpQuery, ScheduleHttpQuery, SearchPageQuery, SearchQuery, extract,
+        schedule_query,
     },
 };
 
@@ -23,7 +24,7 @@ pub(crate) async fn guide_window(
 pub(crate) async fn schedule(
     State(state): State<AppState>,
     path: Result<Path<String>, PathRejection>,
-    query: Result<Query<PageQuery>, QueryRejection>,
+    query: Result<Query<ScheduleHttpQuery>, QueryRejection>,
 ) -> Result<Json<PageDto<ProgrammeDto>>, ApiError> {
     let query = schedule_query(path, query)?;
     let page = state.core().schedule(query).map_err(ApiError::from)?;

@@ -18,17 +18,18 @@ import {
   type SearchPageInput,
   type SparrowClient,
 } from "../../client/contracts";
+import { channelFixture } from "../../test/channel-fixture";
 import { BoardSearch } from "./board-search";
 
 afterEach(cleanup);
 
-const CHANNEL = clientSchemas.channel.parse({
+const CHANNEL = channelFixture({
   id: "world-news",
   name: "World News",
   group: "News",
 });
 
-const CINEMA = clientSchemas.channel.parse({
+const CINEMA = channelFixture({
   id: "cinema-one",
   name: "Cinema One",
   group: "Cinema",
@@ -82,7 +83,7 @@ describe("BoardSearch", () => {
 
     fireEvent.change(
       screen.getByRole("combobox", {
-        name: "Search Channels and Programmes",
+        name: "Search channels and programmes",
       }),
       { target: { value: "  news  " } },
     );
@@ -92,7 +93,7 @@ describe("BoardSearch", () => {
     expect(await screen.findByText("World News")).toBeVisible();
     expect(search).toHaveBeenCalledTimes(1);
     expect(search.mock.calls[0]?.[0]).toMatchObject({ term: "news" });
-    expect(screen.queryByText("Scanning the catalog…")).not.toBeInTheDocument();
+    expect(screen.queryByText("Searching…")).not.toBeInTheDocument();
   });
 
   it("returns focus to the input when the clear control disappears", async () => {
@@ -100,7 +101,7 @@ describe("BoardSearch", () => {
     const view = renderSearch(client, CHANNEL_RESULTS.generation);
     const user = userEvent.setup();
     const input = screen.getByRole("combobox", {
-      name: "Search Channels and Programmes",
+      name: "Search channels and programmes",
     });
 
     await user.type(input, "news");
@@ -122,15 +123,15 @@ describe("BoardSearch", () => {
 
     fireEvent.change(
       screen.getByRole("combobox", {
-        name: "Search Channels and Programmes",
+        name: "Search channels and programmes",
       }),
       { target: { value: "x".repeat(257) } },
     );
 
     expect(
-      await screen.findByText("Keep the search within 256 UTF-8 bytes."),
+      await screen.findByText("That search is too long. Shorten it and try again."),
     ).toBeVisible();
-    expect(screen.queryByText("Scanning the catalog…")).not.toBeInTheDocument();
+    expect(screen.queryByText("Searching…")).not.toBeInTheDocument();
     expect(search).not.toHaveBeenCalled();
   });
 
@@ -140,13 +141,13 @@ describe("BoardSearch", () => {
 
     fireEvent.change(
       screen.getByRole("combobox", {
-        name: "Search Channels and Programmes",
+        name: "Search channels and programmes",
       }),
       { target: { value: "news" } },
     );
 
     expect(
-      await screen.findByText("Search opens after a catalog is ready."),
+      await screen.findByText("Search is ready once the channels have loaded."),
     ).toBeVisible();
     expect(search).not.toHaveBeenCalled();
   });
@@ -157,13 +158,13 @@ describe("BoardSearch", () => {
 
     await userEvent.setup().type(
       screen.getByRole("combobox", {
-        name: "Search Channels and Programmes",
+        name: "Search channels and programmes",
       }),
       "news",
     );
 
     expect(
-      await screen.findByText("The catalog changed while searching."),
+      await screen.findByText("The channels changed while you searched."),
     ).toBeVisible();
     expect(screen.queryByText("World News")).not.toBeInTheDocument();
   });
@@ -181,11 +182,11 @@ describe("BoardSearch", () => {
 
     await user.type(
       screen.getByRole("combobox", {
-        name: "Search Channels and Programmes",
+        name: "Search channels and programmes",
       }),
       "news",
     );
-    await user.click(await screen.findByRole("button", { name: "Rescan" }));
+    await user.click(await screen.findByRole("button", { name: "Search again" }));
 
     expect(onGenerationMismatch).toHaveBeenCalledTimes(1);
     expect(search).toHaveBeenCalledTimes(1);
@@ -198,12 +199,51 @@ describe("BoardSearch", () => {
     const user = userEvent.setup();
 
     await user.type(
-      screen.getByRole("combobox", { name: "Search Channels and Programmes" }),
+      screen.getByRole("combobox", { name: "Search channels and programmes" }),
       "news",
     );
     await user.click(await screen.findByRole("option", { name: /World News/ }));
 
-    expect(onTune).toHaveBeenCalledWith(CHANNEL, null);
+    expect(onTune).toHaveBeenCalledWith(CHANNEL);
+  });
+
+  it("shows a Quality Variant hit by Channel Number, base name and quality", async () => {
+    const variant = channelFixture({
+      id: "svt1-fhd",
+      name: "SVT1 FHD",
+      group: "Sweden",
+      number: 101,
+      variant: { quality: "fhd", baseName: "SVT1" },
+    });
+    const page = { generation: CHANNEL_RESULTS.generation, items: [variant], next: null };
+    renderSearch(
+      searchClient(
+        async () =>
+          success(
+            clientSchemas.searchResults.parse({
+              generation: 7,
+              channels: page,
+              programmes: { generation: 7, items: [], next: null },
+            }),
+          ),
+        async () => success(page),
+      ),
+      CHANNEL_RESULTS.generation,
+    );
+    const user = userEvent.setup();
+
+    await user.type(
+      screen.getByRole("combobox", { name: "Search channels and programmes" }),
+      "svt",
+    );
+    expect(
+      await screen.findByRole("option", { name: /SVT1/ }),
+    ).toHaveTextContent(/^101SVT1FHDSweden$/u);
+
+    await user.keyboard("{Enter}");
+    expect(
+      await screen.findByRole("button", { name: "Tune SVT1 FHD" }),
+    ).toHaveTextContent(/^101SVT1FHDSweden$/u);
   });
 
   it("opens the Channel search desk from Enter and the first dropdown option", async () => {
@@ -218,18 +258,18 @@ describe("BoardSearch", () => {
     const user = userEvent.setup();
 
     await user.type(
-      screen.getByRole("combobox", { name: "Search Channels and Programmes" }),
+      screen.getByRole("combobox", { name: "Search channels and programmes" }),
       "news",
     );
     expect(
-      await screen.findByRole("option", { name: /Open full Channel search/ }),
+      await screen.findByRole("option", { name: /Open full channel search/ }),
     ).toBeVisible();
     await user.keyboard("{Enter}");
 
     expect(
-      await screen.findByRole("heading", { name: "Find a Channel" }),
+      await screen.findByRole("heading", { name: "Find a channel" }),
     ).toBeVisible();
-    expect(screen.getByRole("searchbox", { name: "Search Channels on the board" })).toHaveValue(
+    expect(screen.getByRole("searchbox", { name: "Search channels" })).toHaveValue(
       "news",
     );
     expect(
@@ -247,16 +287,16 @@ describe("BoardSearch", () => {
     const user = userEvent.setup();
 
     await user.type(
-      screen.getByRole("combobox", { name: "Search Channels and Programmes" }),
+      screen.getByRole("combobox", { name: "Search channels and programmes" }),
       "news",
     );
     expect(await screen.findByText("World News")).toBeVisible();
     await user.keyboard("{ArrowDown}{Enter}");
 
-    expect(onTune).toHaveBeenCalledWith(CHANNEL, null);
+    expect(onTune).toHaveBeenCalledWith(CHANNEL);
   });
 
-  it("tunes a Programme directly from its generation-bound search hit", async () => {
+  it("tunes the Channel of a Programme search hit", async () => {
     const client = searchClient(async () => success(PROGRAMME_RESULTS));
     const onTune = vi.fn();
     renderSearch(client, PROGRAMME_RESULTS.generation, onTune);
@@ -265,7 +305,7 @@ describe("BoardSearch", () => {
       .setup()
       .type(
         screen.getByRole("combobox", {
-          name: "Search Channels and Programmes",
+          name: "Search channels and programmes",
         }),
         "studio",
       );
@@ -273,7 +313,7 @@ describe("BoardSearch", () => {
       .setup()
       .click(await screen.findByRole("option", { name: /Evening Studio/ }));
 
-    expect(onTune).toHaveBeenCalledWith(CHANNEL, PROGRAMME_HIT);
+    expect(onTune).toHaveBeenCalledWith(CHANNEL);
   });
 
   it("keeps dropdown hits inside non-excluded groups", async () => {
@@ -290,7 +330,7 @@ describe("BoardSearch", () => {
       .setup()
       .type(
         screen.getByRole("combobox", {
-          name: "Search Channels and Programmes",
+          name: "Search channels and programmes",
         }),
         "one",
       );
@@ -311,29 +351,31 @@ describe("BoardSearch", () => {
     const user = userEvent.setup();
 
     await user.type(
-      screen.getByRole("combobox", { name: "Search Channels and Programmes" }),
+      screen.getByRole("combobox", { name: "Search channels and programmes" }),
       "news",
     );
     expect(
-      await screen.findByText("Matching signals are in excluded groups."),
+      await screen.findByText("The only matches are in hidden groups."),
     ).toBeVisible();
     expect(screen.queryByText("World News")).not.toBeInTheDocument();
 
     await user.click(
-      await screen.findByRole("option", { name: /Open full Channel search/ }),
+      await screen.findByRole("option", { name: /Open full channel search/ }),
     );
     expect(
-      await screen.findByText("Matching Channels are in excluded groups."),
+      await screen.findByText(
+        "The only matches are in hidden groups. Choose Include hidden to see them.",
+      ),
     ).toBeVisible();
 
     await user.click(
-      screen.getByRole("button", { name: "Include excluded" }),
+      screen.getByRole("button", { name: "Include hidden" }),
     );
     await user.click(
       await screen.findByRole("button", { name: "Tune World News" }),
     );
 
-    expect(onTune).toHaveBeenCalledWith(CHANNEL, null);
+    expect(onTune).toHaveBeenCalledWith(CHANNEL);
   });
 });
 

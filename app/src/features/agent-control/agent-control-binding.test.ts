@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { clientSchemas } from "../../client/contracts";
+import { channelFixture } from "../../test/channel-fixture";
 import type { AgentControlCatalog } from "./agent-control";
 import {
   bindAgentControlCatalog,
@@ -8,7 +9,7 @@ import {
   installAgentControlDispatch,
 } from "./agent-control-binding";
 
-const CHANNEL = clientSchemas.channel.parse({
+const CHANNEL = channelFixture({
   id: "world-news",
   name: "World News",
   group: "News",

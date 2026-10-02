@@ -62,6 +62,8 @@ just agent tune Eurosport 1 FHD SE
 
 **Unique name required.** Exact canonical match wins within a complete search. A term that hits several Channels returns `ambiguous-channel` with names and does not start playback. If results exceed one bounded page, `tune` returns `search-incomplete`: use a more specific name instead of guessing from truncated results. `Eurosport` is typically ambiguous; `Eurosport 1 FHD SE` is the intended sample.
 
+Agent Control uses the Channel's full name, quality token included. The guide shows Quality Variants as one row titled by the base name (`Eurosport 1 SE`) with a quality switch, so the name on screen can be shorter than the one you tune and read back in `channelName`.
+
 `stop` also cancels a pending tune before the player mounts. It reports `cleanup-failed` if release cannot be confirmed; it never acknowledges a successful stop while cleanup is blocked. Timed-out or disconnected requests cannot later commit a pending tune.
 
 Wait flags can be combined (AND). `--media-advancing` requires **two consecutive snapshots** for the same Channel with `phase: "playing"`, unpaused media, an unchanged recovery count, and increases in **both** `currentTimeMs` and `presentedFrames`. A single old observation or a low `msSinceTimeAdvance` is not proof of motion. The wait deadline includes socket requests and polling delays.
@@ -112,7 +114,7 @@ Exit codes: `0` ok, `1` CLI/usage, `2` app error envelope, `3` wait timeout (inc
 | `media.bufferAheadMs` / `readyState` | Data present vs starved. |
 | `media.presentedFrames` vs `totalVideoFrames` | Decode vs display. |
 
-A first picture that never moves: ON AIR in the UI with `phase: "playing"`, rising `standstills`, and `msSinceTimeAdvance` in the seconds. A watchdog restart loop: `phase` flipping through `recovering` and growing `recoveryCount`.
+A first picture that never moves: no message on the picture (in the stacked layout the state reads "On air"), `phase: "playing"`, rising `standstills`, and `msSinceTimeAdvance` in the seconds. A watchdog restart loop: `phase` flipping through `recovering` and growing `recoveryCount`.
 
 If `diagnostics` is `null`, nothing is mounted yet — wait after `tune`, or the tune failed. If `media` is `null`, there is no current observable in-app transport; counters from released transports are not reused.
 
@@ -120,7 +122,7 @@ If `diagnostics` is `null`, nothing is mounted yet — wait after `tune`, or the
 
 Video-frame and media-time progress do **not** prove audio output. Check the selected Audio Track, mute and volume controls, then listen or capture Sparrow's own audio output. A recording of the whole desktop can accidentally prove another application's audio instead. Neither an available Audio Track nor `audio.selection` alone proves that samples reached the speakers.
 
-The native transport preserves the selected audio PID, including MPEG-1/2 audio and AC-3. Do not restore video by silently dropping audio packets while leaving a track marked selected. Codec incompatibility must surface as a playback failure or be handled by a tested engine adaptation; **Open in MPV** remains an explicit user choice.
+The native transport preserves the selected audio PID, including MPEG-1/2 audio and AC-3. Do not restore video by silently dropping audio packets while leaving a track marked selected. Codec incompatibility must surface as a playback failure or be handled by a tested engine adaptation; **Open in mpv** remains an explicit user choice.
 
 ## Suggested loop for a live Channel
 
@@ -137,7 +139,7 @@ just agent snapshot
 
 If the second snapshot shows new `standstills` or `msSinceTimeAdvance` stuck above a few seconds while `presentedFrames` is unchanged, the picture is frozen. Paste that JSON (not provider URLs) when asking for a player change.
 
-Omarchy `omarchy capture screenshot fullscreen save` can sit beside this as visual proof. It does not replace `snapshot`.
+Omarchy `omarchy capture screenshot fullscreen save` can sit beside this as visual proof. It does not replace `snapshot`. In a desktop-size window `tune` leaves the picture filling the window (the Theater layout's watch mode, [ADR 0006](../adr/0006-use-a-theater-layout-on-desktop-and-number-channels-in-core.md)); the Channel info and controls over it hide after three seconds without input, so a later capture shows the picture alone.
 
 ## Privacy
 
