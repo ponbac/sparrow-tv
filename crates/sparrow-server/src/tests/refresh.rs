@@ -167,6 +167,141 @@ async fn manual_refresh_is_authenticated_csrf_gated_and_accepts_no_inputs() {
 }
 
 #[tokio::test]
+async fn public_refresh_and_events_keep_csrf_input_and_privacy_guards() {
+    let source = FixtureSource::available_with_epg(PROGRAMME_M3U, PROGRAMME_EPG);
+    let core = configured_core_with_configuration(
+        source.clone(),
+        Arc::new(MemorySnapshotStore::default()),
+        source_configuration_with_epg(),
+    )
+    .await;
+    settle_tasks().await;
+    let app = TestApp::with_core(core).into_public();
+    let opens_before = source.open_count();
+
+    let response = app
+        .router
+        .clone()
+        .oneshot(request(Method::GET, "/api/v1/events", None))
+        .await
+        .expect("public SSE responds");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "text/event-stream"
+    );
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    assert!(!response.headers().contains_key(header::WWW_AUTHENTICATE));
+    assert_no_cors(response.headers());
+    let mut body = response.into_body();
+    let mut buffer = Vec::new();
+    let initial = next_sse_json(&mut body, &mut buffer).await;
+    assert_eq!(initial["_tag"], "catalog-status-changed");
+    assert_private_markers_absent(&initial.to_string());
+
+    let mut duplicate = refresh_request("/api/v1/refresh", None, Some("refresh"), Body::empty());
+    duplicate
+        .headers_mut()
+        .append(REQUEST_MARKER, "refresh".parse().unwrap());
+    for (request, field, reason) in [
+        (
+            refresh_request("/api/v1/refresh", None, None, Body::empty()),
+            "header",
+            "invalid-format",
+        ),
+        (
+            refresh_request("/api/v1/refresh", None, Some("wrong"), Body::empty()),
+            "header",
+            "invalid-format",
+        ),
+        (duplicate, "header", "invalid-format"),
+        (
+            refresh_request(
+                "/api/v1/refresh?source=private-query-canary",
+                None,
+                Some("refresh"),
+                Body::empty(),
+            ),
+            "query",
+            "invalid-format",
+        ),
+        (
+            refresh_request("/api/v1/refresh", None, Some("refresh"), Body::from("x")),
+            "body",
+            "invalid-format",
+        ),
+        (
+            refresh_request(
+                "/api/v1/refresh",
+                None,
+                Some("refresh"),
+                Body::from("private-body-canary"),
+            ),
+            "body",
+            "too-long",
+        ),
+        (
+            request(
+                Method::GET,
+                "/api/v1/events?cursor=private-query-canary",
+                None,
+            ),
+            "query",
+            "invalid-format",
+        ),
+    ] {
+        let response = send(&app.router, request).await;
+        assert_invalid_input(&response, field, reason);
+        assert_private_markers_absent(&response.text);
+        assert!(!response.text.contains("private-query-canary"));
+        assert!(!response.text.contains("private-body-canary"));
+    }
+
+    let preflight = Request::builder()
+        .method(Method::OPTIONS)
+        .uri("/api/v1/refresh")
+        .header(header::ORIGIN, "https://attacker.fixture.invalid")
+        .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+        .header(header::ACCESS_CONTROL_REQUEST_HEADERS, REQUEST_MARKER)
+        .body(Body::empty())
+        .unwrap();
+    let preflight = send(&app.router, preflight).await;
+    assert_eq!(preflight.status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_no_cors(&preflight.headers);
+    let mut cross_origin_form = refresh_request("/api/v1/refresh", None, None, Body::empty());
+    cross_origin_form.headers_mut().insert(
+        header::ORIGIN,
+        "https://attacker.fixture.invalid".parse().unwrap(),
+    );
+    let rejected = send(&app.router, cross_origin_form).await;
+    assert_invalid_input(&rejected, "header", "invalid-format");
+    assert_no_cors(&rejected.headers);
+    assert_eq!(source.open_count(), opens_before);
+
+    let accepted = send(
+        &app.router,
+        refresh_request("/api/v1/refresh", None, Some("refresh"), Body::empty()),
+    )
+    .await;
+    assert_eq!(accepted.status, StatusCode::OK, "{}", accepted.text);
+    assert_eq!(accepted.json["trigger"], "manual");
+    assert_eq!(accepted.json["m3u"]["_tag"], "updated");
+    assert_eq!(accepted.json["epg"]["_tag"], "updated");
+    assert_eq!(accepted.headers[header::CACHE_CONTROL], "no-store");
+    assert_private_markers_absent(&accepted.text);
+    assert_eq!(source.open_count(), opens_before + 2);
+
+    loop {
+        let event = next_sse_json(&mut body, &mut buffer).await;
+        assert_private_markers_absent(&event.to_string());
+        if event["_tag"] == "refresh-completed" {
+            break;
+        }
+    }
+    drop(body);
+}
+
+#[tokio::test]
 async fn concurrent_manual_requests_share_one_refresh_and_return_typed_completion() {
     let source = FixtureSource::available(BROWSE_M3U);
     let core = configured_core(source.clone(), Arc::new(MemorySnapshotStore::default())).await;

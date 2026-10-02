@@ -57,6 +57,8 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
   localStorage.clear();
+  Reflect.deleteProperty(document, "fullscreenElement");
+  Reflect.deleteProperty(document, "exitFullscreen");
 });
 
 const HOSTED_CAPABILITIES = clientSchemas.capabilities.parse({
@@ -1678,10 +1680,13 @@ describe("CatalogBrowser Theater layout", () => {
     ).toBeInTheDocument();
   });
 
-  it("makes the whole window fullscreen, so the chrome stays over the picture", async () => {
+  it.each([
+    ["hosted", renderHostedBrowser],
+    ["installed Linux", renderInstalledBrowser],
+  ] as const)("keeps %s desktop root fullscreen across guide, Stop and Channel changes", async (_runtime, renderShell) => {
     stubViewport(true);
     const user = userEvent.setup();
-    renderHostedBrowser(new FakeSparrowClient());
+    renderShell(new FakeSparrowClient());
     await user.click(
       await screen.findByRole("button", { name: "Tune World News" }),
     );
@@ -1692,9 +1697,116 @@ describe("CatalogBrowser Theater layout", () => {
     const root = stubRequestFullscreen(document.documentElement);
     try {
       await user.click(fullScreen);
-      expect(root.request).toHaveBeenCalledTimes(1);
+      expect(document.fullscreenElement).toBe(document.documentElement);
+      expect(requireShell()).toHaveAttribute("data-layout", "theater");
+      await user.click(screen.getByRole("button", { name: "Guide" }));
+      expect(requireShell()).toHaveAttribute("data-mode", "guide");
+      await user.click(screen.getByRole("button", { name: "Stop stream" }));
+      expect(document.fullscreenElement).toBe(document.documentElement);
+      await user.click(screen.getByRole("button", { name: "Tune Cinema One" }));
+      await screen.findByRole("button", { name: "Exit fullscreen" });
+      expect(document.fullscreenElement).toBe(document.documentElement);
+      expect(requireShell()).toHaveAttribute("data-mode", "watch");
+      expect(requireControlsSlot()).toContainElement(
+        screen.getByRole("group", { name: "Playback controls" }),
+      );
     } finally {
       root.restore();
+    }
+  });
+
+  it.each([
+    ["hosted", renderHostedBrowser, true],
+    ["installed Linux", renderInstalledBrowser, true],
+    ["installed without picture overlay", renderInstalledBrowser, false],
+  ] as const)("takes only the %s player fullscreen on a phone, including after growing", async (_runtime, renderShell, pictureOverlay) => {
+    const viewport = stubViewport(false);
+    const client = new FakeSparrowClient({ pictureOverlay });
+    const user = userEvent.setup();
+    renderShell(client);
+    await user.click(
+      await screen.findByRole("button", { name: "Tune World News" }),
+    );
+    const video = await screen.findByLabelText("World News live video");
+    const player = screen.getByRole("region", { name: "World News" });
+    const root = stubRequestFullscreen(document.documentElement);
+    const section = stubRequestFullscreen(player);
+    stubExitFullscreen();
+    try {
+      await user.click(screen.getByRole("button", { name: "Full screen" }));
+      expect(document.fullscreenElement).toBe(player);
+      expect(root.request).not.toHaveBeenCalled();
+      expect(requireShell()).toHaveAttribute("data-layout", "stacked");
+      const controls = screen.getByRole("group", { name: "Playback controls" });
+      expect(player).toContainElement(controls);
+      expect(controls).toHaveAttribute("data-variant", "bar");
+      expect(
+        screen.queryByRole("button", { name: "Guide" }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("navigation", { name: "Nearby channels" }),
+      ).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Exit fullscreen" }));
+      expect(document.fullscreenElement).toBeNull();
+      fireEvent.keyDown(player, { key: "f" });
+      await waitFor(() => expect(document.fullscreenElement).toBe(player));
+      fireEvent.keyDown(player, { key: "f" });
+      await waitFor(() => expect(document.fullscreenElement).toBeNull());
+      fireEvent.doubleClick(video);
+      await waitFor(() => expect(document.fullscreenElement).toBe(player));
+
+      act(() => viewport.resize(true));
+      expect(requireShell()).toHaveAttribute("data-layout", "stacked");
+      expect(player).toContainElement(
+        screen.getByRole("button", { name: "Exit fullscreen" }),
+      );
+      expect(screen.getByLabelText("World News live video")).toBe(video);
+      expect(client.playbackInputs.length + client.installedSessionCount).toBe(1);
+
+      await user.click(screen.getByRole("button", { name: "Exit fullscreen" }));
+      expect(document.fullscreenElement).toBeNull();
+      expect(requireShell()).toHaveAttribute(
+        "data-layout",
+        pictureOverlay ? "theater" : "stacked",
+      );
+    } finally {
+      root.restore();
+      section.restore();
+    }
+  });
+
+  it("stacks a shrinking root-fullscreen window without restarting, and can exit then take only the player fullscreen", async () => {
+    const viewport = stubViewport(true);
+    const client = new FakeSparrowClient();
+    const user = userEvent.setup();
+    renderHostedBrowser(client);
+    await user.click(
+      await screen.findByRole("button", { name: "Tune World News" }),
+    );
+    const video = await screen.findByLabelText("World News live video");
+    const player = screen.getByRole("region", { name: "World News" });
+    const root = stubRequestFullscreen(document.documentElement);
+    const section = stubRequestFullscreen(player);
+    stubExitFullscreen();
+    try {
+      await user.click(screen.getByRole("button", { name: "Full screen" }));
+      act(() => viewport.resize(false));
+      expect(requireShell()).toHaveAttribute("data-layout", "stacked");
+      expect(document.fullscreenElement).toBe(document.documentElement);
+      expect(player).toContainElement(
+        screen.getByRole("group", { name: "Playback controls" }),
+      );
+      expect(screen.getByLabelText("World News live video")).toBe(video);
+      expect(client.playbackInputs).toHaveLength(1);
+
+      await user.click(screen.getByRole("button", { name: "Exit fullscreen" }));
+      expect(document.fullscreenElement).toBeNull();
+      await user.click(screen.getByRole("button", { name: "Full screen" }));
+      expect(document.fullscreenElement).toBe(player);
+    } finally {
+      root.restore();
+      section.restore();
     }
   });
 
@@ -2146,15 +2258,38 @@ function stubRequestFullscreen(element: HTMLElement): {
   readonly request: ReturnType<typeof vi.fn>;
   restore(): void;
 } {
-  const request = vi.fn(() => Promise.resolve());
+  const request = vi.fn(async () => {
+    setFullscreenElement(element);
+  });
   Object.defineProperty(element, "requestFullscreen", {
     configurable: true,
     value: request,
   });
   return {
     request,
-    restore: () => Reflect.deleteProperty(element, "requestFullscreen"),
+    restore: () => {
+      Reflect.deleteProperty(element, "requestFullscreen");
+      if (document.fullscreenElement === element) {
+        setFullscreenElement(null);
+      }
+    },
   };
+}
+
+/** Browser API boundary: exiting updates the element and publishes the event. */
+function stubExitFullscreen(): void {
+  Object.defineProperty(document, "exitFullscreen", {
+    configurable: true,
+    value: async () => setFullscreenElement(null),
+  });
+}
+
+function setFullscreenElement(element: Element | null): void {
+  Object.defineProperty(document, "fullscreenElement", {
+    configurable: true,
+    value: element,
+  });
+  document.dispatchEvent(new Event("fullscreenchange"));
 }
 
 function requireMasthead(): HTMLElement {
