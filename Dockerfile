@@ -14,6 +14,7 @@ FROM oven/bun:1.4.0@sha256:18639686662e5cd8a963ffb967dd130034a2a2d076a52e65dfd4f
 WORKDIR /workspace/app
 
 COPY app/package.json app/bun.lockb ./
+COPY app/patches ./patches
 RUN bun install --frozen-lockfile
 COPY app ./
 RUN bun run build
