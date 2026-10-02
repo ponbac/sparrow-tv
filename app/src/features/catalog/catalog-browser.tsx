@@ -46,7 +46,11 @@ import {
 import { useIdleChrome } from "../stage/use-idle-chrome";
 import { guideRowProgramme, useNowPlaying } from "../stage/use-now-playing";
 import { useStageKeys } from "../stage/use-stage-keys";
-import { usePictureOverlay, useStageLayout } from "../stage/use-stage-layout";
+import {
+  usePictureOverlay,
+  useStageFullscreenTarget,
+  useStageLayout,
+} from "../stage/use-stage-layout";
 import {
   neighbouringZapStop,
   zapRailStops,
@@ -150,6 +154,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   );
   const pictureOverlay = usePictureOverlay(runtime, client);
   const layout = useStageLayout(pictureOverlay);
+  const fullscreenTarget = useStageFullscreenTarget(layout);
   // The viewer's choice between the full picture and the guide. The shell
   // shows the guide regardless while there is no picture in the page.
   const [mode, setMode] = useState<"watch" | "guide">("watch");
@@ -162,11 +167,11 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     () => ({
       controlsSlot: layout === "theater" ? controlsSlot : null,
       controls: layout === "theater" ? "compact" : "bar",
-      // Fullscreen on the document root outlives Stop and a change of Channel.
-      fullscreenTarget: pictureOverlay ? document.documentElement : null,
+      // Only roomy Theater enters root fullscreen; phones keep controls inline.
+      fullscreenTarget,
       reportPicture,
     }),
-    [controlsSlot, layout, pictureOverlay, reportPicture],
+    [controlsSlot, fullscreenTarget, layout, reportPicture],
   );
   const guideForced = playingChannel === null || picture?.external === true;
   const effectiveMode = guideForced ? "guide" : mode;

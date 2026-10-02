@@ -36,13 +36,46 @@ export function usePictureOverlay(
 }
 
 /**
- * Chooses the layout for the current window. Theater needs the overlay
- * capability and either a large enough window or a fullscreen document root;
- * anything else, including a platform without media queries, is stacked.
+ * Chooses the layout for the current window. Theater always needs the overlay
+ * capability and a roomy viewport, including in root fullscreen. Player-only
+ * fullscreen stays stacked so its controls cannot be portalled outside it.
+ * A platform without media queries is stacked.
  */
 export function useStageLayout(pictureOverlay: boolean): StageLayout {
   const roomy = useSyncExternalStore(subscribeToViewport, hasTheaterViewport);
-  return pictureOverlay && roomy ? "theater" : "stacked";
+  const fullscreen = useSyncExternalStore(
+    subscribeToFullscreen,
+    fullscreenElement,
+  );
+  const shellVisible =
+    fullscreen === null || fullscreen === document.documentElement;
+  return pictureOverlay && roomy && shellVisible ? "theater" : "stacked";
+}
+
+/**
+ * Theater enters root fullscreen; stacked enters player-only fullscreen (null).
+ * Keep an already-fullscreen root as the target after shrinking, so the button
+ * exits it. Once exited, the next request follows the current layout again.
+ */
+export function useStageFullscreenTarget(
+  layout: StageLayout,
+): HTMLElement | null {
+  const fullscreen = useSyncExternalStore(
+    subscribeToFullscreen,
+    fullscreenElement,
+  );
+  return fullscreen === document.documentElement || layout === "theater"
+    ? document.documentElement
+    : null;
+}
+
+function subscribeToFullscreen(onChange: () => void): () => void {
+  document.addEventListener("fullscreenchange", onChange);
+  return () => document.removeEventListener("fullscreenchange", onChange);
+}
+
+function fullscreenElement(): Element | null {
+  return document.fullscreenElement ?? null;
 }
 
 function subscribeToViewport(onChange: () => void): () => void {
@@ -51,19 +84,12 @@ function subscribeToViewport(onChange: () => void): () => void {
   }
   const viewport = window.matchMedia(THEATER_VIEWPORT);
   viewport.addEventListener("change", onChange);
-  document.addEventListener("fullscreenchange", onChange);
-  return () => {
-    viewport.removeEventListener("change", onChange);
-    document.removeEventListener("fullscreenchange", onChange);
-  };
+  return () => viewport.removeEventListener("change", onChange);
 }
 
 function hasTheaterViewport(): boolean {
   if (typeof window.matchMedia !== "function") {
     return false;
   }
-  return (
-    window.matchMedia(THEATER_VIEWPORT).matches ||
-    document.fullscreenElement === document.documentElement
-  );
+  return window.matchMedia(THEATER_VIEWPORT).matches;
 }

@@ -219,6 +219,117 @@ async fn successful_playback_relays_only_bytes_and_sparrow_owned_headers() {
 }
 
 #[tokio::test]
+async fn public_playback_relays_bytes_without_exposing_provider_sources_or_credentials() {
+    let provider = TestProvider::one(ok_response(
+        &[
+            (
+                "Location",
+                "https://private-location.fixture.invalid/secret",
+            ),
+            ("Set-Cookie", "provider-session=private-cookie"),
+            ("X-Provider-Canary", "private-header-value"),
+        ],
+        &TS_PACKET,
+    ))
+    .await;
+    let location = provider.credentialed_url(
+        "public-upstream-user",
+        "public-upstream-secret",
+        "/live?token=public-upstream-token",
+    );
+    let (app, channel_id) = playback_app(&location).await;
+    let app = app.into_public();
+    let response = app
+        .router
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            &format!("/api/v1/play/{channel_id}"),
+            None,
+        ))
+        .await
+        .expect("public playback responds");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "video/mp2t");
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    assert_eq!(
+        response.headers()[header::X_CONTENT_TYPE_OPTIONS],
+        "nosniff"
+    );
+    for forbidden in [
+        header::LOCATION,
+        header::SET_COOKIE,
+        header::WWW_AUTHENTICATE,
+    ] {
+        assert!(!response.headers().contains_key(forbidden));
+    }
+    assert!(!response.headers().contains_key("x-provider-canary"));
+    assert_no_cors(response.headers());
+    for value in response.headers().values() {
+        for canary in [
+            &location,
+            "public-upstream-user",
+            "public-upstream-secret",
+            "public-upstream-token",
+        ] {
+            assert!(!value.to_str().unwrap().contains(canary));
+        }
+    }
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("playback bytes")
+        .to_bytes();
+    assert_eq!(bytes.as_ref(), TS_PACKET);
+    let upstream = provider.request().await;
+    assert!(upstream.starts_with("GET /live?token=public-upstream-token HTTP/1.1\r\n"));
+    assert!(upstream.contains("authorization: Basic "));
+    assert!(!upstream.contains(PASSWORD));
+
+    let failure = TestProvider::one(status_response(401, b"private-provider-body")).await;
+    let location = failure.credentialed_url(
+        "failure-user",
+        "failure-secret",
+        "/failure?token=failure-token",
+    );
+    let (app, channel_id) = playback_app(&location).await;
+    let app = app.into_public();
+    let response = send(
+        &app.router,
+        request(Method::GET, &format!("/api/v1/play/{channel_id}"), None),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::FAILED_DEPENDENCY);
+    assert_eq!(
+        response.json,
+        json!({ "error": { "_tag": "playback-failed", "reason": "rejected", "retryable": false } })
+    );
+    for canary in [
+        "failure-user",
+        "failure-secret",
+        "failure-token",
+        "private-provider-body",
+        "http://",
+    ] {
+        assert!(!response.text.contains(canary));
+    }
+    let _ = failure.request().await;
+
+    let query = send(
+        &app.router,
+        request(
+            Method::GET,
+            &format!("/api/v1/play/{channel_id}?url=private-url-canary"),
+            None,
+        ),
+    )
+    .await;
+    assert_invalid_input(&query, "query", "invalid-format");
+    assert!(!query.text.contains("private-url-canary"));
+}
+
+#[tokio::test]
 async fn playback_header_failures_are_typed_actionable_and_privacy_safe() {
     for (status, http_status, reason, retryable) in [
         (401, StatusCode::FAILED_DEPENDENCY, "rejected", false),
