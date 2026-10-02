@@ -1,7 +1,4 @@
-/*
- * Keeps its content height, so the workspace scrolls before the guide covers
- * the info block. A clipping stage would have no minimum for its grid row.
- */
+/* What both layouts share. Each places and sizes the parts in its own stylesheet. */
 .stage {
   position: relative;
   display: grid;
@@ -11,7 +8,6 @@
 }
 
 .stage__monitor {
-  height: clamp(16rem, 54dvh, 42rem);
   position: relative;
   min-width: 0;
   min-height: 0;
@@ -142,7 +138,13 @@
   content: "";
 }
 
-/* The description belongs to the Theater layout. */
+/* The description and what follows are lines of the block like the rest;
+   only pocket's watch screen makes a scrolling box of them. */
+.now-playing__later {
+  display: contents;
+}
+
+/* Shown where a layout has room for it. */
 .now-playing__about {
   display: none;
 }
@@ -180,30 +182,4 @@
 
 .now-playing__controls:empty {
   display: none;
-}
-
-@media (max-width: 760px) {
-  .stage {
-    min-height: 0;
-    grid-row: 1;
-    overflow: hidden;
-  }
-
-  .stage__monitor {
-    height: var(--mobile-monitor-height);
-  }
-
-  .now-playing {
-    padding: 0.625rem 0.75rem;
-  }
-
-  .stage__standby {
-    font-size: 1.0625rem;
-  }
-}
-
-@media (max-width: 760px) and (max-height: 720px) {
-  .now-playing__next {
-    display: none;
-  }
 }

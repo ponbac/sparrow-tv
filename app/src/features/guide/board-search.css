@@ -170,19 +170,6 @@
   line-height: 1.5;
 }
 
-/* A phone-width popup stacks the name over its detail so names stay readable. */
-@media (max-width: 760px) {
-  .board-search__result {
-    grid-template-columns: 2.25rem minmax(0, 1fr);
-    gap: 0.125rem 0.5rem;
-  }
-
-  .board-search__result > small {
-    max-width: none;
-    grid-column: 2;
-  }
-}
-
 .board-search-desk__backdrop {
   position: fixed;
   z-index: 48;
@@ -375,9 +362,15 @@
   font-size: 0.875rem;
 }
 
-/* The group sits at the row's end; the tags stay beside the name. */
+/* The group sits at the row's end; the tags stay beside the name. Where the
+   row is short of room the group gives way before the name does. */
 .board-search-desk__pick small {
+  min-width: 0;
+  flex: 0 999 auto;
   margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .board-search-desk__pick strong {
@@ -423,7 +416,6 @@
 @media (max-width: 760px) {
   .board-search-desk__backdrop,
   .board-search-desk__popup {
-    top: var(--mobile-panel-top);
     left: 0;
     width: 100%;
   }

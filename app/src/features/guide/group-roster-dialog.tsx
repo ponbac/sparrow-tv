@@ -47,7 +47,8 @@ export function GroupRosterDialog({
     >
       <Dialog.Trigger className="group-roster-trigger">
         <ListFilter aria-hidden="true" />
-        Choose groups
+        {/* An element of its own: a narrow window shows the icon alone. */}
+        <span>Choose groups</span>
       </Dialog.Trigger>
       <Dialog.Portal>
         <Dialog.Backdrop className="group-roster__backdrop" />

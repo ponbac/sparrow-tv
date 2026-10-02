@@ -69,7 +69,7 @@ export function BoardSearch({
   const queryClient = useQueryClient();
   const [searchBoundary, setSearchBoundary] = useState<HTMLElement | null>(null);
   const bindSearchBoundary = useCallback((element: HTMLElement | null) => {
-    // In the stacked layout the results must stay inside the guide pane,
+    // In the pocket layout the results must stay inside the guide pane,
     // below the native picture.
     setSearchBoundary(
       element?.closest<HTMLElement>(".programme-guide") ??

@@ -8,9 +8,9 @@ const THEATER_VIEWPORT = "(min-width: 1051px) and (min-height: 601px)";
 
 /**
  * How the shell arranges picture, info and guide. Theater lays the chrome over
- * a picture that fills the window; stacked keeps everything below the picture.
+ * a picture that fills the window; pocket keeps everything clear of the picture.
  */
-export type StageLayout = "theater" | "stacked";
+export type StageLayout = "theater" | "pocket";
 
 /**
  * Reads whether page content may be drawn over the picture. Hosted always
@@ -38,11 +38,11 @@ export function usePictureOverlay(
 /**
  * Chooses the layout for the current window. Theater needs the overlay
  * capability and either a large enough window or a fullscreen document root;
- * anything else, including a platform without media queries, is stacked.
+ * anything else, including a platform without media queries, is pocket.
  */
 export function useStageLayout(pictureOverlay: boolean): StageLayout {
   const roomy = useSyncExternalStore(subscribeToViewport, hasTheaterViewport);
-  return pictureOverlay && roomy ? "theater" : "stacked";
+  return pictureOverlay && roomy ? "theater" : "pocket";
 }
 
 function subscribeToViewport(onChange: () => void): () => void {

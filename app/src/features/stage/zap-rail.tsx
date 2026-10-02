@@ -1,6 +1,6 @@
 import type { ChannelId, ChannelSummary } from "../../client/contracts";
 import { familyProgrammes, qualityLabel } from "../guide/guide-families";
-import { liveProgramme } from "../guide/guide-window";
+import { elapsedFraction, programmeAt } from "../guide/now-next";
 import type { ZapStop } from "./zap";
 
 /** Inputs for the row of nearby Channels under the lower third. */
@@ -25,7 +25,7 @@ export function ZapRail({
   return (
     <nav className="zap-rail" aria-label="Nearby channels">
       {stops.map(({ family, target }) => {
-        const live = liveProgramme(familyProgrammes(family, target), now);
+        const live = programmeAt(familyProgrammes(family, target), now);
         const quality = target.channel.variant?.quality;
         return (
           <button
@@ -49,7 +49,7 @@ export function ZapRail({
             <span
               className="zap-rail__progress"
               style={{
-                "--progress": `${live === null ? 0 : elapsedPercent(live, now)}%`,
+                "--progress": `${live === null ? 0 : elapsedFraction(live, now) * 100}%`,
               }}
               aria-hidden="true"
             />
@@ -58,14 +58,4 @@ export function ZapRail({
       })}
     </nav>
   );
-}
-
-function elapsedPercent(
-  programme: { readonly startsAt: string; readonly endsAt: string },
-  now: Date,
-): number {
-  const startsAt = Date.parse(programme.startsAt);
-  const endsAt = Date.parse(programme.endsAt);
-  const elapsed = (now.getTime() - startsAt) / (endsAt - startsAt);
-  return Math.min(Math.max(elapsed, 0), 1) * 100;
 }

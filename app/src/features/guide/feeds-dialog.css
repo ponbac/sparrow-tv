@@ -115,7 +115,6 @@
 @media (max-width: 760px) {
   .feeds-dialog__backdrop,
   .feeds-dialog__popup {
-    top: var(--mobile-panel-top);
     left: 0;
     width: 100%;
   }

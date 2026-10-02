@@ -1,5 +1,7 @@
+import { Maximize2 } from "lucide-react";
 import { useEffect, useRef, type ReactNode } from "react";
 import type { ChannelId } from "../../client/contracts";
+import { focusIsInChannelBar, isPictureTap } from "./stage-dom";
 import "./stage.css";
 
 /** Inputs for the picture and the block of information beside it. */
@@ -10,10 +12,19 @@ export interface StageProps {
   readonly player: ReactNode;
   /** The info block; it carries the stage heading. */
   readonly info: ReactNode;
-  /** The row of nearby Channels; null wherever nothing lies over the picture. */
+  /**
+   * What changes Channel from the stage: Theater's row of nearby Channels or
+   * pocket's channel bar. Null where there is none.
+   */
   readonly rail: ReactNode;
   /** Shows which keys work over the full picture. */
   readonly keyHints: boolean;
+  /**
+   * Returns from the guide to the full picture. With it, a tap on the picture
+   * and the button beside the docked picture both do so: pocket's way back.
+   * Null in Theater, where the masthead and the keys do it.
+   */
+  readonly onShowPicture: (() => void) | null;
 }
 
 /** Presents live playback above its information so native Android video never obscures controls. */
@@ -23,6 +34,7 @@ export function Stage({
   info,
   rail,
   keyHints,
+  onShowPicture,
 }: StageProps) {
   const monitorRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -30,14 +42,32 @@ export function Stage({
     // Let search dialogs restore focus first, then dismiss the soft keyboard
     // without scrolling the fixed stage away from its native video viewport.
     const frame = requestAnimationFrame(() => {
-      monitorRef.current?.focus({ preventScroll: true });
+      // A press in the channel bar changed the Channel: focus stays on the
+      // button, ready for the next press.
+      if (!focusIsInChannelBar()) {
+        monitorRef.current?.focus({ preventScroll: true });
+      }
     });
     return () => cancelAnimationFrame(frame);
   }, [playingChannel]);
 
   return (
     <section className="stage" aria-labelledby="stage-heading">
-      <div className="stage__monitor" ref={monitorRef} tabIndex={-1}>
+      <div
+        className="stage__monitor"
+        ref={monitorRef}
+        tabIndex={-1}
+        // A tap on native Android video reaches the page under it.
+        onClick={
+          onShowPicture === null
+            ? undefined
+            : (event) => {
+                if (isPictureTap(event.currentTarget, event.target)) {
+                  onShowPicture();
+                }
+              }
+        }
+      >
         {player ?? (
           <div className="stage__standby" role="status">
             Nothing playing
@@ -45,6 +75,21 @@ export function Stage({
         )}
       </div>
       {info}
+      {onShowPicture === null ? null : (
+        <button
+          className="stage__undock"
+          type="button"
+          aria-label="Back to the picture"
+          onClick={() => {
+            onShowPicture();
+            // The button leaves the layout with the guide; focus goes on to
+            // the picture it returned to.
+            monitorRef.current?.focus({ preventScroll: true });
+          }}
+        >
+          <Maximize2 aria-hidden="true" />
+        </button>
+      )}
       {rail}
       {keyHints ? (
         <p className="stage__keys" aria-hidden="true">

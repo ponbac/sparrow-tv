@@ -114,7 +114,7 @@ Exit codes: `0` ok, `1` CLI/usage, `2` app error envelope, `3` wait timeout (inc
 | `media.bufferAheadMs` / `readyState` | Data present vs starved. |
 | `media.presentedFrames` vs `totalVideoFrames` | Decode vs display. |
 
-A first picture that never moves: no message on the picture (in the stacked layout the state reads "On air"), `phase: "playing"`, rising `standstills`, and `msSinceTimeAdvance` in the seconds. A watchdog restart loop: `phase` flipping through `recovering` and growing `recoveryCount`.
+A first picture that never moves: no message on the picture, `phase: "playing"`, rising `standstills`, and `msSinceTimeAdvance` in the seconds. The pocket layout of a small window words the state beside the Channel's name only while it is not playing, so it shows nothing there either. A watchdog restart loop: `phase` flipping through `recovering` and growing `recoveryCount`.
 
 If `diagnostics` is `null`, nothing is mounted yet — wait after `tune`, or the tune failed. If `media` is `null`, there is no current observable in-app transport; counters from released transports are not reused.
 
@@ -139,7 +139,7 @@ just agent snapshot
 
 If the second snapshot shows new `standstills` or `msSinceTimeAdvance` stuck above a few seconds while `presentedFrames` is unchanged, the picture is frozen. Paste that JSON (not provider URLs) when asking for a player change.
 
-Omarchy `omarchy capture screenshot fullscreen save` can sit beside this as visual proof. It does not replace `snapshot`. In a desktop-size window `tune` leaves the picture filling the window (the Theater layout's watch mode, [ADR 0006](../adr/0006-use-a-theater-layout-on-desktop-and-number-channels-in-core.md)); the Channel info and controls over it hide after three seconds without input, so a later capture shows the picture alone.
+Omarchy `omarchy capture screenshot fullscreen save` can sit beside this as visual proof. It does not replace `snapshot`. In a desktop-size window `tune` leaves the picture filling the window (the Theater layout's watch mode, [ADR 0006](../adr/0006-use-a-theater-layout-on-desktop-and-number-channels-in-core.md)); the Channel info and controls over it hide after three seconds without input, so a later capture shows the picture alone. In a smaller window `tune` leaves the pocket layout's watch mode ([ADR 0007](../adr/0007-use-a-pocket-layout-where-the-picture-cannot-be-covered.md)): the picture with the Channel info and controls under it. Nothing is drawn over the picture there and nothing hides.
 
 ## Privacy
 

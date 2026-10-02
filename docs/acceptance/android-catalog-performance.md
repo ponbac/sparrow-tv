@@ -55,7 +55,13 @@ It does not use Android's `am start -W` timing as the readiness result. It then
 tunes the first marked Channel button without reading its content and waits for
 its pressed state, covering the tune interaction without an extra detail read.
 The guide marks one button per Channel: the row's own button, or each quality
-chip on a row that folds Quality Variants.
+chip on a row that folds Quality Variants. On Android the guide is the pocket
+layout's list
+([ADR 0007](../adr/0007-use-a-pocket-layout-where-the-picture-cannot-be-covered.md)),
+and the page is ready with no picture box above it. The tune enters watch
+mode, which takes the guide out of the layout but leaves it mounted: the
+pressed state is read from a button that is not shown, and the readiness
+markers still hold after the tune.
 
 During load and browse, the tool samples the main process's `VmHWM` and `VmRSS`
 through its own UID. `VmHWM` is gated at 524,288 KiB; total PSS and cgroup memory

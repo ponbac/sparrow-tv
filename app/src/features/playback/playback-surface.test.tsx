@@ -19,6 +19,7 @@ import { PlaybackSurface, type PlaybackSurfaceProps } from "./playback-surface";
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  Reflect.deleteProperty(document, "fullscreenElement");
 });
 
 it("hides fullscreen chrome only during playback and restores it for touch, keyboard, and recovery", () => {
@@ -142,7 +143,136 @@ it("hands compact controls to the shell's slot and keeps them wired to the playe
   expect(screen.queryByRole("button", { name: "More" })).not.toBeInTheDocument();
 });
 
-it("tells the shell whether a picture is playing and where, until it unmounts", () => {
+it.each(["top", "bottom"] as const)(
+  "opens the More menu on the %s side when the shell asks for it",
+  async (menuSide) => {
+    const user = userEvent.setup();
+    render(
+      <CompactChrome menuSide={menuSide}>
+        <PlaybackSurface {...surfaceProps()} {...everyControl().slots} />
+      </CompactChrome>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "More" }));
+
+    expect(await screen.findByRole("menu")).toHaveAttribute(
+      "data-side",
+      menuSide,
+    );
+  },
+);
+
+it("shows the inline bar while the player section itself is fullscreen, whatever the shell asks for", () => {
+  const props = { ...surfaceProps(), ...everyControl().slots };
+  const view = render(
+    <CompactChrome>
+      <PlaybackSurface {...props} />
+    </CompactChrome>,
+  );
+  const player = screen.getByRole("region", { name: "Demo" });
+  const video = screen.getByLabelText("Demo live video");
+  const controls = () =>
+    screen.getByRole("group", { name: "Playback controls" });
+  expect(controls()).toHaveAttribute("data-variant", "compact");
+  expect(screen.getByTestId("controls-slot")).toContainElement(controls());
+
+  // No fullscreen target from the shell: the section is the fullscreen
+  // element, and only what is inside it is drawn.
+  enterFullscreen(player);
+  view.rerender(
+    <CompactChrome>
+      <PlaybackSurface {...props} fullscreen />
+    </CompactChrome>,
+  );
+  expect(controls()).toHaveAttribute("data-variant", "bar");
+  expect(player).toContainElement(controls());
+  expect(screen.getByTestId("controls-slot")).toBeEmptyDOMElement();
+  expect(buttonText(controls())).toEqual([
+    "Pause",
+    "Mute",
+    "Exit fullscreen",
+    "Open in mpv",
+    "Restart",
+    "Copy diagnostics",
+    "Stop stream",
+  ]);
+  expect(screen.queryByRole("button", { name: "More" })).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Demo live video")).toBe(video);
+
+  enterFullscreen(null);
+  view.rerender(
+    <CompactChrome>
+      <PlaybackSurface {...props} />
+    </CompactChrome>,
+  );
+  expect(controls()).toHaveAttribute("data-variant", "compact");
+  expect(screen.getByTestId("controls-slot")).toContainElement(controls());
+  expect(screen.getByLabelText("Demo live video")).toBe(video);
+});
+
+it("keeps the shell's controls while the shell's own fullscreen target is fullscreen", () => {
+  const props = { ...surfaceProps(), ...everyControl().slots };
+  render(
+    <CompactChrome fullscreenTarget={document.documentElement}>
+      <PlaybackSurface {...props} fullscreen />
+    </CompactChrome>,
+  );
+  enterFullscreen(document.documentElement);
+
+  const controls = screen.getByRole("group", { name: "Playback controls" });
+  expect(controls).toHaveAttribute("data-variant", "compact");
+  expect(screen.getByTestId("controls-slot")).toContainElement(controls);
+  expect(screen.getByRole("button", { name: "More" })).toBeInTheDocument();
+});
+
+it("keeps the bar in a fullscreen player section when the shell gains a target of its own, and leaves that section", async () => {
+  const user = userEvent.setup();
+  const props = { ...surfaceProps(), ...everyControl().slots };
+  // An installed player before the device has said the picture may be
+  // covered: no target, so Full screen takes the player section.
+  const view = render(
+    <CompactChrome>
+      <PlaybackSurface {...props} />
+    </CompactChrome>,
+  );
+  const player = screen.getByRole("region", { name: "Demo" });
+  const controls = () =>
+    screen.getByRole("group", { name: "Playback controls" });
+  await user.click(screen.getByRole("button", { name: "Full screen" }));
+  expect(props.onRequestFullscreen).toHaveBeenLastCalledWith(player);
+  enterFullscreen(player);
+
+  // The device answers: the shell's target is now the document root. The
+  // section is still what is fullscreen, so its bar stays inside it.
+  view.rerender(
+    <CompactChrome fullscreenTarget={document.documentElement}>
+      <PlaybackSurface {...props} fullscreen />
+    </CompactChrome>,
+  );
+  expect(controls()).toHaveAttribute("data-variant", "bar");
+  expect(player).toContainElement(controls());
+  expect(screen.getByTestId("controls-slot")).toBeEmptyDOMElement();
+
+  // Leaving fullscreen acts on the section, not on the new target.
+  await user.click(screen.getByRole("button", { name: "Exit fullscreen" }));
+  expect(props.onRequestFullscreen).toHaveBeenCalledTimes(2);
+  expect(props.onRequestFullscreen).toHaveBeenLastCalledWith(player);
+
+  enterFullscreen(null);
+  view.rerender(
+    <CompactChrome fullscreenTarget={document.documentElement}>
+      <PlaybackSurface {...props} />
+    </CompactChrome>,
+  );
+  expect(controls()).toHaveAttribute("data-variant", "compact");
+  expect(screen.getByTestId("controls-slot")).toContainElement(controls());
+  await user.click(screen.getByRole("button", { name: "Full screen" }));
+  expect(props.onRequestFullscreen).toHaveBeenLastCalledWith(
+    document.documentElement,
+  );
+});
+
+it("tells the shell the state of its picture and where it is, until it unmounts", () => {
   const reportPicture = vi.fn<StageChrome["reportPicture"]>();
   const props = surfaceProps();
   const view = render(
@@ -151,7 +281,8 @@ it("tells the shell whether a picture is playing and where, until it unmounts", 
     </CompactChrome>,
   );
   expect(reportPicture).toHaveBeenLastCalledWith({
-    playing: false,
+    state: "starting",
+    status: "Tuning",
     external: false,
   });
 
@@ -161,8 +292,28 @@ it("tells the shell whether a picture is playing and where, until it unmounts", 
     </CompactChrome>,
   );
   expect(reportPicture).toHaveBeenLastCalledWith({
-    playing: true,
+    state: "playing",
+    status: "On air",
     external: true,
+  });
+
+  // A failure is reported under the name the player's heading gives it.
+  view.rerender(
+    <CompactChrome reportPicture={reportPicture}>
+      <PlaybackSurface
+        {...props}
+        state={{
+          _tag: "failed",
+          failure: "stream-interrupted",
+          retryable: true,
+        }}
+      />
+    </CompactChrome>,
+  );
+  expect(reportPicture).toHaveBeenLastCalledWith({
+    state: "failed",
+    status: "Signal lost",
+    external: false,
   });
   expect(reportPicture).not.toHaveBeenCalledWith(null);
 
@@ -170,14 +321,16 @@ it("tells the shell whether a picture is playing and where, until it unmounts", 
   expect(reportPicture).toHaveBeenLastCalledWith(null);
 });
 
-/** A stand-in for the Theater shell: compact controls portalled into a slot it owns. */
+/** A stand-in for the shell: compact controls portalled into a slot it owns. */
 function CompactChrome({
   children,
   fullscreenTarget = null,
+  menuSide = "top",
   reportPicture = ignorePicture,
 }: {
   readonly children: ReactNode;
   readonly fullscreenTarget?: HTMLElement | null;
+  readonly menuSide?: StageChrome["menuSide"];
   readonly reportPicture?: StageChrome["reportPicture"];
 }) {
   const [controlsSlot, setControlsSlot] = useState<HTMLElement | null>(null);
@@ -186,9 +339,10 @@ function CompactChrome({
       controlsSlot,
       controls: "compact",
       fullscreenTarget,
+      menuSide,
       reportPicture,
     }),
-    [controlsSlot, fullscreenTarget, reportPicture],
+    [controlsSlot, fullscreenTarget, menuSide, reportPicture],
   );
   return (
     <StageChromeProvider value={chrome}>
@@ -199,6 +353,17 @@ function CompactChrome({
 }
 
 function ignorePicture(): void {}
+
+/** jsdom has no fullscreen: makes an element the document's, or none, as a browser reports it. */
+function enterFullscreen(element: Element | null): void {
+  act(() => {
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      value: element,
+    });
+    document.dispatchEvent(new Event("fullscreenchange"));
+  });
+}
 
 function surfaceProps() {
   return {

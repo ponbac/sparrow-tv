@@ -69,6 +69,13 @@ then samples aggregate native status once per second for at least 120 seconds.
 The guide marks one button per Channel, so when the first guide row folds
 Quality Variants the first two Channels are two qualities of that row.
 
+The first tune enters the pocket layout's watch mode
+([ADR 0007](../adr/0007-use-a-pocket-layout-where-the-picture-cannot-be-covered.md))
+and the app stays there until Stop. The guide's marked buttons
+are mounted but not shown, and the harness presses them through the DOM. The
+player controls it uses are the icon controls under the picture; their labels,
+and the Volume slider that a phone's row does not show, stay in the DOM.
+
 The sustained gate requires uninterrupted playing state, a nonzero Media3
 buffer at every sample, and monotonic counters. When the candidate exposes the
 aggregate decoded-frame count, it must sustain at least 20 decoded frames per

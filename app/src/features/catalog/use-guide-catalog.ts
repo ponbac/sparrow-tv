@@ -1,4 +1,5 @@
 import {
+  InfiniteQueryObserver,
   infiniteQueryOptions,
   keepPreviousData,
   useInfiniteQuery,
@@ -6,7 +7,7 @@ import {
   type InfiniteData,
   type QueryClient,
 } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   CatalogGeneration,
   ChannelGroup,
@@ -40,6 +41,12 @@ interface CatalogContinuation {
   readonly cursor: PageCursor;
   readonly previousCursors: readonly PageCursor[];
   readonly generation: CatalogGeneration;
+}
+
+/** The time span a guide read covers. */
+interface GuideSpan {
+  readonly startsAt: IsoInstant;
+  readonly endsAt: IsoInstant;
 }
 
 interface GuideCatalogInput {
@@ -109,10 +116,15 @@ export function useGuideCatalog({
     ),
     staleTime: IMMUTABLE_CATALOG_STALE_TIME,
   });
+  // The window whose rows are shown. It follows the window asked for at
+  // once, except while the viewer has read past the first page: the rows of
+  // the new window are then read to as many pages first, so they replace the
+  // old ones in place and the list keeps its length and the viewer's place.
+  const [shown, setShown] = useState<GuideSpan>({ startsAt, endsAt });
   const guideBootstrapKey = guideWindowQueryKey({
     group,
-    startsAt,
-    endsAt,
+    startsAt: shown.startsAt,
+    endsAt: shown.endsAt,
     expectedGeneration: null,
   });
   const guideGeneration = bootstrapAwareGeneration(
@@ -124,8 +136,8 @@ export function useGuideCatalog({
     ...guideWindowQueryOptions({
       client,
       group,
-      startsAt,
-      endsAt,
+      startsAt: shown.startsAt,
+      endsAt: shown.endsAt,
       expectedGeneration: guideGeneration,
     }),
     enabled,
@@ -145,6 +157,51 @@ export function useGuideCatalog({
   } = groupsQuery;
   const { refetch: refetchGuide, fetchNextPage: fetchNextGuidePage } =
     guideQuery;
+  const windowMoved = shown.startsAt !== startsAt || shown.endsAt !== endsAt;
+  const shownPages = guideQuery.isPlaceholderData
+    ? 0
+    : (guideQuery.data?.pages.length ?? 0);
+  // How many pages of the new window to read before its rows are shown;
+  // null when it can be shown at once.
+  const catchUpPages =
+    windowMoved && enabled && shownPages > 1 ? shownPages : null;
+  if (windowMoved && catchUpPages === null) {
+    setShown({ startsAt, endsAt });
+  }
+  useEffect(() => {
+    if (catchUpPages === null) {
+      return;
+    }
+    let active = true;
+    // The read settles either way. If it failed, the new window is shown
+    // all the same and reports the failure as its own.
+    void readGuidePages(
+      queryClient,
+      guideWindowQueryOptions({
+        client,
+        group,
+        startsAt,
+        endsAt,
+        expectedGeneration: guideGeneration,
+      }),
+      catchUpPages,
+    ).then(() => {
+      if (active) {
+        setShown({ startsAt, endsAt });
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [
+    catchUpPages,
+    client,
+    endsAt,
+    group,
+    guideGeneration,
+    queryClient,
+    startsAt,
+  ]);
   const guideError = clientErrorFromQuery(guideQuery.error);
   const groupsError = clientErrorFromQuery(groupsQuery.error);
   const error =
@@ -220,7 +277,8 @@ export function useGuideCatalog({
       enabled &&
       (guideQuery.isPending ||
         (guideQuery.isPlaceholderData && rows.length === 0)),
-    replacing: guideQuery.isRefetching || guideQuery.isPlaceholderData,
+    replacing:
+      guideQuery.isRefetching || guideQuery.isPlaceholderData || windowMoved,
     error,
     hasMore: guideQuery.hasNextPage === true,
     loadingMore: guideQuery.isFetchingNextPage,
@@ -270,6 +328,32 @@ function guideWindowQueryOptions({
     retry: false,
     staleTime: IMMUTABLE_CATALOG_STALE_TIME,
   });
+}
+
+/**
+ * Reads a guide window until the cache holds `pages` pages of it, or all the
+ * window has. A cached window never goes stale, so the first read accepts
+ * one the viewer left with fewer pages: the pages it lacks are then read one
+ * at a time after those it holds. Settles whether or not the reads succeed.
+ */
+async function readGuidePages(
+  queryClient: QueryClient,
+  options: ReturnType<typeof guideWindowQueryOptions>,
+  pages: number,
+): Promise<void> {
+  await queryClient.prefetchInfiniteQuery({ ...options, pages });
+  const window = new InfiniteQueryObserver(queryClient, options);
+  let held = window.getCurrentResult().data?.pages.length ?? 0;
+  // Nothing held means the first read failed; a page that adds nothing means
+  // the window has no more or its read failed.
+  while (held > 0 && held < pages) {
+    const read = await window.fetchNextPage();
+    const next = read.data?.pages.length ?? 0;
+    if (next <= held) {
+      return;
+    }
+    held = next;
+  }
 }
 
 function groupsQueryKey(expectedGeneration: CatalogGeneration | null) {

@@ -1,0 +1,1406 @@
+/*
+ * Pocket layout: every window that is not Theater. Nothing is ever drawn over
+ * the picture. Watch mode gives the window to the playing Channel: the picture,
+ * a lower third under it, the controls, what follows, and a bar to change
+ * Channel. Guide mode docks the picture to a band and puts the guide below it.
+ * With nothing playing there is no picture box and the guide has the window.
+ *
+ * Every selector is scoped to the pocket layout: in-tree elements through
+ * `.shell[data-layout="pocket"]`, portalled ones through the root. The
+ * player's stylesheet loads after this one, so overrides of its rules win by
+ * specificity, never by order. Nothing here moves over time: native Android
+ * video follows the picture's box late, so the box only ever jumps.
+ *
+ * `data-dock` sizes the picture and `data-mode` decides what is shown under
+ * it. They differ while the picture cannot follow its box. Rules that read
+ * either sit in the block that excludes short landscape windows, where the
+ * picture and the guide are side by side whatever the mode.
+ *
+ * While the picture cannot follow its box, the shell also writes the size
+ * the box has to the root as `--pocket-pinned-w` and `--pocket-pinned-h`
+ * (`usePicturePin`). Every rule that sizes the box, or places something by
+ * its size, reads them first, so a window that changes size in that time
+ * (the soft keyboard opens) leaves the box, the guide and the sheets where
+ * the native picture still is.
+ */
+
+/* The picture and the sheets under it read their sizes from the root, so the
+   two cannot drift apart. */
+:root:has(.shell[data-layout="pocket"]) {
+  --pocket-band-w: 9.375rem;
+  --pocket-band-h: 5.25rem;
+  --pocket-banner-h: 0rem;
+  /* What the watch screen needs under the picture: the lower third with a
+     two-line title and the control row, then the channel bar. */
+  --pocket-lower-third-h: 11.5rem;
+  --pocket-channel-bar-h: 3.875rem;
+  /* 16:9 across the window and at most about half its height. A short window
+     takes the picture down further, as far as the band's height, so the
+     lines and controls under it keep their room. */
+  --pocket-monitor-h: min(
+    56.25vw,
+    52dvh,
+    max(
+      var(--pocket-band-h),
+      calc(
+        100dvh - var(--bar-h) - var(--pocket-banner-h) -
+          var(--pocket-lower-third-h) - var(--pocket-channel-bar-h)
+      )
+    )
+  );
+  /* The height the picture takes under the masthead; none without a player. */
+  --pocket-picture-h: 0rem;
+}
+
+:root:has(.shell[data-layout="pocket"] .shell__retained) {
+  --pocket-banner-h: 2rem;
+}
+
+:root:has(.shell[data-layout="pocket"][data-playing="true"][data-dock="true"]) {
+  --pocket-picture-h: var(--pocket-pinned-h, var(--pocket-band-h));
+}
+
+:root:has(.shell[data-layout="pocket"][data-playing="true"][data-dock="false"]) {
+  --pocket-picture-h: var(--pocket-pinned-h, var(--pocket-monitor-h));
+}
+
+.shell[data-layout="pocket"] {
+  min-height: 0;
+}
+
+/* Masthead */
+
+.shell[data-layout="pocket"] .shell__masthead {
+  position: sticky;
+  top: 0;
+  gap: 0;
+  padding: 0 0.875rem;
+}
+
+.shell[data-layout="pocket"] .shell__wordmark {
+  margin-right: auto;
+}
+
+.shell[data-layout="pocket"] .shell__find {
+  position: relative;
+  display: grid;
+  width: 3rem;
+  height: var(--bar-h);
+  place-items: center;
+  padding: 0;
+  color: var(--paper);
+  border: 0;
+  background: none;
+}
+
+.shell[data-layout="pocket"] .shell__find:focus-visible {
+  outline-offset: -2px;
+}
+
+/* The masthead is lower than a finger is wide: the touch reaches a little
+   under it. */
+.shell[data-layout="pocket"] .shell__find::after {
+  position: absolute;
+  inset: 0 0 -0.375rem;
+  content: "";
+}
+
+.shell[data-layout="pocket"] .shell__find svg {
+  width: 1.1875rem;
+  height: 1.1875rem;
+}
+
+.shell[data-layout="pocket"] .shell__clock {
+  margin-left: 0.375rem;
+}
+
+/* Workspace: the stage above the guide. Clipped, not scrollable: the picture
+   must never be inside something that scrolls. */
+
+.shell[data-layout="pocket"] .shell__workspace {
+  overflow: clip;
+}
+
+/* Its own stacking context: what is raised inside the stage stays under the
+   sheets and their backdrops, which are layers of the document. */
+.shell[data-layout="pocket"] .stage {
+  min-height: 0;
+  grid-row: 1;
+  isolation: isolate;
+}
+
+/* No picture box without a Channel. Tuning one brings the box back at once,
+   before the player loads, so focus can rest on it. */
+.shell[data-layout="pocket"][data-playing="false"] .stage {
+  display: none;
+}
+
+.shell[data-layout="pocket"] .programme-guide {
+  grid-row: 2;
+}
+
+/* Picture */
+
+/* As wide as its place in the layout, or as it was when the picture stopped
+   following it. */
+.shell[data-layout="pocket"] .stage__monitor {
+  width: var(--pocket-pinned-w, auto);
+}
+
+/* Focus rests here after a tune; it is not a control to mark. */
+.shell[data-layout="pocket"] .stage__monitor:focus-visible {
+  outline: 0;
+}
+
+/* The notice of a player that could not load fills the picture's box, which
+   may be lower than the notice. Its lines are centred by the room left over,
+   so with none they start at the top and the heading can be scrolled to. */
+.shell[data-layout="pocket"] .playback-load-notice {
+  display: flex;
+  place-content: normal;
+  align-items: center;
+  flex-direction: column;
+}
+
+.shell[data-layout="pocket"] .playback-load-notice h2 {
+  margin-top: auto;
+}
+
+.shell[data-layout="pocket"] .playback-load-notice__actions {
+  margin-bottom: auto;
+}
+
+/* The player is all picture: its controls sit in the info block. Fullscreen
+   on Android is the player's own section, which keeps its heading and bar. */
+.shell[data-layout="pocket"] .hosted-player:not(:fullscreen) {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+/* Clipped, not removed: the heading names the player and its state is read out. */
+.shell[data-layout="pocket"]
+  .hosted-player:not(:fullscreen)
+  .hosted-player__heading {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Info block: the lower third, the controls and what follows, as rows of one
+   grid. The body's lines are its items, so the controls slot can sit between
+   the meter and the later block although it comes last in the document. */
+
+.shell[data-layout="pocket"] .now-playing {
+  column-gap: 0.5625rem;
+  padding: 0.6875rem 0.875rem 0;
+}
+
+.shell[data-layout="pocket"] .now-playing__number {
+  grid-area: 1 / 1;
+  padding: 0 0.375rem;
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+}
+
+.shell[data-layout="pocket"] .now-playing__channel {
+  grid-area: 1 / 2;
+  gap: 0.5625rem;
+  font-size: 0.84375rem;
+}
+
+/* The state takes the group's place while the picture is not simply playing. */
+.shell[data-layout="pocket"]
+  .now-playing__channel:has(.now-playing__state)
+  .now-playing__group {
+  display: none;
+}
+
+.shell[data-layout="pocket"] .now-playing__state {
+  flex: 0 0 auto;
+  color: var(--dim);
+  font-weight: 600;
+}
+
+.shell[data-layout="pocket"] .now-playing__state[data-state="failed"] {
+  color: var(--bad);
+}
+
+.shell[data-layout="pocket"]
+  .now-playing__state[data-state="autoplay-blocked"] {
+  color: var(--amber);
+}
+
+.shell[data-layout="pocket"] .now-playing .quality-switch {
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.shell[data-layout="pocket"] .now-playing .quality-switch button {
+  position: relative;
+  min-width: 2.25rem;
+  padding: 0 0.4375rem;
+  background: var(--cell);
+  font-size: 0.71875rem;
+  font-weight: 700;
+  line-height: 1.375rem;
+}
+
+.shell[data-layout="pocket"]
+  .now-playing
+  .quality-switch
+  button[data-current="true"] {
+  background: var(--paper);
+}
+
+/* A chip is small; the room around it takes the touch as well, as far as
+   halfway to the next chip. */
+.shell[data-layout="pocket"] .now-playing .quality-switch button::after {
+  position: absolute;
+  inset: -0.6875rem -0.25rem;
+  content: "";
+}
+
+.shell[data-layout="pocket"] .now-playing h1 {
+  grid-area: 2 / 1 / auto / -1;
+  margin: 0.4375rem 0 0;
+  font-size: 1.5625rem;
+  -webkit-line-clamp: 2;
+}
+
+.shell[data-layout="pocket"] .now-playing__meter {
+  grid-area: 3 / 1 / auto / -1;
+  gap: 0.5625rem;
+  margin-top: 0.5rem;
+  font-size: 0.84375rem;
+}
+
+.shell[data-layout="pocket"] .now-playing__progress {
+  max-width: none;
+}
+
+/* Kept while empty, so the lines under it do not jump when the player loads. */
+.shell[data-layout="pocket"] .now-playing__controls {
+  display: block;
+  min-height: calc(2.75rem + 2px);
+  grid-area: 4 / 1 / auto / -1;
+  margin: 0.75rem -0.875rem 0;
+  border-block: 1px solid var(--hair);
+}
+
+.shell[data-layout="pocket"] .now-playing__later {
+  display: block;
+  min-height: 0;
+  grid-area: 5 / 1 / auto / -1;
+  align-self: stretch;
+  padding: 0.75rem 0 0.5rem;
+  overflow-y: auto;
+  scrollbar-color: var(--faint) transparent;
+  scrollbar-width: thin;
+}
+
+/* Held back while the description may still arrive. */
+.shell[data-layout="pocket"] .now-playing__later[data-settled="false"] > * {
+  visibility: hidden;
+}
+
+.shell[data-layout="pocket"] .now-playing__about {
+  display: block;
+  margin: 0 0 0.75rem;
+  color: var(--dim);
+  font-size: 0.84375rem;
+  line-height: 1.45;
+}
+
+.shell[data-layout="pocket"] .now-playing__next {
+  margin: 0;
+  color: var(--paper);
+  font-size: 0.875rem;
+}
+
+.shell[data-layout="pocket"] .now-playing__next li,
+.shell[data-layout="pocket"] .now-playing__next li + li {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.4375rem 0;
+  border-top: 1px solid var(--hair);
+}
+
+/* Without a description the control row's hairline is the line above. */
+.shell[data-layout="pocket"] .now-playing__next:first-child li:first-child {
+  border-top: 0;
+}
+
+/* The list reads as a timetable here; its first line needs no lead-in. */
+.shell[data-layout="pocket"] .now-playing__next-lead {
+  display: none;
+}
+
+.shell[data-layout="pocket"] .now-playing__next time {
+  width: 2.375rem;
+  flex: none;
+  color: var(--dim);
+}
+
+.shell[data-layout="pocket"] .now-playing__next b {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Controls: one row of icon buttons with a hairline above and below. The
+   markup has one order for every variant; this row is ordered by class. The
+   left group is the recovery or Pause button, Mute and the Audio Track; the
+   right group is Full screen, the mpv switch, More and Stop. */
+
+.shell[data-layout="pocket"] .hosted-player__controls[data-variant="compact"] {
+  --control-size: 2.75rem;
+  --control-fill: transparent;
+  flex-wrap: wrap;
+  gap: 0;
+  padding: 0 0.25rem;
+  overflow: visible;
+}
+
+/* The space between the two groups. */
+.shell[data-layout="pocket"]
+  .hosted-player__controls[data-variant="compact"]::before {
+  flex: 1 1 0;
+  order: 4;
+  content: "";
+}
+
+.shell[data-layout="pocket"]
+  .hosted-player__controls[data-variant="compact"]
+  > .hosted-player__primary-control {
+  order: 1;
+}
+
+/* A phone has volume keys, and its row has no room for a slider. */
+.shell[data-layout="pocket"]
+  .hosted-player__controls[data-variant="compact"]
+  > .hosted-player__volume {
+  display: none;
+  order: 2;
+  margin-left: 0;
+}
+
+/* The slider returns where the row has room for it: a row across the window
+   from 30rem, a row in the left column of a short landscape window from
+   56rem. */
+@media not all and (max-width: 1050px) and (max-height: 600px) and (orientation: landscape) {
+  @media (min-width: 30rem) {
+    .shell[data-layout="pocket"]
+      .hosted-player__controls[data-variant="compact"]
+      > .hosted-player__volume {
+      display: inline-flex;
+    }
+  }
+}
+
+@media (min-width: 56rem) {
+  .shell[data-layout="pocket"]
+    .hosted-player__controls[data-variant="compact"]
+    > .hosted-player__volume {
+    display: inline-flex;
+  }
+}
+
+/* The one control that gives way: it counts as its narrowest when the row
+   decides whether to wrap, then takes the room the buttons leave, up to the
+   width of its longest name. */
+.shell[data-layout="pocket"]
+  .hosted-player__controls[data-variant="compact"]
+  > .hosted-player__audio-track {
+  min-width: 3.5rem;
+  max-width: max-content;
+  flex: 999 1 0;
+  order: 3;
+  padding-left: 0.75rem;
+  color: var(--dim);
+}
+
+.shell[data-layout="pocket"]
+  .hosted-player__controls[data-variant="compact"]
+  > .hosted-player__audio-track
+  select {
+  min-width: 0;
+  max-width: none;
+  flex: 1 1 auto;
+  padding: 0 0.75rem 0 0.4375rem;
+  color: var(--dim);
+  font-size: 0.8125rem;
+  text-overflow: ellipsis;
+}
+
+.shell[data-layout="pocket"]
+  .hosted-player__controls[data-variant="compact"]
+  > .hosted-player__fullscreen {
+  order: 5;
+}
+
+.shell[data-layout="pocket"]
+  .hosted-player__controls[data-variant="compact"]
+  > .hosted-player__switch {
+  order: 6;
+}
+
+.shell[data-layout="pocket"]
+  .hosted-player__controls[data-variant="compact"]
+  > .hosted-player__more {
+  order: 7;
+}
+
+.shell[data-layout="pocket"]
+  .hosted-player__controls[data-variant="compact"]
+  > .hosted-player__stop {
+  order: 8;
+}
+
+.shell[data-layout="pocket"]
+  .hosted-player__controls[data-variant="compact"]
+  > .hosted-player__status {
+  order: 9;
+  padding: 0 0.625rem;
+}
+
+.shell[data-layout="pocket"]
+  .hosted-player__controls[data-variant="compact"]
+  svg {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+/* The row is flush with the window's edges, where an outset ring is cut off. */
+.shell[data-layout="pocket"]
+  .hosted-player__controls[data-variant="compact"]
+  :focus-visible {
+  outline-offset: -2px;
+}
+
+/* The recovery button keeps its words, a little inside the row. */
+.shell[data-layout="pocket"]
+  .hosted-player__controls[data-variant="compact"]
+  > .hosted-player__recovery {
+  min-height: 2.25rem;
+  margin: 0 0.25rem 0 0.5rem;
+  padding: 0 0.75rem;
+  font-size: 0.875rem;
+}
+
+/* A narrow row, across a phone or in the left column of a short landscape
+   window, has no room for the words and the Audio Track both. The track
+   cannot be changed while playback waits to be resumed or restarted. */
+@media (max-width: 29.9375rem), (max-width: 1050px) and (max-height: 600px) and (orientation: landscape) {
+  .shell[data-layout="pocket"]
+    .hosted-player__controls[data-variant="compact"]:has(
+      > .hosted-player__recovery
+    )
+    > .hosted-player__audio-track {
+    display: none;
+  }
+}
+
+/* Channel bar: the Channel before, the guide, the Channel after. */
+
+.shell[data-layout="pocket"] .channel-bar {
+  display: grid;
+  height: var(--pocket-channel-bar-h);
+  grid-template-columns: minmax(0, 1fr) 3.875rem minmax(0, 1fr);
+  border-top: 1px solid var(--faint);
+  background: var(--panel);
+}
+
+.shell[data-layout="pocket"] .channel-bar button {
+  min-width: 0;
+  padding: 0;
+  color: var(--paper);
+  border: 0;
+  background: none;
+}
+
+.shell[data-layout="pocket"] .channel-bar button:focus-visible {
+  outline-offset: -2px;
+}
+
+.shell[data-layout="pocket"] .channel-bar button.channel-bar__stop {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0 0.625rem;
+  text-align: left;
+}
+
+.shell[data-layout="pocket"] .channel-bar button.channel-bar__stop:last-child {
+  flex-direction: row-reverse;
+  text-align: right;
+}
+
+.shell[data-layout="pocket"] .channel-bar__stop:disabled {
+  opacity: 0.35;
+}
+
+.shell[data-layout="pocket"] .channel-bar__stop svg {
+  width: 1.125rem;
+  height: 1.125rem;
+  flex: none;
+  color: var(--dim);
+}
+
+.shell[data-layout="pocket"] .channel-bar__channel {
+  display: block;
+  min-width: 0;
+}
+
+.shell[data-layout="pocket"] .channel-bar__channel b,
+.shell[data-layout="pocket"] .channel-bar__channel span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell[data-layout="pocket"] .channel-bar__channel b {
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.shell[data-layout="pocket"] .channel-bar__channel i {
+  color: var(--dim);
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.shell[data-layout="pocket"] .channel-bar__channel span {
+  color: var(--dim);
+  font-size: 0.75rem;
+}
+
+.shell[data-layout="pocket"] .channel-bar__guide {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 0.1875rem;
+  border-inline: 1px solid var(--faint);
+  font-size: 0.78125rem;
+  font-weight: 700;
+}
+
+.shell[data-layout="pocket"] .channel-bar__guide svg {
+  width: 1.0625rem;
+  height: 1.0625rem;
+}
+
+/* The band's button back to the picture: only guide mode shows it. */
+.shell[data-layout="pocket"] .stage__undock {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .shell[data-layout="pocket"] .shell__retained {
+    font-size: 0.75rem;
+  }
+}
+
+/* Guide: the search field and Sources, the Channel Groups behind a time
+   chip, and a list with one row per Channel saying what it has on. */
+
+.shell[data-layout="pocket"] .programme-guide {
+  grid-template-rows: 3.5rem minmax(0, 1fr);
+}
+
+.shell[data-layout="pocket"] .programme-guide__toolbar {
+  gap: 0.5rem;
+  padding: 0 0.625rem;
+  border-bottom: 0;
+}
+
+.shell[data-layout="pocket"] .programme-guide__toolbar .board-search > svg {
+  left: 0.6875rem;
+  width: 1rem;
+}
+
+.shell[data-layout="pocket"] .programme-guide__toolbar .board-search input {
+  height: 2.5rem;
+  padding: 0 2.75rem 0 2.125rem;
+  text-overflow: ellipsis;
+}
+
+/* Nothing to clear yet: the prompt may run to the field's edge. */
+.shell[data-layout="pocket"]
+  .programme-guide__toolbar
+  .board-search
+  input:placeholder-shown {
+  padding-right: 0.25rem;
+}
+
+.shell[data-layout="pocket"] .programme-guide__toolbar .board-search button {
+  width: 2.5rem;
+  height: calc(2.5rem - 2px);
+}
+
+.shell[data-layout="pocket"] .programme-guide__toolbar .feeds-trigger {
+  position: relative;
+  height: 2.5rem;
+  padding: 0 0.5625rem;
+  font-size: 0.84375rem;
+}
+
+.shell[data-layout="pocket"]
+  .programme-guide__toolbar
+  .feeds-trigger:not([data-attention="true"], [data-popup-open], :hover) {
+  background: none;
+}
+
+.shell[data-layout="pocket"] .programme-guide__toolbar .feeds-trigger svg {
+  width: 1rem;
+}
+
+/* The toolbar's full height takes the touch. */
+.shell[data-layout="pocket"]
+  .programme-guide__toolbar
+  .feeds-trigger::after {
+  position: absolute;
+  inset: -0.5rem 0;
+  content: "";
+}
+
+/* The lane, the times under it while they are open, then the list. */
+.shell[data-layout="pocket"] .programme-guide__body {
+  grid-template-rows: 2.5rem auto minmax(0, 1fr);
+}
+
+.shell[data-layout="pocket"] .programme-guide__panel {
+  grid-row: 3;
+}
+
+/* The time chip, the groups, the roster's button. A finger scrolls the
+   groups; the step buttons are for a pointer in Theater's column. */
+.shell[data-layout="pocket"] .programme-guide__lane {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.shell[data-layout="pocket"] .programme-guide__lane-step {
+  display: none;
+}
+
+.shell[data-layout="pocket"] .programme-guide__when {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3125rem;
+  margin: 0.4375rem 0.125rem 0.4375rem 0.625rem;
+  padding: 0 0.5625rem;
+  color: var(--paper);
+  border: 0;
+  background: var(--cell-live);
+  font-size: 0.84375rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+/* The chip is short; the lane's full height takes the touch. */
+.shell[data-layout="pocket"] .programme-guide__when::after {
+  position: absolute;
+  inset: -0.4375rem 0;
+  content: "";
+}
+
+.shell[data-layout="pocket"] .programme-guide__when svg {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+.shell[data-layout="pocket"] .programme-guide__when[aria-expanded="true"] {
+  background: var(--cell-hover);
+}
+
+.shell[data-layout="pocket"] .programme-guide__when[aria-pressed="true"] {
+  color: var(--on-amber);
+  background: var(--amber);
+}
+
+/* As tall as the lane: the whole height takes the touch, and the chosen
+   group's underline lies on the lane's hairline. */
+.shell[data-layout="pocket"] .programme-guide__groups {
+  height: 100%;
+  padding: 0 0.3125rem;
+}
+
+.shell[data-layout="pocket"] .programme-guide__group {
+  gap: 0.3125rem;
+  padding: 0 0.625rem;
+  font-size: 0.84375rem;
+}
+
+.shell[data-layout="pocket"] .programme-guide__group em {
+  font-size: 0.71875rem;
+}
+
+.shell[data-layout="pocket"] .group-roster-trigger svg {
+  width: 1rem;
+}
+
+.shell[data-layout="pocket"] .programme-guide__times {
+  display: flex;
+  height: 3rem;
+  grid-row: 2;
+  align-items: center;
+  gap: 0.375rem;
+  /* The row scrolls sideways where the times do not fit; its right edge
+     fades, and the last time can be brought clear of the fade. */
+  padding: 0 1.75rem 0 0.625rem;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--hair);
+  mask-image: linear-gradient(90deg, #000 calc(100% - 1.75rem), transparent);
+  -webkit-mask-image: linear-gradient(
+    90deg,
+    #000 calc(100% - 1.75rem),
+    transparent
+  );
+  scrollbar-width: none;
+}
+
+.shell[data-layout="pocket"] .programme-guide__times::-webkit-scrollbar {
+  display: none;
+}
+
+.shell[data-layout="pocket"] .programme-guide__times button {
+  position: relative;
+  flex: none;
+  padding: 0 0.6875rem;
+  color: var(--paper);
+  border: 0;
+  background: var(--cell-live);
+  font-size: 0.84375rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 2rem;
+}
+
+.shell[data-layout="pocket"]
+  .programme-guide__times
+  button[aria-pressed="true"] {
+  color: var(--on-amber);
+  background: var(--amber);
+}
+
+/* The row's full height takes the touch. */
+.shell[data-layout="pocket"] .programme-guide__times button::after {
+  position: absolute;
+  inset: -0.5rem 0;
+  content: "";
+}
+
+/* The list scrolls one way; a wide window lays its rows out in columns. */
+.shell[data-layout="pocket"] .programme-guide__board {
+  overflow: hidden auto;
+}
+
+.shell[data-layout="pocket"] .programme-guide__rows {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(auto-fill, minmax(min(21rem, 100%), 1fr));
+}
+
+/* A row is one cell that its parts share: the button fills it, the Channel
+   Number and the quality chips lie over the button's first line, and the
+   progress line runs along the bottom edge. */
+.shell[data-layout="pocket"] .programme-guide__row {
+  position: relative;
+  height: 4.25rem;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  border-bottom: 0;
+  contain-intrinsic-size: 4.25rem;
+}
+
+.shell[data-layout="pocket"] .programme-guide__row[data-playing="true"] {
+  background: var(--cell);
+}
+
+/* Inside the row's box: content-visibility clips what is painted outside. */
+.shell[data-layout="pocket"] .programme-guide__row::after {
+  position: absolute;
+  inset: auto 0 0;
+  height: 2px;
+  pointer-events: none;
+  background: var(--hair);
+  content: "";
+}
+
+.shell[data-layout="pocket"] .programme-guide__elapsed {
+  z-index: 1;
+  inset: auto auto 0 0;
+  width: var(--progress);
+  height: 2px;
+  opacity: 0.66;
+  background: var(--dim);
+}
+
+.shell[data-layout="pocket"]
+  .programme-guide__row[data-playing="true"]
+  .programme-guide__elapsed {
+  opacity: 1;
+  background: var(--amber);
+}
+
+.shell[data-layout="pocket"] .programme-guide__number {
+  z-index: 1;
+  width: 2.125rem;
+  min-width: 0;
+  grid-area: 1 / 1;
+  align-self: start;
+  justify-self: start;
+  margin: 0.4375rem 0 0 0.625rem;
+  pointer-events: none;
+  font-size: 0.78125rem;
+  line-height: 1rem;
+  text-align: center;
+}
+
+.shell[data-layout="pocket"]
+  .programme-guide__row[data-playing="true"]
+  .programme-guide__number {
+  font-weight: 800;
+}
+
+/* Three lines: the Channel, the Programme, then what follows and the minutes
+   left. The last column is the room the quality chips take on the first
+   line. Only the Programme's title turns amber on the playing row. */
+.shell[data-layout="pocket"] .programme-guide__row .programme-guide__channel {
+  display: grid;
+  grid-area: 1 / 1;
+  grid-template-columns: minmax(0, 1fr) auto calc(var(--variants, 0) * 2.25rem);
+  align-content: start;
+  padding: 0.4375rem 0.875rem 0 2.75rem;
+  color: var(--paper);
+}
+
+.shell[data-layout="pocket"] .programme-guide__name {
+  overflow: hidden;
+  grid-area: 1 / 1 / auto / 3;
+  opacity: 0.82;
+  font-size: 0.78125rem;
+  line-height: 1rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell[data-layout="pocket"] .programme-guide__name:empty {
+  display: none;
+}
+
+.shell[data-layout="pocket"] .programme-guide__name small {
+  margin-left: 0.375rem;
+  color: var(--dim);
+  font-size: 0.65625rem;
+  font-weight: 700;
+}
+
+.shell[data-layout="pocket"] .programme-guide__left {
+  grid-area: 3 / 2 / auto / -1;
+  margin-left: 0.5rem;
+  color: var(--dim);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1rem;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.shell[data-layout="pocket"] .programme-guide__channel .programme-guide__on {
+  grid-area: 2 / 1 / auto / -1;
+  font-size: 1rem;
+  line-height: 1.3125rem;
+}
+
+.shell[data-layout="pocket"]
+  .programme-guide__row[data-playing="true"]
+  .programme-guide__on {
+  color: var(--amber);
+}
+
+.shell[data-layout="pocket"] .programme-guide__after {
+  overflow: hidden;
+  grid-area: 3 / 1;
+  color: var(--dim);
+  font-size: 0.78125rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Titled by its Channel: two lines, lower in the row, and the title stops
+   short of the quality chips beside it. */
+.shell[data-layout="pocket"]
+  .programme-guide__row[data-bare="true"]
+  .programme-guide__channel {
+  padding-top: 0.9375rem;
+}
+
+.shell[data-layout="pocket"]
+  .programme-guide__row[data-bare="true"]
+  .programme-guide__number {
+  margin-top: 1.125rem;
+}
+
+.shell[data-layout="pocket"]
+  .programme-guide__row[data-bare="true"]
+  .programme-guide__on {
+  grid-area: 2 / 1;
+  font-weight: 550;
+}
+
+.shell[data-layout="pocket"]
+  .programme-guide__row[data-bare="true"]
+  .programme-guide__name {
+  grid-area: 2 / 2;
+  align-self: center;
+}
+
+/* Quality chips: plain text buttons over the right of the first line, each
+   reaching well below its label so a finger finds it. */
+.shell[data-layout="pocket"] .programme-guide__variants {
+  z-index: 2;
+  grid-area: 1 / 1;
+  align-self: start;
+  justify-self: end;
+  gap: 0;
+  margin-right: 0.375rem;
+}
+
+/* Beside the title of a row that is titled by its Channel. */
+.shell[data-layout="pocket"]
+  .programme-guide__row[data-bare="true"]
+  .programme-guide__variants {
+  margin-top: 0.625rem;
+}
+
+.shell[data-layout="pocket"] .programme-guide__variants button {
+  width: 2.25rem;
+  height: 2.75rem;
+  padding: 0 0 0.875rem;
+  background: none;
+  font-weight: 700;
+}
+
+.shell[data-layout="pocket"]
+  .programme-guide__variants
+  button[data-current="true"] {
+  color: var(--paper);
+  background: none;
+  text-decoration-line: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.25rem;
+}
+
+.shell[data-layout="pocket"]
+  .programme-guide__variants
+  button[aria-pressed="true"] {
+  color: var(--amber);
+}
+
+.shell[data-layout="pocket"] .programme-guide__more {
+  width: calc(100% - 1.25rem);
+  min-height: 2.75rem;
+  margin: 0.625rem;
+}
+
+/* A pointer shows which row it is over; a finger leaves no hover behind. */
+@media (hover: hover) {
+  .shell[data-layout="pocket"]
+    .programme-guide__row
+    .programme-guide__channel:hover {
+    background: var(--cell);
+  }
+}
+
+@media (max-width: 760px), (max-width: 1050px) and (max-height: 600px) and (orientation: landscape) {
+  /* No room beside the search field: Sources shows the same readouts. */
+  .shell[data-layout="pocket"] .programme-guide__status {
+    display: none;
+  }
+}
+
+@media (min-width: 42rem) {
+  /* Room for two columns or more: a hairline tells them apart. */
+  .shell[data-layout="pocket"] .programme-guide__row {
+    border-right: 1px solid var(--hair);
+  }
+}
+
+@media (max-width: 37.4375rem), (max-width: 1050px) and (max-height: 600px) and (orientation: landscape) {
+  /* The lane is short of room: the roster's button is its icon, and the
+     label stays for a screen reader. */
+  .shell[data-layout="pocket"] .group-roster-trigger {
+    width: 2.75rem;
+    justify-content: center;
+    gap: 0;
+    padding: 0;
+  }
+
+  .shell[data-layout="pocket"] .group-roster-trigger span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  /* A row of the search desk has no room for a Channel's name and its group
+     on one line: the group goes under the name, in line with it. */
+  :root:has(.shell[data-layout="pocket"]) .board-search-desk__pick {
+    flex-wrap: wrap;
+    row-gap: 0.125rem;
+  }
+
+  :root:has(.shell[data-layout="pocket"]) .board-search-desk__pick small {
+    flex: 0 0 100%;
+    margin-left: 0;
+    padding-left: 3.25rem;
+  }
+}
+
+/* The More menu keeps to the room under the picture; where that is less
+   than it needs, it scrolls. */
+:root:has(.shell[data-layout="pocket"]) .hosted-player__menu {
+  max-height: var(--available-height);
+  overflow-y: auto;
+}
+
+/* Search results stack the name over its detail: the list is never wide
+   enough for both on one line. A detail too long for its line runs on to
+   the next, so the times at its end are never cut. */
+:root:has(.shell[data-layout="pocket"]) .board-search__result {
+  grid-template-columns: 2.25rem minmax(0, 1fr);
+  gap: 0.125rem 0.5rem;
+}
+
+:root:has(.shell[data-layout="pocket"]) .board-search__result > small {
+  max-width: none;
+  grid-column: 2;
+  white-space: normal;
+}
+
+/* Modes and the dock: everywhere but a short landscape window. */
+@media not all and (max-width: 1050px) and (max-height: 600px) and (orientation: landscape) {
+  /* The search button opens the guide; in the guide the field is in view. */
+  .shell[data-layout="pocket"][data-mode="guide"] .shell__find {
+    display: none;
+  }
+
+  .shell[data-layout="pocket"] .stage__monitor {
+    height: var(--pocket-picture-h);
+  }
+
+  .shell[data-layout="pocket"][data-dock="true"] .stage__monitor {
+    width: var(--pocket-pinned-w, var(--pocket-band-w));
+  }
+
+  /* The band is too small for the player's sentences. */
+  .shell[data-layout="pocket"][data-dock="true"] .hosted-player__overlay,
+  .shell[data-layout="pocket"][data-dock="true"] .stage__player-loading {
+    padding: 0.375rem;
+  }
+
+  .shell[data-layout="pocket"][data-dock="true"] .hosted-player__overlay p,
+  .shell[data-layout="pocket"][data-dock="true"] .stage__player-loading {
+    font-size: 0.8125rem;
+  }
+
+  .shell[data-layout="pocket"][data-dock="true"] .hosted-player__overlay span {
+    display: none;
+  }
+
+  /* Nor for the notice of a player that could not load. The band says what
+     happened, in small type from its top left; the sentence and the buttons
+     are in watch mode, a tap on the band away. */
+  .shell[data-layout="pocket"][data-dock="true"] .playback-load-notice {
+    align-items: start;
+    padding: 0.375rem;
+    text-align: left;
+  }
+
+  .shell[data-layout="pocket"][data-dock="true"] .playback-load-notice h2 {
+    margin-top: 0;
+    font-size: 0.8125rem;
+  }
+
+  .shell[data-layout="pocket"][data-dock="true"] .playback-load-notice p,
+  .shell[data-layout="pocket"][data-dock="true"]
+    .playback-load-notice__actions {
+    display: none;
+  }
+
+  /* Watch mode: the stage fills the workspace as a column. The picture and
+     the channel bar keep their heights; the info block takes what is left
+     and only its later block scrolls. The guide stays mounted, out of the
+     layout. */
+
+  .shell[data-layout="pocket"][data-mode="watch"] .shell__workspace {
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .shell[data-layout="pocket"][data-mode="watch"] .programme-guide {
+    display: none;
+  }
+
+  .shell[data-layout="pocket"][data-mode="watch"] .stage {
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+
+  /* The four lines keep their heights whatever room there is; a window too
+     short for them cuts the last, never one into the next. */
+  .shell[data-layout="pocket"][data-mode="watch"] .now-playing {
+    min-height: 0;
+    grid-template-rows: repeat(4, max-content) minmax(0, 1fr);
+    overflow: clip;
+  }
+
+  /* Guide mode: the guide is under the stage, and nothing of the stage but
+     the picture and a few lines about it is shown. */
+
+  .shell[data-layout="pocket"][data-mode="guide"] .now-playing__controls,
+  .shell[data-layout="pocket"][data-mode="guide"] .now-playing__later,
+  .shell[data-layout="pocket"][data-mode="guide"] .channel-bar {
+    display: none;
+  }
+
+  /* The guide was opened while the picture could not follow its box: the
+     picture keeps its width and the info block gives way. A tap on the
+     picture returns to it. */
+  .shell[data-layout="pocket"][data-mode="guide"][data-dock="false"]
+    .now-playing {
+    display: none;
+  }
+
+  /* Docked: the band. The picture at the left, three lines beside it. */
+
+  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"] .stage {
+    grid-template-columns:
+      var(--pocket-pinned-w, var(--pocket-band-w))
+      minmax(0, 1fr);
+    grid-template-rows: auto;
+  }
+
+  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
+    .stage__monitor {
+    grid-area: 1 / 1;
+  }
+
+  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
+    .now-playing {
+    --band-lines-h: 3.875rem;
+    height: var(--pocket-band-h);
+    grid-area: 1 / 2;
+    grid-template-rows: 1.125rem 1.25rem 1.125rem;
+    row-gap: 0.1875rem;
+    align-content: start;
+    padding: calc((var(--pocket-band-h) - var(--band-lines-h)) / 2) 2.5rem 0
+      0.6875rem;
+    overflow: clip;
+  }
+
+  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
+    .now-playing__number {
+    padding: 0 0.3125rem;
+    font-size: 0.75rem;
+    line-height: 1.0625rem;
+  }
+
+  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
+    .now-playing__channel {
+    gap: 0.4375rem;
+    font-size: 0.78125rem;
+  }
+
+  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
+    .now-playing__group,
+  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
+    .now-playing
+    .quality-switch,
+  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
+    .now-playing__meter
+    time {
+    display: none;
+  }
+
+  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
+    .now-playing
+    h1 {
+    margin: 0;
+    font-size: 0.9375rem;
+    line-height: 1.25rem;
+    -webkit-line-clamp: 1;
+  }
+
+  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
+    .now-playing__meter {
+    height: 1.125rem;
+    margin: 0;
+    font-size: 0.75rem;
+    line-height: 1.125rem;
+  }
+
+  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
+    .now-playing__progress {
+    max-width: 14rem;
+    height: 0.1875rem;
+  }
+
+  /* Over the lines beside the picture, with its icon at the right edge. */
+  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
+    .stage__undock {
+    z-index: 1;
+    display: grid;
+    grid-area: 1 / 2;
+    place-items: center end;
+    padding: 0 0.6875rem 0 0;
+    color: var(--dim);
+    border: 0;
+    background: none;
+  }
+
+  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
+    .stage__undock:focus-visible {
+    outline-offset: -2px;
+  }
+
+  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
+    .stage__undock
+    svg {
+    width: 1.1875rem;
+    height: 1.1875rem;
+  }
+
+  /* While mpv holds the picture there is no watch mode to reach the controls
+     from: they take a row of their own under the band, and the band has
+     nothing to return to. */
+
+  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"][data-external="true"]
+    .now-playing {
+    height: auto;
+    grid-template-rows: 1.125rem 1.25rem 1.125rem auto;
+    padding-right: 0.6875rem;
+    overflow: visible;
+  }
+
+  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"][data-external="true"]
+    .now-playing__controls {
+    display: block;
+    margin: calc((var(--pocket-band-h) - var(--band-lines-h)) / 2) -0.6875rem
+      0 calc(-1 * (var(--pocket-band-w) + 0.6875rem));
+  }
+
+  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"][data-external="true"]
+    .stage__undock {
+    display: none;
+  }
+
+  /* The search results run the width of the window, not of the field. */
+  :root:has(.shell[data-layout="pocket"]) .board-search__positioner {
+    width: calc(100vw - 1.25rem);
+    max-width: 35rem;
+  }
+
+  /* Sheets open from the guide, under the picture: across a narrow window,
+     as a panel at the right edge of a wide one. */
+
+  :root:has(.shell[data-layout="pocket"]) .feeds-dialog__backdrop,
+  :root:has(.shell[data-layout="pocket"]) .group-roster__backdrop,
+  :root:has(.shell[data-layout="pocket"]) .board-search-desk__backdrop {
+    top: calc(
+      var(--bar-h) + var(--pocket-banner-h) + var(--pocket-picture-h)
+    );
+    left: 0;
+  }
+
+  :root:has(.shell[data-layout="pocket"]) .feeds-dialog__popup,
+  :root:has(.shell[data-layout="pocket"]) .group-roster__popup,
+  :root:has(.shell[data-layout="pocket"]) .board-search-desk__popup {
+    top: calc(
+      var(--bar-h) + var(--pocket-banner-h) + var(--pocket-picture-h)
+    );
+    left: auto;
+    width: min(100%, 36rem);
+  }
+}
+
+/* A phone on its side: the picture, its lower third and the controls in the
+   left column, the guide in the right, both always in view. Modes and the
+   dock change nothing here. */
+@media (max-width: 1050px) and (max-height: 600px) and (orientation: landscape) {
+  /* A picture held at its size keeps its width, and its column with it. */
+  .shell[data-layout="pocket"][data-playing="true"] .shell__workspace {
+    grid-template-columns:
+      minmax(var(--pocket-pinned-w, 0px), 45fr)
+      minmax(0, 55fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .shell[data-layout="pocket"][data-playing="true"] .programme-guide {
+    grid-area: 1 / 2;
+  }
+
+  /* The picture gives way here: it takes what the info block leaves. Held
+     at its size it gives way no longer, and the info block is cut instead. */
+  .shell[data-layout="pocket"] .stage {
+    grid-template-rows: var(--pocket-pinned-h, minmax(0, 1fr)) auto;
+  }
+
+  .shell[data-layout="pocket"] .now-playing {
+    padding: 0.5rem 0.75rem 0;
+  }
+
+  .shell[data-layout="pocket"] .now-playing h1 {
+    -webkit-line-clamp: 1;
+  }
+
+  /* The picture takes what the info block leaves, and native Android video
+     does not follow its box while paused or failed. So the control row is
+     one line of a fixed height whatever it holds: it scrolls sideways
+     rather than wrap, and the status messages come last in it. */
+  .shell[data-layout="pocket"] .now-playing__controls {
+    height: calc(2.75rem + 1px);
+    min-height: 0;
+    margin: 0.5rem -0.75rem 0;
+    overflow: clip;
+    border-bottom: 0;
+  }
+
+  .shell[data-layout="pocket"]
+    .hosted-player__controls[data-variant="compact"] {
+    flex-wrap: nowrap;
+    overflow: auto hidden;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+
+  .shell[data-layout="pocket"]
+    .hosted-player__controls[data-variant="compact"]::-webkit-scrollbar {
+    display: none;
+  }
+
+  .shell[data-layout="pocket"]
+    .hosted-player__controls[data-variant="compact"]
+    > .hosted-player__status {
+    width: auto;
+    min-width: 0;
+    overflow: visible;
+  }
+
+  .shell[data-layout="pocket"] .shell__find,
+  .shell[data-layout="pocket"] .now-playing__later,
+  .shell[data-layout="pocket"] .channel-bar {
+    display: none;
+  }
+}
