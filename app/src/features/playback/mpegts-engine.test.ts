@@ -1,4 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+afterEach(() => vi.useRealTimers());
 import { clientSchemas } from "../../client/contracts";
 import {
   createMpegtsPlaybackEngine,
@@ -6,6 +8,148 @@ import {
 } from "./mpegts-engine";
 
 describe("hosted mpegts.js adapter", () => {
+  it("releases a live player whose picture stops progressing", () => {
+    vi.useFakeTimers();
+    const fixture = runtimeFixture();
+    const failures: string[] = [];
+    const video = document.createElement("video");
+    const started = createMpegtsPlaybackEngine(fixture.runtime).start({
+      endpoint: playbackEndpoint(), video,
+      onFailure: (failure) => failures.push(failure),
+      onAutoplayBlocked: () => undefined,
+    });
+    if (typeof started === "string") throw new Error("expected a handle");
+    video.dispatchEvent(new Event("playing"));
+    vi.advanceTimersByTime(14_999);
+    expect(failures).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(failures).toEqual(["stream-interrupted"]);
+    expect(fixture.calls.slice(-4)).toEqual(["pause", "unload", "detach", "destroy"]);
+    started.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps a progressing picture alive despite transient waiting/stalled events", () => {
+    vi.useFakeTimers();
+    const fixture = runtimeFixture();
+    const failures: string[] = [];
+    const video = document.createElement("video");
+    const started = createMpegtsPlaybackEngine(fixture.runtime).start({
+      endpoint: playbackEndpoint(), video, onFailure: (failure) => failures.push(failure),
+      onAutoplayBlocked: () => undefined,
+    });
+    if (typeof started === "string") throw new Error("expected a handle");
+    for (let second = 1; second <= 45; second += 1) {
+      video.currentTime = second;
+      video.dispatchEvent(new Event(second % 2 === 0 ? "waiting" : "stalled"));
+      vi.advanceTimersByTime(1_000);
+    }
+    expect(failures).toEqual([]);
+    vi.advanceTimersByTime(14_999);
+    expect(failures).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(failures).toEqual(["stream-interrupted"]);
+    started.stop();
+  });
+
+  it("suspends the progress deadline on pause and restarts it on resume", () => {
+    vi.useFakeTimers();
+    const fixture = runtimeFixture();
+    const video = document.createElement("video");
+    const failures: string[] = [];
+    let pauses = 0;
+    const started = createMpegtsPlaybackEngine(fixture.runtime).start({
+      endpoint: playbackEndpoint(), video, onFailure: (failure) => failures.push(failure),
+      onAutoplayBlocked: () => undefined, onPause: () => { pauses += 1; },
+    });
+    if (typeof started === "string") throw new Error("expected a handle");
+    vi.advanceTimersByTime(14_000);
+    video.dispatchEvent(new Event("pause"));
+    vi.advanceTimersByTime(120_000);
+    expect(failures).toEqual([]);
+    expect(pauses).toBe(1);
+    video.dispatchEvent(new Event("play"));
+    vi.advanceTimersByTime(15_000);
+    expect(failures).toEqual(["stream-interrupted"]);
+    // Adapter teardown calls pause, but it is not a viewer pause.
+    expect(pauses).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("leaves autoplay rejection to the viewer without a startup timeout", async () => {
+    vi.useFakeTimers();
+    const blocked = new Error("gesture required");
+    blocked.name = "NotAllowedError";
+    const fixture = runtimeFixture(true, { play: () => Promise.reject(blocked) });
+    const video = document.createElement("video");
+    const failures: string[] = [];
+    let blocks = 0;
+    const started = createMpegtsPlaybackEngine(fixture.runtime).start({
+      endpoint: playbackEndpoint(), video, onFailure: (failure) => failures.push(failure),
+      onAutoplayBlocked: () => { blocks += 1; },
+    });
+    if (typeof started === "string") throw new Error("expected a handle");
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(blocks).toBe(1);
+    expect(failures).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+    video.dispatchEvent(new Event("playing"));
+    vi.advanceTimersByTime(15_000);
+    expect(failures).toEqual(["stream-interrupted"]);
+  });
+
+  it("bounds startup even if the play promise never settles and ignores its late rejection", async () => {
+    vi.useFakeTimers();
+    let reject: ((cause: unknown) => void) | undefined;
+    const playing = new Promise<void>((_resolve, no) => { reject = no; });
+    const fixture = runtimeFixture(true, { play: () => playing });
+    const failures: string[] = [];
+    let blocks = 0;
+    createMpegtsPlaybackEngine(fixture.runtime).start({
+      endpoint: playbackEndpoint(), video: document.createElement("video"),
+      onFailure: (failure) => failures.push(failure), onAutoplayBlocked: () => { blocks += 1; },
+    });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(failures).toEqual(["stream-interrupted"]);
+    const blocked = new Error("late rejection");
+    blocked.name = "NotAllowedError";
+    reject?.(blocked);
+    await Promise.resolve();
+    expect(blocks).toBe(0);
+    expect(failures).toEqual(["stream-interrupted"]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("recovers native media end even when the browser emits pause first", () => {
+    vi.useFakeTimers();
+    const fixture = runtimeFixture();
+    const video = document.createElement("video");
+    Object.defineProperty(video, "ended", { value: true });
+    const failures: string[] = [];
+    let pauses = 0;
+    createMpegtsPlaybackEngine(fixture.runtime).start({
+      endpoint: playbackEndpoint(), video, onFailure: (failure) => failures.push(failure),
+      onAutoplayBlocked: () => undefined, onPause: () => { pauses += 1; },
+    });
+    video.dispatchEvent(new Event("pause"));
+    video.dispatchEvent(new Event("ended"));
+    fixture.loadingCompleteListener?.();
+    expect(pauses).toBe(0);
+    expect(failures).toEqual(["stream-interrupted"]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not call play after a synchronous end during load", () => {
+    const fixture = runtimeFixture(true, { completesOnLoad: true });
+    const failures: string[] = [];
+    createMpegtsPlaybackEngine(fixture.runtime).start({
+      endpoint: playbackEndpoint(), video: document.createElement("video"),
+      onFailure: (failure) => failures.push(failure), onAutoplayBlocked: () => undefined,
+    });
+    expect(failures).toEqual(["stream-interrupted"]);
+    expect(fixture.calls).not.toContain("play");
+  });
+
   it("opens only the branded Sparrow route and releases the player idempotently", () => {
     const fixture = runtimeFixture();
     const engine = createMpegtsPlaybackEngine(fixture.runtime);
@@ -87,6 +231,12 @@ describe("hosted mpegts.js adapter", () => {
 
   it("keeps rejected, invalid, unavailable, and timeout statuses distinct", () => {
     for (const [status, expected] of [
+      [401, "authentication-required"],
+      [404, "channel-not-found"],
+      [400, "source-rejected"],
+      [403, "source-rejected"],
+      [408, "source-timeout"],
+      [429, "source-unavailable"],
       [424, "source-rejected"],
       [502, "source-invalid"],
       [503, "source-unavailable"],
@@ -162,7 +312,10 @@ describe("hosted mpegts.js adapter", () => {
   });
 });
 
-function runtimeFixture(mseLivePlayback = true): {
+function runtimeFixture(mseLivePlayback = true, options: {
+  readonly play?: () => Promise<void> | void;
+  readonly completesOnLoad?: boolean;
+} = {}): {
   readonly runtime: MpegtsRuntime;
   readonly calls: string[];
   readonly source:
@@ -179,6 +332,7 @@ function runtimeFixture(mseLivePlayback = true): {
   let config: Parameters<MpegtsRuntime["createPlayer"]>[1] | undefined;
   let errorListener: ((...args: unknown[]) => void) | undefined;
   let loadingCompleteListener: (() => void) | undefined;
+  let video: HTMLMediaElement | undefined;
   const runtime: MpegtsRuntime = {
     getFeatureList: () => ({ mseLivePlayback }),
     Events: { ERROR: "error", LOADING_COMPLETE: "loading-complete" },
@@ -205,14 +359,18 @@ function runtimeFixture(mseLivePlayback = true): {
           }
         },
         off: (event) => calls.push(`off:${event}`),
-        attachMediaElement: () => calls.push("attach"),
+        attachMediaElement: (element) => { video = element; calls.push("attach"); },
         detachMediaElement: () => calls.push("detach"),
-        load: () => calls.push("load"),
+        load: () => {
+          calls.push("load");
+          if (options.completesOnLoad === true) loadingCompleteListener?.();
+        },
         unload: () => calls.push("unload"),
         play: () => {
           calls.push("play");
+          return options.play?.();
         },
-        pause: () => calls.push("pause"),
+        pause: () => { calls.push("pause"); video?.dispatchEvent(new Event("pause")); },
         destroy: () => calls.push("destroy"),
       };
     },

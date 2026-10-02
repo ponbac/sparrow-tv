@@ -1,5 +1,6 @@
 mod playback;
 mod programmes;
+mod public_access;
 mod refresh;
 mod search_lanes;
 
@@ -200,6 +201,12 @@ impl TestApp {
         )
         .await;
         Self::with_core(core)
+    }
+
+    fn into_public(mut self) -> Self {
+        self.router = crate::public_router(Arc::clone(&self.core), self._app_root.path())
+            .expect("public routing requires no password");
+        self
     }
 
     fn with_core(core: Arc<SparrowCore>) -> Self {

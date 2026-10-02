@@ -16,6 +16,11 @@ const MAX_PASSWORD_BYTES: usize = 1024;
 const MAX_AUTHORIZATION_BYTES: usize = 2048;
 const CHALLENGE: &str = "Basic realm=\"sparrow\", charset=\"UTF-8\"";
 
+pub(crate) enum DeploymentAuth {
+    Public,
+    Basic(DeploymentCredential),
+}
+
 #[derive(Clone)]
 pub(crate) struct DeploymentCredential {
     digest: [u8; 32],

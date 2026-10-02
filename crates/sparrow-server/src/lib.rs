@@ -15,7 +15,9 @@ use sparrow_source_http::{HttpPlaybackAccess, HttpSourceAccess};
 use thiserror::Error;
 
 use crate::{
-    api::AppState, auth::DeploymentCredential, config::HostedConfig,
+    api::AppState,
+    auth::{DeploymentAuth, DeploymentCredential},
+    config::HostedConfig,
     memory_snapshot_store::MemorySnapshotStore,
 };
 
@@ -32,47 +34,63 @@ pub fn router(
 ) -> Result<Router, RouterBuildError> {
     let credential = DeploymentCredential::new(password.as_ref())?;
     let playback = HttpPlaybackAccess::new().map_err(|_| RouterBuildError::PlaybackAdapter)?;
-    Ok(authenticated_router(
+    Ok(hosted_router(
         core,
         playback,
-        credential,
+        DeploymentAuth::Basic(credential),
         app_root.into(),
     ))
 }
 
-fn authenticated_router(
+/// Builds the hosted SPA and API without requiring viewer credentials.
+///
+/// Explicitly choosing this router exposes catalog, playback, events, and manual
+/// refresh to every reachable client. Source Configuration remains readonly.
+pub fn public_router(
+    core: Arc<SparrowCore>,
+    app_root: impl Into<PathBuf>,
+) -> Result<Router, RouterBuildError> {
+    let playback = HttpPlaybackAccess::new().map_err(|_| RouterBuildError::PlaybackAdapter)?;
+    Ok(hosted_router(
+        core,
+        playback,
+        DeploymentAuth::Public,
+        app_root.into(),
+    ))
+}
+
+fn hosted_router(
     core: Arc<SparrowCore>,
     playback: HttpPlaybackAccess,
-    credential: DeploymentCredential,
+    authentication: DeploymentAuth,
     app_root: PathBuf,
 ) -> Router {
-    let protected = Router::new()
+    let interfaces = Router::new()
         .nest("/api/v1", api::router())
-        .nest_service("/app", static_app::service(app_root))
-        .layer(middleware::from_fn_with_state(
+        .nest_service("/app", static_app::service(app_root));
+    let interfaces = match authentication {
+        DeploymentAuth::Public => interfaces,
+        DeploymentAuth::Basic(credential) => interfaces.layer(middleware::from_fn_with_state(
             credential,
             auth::require_authentication,
-        ))
-        .with_state(AppState::new(core, playback));
+        )),
+    }
+    .with_state(AppState::new(core, playback));
 
     Router::new()
         .route("/health", get(health))
         .route("/", get(|| async { Redirect::permanent("/app/") }))
-        .merge(protected)
+        .merge(interfaces)
 }
 
 /// Loads deployment configuration, bootstraps the production adapters, and
 /// serves the hosted composition on `0.0.0.0:33733`.
 pub async fn run() -> Result<(), StartupError> {
-    let config = HostedConfig::load()?;
-    let credential = DeploymentCredential::new(config.password.expose())
-        .map_err(|_| StartupError::Configuration)?;
     let HostedConfig {
-        password,
+        authentication,
         source: configuration,
         app_root,
-    } = config;
-    drop(password);
+    } = HostedConfig::load()?;
     let source = Arc::new(HttpSourceAccess::new().map_err(|_| StartupError::SourceAdapter)?);
     let playback = HttpPlaybackAccess::new().map_err(|_| StartupError::PlaybackAdapter)?;
     let snapshots = Arc::new(MemorySnapshotStore::default());
@@ -82,7 +100,7 @@ pub async fn run() -> Result<(), StartupError> {
             .await
             .map_err(|_| StartupError::Core)?,
     );
-    let app = authenticated_router(core, playback, credential, app_root);
+    let app = hosted_router(core, playback, authentication, app_root);
     let listener = tokio::net::TcpListener::bind(BIND_ADDRESS)
         .await
         .map_err(|_| StartupError::Bind)?;

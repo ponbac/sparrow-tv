@@ -2,6 +2,9 @@ import mpegts from "mpegts.js";
 import type { SameOriginPlaybackEndpoint } from "../../client/contracts";
 import type { NativeLoaderConstructor } from "./native-mpegts-loader";
 
+const PROGRESS_TIMEOUT_MS = 15_000;
+const PROGRESS_CHECK_MS = 1_000;
+
 /** Safe terminal failures emitted by the hosted MPEG-TS adapter. */
 export type HostedPlaybackFailure =
   | "authentication-required"
@@ -25,6 +28,8 @@ export interface HostedPlaybackRequest {
   readonly video: HTMLVideoElement;
   readonly onFailure: (failure: HostedPlaybackFailure) => void;
   readonly onAutoplayBlocked: () => void;
+  /** Reports playback pause intent, never pauses caused by adapter teardown/end. */
+  readonly onPause?: () => void;
 }
 
 /** Narrow engine seam used by the hosted player and deterministic UI tests. */
@@ -96,6 +101,32 @@ export function createMpegtsPlaybackEngine(
 
       let active = true;
       let player: EnginePlayer | null = null;
+      let progressTimer: ReturnType<typeof setInterval> | undefined;
+      const clearProgress = () => {
+        clearInterval(progressTimer);
+        progressTimer = undefined;
+      };
+      const monitorProgress = () => {
+        if (!active || progressTimer !== undefined) return;
+        let lastTime = request.video.currentTime;
+        let lastProgressAt = Date.now();
+        // Watch the picture, not bytes: a connected provider can silently stall.
+        // This also bounds startup if play() never settles or no frame arrives.
+        progressTimer = setInterval(() => {
+          const currentTime = request.video.currentTime;
+          if (currentTime !== lastTime) {
+            lastTime = currentTime;
+            lastProgressAt = Date.now();
+          } else if (Date.now() - lastProgressAt >= PROGRESS_TIMEOUT_MS) {
+            onLoadingComplete();
+          }
+        }, PROGRESS_CHECK_MS);
+      };
+      const onPause = () => {
+        if (!active || request.video.ended) return;
+        clearProgress();
+        request.onPause?.();
+      };
       const onError = (type: unknown, detail: unknown, info: unknown) => {
         if (!active) {
           return;
@@ -116,6 +147,11 @@ export function createMpegtsPlaybackEngine(
           return;
         }
         active = false;
+        clearProgress();
+        request.video.removeEventListener("play", monitorProgress);
+        request.video.removeEventListener("playing", monitorProgress);
+        request.video.removeEventListener("pause", onPause);
+        request.video.removeEventListener("ended", onLoadingComplete);
         const current = player;
         player = null;
         if (current === null) {
@@ -148,10 +184,17 @@ export function createMpegtsPlaybackEngine(
             autoCleanupSourceBuffer: true,
           },
         );
+        request.video.addEventListener("play", monitorProgress);
+        request.video.addEventListener("playing", monitorProgress);
+        request.video.addEventListener("pause", onPause);
+        request.video.addEventListener("ended", onLoadingComplete);
         player.on(runtime.Events.ERROR, onError);
         player.on(runtime.Events.LOADING_COMPLETE, onLoadingComplete);
         player.attachMediaElement(request.video);
         player.load();
+        // load may synchronously report a terminal runtime failure.
+        if (!active) return { stop };
+        monitorProgress();
         const play = player.play();
         if (play !== undefined) {
           void Promise.resolve(play).catch((error: unknown) => {
@@ -159,6 +202,7 @@ export function createMpegtsPlaybackEngine(
               return;
             }
             if (isAutoplayRejection(error)) {
+              clearProgress();
               request.onAutoplayBlocked();
               return;
             }
@@ -193,13 +237,16 @@ function classifyMpegtsFailure(
   }
 
   if (detail === runtime.ErrorDetails.NETWORK_STATUS_CODE_INVALID) {
-    switch (safeStatusCode(info)) {
+    const status = safeStatusCode(info);
+    switch (status) {
       case 401:
         return "authentication-required";
       case 404:
         return "channel-not-found";
       case 424:
         return "source-rejected";
+      case 408:
+        return "source-timeout";
       case 502:
         return "source-invalid";
       case 503:
@@ -207,7 +254,11 @@ function classifyMpegtsFailure(
       case 504:
         return "source-timeout";
       default:
-        return "source-unavailable";
+        // Other client rejections will not improve by reopening the request.
+        // Rate limiting is transient and still uses the bounded retry budget.
+        return status !== null && status >= 400 && status < 500 && status !== 429
+          ? "source-rejected"
+          : "source-unavailable";
     }
   }
   if (detail === runtime.ErrorDetails.NETWORK_TIMEOUT) {

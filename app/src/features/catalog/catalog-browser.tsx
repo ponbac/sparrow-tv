@@ -57,7 +57,11 @@ import { useIdleChrome } from "../stage/use-idle-chrome";
 import { guideRowProgramme, useNowPlaying } from "../stage/use-now-playing";
 import { usePicturePin } from "../stage/use-picture-pin";
 import { useStageKeys } from "../stage/use-stage-keys";
-import { usePictureOverlay, useStageLayout } from "../stage/use-stage-layout";
+import {
+  usePictureOverlay,
+  useStageFullscreenTarget,
+  useStageLayout,
+} from "../stage/use-stage-layout";
 import { useTurnFullscreen } from "../stage/use-turn-fullscreen";
 import { useZapStops } from "../stage/use-zap-stops";
 import {
@@ -156,6 +160,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   );
   const pictureOverlay = usePictureOverlay(runtime, client);
   const layout = useStageLayout(pictureOverlay);
+  const fullscreenTarget = useStageFullscreenTarget(layout);
   // Pocket's row of times. Until the viewer first opens it the guide reads
   // what the timeline shows; from then on one longer read covers every time
   // on offer, so choosing one asks for nothing.
@@ -187,15 +192,17 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   const chrome = useMemo<StageChrome>(
     () => ({
       // Both layouts keep the controls in the info block, clear of the picture.
+      // A fullscreen player section draws its own bar (controlPresentation).
       controlsSlot,
       controls: "compact",
-      // Fullscreen on the document root outlives Stop and a change of Channel.
-      fullscreenTarget: pictureOverlay ? document.documentElement : null,
+      // Only roomy Theater enters root fullscreen, which outlives Stop and a
+      // change of Channel; pocket takes the player section alone.
+      fullscreenTarget,
       // Above pocket's controls is the picture, which nothing may cover.
       menuSide: layout === "theater" ? "top" : "bottom",
       reportPicture,
     }),
-    [controlsSlot, layout, pictureOverlay, reportPicture],
+    [controlsSlot, fullscreenTarget, layout, reportPicture],
   );
   const guideForced = playingChannel === null || picture?.external === true;
   const effectiveMode = guideForced ? "guide" : mode;
