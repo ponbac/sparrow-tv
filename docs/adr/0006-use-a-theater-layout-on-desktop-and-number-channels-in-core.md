@@ -4,7 +4,7 @@ On desktop the picture fills the window and the info, controls and guide are dra
 
 ## Layout
 
-- The layout is Theater when the page may draw over the picture and either the window is at least 1051 px wide and 601 px tall or the document root is fullscreen. Otherwise it is stacked.
+- The layout is Theater when the page may draw over the picture, the window is at least 1051 px wide and 601 px tall, and the shell is visible (no fullscreen element, or the document root is fullscreen). Otherwise it is stacked. Fullscreen alone never makes a phone use Theater.
 - Whether the page may draw over the picture is the `pictureOverlay` capability. It is true for hosted and installed Linux and false on Android, where Media3 draws a native surface above the WebView. The installed app is stacked until its capability read answers.
 - Theater has two modes. In watch mode the picture fills the window; the playing Channel's info, the controls and a rail of nearby Channels lie over its lower edge. That chrome and the top bar hide after three seconds without input while a picture plays in the page, and return on pointer or key input. In guide mode the picture docks top-left, the info sits beside it and the guide fills the rest.
 - Tuning a Channel enters watch mode. Guide mode is forced while nothing plays and while the picture is in the external mpv window.
@@ -15,7 +15,7 @@ On desktop the picture fills the window and the info, controls and guide are dra
 
 ## Fullscreen
 
-This amends the fullscreen bullet of [ADR 0001](0001-shared-native-http-playback.md). Where the page may draw over the picture, the fullscreen element is the document root, not the player. Fullscreen then outlasts the player: it stays across Stop and Channel changes, and entering it from a small window switches that window to the Theater layout. On Android the player remains the fullscreen element, with its controls over the picture as before. The button, double-click and F toggle it in both cases. With external mpv the button still toggles the mpv window.
+This amends the fullscreen bullet of [ADR 0001](0001-shared-native-http-playback.md). In Theater the fullscreen element is the document root, not the player. Root fullscreen outlasts the player: it stays across Stop and Channel changes. In stacked layout, including phones and Android, the player is the fullscreen element, with its controls inside it. Player-only fullscreen stays stacked even if its viewport grows, so controls cannot move outside the fullscreen element. A root-fullscreen viewport that shrinks switches to stacked without restarting playback; its fullscreen button still exits the root. The button, double-click and F toggle fullscreen in both cases. With external mpv the button still toggles the mpv window.
 
 ## Channel Numbers and Quality Variants
 

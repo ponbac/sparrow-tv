@@ -1,21 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChannelId, SparrowClient } from "../../client/contracts";
-import { clientPlaybackFailure } from "./playback-failure";
+import {
+  startHostedPlaybackSession,
+  type HostedPlaybackSessionHandle,
+} from "./hosted-playback-session";
 import {
   mpegtsPlaybackEngine,
   type HostedPlaybackEngine,
-  type HostedPlaybackHandle,
 } from "./mpegts-engine";
-import {
-  isRetryable,
-  retryLabel,
-  type PlayerState,
-} from "./playback-presentation";
+import { retryLabel, type PlayerState } from "./playback-presentation";
 import { PlaybackSurface } from "./playback-surface";
 
+/** Hosted playback inputs; the client only resolves ephemeral playback descriptors. */
 export interface HostedPlayerProps {
   readonly channel: { readonly id: ChannelId; readonly name: string };
-  readonly client: SparrowClient;
+  readonly client: Pick<SparrowClient, "startPlayback">;
   readonly onStop: () => void;
   readonly engine?: HostedPlaybackEngine;
 }
@@ -28,6 +27,11 @@ export function HostedPlayer({
   engine = mpegtsPlaybackEngine,
 }: HostedPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const sessionRef = useRef<{
+    readonly id: ChannelId;
+    readonly attempt: number;
+    readonly handle: HostedPlaybackSessionHandle;
+  } | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [state, setState] = useState<PlayerState>({ _tag: "starting" });
   const [muted, setMuted] = useState(false);
@@ -40,66 +44,17 @@ export function HostedPlayer({
       return;
     }
 
-    const controller = new AbortController();
-    let active = true;
-    let handle: HostedPlaybackHandle | null = null;
-    setState({ _tag: "starting" });
-
-    void client
-      .startPlayback({ id: channel.id, signal: controller.signal })
-      .then((result) => {
-        if (!active) {
-          return;
-        }
-        if (!result.ok) {
-          setState({
-            _tag: "failed",
-            ...clientPlaybackFailure(result.error),
-          });
-          return;
-        }
-        if (result.value._tag !== "same-origin-http") {
-          setState({
-            _tag: "failed",
-            failure: "source-invalid",
-            retryable: false,
-          });
-          return;
-        }
-
-        const started = engine.start({
-          endpoint: result.value.endpoint,
-          video,
-          onAutoplayBlocked: () => {
-            if (active) {
-              setState({ _tag: "autoplay-blocked" });
-            }
-          },
-          onFailure: (failure) => {
-            if (active) {
-              setState({
-                _tag: "failed",
-                failure,
-                retryable: isRetryable(failure),
-              });
-            }
-          },
-        });
-        if (typeof started === "string") {
-          setState({
-            _tag: "failed",
-            failure: started,
-            retryable: isRetryable(started),
-          });
-          return;
-        }
-        handle = started;
-      });
-
+    const session = startHostedPlaybackSession({
+      id: channel.id,
+      client,
+      engine,
+      video,
+      onState: setState,
+    });
+    sessionRef.current = { id: channel.id, attempt, handle: session };
     return () => {
-      active = false;
-      controller.abort();
-      handle?.stop();
+      sessionRef.current = null;
+      session.stop();
     };
   }, [attempt, channel.id, client, engine]);
 
@@ -140,7 +95,7 @@ export function HostedPlayer({
     }
   };
   const recoveryAction =
-    state._tag === "failed" && state.retryable
+    (state._tag === "failed" && state.retryable) || state._tag === "recovering"
       ? {
           label: retryLabel(state.failure),
           onAction: () => setAttempt((current) => current + 1),
@@ -154,7 +109,8 @@ export function HostedPlayer({
       videoKey={`${channel.id}:${attempt}`}
       videoRef={videoRef}
       privacyCopy="Provider details remain behind the Sparrow relay."
-      onPlaying={() => setState({ _tag: "playing" })}
+      // The session owns playing events, including guards against stale media.
+      onPlaying={() => undefined}
       {...(recoveryAction === undefined ? {} : { recoveryAction })}
       volume={volume}
       muted={muted}
@@ -162,14 +118,22 @@ export function HostedPlayer({
       onVolumeChange={setVolume}
       onToggleMuted={() => setMuted((current) => !current)}
       onRequestFullscreen={requestFullscreen}
-      onStop={onStop}
-      onAutoplayFailure={() =>
-        setState({
-          _tag: "failed",
-          failure: "media-unsupported",
-          retryable: false,
-        })
-      }
+      onStop={() => {
+        sessionRef.current?.handle.stop();
+        sessionRef.current = null;
+        setState({ _tag: "stopping" });
+        onStop();
+      }}
+      onBeginBlockedPlayback={() => {
+        const current = sessionRef.current;
+        // Only the matching session may start a gesture; it owns late outcomes.
+        if (
+          current === null ||
+          current.id !== channel.id ||
+          current.attempt !== attempt
+        ) return;
+        current.handle.beginBlockedPlayback();
+      }}
     />
   );
 }

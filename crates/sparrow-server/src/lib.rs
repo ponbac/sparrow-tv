@@ -24,7 +24,8 @@ const BIND_ADDRESS: &str = "0.0.0.0:33733";
 /// Builds the complete hosted router around one shared catalog core.
 ///
 /// `/health` and the root redirect are public. Authentication is applied once
-/// around both same-origin interfaces: `/app` and `/api/v1`.
+/// around both same-origin interfaces: `/app` and `/api/v1`, using the default
+/// username `sparrow`. The deployment entry point also accepts a configured username.
 pub fn router(
     core: Arc<SparrowCore>,
     password: impl AsRef<[u8]>,
@@ -32,21 +33,16 @@ pub fn router(
 ) -> Result<Router, RouterBuildError> {
     let credential = DeploymentCredential::new(password.as_ref())?;
     let playback = HttpPlaybackAccess::new().map_err(|_| RouterBuildError::PlaybackAdapter)?;
-    Ok(authenticated_router(
-        core,
-        playback,
-        credential,
-        app_root.into(),
-    ))
+    Ok(hosted_router(core, playback, credential, app_root.into()))
 }
 
-fn authenticated_router(
+fn hosted_router(
     core: Arc<SparrowCore>,
     playback: HttpPlaybackAccess,
     credential: DeploymentCredential,
     app_root: PathBuf,
 ) -> Router {
-    let protected = Router::new()
+    let interfaces = Router::new()
         .nest("/api/v1", api::router())
         .nest_service("/app", static_app::service(app_root))
         .layer(middleware::from_fn_with_state(
@@ -58,21 +54,17 @@ fn authenticated_router(
     Router::new()
         .route("/health", get(health))
         .route("/", get(|| async { Redirect::permanent("/app/") }))
-        .merge(protected)
+        .merge(interfaces)
 }
 
 /// Loads deployment configuration, bootstraps the production adapters, and
 /// serves the hosted composition on `0.0.0.0:33733`.
 pub async fn run() -> Result<(), StartupError> {
-    let config = HostedConfig::load()?;
-    let credential = DeploymentCredential::new(config.password.expose())
-        .map_err(|_| StartupError::Configuration)?;
     let HostedConfig {
-        password,
+        authentication,
         source: configuration,
         app_root,
-    } = config;
-    drop(password);
+    } = HostedConfig::load()?;
     let source = Arc::new(HttpSourceAccess::new().map_err(|_| StartupError::SourceAdapter)?);
     let playback = HttpPlaybackAccess::new().map_err(|_| StartupError::PlaybackAdapter)?;
     let snapshots = Arc::new(MemorySnapshotStore::default());
@@ -82,7 +74,7 @@ pub async fn run() -> Result<(), StartupError> {
             .await
             .map_err(|_| StartupError::Core)?,
     );
-    let app = authenticated_router(core, playback, credential, app_root);
+    let app = hosted_router(core, playback, authentication, app_root);
     let listener = tokio::net::TcpListener::bind(BIND_ADDRESS)
         .await
         .map_err(|_| StartupError::Bind)?;
@@ -102,6 +94,8 @@ async fn health() -> axum::Json<Health> {
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum RouterBuildError {
+    #[error("the deployment username is invalid")]
+    InvalidUsername,
     #[error("the deployment password is required")]
     MissingPassword,
     #[error("the deployment password exceeds the supported size")]

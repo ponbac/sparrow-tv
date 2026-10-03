@@ -21,6 +21,29 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+it.each(["resolve", "AbortError", "NotAllowedError", "NotSupportedError"] as const)(
+  "preserves default installed gesture playback on %s", async (outcome) => {
+    const props = surfaceProps();
+    let failures = 0;
+    render(<PlaybackSurface {...props} state={{ _tag: "autoplay-blocked" }}
+      onAutoplayFailure={() => { failures += 1; }} />);
+    const video = props.videoRef.current;
+    if (video === null) throw new Error("expected the playback video");
+    let plays = 0;
+    video.play = () => {
+      plays += 1;
+      return outcome === "resolve"
+        ? Promise.resolve()
+        : Promise.reject(new DOMException("fixture playback", outcome));
+    };
+    fireEvent.click(screen.getByRole("button", { name: "Start audio & video" }));
+    // The play call stays inside user activation, not a deferred effect.
+    expect(plays).toBe(1);
+    await act(async () => { await Promise.resolve(); });
+    expect(failures).toBe(outcome === "resolve" ? 0 : 1);
+  },
+);
+
 it("hides fullscreen chrome only during playback and restores it for touch, keyboard, and recovery", () => {
   vi.useFakeTimers();
   const props: PlaybackSurfaceProps = {

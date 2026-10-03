@@ -34,7 +34,21 @@ export interface PlaybackSecondaryAction {
   readonly disabled?: boolean;
 }
 
-export interface PlaybackSurfaceProps {
+/** Shared chrome inputs with either session-owned or default gesture playback. */
+export type PlaybackSurfaceProps = PlaybackSurfaceInputs & (
+  | {
+      /** Runs synchronously in the gesture; the session owns play and its outcomes. */
+      readonly onBeginBlockedPlayback: () => void;
+      readonly onAutoplayFailure?: never;
+    }
+  | {
+      readonly onBeginBlockedPlayback?: never;
+      /** Receives rejection from the surface's default video.play path. */
+      readonly onAutoplayFailure: () => void;
+    }
+);
+
+interface PlaybackSurfaceInputs {
   readonly channel: { readonly id: ChannelId; readonly name: string };
   readonly state: PlayerState;
   readonly videoKey: string;
@@ -70,7 +84,6 @@ export interface PlaybackSurfaceProps {
   readonly showMediaControls?: boolean;
   readonly stopLabel?: string;
   readonly onStop: () => void;
-  readonly onAutoplayFailure: () => void;
 }
 
 /** Accessible playback chrome shared without sharing transport ownership. */
@@ -98,6 +111,7 @@ export function PlaybackSurface({
   showMediaControls = true,
   stopLabel = "Stop stream",
   onStop,
+  onBeginBlockedPlayback,
   onAutoplayFailure,
 }: PlaybackSurfaceProps) {
   const chrome = useStageChrome();
@@ -149,6 +163,10 @@ export function PlaybackSurface({
     if (target !== null) onRequestFullscreen(target);
   };
   const beginBlockedPlayback = () => {
+    if (onBeginBlockedPlayback !== undefined) {
+      onBeginBlockedPlayback();
+      return;
+    }
     const video = videoRef.current;
     if (video !== null) {
       void video.play().catch(onAutoplayFailure);

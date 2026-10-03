@@ -39,7 +39,7 @@ describe("useStageLayout", () => {
     expect(layout.result.current).toBe("stacked");
   });
 
-  it("is Theater in a small window while the document root is fullscreen", () => {
+  it("stays stacked in a small window even when the document root is fullscreen", () => {
     stubViewport(false);
     const layout = renderHook(() => useStageLayout(true));
 
@@ -48,10 +48,35 @@ describe("useStageLayout", () => {
     expect(layout.result.current).toBe("stacked");
 
     act(() => enterFullscreen(document.documentElement));
-    expect(layout.result.current).toBe("theater");
+    expect(layout.result.current).toBe("stacked");
 
     act(() => enterFullscreen(null));
     expect(layout.result.current).toBe("stacked");
+  });
+
+  it("follows the size threshold even while the root stays fullscreen", () => {
+    const viewport = stubViewport(true);
+    enterFullscreen(document.documentElement);
+    const layout = renderHook(() => useStageLayout(true));
+    expect(layout.result.current).toBe("theater");
+
+    act(() => viewport.resize(false));
+    expect(layout.result.current).toBe("stacked");
+
+    act(() => viewport.resize(true));
+    expect(layout.result.current).toBe("theater");
+  });
+
+  it("keeps a fullscreen player's controls inside it when the window grows", () => {
+    const viewport = stubViewport(false);
+    const layout = renderHook(() => useStageLayout(true));
+    act(() => enterFullscreen(document.body));
+
+    act(() => viewport.resize(true));
+    expect(layout.result.current).toBe("stacked");
+
+    act(() => enterFullscreen(null));
+    expect(layout.result.current).toBe("theater");
   });
 });
 
