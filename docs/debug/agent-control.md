@@ -113,8 +113,10 @@ Exit codes: `0` ok, `1` CLI/usage, `2` app error envelope, `3` wait timeout (inc
 | `media.waiting` / `stalledEvents` | Browser buffering. |
 | `media.bufferAheadMs` / `readyState` | Data present vs starved. |
 | `media.presentedFrames` vs `totalVideoFrames` | Decode vs display. |
+| `audio.codec` | Codec of the selected Audio Track; `none` when no track was forwarded. |
+| `audio.output` | What Android's player does with the selected Audio Track. `device-decoder`: the device decodes it, with a decoder of its own or in an output it passes the track to undecoded. `bundled-decoder`: the app's FFmpeg decoder does. `pending`: no decoder has started on it yet. `undecodable` or `absent`: the picture plays in silence, and the player says so. `unreported`: another presentation, or Android before its player's first status. |
 
-A first picture that never moves: no message on the picture (in the stacked layout the state reads "On air"), `phase: "playing"`, rising `standstills`, and `msSinceTimeAdvance` in the seconds. A watchdog restart loop: `phase` flipping through `recovering` and growing `recoveryCount`.
+A first picture that never moves: no message on the picture, `phase: "playing"`, rising `standstills`, and `msSinceTimeAdvance` in the seconds. The pocket layout of a small window words the state beside the Channel's name only while it is not playing or plays without sound, so it shows nothing there either. A watchdog restart loop: `phase` flipping through `recovering` and growing `recoveryCount`.
 
 If `diagnostics` is `null`, nothing is mounted yet — wait after `tune`, or the tune failed. If `media` is `null`, there is no current observable in-app transport; counters from released transports are not reused.
 
@@ -122,7 +124,9 @@ If `diagnostics` is `null`, nothing is mounted yet — wait after `tune`, or the
 
 Video-frame and media-time progress do **not** prove audio output. Check the selected Audio Track, mute and volume controls, then listen or capture Sparrow's own audio output. A recording of the whole desktop can accidentally prove another application's audio instead. Neither an available Audio Track nor `audio.selection` alone proves that samples reached the speakers.
 
-The native transport preserves the selected audio PID, including MPEG-1/2 audio and AC-3. Do not restore video by silently dropping audio packets while leaving a track marked selected. Codec incompatibility must surface as a playback failure or be handled by a tested engine adaptation; **Open in mpv** remains an explicit user choice.
+The native transport preserves the selected audio PID, including MPEG-1/2 audio and AC-3. A DVB programme carries AC-3 as private data named by a descriptor, which the WebView demuxer passes over, so for that reader the rewritten PMT lists the track under the ATSC stream type. The demuxer's AC-3 parser is patched (`app/patches/`) to pass over bytes that only look like a syncframe header: unpatched it loops forever on a reserved frame size code, on the WebView's main thread. A clock that rides an Audio Track that was not selected is kept: its packets pass, and the PMT does not list the track. Do not restore video by silently dropping audio packets while leaving a track marked selected. Codec incompatibility must surface as a playback failure or be handled by a tested engine adaptation; **Open in mpv** remains an explicit user choice.
+
+On Android the adaptation is a software decoder bundled with the app. Media3 uses the device's own decoder where it has one and the bundled FFmpeg decoder otherwise, so AC-3, E-AC-3 and MPEG audio layer II play on devices that ship without them. E-AC-3 is an Audio Track only there: the WebView demuxer does not read it, so elsewhere it is left out and the player reports that no playable track was found. When Media3 has no decoder for the selected track, or finds no audio track at all, the player keeps the picture and says so twice: a "No sound" line with the reason after the controls, and "No sound" beside the Channel's name in the pocket layout, where a short window leaves that line out of view at the end of the control row.
 
 ## Suggested loop for a live Channel
 
@@ -139,7 +143,7 @@ just agent snapshot
 
 If the second snapshot shows new `standstills` or `msSinceTimeAdvance` stuck above a few seconds while `presentedFrames` is unchanged, the picture is frozen. Paste that JSON (not provider URLs) when asking for a player change.
 
-Omarchy `omarchy capture screenshot fullscreen save` can sit beside this as visual proof. It does not replace `snapshot`. In a desktop-size window `tune` leaves the picture filling the window (the Theater layout's watch mode, [ADR 0006](../adr/0006-use-a-theater-layout-on-desktop-and-number-channels-in-core.md)); the Channel info and controls over it hide after three seconds without input, so a later capture shows the picture alone.
+Omarchy `omarchy capture screenshot fullscreen save` can sit beside this as visual proof. It does not replace `snapshot`. In a desktop-size window `tune` leaves the picture filling the window (the Theater layout's watch mode, [ADR 0006](../adr/0006-use-a-theater-layout-on-desktop-and-number-channels-in-core.md)); the Channel info and controls over it hide after three seconds without input, so a later capture shows the picture alone. In a smaller window `tune` leaves the pocket layout's watch mode ([ADR 0007](../adr/0007-use-a-pocket-layout-where-the-picture-cannot-be-covered.md)): the picture with the Channel info and controls under it. Nothing is drawn over the picture there and nothing hides.
 
 ## Privacy
 

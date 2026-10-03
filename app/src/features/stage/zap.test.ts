@@ -5,7 +5,13 @@ import type {
 } from "../../client/contracts";
 import { channelFixture } from "../../test/channel-fixture";
 import { familyKey, type VariantPreferences } from "../guide/guide-families";
-import { neighbouringZapStop, zapRailStops, zapStops } from "./zap";
+import {
+  neighbouringZapStop,
+  zapRailStops,
+  zapSidesToRead,
+  zapStops,
+} from "./zap";
+import type { ZapNeighbourhood } from "./zap-neighbourhood";
 
 const NO_EXCLUSIONS: ReadonlySet<string> = new Set();
 const NO_PREFERENCES: VariantPreferences = new Map();
@@ -19,12 +25,14 @@ describe("zap stops", () => {
     const rows = [news, sd, hd, film];
 
     expect(
-      targets(zapStops(rows, news.channel.id, NO_EXCLUSIONS, NO_PREFERENCES)),
+      targets(
+        zapStops(whole(rows), news.channel.id, NO_EXCLUSIONS, NO_PREFERENCES),
+      ),
     ).toEqual(["news", "svt1-hd", "film"]);
     expect(
       targets(
         zapStops(
-          rows,
+          whole(rows),
           news.channel.id,
           NO_EXCLUSIONS,
           new Map([[familyKey({ group: "Sweden", title: "SVT1" }), "sd"]]),
@@ -38,7 +46,14 @@ describe("zap stops", () => {
     const hd = svt1("hd");
 
     expect(
-      targets(zapStops([sd, hd], sd.channel.id, NO_EXCLUSIONS, NO_PREFERENCES)),
+      targets(
+        zapStops(
+          whole([sd, hd]),
+          sd.channel.id,
+          NO_EXCLUSIONS,
+          NO_PREFERENCES,
+        ),
+      ),
     ).toEqual(["svt1-sd"]);
   });
 
@@ -51,17 +66,17 @@ describe("zap stops", () => {
     const excluded = new Set(["Cinema"]);
 
     expect(
-      targets(zapStops(rows, news.channel.id, excluded, NO_PREFERENCES)),
+      targets(zapStops(whole(rows), news.channel.id, excluded, NO_PREFERENCES)),
     ).toEqual(["news", "sport"]);
     expect(
-      targets(zapStops(rows, film.channel.id, excluded, NO_PREFERENCES)),
+      targets(zapStops(whole(rows), film.channel.id, excluded, NO_PREFERENCES)),
     ).toEqual(["news", "film", "sport"]);
   });
 
   it("offers nothing when the rows do not hold the playing Channel", () => {
     expect(
       zapStops(
-        [channel("news"), channel("film")],
+        whole([channel("news"), channel("film")]),
         channel("sport").channel.id,
         NO_EXCLUSIONS,
         NO_PREFERENCES,
@@ -69,11 +84,77 @@ describe("zap stops", () => {
     ).toEqual([]);
   });
 
+  it("leaves out a row at an end the rows do not reach: it may lack Quality Variants", () => {
+    const news = channel("news");
+    const film = channel("film");
+    // The read stopped between the two variants of each end row.
+    const rows = [svt1("hd"), news, film, tv4("sd")];
+    const stops = (startReached: boolean, endReached: boolean) =>
+      targets(
+        zapStops(
+          { rows, startReached, endReached },
+          news.channel.id,
+          NO_EXCLUSIONS,
+          NO_PREFERENCES,
+        ),
+      );
+
+    expect(stops(false, false)).toEqual(["news", "film"]);
+    expect(stops(true, false)).toEqual(["svt1-hd", "news", "film"]);
+    expect(stops(false, true)).toEqual(["news", "film", "tv4-sd"]);
+    // The playing row stays wherever it is.
+    expect(
+      targets(
+        zapStops(
+          { rows, startReached: false, endReached: false },
+          svt1("hd").channel.id,
+          NO_EXCLUSIONS,
+          NO_PREFERENCES,
+        ),
+      ),
+    ).toEqual(["svt1-hd", "news", "film"]);
+  });
+
+  it("asks for further rows on a side with no stop while the catalog goes on there", () => {
+    const news = channel("news", "News");
+    const film = channel("film", "Cinema");
+    const late = channel("late", "Cinema");
+    const edge = channel("edge", "Sport");
+    const rows = [news, film, late, edge];
+    const sides = (
+      neighbourhood: ZapNeighbourhood,
+      from: GuideWindowChannel,
+      excluded: ReadonlySet<string> = NO_EXCLUSIONS,
+    ) =>
+      zapSidesToRead(
+        zapStops(neighbourhood, news.channel.id, excluded, NO_PREFERENCES),
+        neighbourhood,
+        from.channel.id,
+      );
+    const cut: ZapNeighbourhood = {
+      rows,
+      startReached: true,
+      endReached: false,
+    };
+
+    // A stop lies ahead, and the catalog starts here: nothing to read.
+    expect(sides(cut, news)).toEqual([]);
+    // The last whole row: the next one is the cut end row.
+    expect(sides(cut, late)).toEqual([1]);
+    // Every row ahead is hidden.
+    expect(sides(cut, news, new Set(["Cinema"]))).toEqual([1]);
+    // The catalog ends with these rows.
+    expect(sides(whole(rows), edge)).toEqual([]);
+    expect(sides({ ...cut, startReached: false }, news)).toEqual([-1]);
+    // A Channel that is not among the stops asks for nothing.
+    expect(sides(cut, channel("elsewhere"))).toEqual([]);
+  });
+
   it("steps to the row before or after, and stops at either end", () => {
     const sd = svt1("sd");
     const hd = svt1("hd");
     const stops = zapStops(
-      [channel("news"), sd, hd, channel("film")],
+      whole([channel("news"), sd, hd, channel("film")]),
       sd.channel.id,
       NO_EXCLUSIONS,
       NO_PREFERENCES,
@@ -97,7 +178,7 @@ describe("zap stops", () => {
       channel(`channel-${index}`),
     );
     const stops = zapStops(
-      rows,
+      whole(rows),
       channel("channel-4").channel.id,
       NO_EXCLUSIONS,
       NO_PREFERENCES,
@@ -133,6 +214,23 @@ function svt1(quality: ChannelQuality): GuideWindowChannel {
       variant: { quality, baseName: "SVT1" },
     }),
   );
+}
+
+function tv4(quality: ChannelQuality): GuideWindowChannel {
+  return row(
+    channelFixture({
+      id: `tv4-${quality}`,
+      name: `TV4 ${quality.toUpperCase()}`,
+      group: "Sweden",
+      number: 904,
+      variant: { quality, baseName: "TV4" },
+    }),
+  );
+}
+
+/** Rows that are the whole Channel Catalog. */
+function whole(rows: readonly GuideWindowChannel[]): ZapNeighbourhood {
+  return { rows, startReached: true, endReached: true };
 }
 
 function row(channel: GuideWindowChannel["channel"]): GuideWindowChannel {

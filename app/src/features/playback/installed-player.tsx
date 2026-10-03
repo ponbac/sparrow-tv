@@ -9,8 +9,6 @@ import {
 import { clientSchemas } from "../../client/contracts";
 import type {
   AudioCodec,
-  AudioPreferenceStatus,
-  AudioSelection,
   AudioTrack,
   ChannelId,
   InstalledSparrowClient,
@@ -21,7 +19,10 @@ import {
   type InstalledLifecycleEvents,
 } from "./installed-lifecycle";
 import { createInstalledPlaybackRunner } from "./installed-playback-runner";
-import { installedPlayerState } from "./installed-playback-state";
+import {
+  installedPlayerState,
+  type InstalledPlaybackAudio,
+} from "./installed-playback-state";
 import {
   installedPlaybackEngine,
   type InstalledPlaybackEngine,
@@ -177,12 +178,10 @@ export function InstalledPlayer({
   const canSelectAudio =
     state.audio.tracks.length > 1 &&
     (phase._tag === "playing" || phase._tag === "autoplay-blocked");
-  const audioStatus = installedAudioStatus(
-    state.audio.discovered,
-    state.audio.tracks,
-    state.audio.selection,
-    state.audio.preferenceStatus,
-  );
+  // mpv reads the Playback Source itself: no Audio Tracks are listed for it,
+  // and that says nothing about its sound.
+  const silence = usesMpv ? null : audioSilence(state.audio);
+  const audioStatus = installedAudioStatus(state.audio, silence);
 
   const copyDiagnostics = () => {
     const clipboard = navigator.clipboard;
@@ -287,10 +286,10 @@ export function InstalledPlayer({
                 {audioStatus === null ? null : (
                   <span
                     className="hosted-player__audio-status"
-                    data-fallback={state.audio.selection._tag === "fallback"}
+                    data-warning={audioStatus.warning}
                     role="status"
                   >
-                    {audioStatus}
+                    {audioStatus.text}
                   </span>
                 )}
                 {copyStatus === null ? null : (
@@ -323,6 +322,7 @@ export function InstalledPlayer({
       onRequestFullscreen={(surface) => void runner.requestFullscreen(surface)}
       nativeVideo={state.presentation === "android-media3"}
       external={usesMpv}
+      silent={silence !== null}
       showMediaControls={!transportReleased}
       stopLabel={
         transportReleased
@@ -360,36 +360,69 @@ function audioCodecLabel(codec: AudioCodec): string {
       return "AAC LATM";
     case "ac-3":
       return "AC-3";
+    case "e-ac-3":
+      return "E-AC-3";
   }
 }
 
+/** One line about the sound; a warning when it is not what the viewer chose. */
 function installedAudioStatus(
-  discovered: boolean,
-  tracks: readonly AudioTrack[],
-  selection: AudioSelection,
-  preferenceStatus: AudioPreferenceStatus | null,
-): string | null {
+  audio: InstalledPlaybackAudio,
+  silence: string | null,
+): { readonly text: string; readonly warning: boolean } | null {
+  // A picture playing in silence comes before anything about preferences.
+  if (silence !== null) {
+    return { text: silence, warning: true };
+  }
+  const { selection, preferenceStatus } = audio;
   if (selection._tag === "fallback") {
-    return selection.missing === "saved-preference"
-      ? "Saved audio is unavailable. Using the first compatible track."
-      : "Chosen audio is unavailable. Using the first compatible track.";
+    return {
+      text:
+        selection.missing === "saved-preference"
+          ? "Saved audio is unavailable. Using the first compatible track."
+          : "Chosen audio is unavailable. Using the first compatible track.",
+      warning: true,
+    };
   }
   if (preferenceStatus === "not-saved") {
-    return "Audio changed, but the preference could not be saved.";
+    return {
+      text: "Audio changed, but the preference could not be saved.",
+      warning: false,
+    };
   }
   if (preferenceStatus === "saved") {
-    return "Audio preference saved for this channel.";
+    return { text: "Audio preference saved for this channel.", warning: false };
   }
   if (preferenceStatus === "unchanged") {
-    return "Saved audio preference is unchanged.";
+    return { text: "Saved audio preference is unchanged.", warning: false };
   }
   if (
     selection._tag === "selected" &&
     selection.reason === "saved-preference"
   ) {
-    return "Saved audio preference applied.";
+    return { text: "Saved audio preference applied.", warning: false };
   }
-  return discovered && tracks.length === 0
-    ? "No compatible audio track was found."
-    : null;
+  return null;
+}
+
+/** Says why there is no sound, or null while there is or may yet be some. */
+function audioSilence(audio: InstalledPlaybackAudio): string | null {
+  if (audio.discovered && audio.tracks.length === 0) {
+    return "No sound: no playable audio track found.";
+  }
+  switch (audio.output) {
+    case "undecodable": {
+      const codec = audio.tracks.find((track) => track.selected)?.codec;
+      return codec === undefined
+        ? "No sound: this device cannot play the audio."
+        : `No sound: this device cannot play ${audioCodecLabel(codec)}.`;
+    }
+    case "absent":
+      return "No sound: the player found no audio track.";
+    case "pending":
+    case "device-decoder":
+    case "bundled-decoder":
+    case null:
+      return null;
+  }
 }

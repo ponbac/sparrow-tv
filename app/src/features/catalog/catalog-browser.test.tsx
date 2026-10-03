@@ -684,21 +684,24 @@ describe("CatalogBrowser shell", () => {
     expect(client.searchInputs).toHaveLength(2);
   });
 
-  it("builds rows and Programme cells from one bounded guide-window read", async () => {
+  it("builds now-and-next rows from one bounded guide-window read", async () => {
     const client = new FakeSparrowClient();
 
     renderHostedBrowser(client);
 
     const guide = await screen.findByLabelText("Programme guide");
+    const worldNews = within(guide).getByRole("button", {
+      name: "Tune World News",
+    });
+    expect(worldNews).toBeVisible();
+    // What is on, then what follows with its start time.
+    expect(worldNews).toHaveTextContent(
+      /^World NewsLive Bulletin\d\d:\d\d Future Bulletin\d+ min left$/u,
+    );
+    // The list has no Programme cells: the timeline is Theater's.
     expect(
-      within(guide).getByRole("button", { name: "Tune World News" }),
-    ).toBeVisible();
-    expect(
-      within(guide).getByRole("button", { name: /Live Bulletin,/ }),
-    ).toBeVisible();
-    expect(
-      within(guide).getByRole("button", { name: /Future Bulletin,/ }),
-    ).toBeVisible();
+      within(guide).queryByRole("button", { name: /Bulletin,/ }),
+    ).not.toBeInTheDocument();
 
     const input = requireFirst(
       client.guideInputs,
@@ -847,7 +850,8 @@ describe("CatalogBrowser shell", () => {
     ).toBeVisible();
   });
 
-  it("choosing a future cell tunes the Channel and the stage shows the live Programme", async () => {
+  it("choosing a future cell of the timeline tunes the Channel and the stage shows the live Programme", async () => {
+    stubViewport(true);
     const client = new FakeSparrowClient();
     const user = userEvent.setup();
     renderHostedBrowser(client);
@@ -874,7 +878,7 @@ describe("CatalogBrowser shell", () => {
     await screen.findByRole("button", { name: "Tune Cinema One" });
     const heading = screen.getByRole("heading", { level: 1 });
     expect(heading).toHaveTextContent("Pick a channel");
-    expect(screen.getByText("Choose a programme below.")).toBeVisible();
+    expect(screen.getByText("Choose a channel below.")).toBeVisible();
     expect(screen.getByText("Nothing playing")).toBeVisible();
     expect(client.playbackInputs).toHaveLength(0);
 
@@ -1117,7 +1121,7 @@ describe("CatalogBrowser shell", () => {
     ).toEqual([
       {
         around: WORLD_NEWS.id,
-        channelLimit: 9,
+        channelLimit: 21,
         startsAt: board.startsAt,
         endsAt: board.endsAt,
       },
@@ -1709,18 +1713,17 @@ describe("CatalogBrowser Theater layout", () => {
     );
     const shell = requireShell();
     const video = await screen.findByLabelText("World News live video");
-    const player = screen.getByRole("region", { name: "World News" });
-    expect(shell).toHaveAttribute("data-layout", "stacked");
-    expect(player).toContainElement(
-      screen.getByRole("group", { name: "Playback controls" }),
-    );
-    expect(
-      screen.getByRole("group", { name: "Playback controls" }),
-    ).toHaveAttribute("data-variant", "bar");
+    const controls = screen.getByRole("group", { name: "Playback controls" });
+    expect(shell).toHaveAttribute("data-layout", "pocket");
+    await waitFor(() => expect(requireControlsSlot()).toContainElement(controls));
+    expect(controls).toHaveAttribute("data-variant", "compact");
     expect(screen.getByLabelText("Programme guide")).toContainElement(
       screen.getByRole("combobox", { name: "Search channels and programmes" }),
     );
-    expect(screen.queryByRole("button", { name: "Guide" })).not.toBeInTheDocument();
+    // Pocket's way to the guide is in its channel bar, not the masthead.
+    expect(requireMasthead()).not.toContainElement(
+      screen.getByRole("button", { name: "Guide" }),
+    );
 
     act(() => viewport.resize(true));
 
@@ -1728,15 +1731,20 @@ describe("CatalogBrowser Theater layout", () => {
     expect(shell).toHaveAttribute("data-mode", "watch");
     expect(screen.getByLabelText("World News live video")).toBe(video);
     expect(client.playbackInputs).toHaveLength(1);
-    expect(requireControlsSlot()).toContainElement(
-      screen.getByRole("group", { name: "Playback controls" }),
+    // Both layouts keep the controls in the info block: they never remount.
+    expect(screen.getByRole("group", { name: "Playback controls" })).toBe(
+      controls,
     );
+    expect(requireControlsSlot()).toContainElement(controls);
     expect(requireMasthead()).toContainElement(
       screen.getByRole("combobox", { name: "Search channels and programmes" }),
     );
+    expect(requireMasthead()).toContainElement(
+      screen.getByRole("button", { name: "Guide" }),
+    );
   });
 
-  it("stays stacked on a device whose picture may not be covered", async () => {
+  it("stays pocket where the picture may not be covered: controls under it, and inside the player while that is fullscreen", async () => {
     stubViewport(true);
     const client = new FakeSparrowClient({ pictureOverlay: false });
     const user = userEvent.setup();
@@ -1747,21 +1755,61 @@ describe("CatalogBrowser Theater layout", () => {
     );
 
     // By the time the player shows its controls the device has answered.
-    const controls = await screen.findByRole("group", {
-      name: "Playback controls",
-    });
+    const video = await screen.findByLabelText("World News live video");
     const player = screen.getByRole("region", { name: "World News" });
-    expect(requireShell()).toHaveAttribute("data-layout", "stacked");
-    expect(controls).toHaveAttribute("data-variant", "bar");
-    expect(player).toContainElement(controls);
+    const controls = () =>
+      screen.getByRole("group", { name: "Playback controls" });
+    expect(requireShell()).toHaveAttribute("data-layout", "pocket");
+    // Under the picture, clear of it: icon controls in the info block, with
+    // a More menu that opens away from the picture.
+    await waitFor(() =>
+      expect(requireControlsSlot()).toContainElement(controls()),
+    );
+    expect(controls()).toHaveAttribute("data-variant", "compact");
+    expect(
+      screen.queryByRole("button", { name: "Copy diagnostics" }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "More" }));
+    expect(await screen.findByRole("menu")).toHaveAttribute(
+      "data-side",
+      "bottom",
+    );
+    expect(
+      screen.getAllByRole("menuitem").map((item) => item.textContent),
+    ).toEqual(["Restart", "Copy diagnostics"]);
+    await user.keyboard("{Escape}");
 
-    // Full screen takes the player alone, with its controls inside it.
+    // Full screen takes the player alone, so its controls move inside it as
+    // the bar, with the More menu's actions as plain buttons.
     const root = stubRequestFullscreen(document.documentElement);
-    const section = stubRequestFullscreen(player);
+    const section = stubRequestFullscreen(player, { enters: true });
     try {
       await user.click(screen.getByRole("button", { name: "Full screen" }));
       await waitFor(() => expect(section.request).toHaveBeenCalledTimes(1));
       expect(root.request).not.toHaveBeenCalled();
+      await waitFor(() =>
+        expect(controls()).toHaveAttribute("data-variant", "bar"),
+      );
+      expect(player).toContainElement(controls());
+      expect(requireControlsSlot()).toBeEmptyDOMElement();
+      expect(
+        within(controls()).getByRole("button", { name: "Restart" }),
+      ).toBeInTheDocument();
+      expect(
+        within(controls()).getByRole("button", { name: "Copy diagnostics" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "More" }),
+      ).not.toBeInTheDocument();
+      expect(requireShell()).toHaveAttribute("data-layout", "pocket");
+      expect(screen.getByLabelText("World News live video")).toBe(video);
+
+      act(() => section.exit());
+
+      expect(controls()).toHaveAttribute("data-variant", "compact");
+      expect(requireControlsSlot()).toContainElement(controls());
+      expect(screen.getByLabelText("World News live video")).toBe(video);
+      expect(client.installedSessionCount).toBe(1);
     } finally {
       root.restore();
       section.restore();
@@ -1887,7 +1935,7 @@ describe("CatalogBrowser Theater layout", () => {
     ).toHaveTextContent("Cinema One");
   });
 
-  it("has no nearby Channels and no key hints in the stacked layout", async () => {
+  it("has no row of nearby Channels and no stage keys in the pocket layout", async () => {
     const user = userEvent.setup();
     renderHostedBrowser(new FakeSparrowClient());
     await user.click(
@@ -1900,6 +1948,8 @@ describe("CatalogBrowser Theater layout", () => {
       ),
     );
 
+    // Pocket changes Channel from its bar, which is not that landmark.
+    expect(screen.getByRole("group", { name: "Channels" })).toBeInTheDocument();
     expect(
       screen.queryByRole("navigation", { name: "Nearby channels" }),
     ).not.toBeInTheDocument();
@@ -2100,6 +2150,652 @@ describe("CatalogBrowser Theater layout", () => {
   });
 });
 
+describe("CatalogBrowser pocket layout", () => {
+  it("has no picture until a Channel is tuned, docks it for the guide, and returns by the band, the picture or a tune", async () => {
+    const client = new FakeSparrowClient();
+    const user = userEvent.setup();
+    renderHostedBrowser(client);
+
+    await screen.findByRole("button", { name: "Tune World News" });
+    const shell = requireShell();
+    expect(shell).toHaveAttribute("data-layout", "pocket");
+    expect(shell).toHaveAttribute("data-mode", "guide");
+    expect(shell).toHaveAttribute("data-playing", "false");
+    expect(shell).toHaveAttribute("data-external", "false");
+    expect(
+      screen.queryByRole("group", { name: "Channels" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Tune World News" }));
+
+    expect(shell).toHaveAttribute("data-mode", "watch");
+    expect(shell).toHaveAttribute("data-playing", "true");
+    expect(shell).toHaveAttribute("data-dock", "false");
+    const video = await screen.findByLabelText("World News live video");
+    // Watch mode hides the guide with CSS alone: the acceptance scripts still
+    // find its search field, its groups and every Channel button.
+    const guide = screen.getByLabelText("Programme guide");
+    expect(guide).not.toHaveAttribute("hidden");
+    expect(guide).toContainElement(
+      screen.getByRole("combobox", { name: "Search channels and programmes" }),
+    );
+    expect(guide.querySelectorAll("[data-acceptance-group]")).not.toHaveLength(0);
+    expect(acceptanceChannels()).toEqual([
+      ["Tune World News", "true"],
+      ["Tune Cinema One", "false"],
+    ]);
+
+    const bar = within(screen.getByRole("group", { name: "Channels" }));
+    await user.click(bar.getByRole("button", { name: "Guide" }));
+    expect(shell).toHaveAttribute("data-mode", "guide");
+    expect(shell).toHaveAttribute("data-dock", "true");
+    // Guide mode hides the controls the same way.
+    expect(requireControlsSlot()).toContainElement(
+      screen.getByRole("group", { name: "Playback controls" }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Back to the picture" }));
+    expect(shell).toHaveAttribute("data-mode", "watch");
+    expect(shell).toHaveAttribute("data-dock", "false");
+
+    await user.click(bar.getByRole("button", { name: "Guide" }));
+    await user.click(video);
+    expect(shell).toHaveAttribute("data-mode", "watch");
+    expect(shell).toHaveAttribute("data-dock", "false");
+    // Docking is the shell's own business: the player never noticed.
+    expect(screen.getByLabelText("World News live video")).toBe(video);
+    expect(client.playbackInputs).toHaveLength(1);
+
+    await user.click(bar.getByRole("button", { name: "Guide" }));
+    await user.click(screen.getByRole("button", { name: "Tune Cinema One" }));
+    expect(shell).toHaveAttribute("data-mode", "watch");
+    expect(shell).toHaveAttribute("data-dock", "false");
+    expect(
+      await screen.findByLabelText("Cinema One live video"),
+    ).toBeInTheDocument();
+  });
+
+  it("opens the guide from the masthead's search button, ready to type in", async () => {
+    const user = userEvent.setup();
+    renderHostedBrowser(new FakeSparrowClient());
+    await user.click(
+      await screen.findByRole("button", { name: "Tune World News" }),
+    );
+    await screen.findByLabelText("World News live video");
+    // Tuning rests focus on the picture a frame later.
+    await waitFor(() => expect(requireMonitor()).toHaveFocus());
+
+    await user.click(
+      within(requireMasthead()).getByRole("button", { name: "Search" }),
+    );
+
+    expect(requireShell()).toHaveAttribute("data-mode", "guide");
+    await waitFor(() =>
+      expect(
+        screen.getByRole("combobox", { name: "Search channels and programmes" }),
+      ).toHaveFocus(),
+    );
+  });
+
+  it("takes a watched picture fullscreen when the phone is turned on its side", async () => {
+    const client = new FakeSparrowClient({ pictureOverlay: false });
+    const user = userEvent.setup();
+    const orientation = Object.assign(new EventTarget(), {
+      type: "portrait-primary",
+    });
+    Object.defineProperty(window.screen, "orientation", {
+      configurable: true,
+      value: orientation,
+    });
+    const turn = (type: OrientationType) => {
+      orientation.type = type;
+      act(() => {
+        orientation.dispatchEvent(new Event("change"));
+      });
+    };
+    // A phone: a small window, held in the hand.
+    vi.stubGlobal("matchMedia", (media: string) => ({
+      matches: media === "(pointer: coarse)",
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    }));
+    renderInstalledBrowser(client);
+    await user.click(
+      await screen.findByRole("button", { name: "Tune World News" }),
+    );
+    const video = await screen.findByLabelText("World News live video");
+    const bar = within(await screen.findByRole("group", { name: "Channels" }));
+    await screen.findByRole("button", { name: "Pause" });
+    const player = video.closest<HTMLElement>(".hosted-player");
+    if (player === null) {
+      throw new Error("expected the player section");
+    }
+    const section = stubRequestFullscreen(player, { enters: true });
+    const exit = vi.fn(async () => section.exit());
+    Object.defineProperty(document, "exitFullscreen", {
+      configurable: true,
+      value: exit,
+    });
+    try {
+      // Browsing the guide, a turn only turns the layout.
+      await user.click(bar.getByRole("button", { name: "Guide" }));
+      turn("landscape-primary");
+      expect(section.request).not.toHaveBeenCalled();
+      turn("portrait-primary");
+
+      // Watching, it takes the picture fullscreen, and upright ends that.
+      await user.click(screen.getByRole("button", { name: "Back to the picture" }));
+      expect(requireShell()).toHaveAttribute("data-mode", "watch");
+      turn("landscape-primary");
+      expect(section.request).toHaveBeenCalledTimes(1);
+      // The player hears of the fullscreen it asked for before the next turn.
+      await act(async () => {});
+      turn("portrait-primary");
+      expect(exit).toHaveBeenCalledTimes(1);
+
+      // A paused picture stays where it is.
+      await user.click(screen.getByRole("button", { name: "Pause" }));
+      await screen.findByRole("button", { name: "Resume" });
+      turn("landscape-primary");
+      expect(section.request).toHaveBeenCalledTimes(1);
+    } finally {
+      section.restore();
+      vi.unstubAllGlobals();
+      Reflect.deleteProperty(document, "exitFullscreen");
+      Reflect.deleteProperty(window.screen, "orientation");
+    }
+  });
+
+  it("keeps the picture's box while native video cannot follow it", async () => {
+    const client = new FakeSparrowClient({ pictureOverlay: false });
+    const user = userEvent.setup();
+    renderInstalledBrowser(client);
+    await user.click(
+      await screen.findByRole("button", { name: "Tune World News" }),
+    );
+    const shell = requireShell();
+    const video = await screen.findByLabelText("World News live video");
+    const stage = within(requireStage(screen.getByRole("heading", { level: 1 })));
+    const bar = within(await screen.findByRole("group", { name: "Channels" }));
+    await screen.findByRole("button", { name: "Pause" });
+    expect(shell).toHaveAttribute("data-dock", "false");
+
+    // Paused, the native picture stays where it is: opening the guide must
+    // leave its box full width.
+    await user.click(screen.getByRole("button", { name: "Pause" }));
+    await screen.findByRole("button", { name: "Resume" });
+    expect(stage.getByText("Paused", { selector: ".now-playing__state" })).toBeInTheDocument();
+    await user.click(bar.getByRole("button", { name: "Guide" }));
+    expect(shell).toHaveAttribute("data-mode", "guide");
+    expect(shell).toHaveAttribute("data-dock", "false");
+
+    // Live again, the picture follows its box into the band. Resume is a
+    // control of the info block: pressing it is not a tap on the picture.
+    await user.click(screen.getByRole("button", { name: "Resume" }));
+    await screen.findByRole("button", { name: "Pause" });
+    expect(shell).toHaveAttribute("data-mode", "guide");
+    expect(shell).toHaveAttribute("data-dock", "true");
+    // The fixture's transport carries no Audio Track, which is all the state
+    // line has left to say of a live picture.
+    expect(
+      stage.queryByText("Paused", { selector: ".now-playing__state" }),
+    ).not.toBeInTheDocument();
+    expect(
+      stage.getByText("No sound", { selector: ".now-playing__state" }),
+    ).toHaveAttribute("data-state", "silent");
+
+    // And the other way: paused in the band, it stays band-sized in watch mode.
+    await user.click(screen.getByRole("button", { name: "Pause" }));
+    await screen.findByRole("button", { name: "Resume" });
+    await user.click(screen.getByRole("button", { name: "Back to the picture" }));
+    expect(shell).toHaveAttribute("data-mode", "watch");
+    expect(shell).toHaveAttribute("data-dock", "true");
+    await user.click(screen.getByRole("button", { name: "Resume" }));
+    await screen.findByRole("button", { name: "Pause" });
+    expect(shell).toHaveAttribute("data-dock", "false");
+
+    expect(screen.getByLabelText("World News live video")).toBe(video);
+    expect(client.installedSessionCount).toBe(1);
+  });
+
+  it("holds the picture's box at its size while native video cannot follow it, and lets go when it can", async () => {
+    const client = new FakeSparrowClient({ pictureOverlay: false });
+    const user = userEvent.setup();
+    renderInstalledBrowser(client);
+    await user.click(
+      await screen.findByRole("button", { name: "Tune World News" }),
+    );
+    const shell = requireShell();
+    const video = await screen.findByLabelText("World News live video");
+    const bar = within(await screen.findByRole("group", { name: "Channels" }));
+    await screen.findByRole("button", { name: "Pause" });
+    layOutMonitor(360, 202.5);
+    // Live, the picture follows its box: nothing is held.
+    expect(pinnedPictureSize()).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Pause" }));
+    await screen.findByRole("button", { name: "Resume" });
+    expect(pinnedPictureSize()).toEqual({ width: "360px", height: "202.5px" });
+
+    // The soft keyboard opens over the guide: the window is lower, and the
+    // page would lay the box out lower with it. The size taken when the
+    // picture stopped following is the one that is kept.
+    layOutMonitor(360, 156);
+    await user.click(bar.getByRole("button", { name: "Guide" }));
+    expect(shell).toHaveAttribute("data-dock", "false");
+    expect(pinnedPictureSize()).toEqual({ width: "360px", height: "202.5px" });
+
+    // Live again, the box is the layout's to size.
+    await user.click(screen.getByRole("button", { name: "Resume" }));
+    await screen.findByRole("button", { name: "Pause" });
+    expect(shell).toHaveAttribute("data-dock", "true");
+    expect(pinnedPictureSize()).toBeNull();
+
+    // Paused in the band, the band's size is held, until the player goes.
+    layOutMonitor(150, 84);
+    await user.click(screen.getByRole("button", { name: "Pause" }));
+    await screen.findByRole("button", { name: "Resume" });
+    expect(pinnedPictureSize()).toEqual({ width: "150px", height: "84px" });
+    expect(screen.getByLabelText("World News live video")).toBe(video);
+    await user.click(screen.getByRole("button", { name: "Stop stream" }));
+    await waitFor(() => expect(shell).toHaveAttribute("data-playing", "false"));
+    await waitFor(() => expect(pinnedPictureSize()).toBeNull());
+  });
+
+  it("docks the picture at once where the page draws it, whatever its state", async () => {
+    const user = userEvent.setup();
+    renderInstalledBrowser(new FakeSparrowClient());
+    await user.click(
+      await screen.findByRole("button", { name: "Tune World News" }),
+    );
+    await screen.findByRole("button", { name: "Pause" });
+    layOutMonitor(360, 202.5);
+    await user.click(screen.getByRole("button", { name: "Pause" }));
+    await screen.findByRole("button", { name: "Resume" });
+    // The page moves the picture with its box: there is nothing to hold.
+    expect(pinnedPictureSize()).toBeNull();
+
+    await user.click(
+      within(screen.getByRole("group", { name: "Channels" })).getByRole(
+        "button",
+        { name: "Guide" },
+      ),
+    );
+
+    expect(requireShell()).toHaveAttribute("data-layout", "pocket");
+    expect(requireShell()).toHaveAttribute("data-dock", "true");
+  });
+
+  it("holds the guide open and marks the shell while mpv has the picture", async () => {
+    const user = userEvent.setup();
+    renderInstalledBrowser(
+      new FakeSparrowClient({ transport: { _tag: "linux-mpv" } }),
+    );
+    await user.click(
+      await screen.findByRole("button", { name: "Tune World News" }),
+    );
+
+    expect(await screen.findByText("Playing in mpv")).toBeVisible();
+    const shell = requireShell();
+    expect(shell).toHaveAttribute("data-layout", "pocket");
+    expect(shell).toHaveAttribute("data-external", "true");
+    expect(shell).toHaveAttribute("data-mode", "guide");
+    expect(shell).toHaveAttribute("data-dock", "true");
+
+    // There is no picture in the page to return to.
+    await user.click(screen.getByRole("button", { name: "Back to the picture" }));
+    expect(shell).toHaveAttribute("data-mode", "guide");
+  });
+
+  it("names the Channel on either side in its bar, shows the next one at once and tunes it after the commit delay", async () => {
+    const client = new FakeSparrowClient();
+    const user = userEvent.setup();
+    renderHostedBrowser(client);
+    await user.click(
+      await screen.findByRole("button", { name: "Tune World News" }),
+    );
+    await screen.findByLabelText("World News live video");
+    const shell = requireShell();
+    const heading = screen.getByRole("heading", { level: 1 });
+    const bar = within(screen.getByRole("group", { name: "Channels" }));
+    const next = await bar.findByRole("button", {
+      name: `Next channel, ${CINEMA_ONE.number} Cinema One`,
+    });
+    expect(next).toHaveTextContent("Feature Presentation");
+    expect(bar.getByRole("button", { name: "Previous channel" })).toBeDisabled();
+    // The Linux probe tunes the first button named "Tune …": none is here.
+    expect(
+      bar.getAllByRole("button").map((button) => button.getAttribute("aria-label")),
+    ).not.toContainEqual(expect.stringMatching(/^Tune /u));
+
+    await user.click(next);
+
+    // The info block and the bar move at once; the player has not yet.
+    expect(heading).toHaveTextContent("Feature Presentation");
+    expect(
+      bar.getByRole("button", {
+        name: `Previous channel, ${WORLD_NEWS.number} World News`,
+      }),
+    ).toHaveTextContent("Live Bulletin");
+    expect(bar.getByRole("button", { name: "Next channel" })).toBeDisabled();
+    expect(screen.getByLabelText("World News live video")).toBeInTheDocument();
+    expect(client.playbackInputs).toHaveLength(1);
+
+    expect(
+      await screen.findByLabelText("Cinema One live video"),
+    ).toBeInTheDocument();
+    expect(client.playbackInputs.map(({ id }) => id)).toEqual([
+      WORLD_NEWS.id,
+      CINEMA_ONE.id,
+    ]);
+    expect(shell).toHaveAttribute("data-mode", "watch");
+  });
+
+  it("moves focus with the mode, and leaves it on the bar's button through a zap", async () => {
+    const surf = surfChannels(5);
+    const [, , third, fourth, fifth] = surf;
+    const user = userEvent.setup();
+    renderHostedBrowser(new FakeSparrowClient({ guide: catalogGuide(surf) }));
+    await user.click(
+      await screen.findByRole("button", { name: `Tune ${third.name}` }),
+    );
+    await screen.findByLabelText(`${third.name} live video`);
+    await waitFor(() => expect(requireMonitor()).toHaveFocus());
+    const shell = requireShell();
+    const bar = within(screen.getByRole("group", { name: "Channels" }));
+
+    // The bar leaves with the watch screen: focus goes to the way back.
+    bar.getByRole("button", { name: "Guide" }).focus();
+    await user.keyboard("{Enter}");
+    expect(shell).toHaveAttribute("data-mode", "guide");
+    const back = screen.getByRole("button", { name: "Back to the picture" });
+    await waitFor(() => expect(back).toHaveFocus());
+
+    // And that button leaves with the guide: focus goes to the picture.
+    await user.keyboard("{Enter}");
+    expect(shell).toHaveAttribute("data-mode", "watch");
+    expect(requireMonitor()).toHaveFocus();
+
+    // A zap from the bar tunes without taking focus off its button.
+    const next = await bar.findByRole("button", {
+      name: `Next channel, ${fourth.number} ${fourth.name}`,
+    });
+    next.focus();
+    await user.keyboard("{Enter}");
+    await screen.findByLabelText(`${fourth.name} live video`);
+    await nextFrame();
+    expect(next).toHaveFocus();
+    expect(next).toHaveAccessibleName(
+      `Next channel, ${fifth.number} ${fifth.name}`,
+    );
+  });
+
+  it("zaps on past the rows first read around the Channel, and past a hidden Channel Group", async () => {
+    // Twelve Channels to watch, twenty-four of a hidden group, four more.
+    const surf = surfChannels(40, (index) =>
+      index >= 12 && index < 36 ? "Hidden" : "Open",
+    );
+    const playing = surf[11];
+    const beyond = surf[36];
+    localStorage.setItem(
+      BOARD_GROUP_EXCLUSIONS_STORAGE_KEY,
+      JSON.stringify({ excluded: ["Hidden"] }),
+    );
+    const client = new FakeSparrowClient({ guide: catalogGuide(surf) });
+    const user = userEvent.setup();
+    renderHostedBrowser(client);
+    await user.click(
+      await screen.findByRole("button", { name: `Tune ${playing.name}` }),
+    );
+    const bar = within(await screen.findByRole("group", { name: "Channels" }));
+
+    // The ten rows read after the Channel are all hidden. The bar does not
+    // end there: it reads on until it finds a Channel to offer.
+    const next = await bar.findByRole("button", {
+      name: `Next channel, ${beyond.number} ${beyond.name}`,
+    });
+    expect(
+      neighbourhoodInputs(client).map(({ around, channelLimit }) => ({
+        around,
+        channelLimit,
+      })),
+    ).toEqual([
+      { around: playing.id, channelLimit: 21 },
+      { around: surf[21].id, channelLimit: 100 },
+    ]);
+
+    await user.click(next);
+    expect(
+      await screen.findByLabelText(`${beyond.name} live video`),
+    ).toBeInTheDocument();
+    // And back across the hidden group.
+    expect(
+      await bar.findByRole("button", {
+        name: `Previous channel, ${playing.number} ${playing.name}`,
+      }),
+    ).toBeEnabled();
+  });
+
+  it("keeps the pages the viewer has loaded when the guide window changes", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 1, 20, 10));
+    // Forty-five Channels: a full first page and five more.
+    const surf = surfChannels(45);
+    const last = surf[44];
+    const client = new FakeSparrowClient({ guide: catalogGuide(surf) });
+    renderHostedBrowser(client);
+    await settleRequests();
+    const guide = within(screen.getByLabelText("Programme guide"));
+    fireEvent.click(guide.getByRole("button", { name: "More channels" }));
+    await settleRequests();
+    expect(
+      guide.getByRole("button", { name: `Tune ${last.name}` }),
+    ).toBeInTheDocument();
+    expect(guideWindowHours(client)).toEqual([3, 3]);
+
+    // Opening the times asks for a longer window. Both pages are read for it
+    // before the rows change, so the second page never leaves the list.
+    fireEvent.click(guide.getByRole("button", { name: "Now", expanded: false }));
+    expect(
+      guide.getByRole("button", { name: `Tune ${last.name}` }),
+    ).toBeInTheDocument();
+    await settleRequests();
+
+    expect(guideWindowHours(client)).toEqual([3, 3, 8, 8]);
+    expect(
+      guide.getByRole("button", { name: `Tune ${last.name}` }),
+    ).toBeInTheDocument();
+    expect(
+      guide.queryByRole("button", { name: "More channels" }),
+    ).not.toBeInTheDocument();
+    expect(acceptanceChannels()).toHaveLength(45);
+  });
+
+  it("reads the pages a cached guide window lacks before returning to it", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 1, 20, 10));
+    const viewport = stubViewport(false);
+    const surf = surfChannels(45);
+    const last = surf[44];
+    const client = new FakeSparrowClient({ guide: catalogGuide(surf) });
+    renderHostedBrowser(client);
+    await settleRequests();
+    const guide = within(screen.getByLabelText("Programme guide"));
+    // The times are opened first and more Channels loaded after: the usual
+    // window stays in the cache with its first page alone.
+    fireEvent.click(guide.getByRole("button", { name: "Now", expanded: false }));
+    await settleRequests();
+    fireEvent.click(guide.getByRole("button", { name: "More channels" }));
+    await settleRequests();
+    expect(guideWindowHours(client)).toEqual([3, 8, 8]);
+    expect(acceptanceChannels()).toHaveLength(45);
+
+    // Theater reads the usual window. What the cache holds of it is a page
+    // short, so the second page is read before the rows change.
+    act(() => viewport.resize(true));
+    expect(requireShell()).toHaveAttribute("data-layout", "theater");
+    expect(
+      guide.getByRole("button", { name: `Tune ${last.name}` }),
+    ).toBeInTheDocument();
+    await settleRequests();
+
+    expect(guideWindowHours(client)).toEqual([3, 8, 8, 3]);
+    expect(
+      guide.getByRole("button", { name: `Tune ${last.name}` }),
+    ).toBeInTheDocument();
+    expect(acceptanceChannels()).toHaveLength(45);
+
+    // And back: both windows now hold both pages, and nothing is asked for.
+    act(() => viewport.resize(false));
+    await settleRequests();
+    expect(guideWindowHours(client)).toEqual([3, 8, 8, 3]);
+    expect(acceptanceChannels()).toHaveLength(45);
+  });
+
+  it("reads a longer guide window once the times are opened, and shows a chosen time without another read", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 1, 20, 10));
+    const client = new FakeSparrowClient();
+    renderHostedBrowser(client);
+    await settleRequests();
+    const guide = within(screen.getByLabelText("Programme guide"));
+    // Until the viewer asks for later times the guide reads what Theater's
+    // timeline shows.
+    expect(guideWindowHours(client)).toEqual([3]);
+    expect(listRowLines("World News")).toEqual([
+      "World News",
+      "Live Bulletin",
+      "21:00 Future Bulletin",
+      "50 min left",
+    ]);
+
+    fireEvent.click(guide.getByRole("button", { name: "Now", expanded: false }));
+    await settleRequests();
+
+    // One longer read covers every time on offer.
+    expect(guideWindowHours(client)).toEqual([3, 8]);
+    const times = within(guide.getByRole("group", { name: "Time" }));
+    expect(
+      times.getAllByRole("button").map((button) => button.textContent),
+    ).toEqual(["Now", "21:00", "22:00", "23:00", "00:00", "01:00", "02:00"]);
+
+    fireEvent.click(times.getByRole("button", { name: "21:00" }));
+    expect(listRowLines("World News")).toEqual([
+      "World News",
+      "Future Bulletin",
+      "21:00 to 22:00",
+    ]);
+    expect(listRowLines("Cinema One")).toEqual([
+      "Cinema One",
+      "Feature Presentation",
+      "20:00 to 23:00",
+    ]);
+    fireEvent.click(times.getByRole("button", { name: "22:00" }));
+    expect(listRowLines("World News")).toEqual([
+      "World News",
+      "Nothing listed at 22:00",
+    ]);
+
+    // The chip keeps the chosen time while the row is closed, and opening the
+    // row again asks for nothing: the window stays wide.
+    const chip = guide.getByRole("button", { name: "22:00", expanded: true });
+    expect(chip).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(chip);
+    expect(
+      guide.queryByRole("group", { name: "Time" }),
+    ).not.toBeInTheDocument();
+    expect(chip).toHaveTextContent("22:00");
+    fireEvent.click(chip);
+    await settleRequests();
+    expect(guide.getByRole("group", { name: "Time" })).toBeInTheDocument();
+    expect(guideWindowHours(client)).toEqual([3, 8]);
+
+    // A row still tunes its Channel now, whatever time the list shows.
+    fireEvent.click(guide.getByRole("button", { name: "Tune World News" }));
+    await settleRequests();
+    expect(client.playbackInputs.map(({ id }) => id)).toEqual([WORLD_NEWS.id]);
+  });
+
+  it("returns to now once the chosen time has passed", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 1, 20, 59, 20));
+    renderHostedBrowser(new FakeSparrowClient());
+    await settleRequests();
+    const guide = within(screen.getByLabelText("Programme guide"));
+    fireEvent.click(guide.getByRole("button", { name: "Now", expanded: false }));
+    await settleRequests();
+    const times = within(guide.getByRole("group", { name: "Time" }));
+
+    fireEvent.click(times.getByRole("button", { name: "21:00" }));
+    expect(
+      guide.getByRole("button", { name: "21:00", expanded: true }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(listRowLines("World News")).toEqual([
+      "World News",
+      "Live Bulletin",
+      "20:30 to 21:30",
+    ]);
+
+    // Two ticks of the guide clock: it is past nine, and the next window.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    await settleRequests();
+
+    expect(
+      guide.getByRole("button", { name: "Now", expanded: true }),
+    ).toHaveAttribute("aria-pressed", "false");
+    expect(times.getByRole("button", { name: "Now" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(
+      times.queryByRole("button", { name: "21:00" }),
+    ).not.toBeInTheDocument();
+    expect(listRowLines("World News")).toEqual([
+      "World News",
+      "Live Bulletin",
+      "22:00 Future Bulletin",
+      "60 min left",
+    ]);
+  });
+});
+
+/** Waits until the frame callbacks already asked for have run. */
+function nextFrame(): Promise<void> {
+  return act(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      }),
+  );
+}
+
+/** Lets the reads a fake-timer test has started answer and render. */
+function settleRequests(): Promise<void> {
+  return act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+}
+
+/** The spans, in hours, of the guide reads from the top of the catalog. */
+function guideWindowHours(client: FakeSparrowClient): readonly number[] {
+  return client.guideInputs
+    .filter((input) => input.around === undefined)
+    .map(
+      (input) =>
+        (Date.parse(input.endsAt) - Date.parse(input.startsAt)) / 3_600_000,
+    );
+}
+
+/** The lines of a Channel's row in pocket's list, in the order they are read. */
+function listRowLines(channel: string): readonly (string | null)[] {
+  return Array.from(
+    screen.getByRole("button", { name: `Tune ${channel}` }).children,
+    (line) => line.textContent,
+  ).filter((line) => line !== "");
+}
+
 /**
  * Tunes World News in the Theater layout and waits until it plays with the
  * Channels around it on offer.
@@ -2115,7 +2811,7 @@ async function watchWorldNews(
     await screen.findByRole("button", { name: "Tune World News" }),
   );
   await screen.findByLabelText("World News live video");
-  // An installed device is stacked until it has said the picture may be covered.
+  // An installed device is pocket until it has said the picture may be covered.
   await screen.findByRole("navigation", { name: "Nearby channels" });
   return {
     shell: requireShell(),
@@ -2131,6 +2827,23 @@ function requireMonitor(): HTMLElement {
   return monitor;
 }
 
+/** Gives the picture box the size a browser would have laid it out at. */
+function layOutMonitor(width: number, height: number): void {
+  requireMonitor().getBoundingClientRect = () =>
+    DOMRect.fromRect({ x: 0, y: 38, width, height });
+}
+
+/** The size the shell holds the picture's box at, or null while it holds none. */
+function pinnedPictureSize(): {
+  readonly width: string;
+  readonly height: string;
+} | null {
+  const root = document.documentElement.style;
+  const width = root.getPropertyValue("--pocket-pinned-w");
+  const height = root.getPropertyValue("--pocket-pinned-h");
+  return width === "" && height === "" ? null : { width, height };
+}
+
 function requireShell(): HTMLElement {
   const shell = document.querySelector<HTMLElement>(
     "[data-acceptance-catalog-shell]",
@@ -2141,19 +2854,44 @@ function requireShell(): HTMLElement {
   return shell;
 }
 
-/** jsdom has no fullscreen: gives one element a request that always succeeds. */
-function stubRequestFullscreen(element: HTMLElement): {
+/**
+ * jsdom has no fullscreen: gives one element a request that always succeeds.
+ * With `enters`, the request also makes the element the document's fullscreen
+ * element, as a browser would, until `exit` or `restore`.
+ */
+function stubRequestFullscreen(
+  element: HTMLElement,
+  { enters = false }: { readonly enters?: boolean } = {},
+): {
   readonly request: ReturnType<typeof vi.fn>;
+  /** Leaves fullscreen as the browser's own exit would. */
+  exit(): void;
   restore(): void;
 } {
-  const request = vi.fn(() => Promise.resolve());
+  const setFullscreenElement = (value: HTMLElement | null) => {
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      value,
+    });
+    document.dispatchEvent(new Event("fullscreenchange"));
+  };
+  const request = vi.fn(() => {
+    if (enters) {
+      setFullscreenElement(element);
+    }
+    return Promise.resolve();
+  });
   Object.defineProperty(element, "requestFullscreen", {
     configurable: true,
     value: request,
   });
   return {
     request,
-    restore: () => Reflect.deleteProperty(element, "requestFullscreen"),
+    exit: () => setFullscreenElement(null),
+    restore: () => {
+      Reflect.deleteProperty(element, "requestFullscreen");
+      Reflect.deleteProperty(document, "fullscreenElement");
+    },
   };
 }
 
@@ -2165,7 +2903,7 @@ function requireMasthead(): HTMLElement {
   return masthead;
 }
 
-/** Where the Theater layout puts the player's controls. */
+/** Where the player's controls go while its own section is not fullscreen. */
 function requireControlsSlot(): HTMLElement {
   const slot = document.querySelector<HTMLElement>(".now-playing__controls");
   if (slot === null) {
@@ -2271,6 +3009,55 @@ function defaultGuideResult(
       ...(end < rows.length ? { next: "guide-after-around" } : {}),
     }),
   );
+}
+
+/** A run of Channels to move through, each in the group `groupOf` names. */
+function surfChannels(
+  count: number,
+  groupOf: (index: number) => string = () => "Open",
+): readonly ChannelSummary[] {
+  return Array.from({ length: count }, (_, index) =>
+    channelFixture({
+      id: `surf-${index + 1}`,
+      name: `Surf ${index + 1}`,
+      group: groupOf(index),
+    }),
+  );
+}
+
+/**
+ * Answers guide reads over a catalog of Channels as core does: a page from
+ * its start or from a cursor, or the page placed around one of its Channels.
+ */
+function catalogGuide(
+  channels: readonly ChannelSummary[],
+): (input: GuideWindowInput) => Promise<ClientResult<GuideWindow>> {
+  return (input) => {
+    const rows = channels.map((channel) =>
+      guideRow(channel, input, `${channel.name} live`),
+    );
+    const position = rows.findIndex((row) => row.channel.id === input.around);
+    if (input.around !== undefined && position === -1) {
+      return Promise.resolve(
+        failure({ _tag: "not-found", resource: "channel" }),
+      );
+    }
+    const start =
+      input.around !== undefined
+        ? Math.max(0, position - Math.floor(input.channelLimit / 2))
+        : input.cursor === undefined
+          ? 0
+          : Number(input.cursor.replace("surf-from-", ""));
+    const end = start + input.channelLimit;
+    return Promise.resolve(
+      success(
+        guidePage(input, {
+          rows: rows.slice(start, end),
+          ...(end < rows.length ? { next: `surf-from-${end}` } : {}),
+        }),
+      ),
+    );
+  };
 }
 
 /**

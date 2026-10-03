@@ -153,6 +153,10 @@ gate passed only after observing its full behavior on the physical phone.
 | `manual-lock-wake-state`                    | Manual lock releases request/wake state and unlock resumes only prior active playback.                                |
 | `bounded-recovery-resource-release`         | Failures stay bounded/visible and ordinary repeated use does not accumulate requests, descriptors, handles, or work.  |
 
+On the phone the controls are a row of icons under the picture
+([ADR 0007](../adr/0007-use-a-pocket-layout-where-the-picture-cannot-be-covered.md)). Restart is in
+its More menu. The row has Mute but no Volume slider; the slider is in the fullscreen controls.
+
 After stopping playback, confirm the staged APK SHA-256 is unchanged. Fill `recordedAt` only after
 all rows pass. Rejection, a device reset, an APK substitution, or a workflow rerun requires fresh
 evidence.

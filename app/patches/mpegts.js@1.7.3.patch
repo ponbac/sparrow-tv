@@ -1,8 +1,30 @@
+diff --git a/src/demux/ac3.ts b/src/demux/ac3.ts
+index 03c2b763f39b27397de1905737328dc24208056b..7885d99baa1b92e32ae71800b8e5bee3f7317af4 100644
+--- a/src/demux/ac3.ts
++++ b/src/demux/ac3.ts
+@@ -89,7 +89,14 @@ export class AC3Parser {
+             let sampling_frequency = [48000, 44200, 33000][sampling_rate_code];
+ 
+             let frame_size_code = data[offset + 4] & 0x3F;
+-            let frame_size = frame_size_code_table[sampling_rate_code][frame_size_code] * 2;
++            let frame_size_row = frame_size_code_table[sampling_rate_code];
++            let frame_size_words = frame_size_row === undefined ? undefined : frame_size_row[frame_size_code];
++            if (frame_size_words === undefined) {
++                // A reserved rate or size code: these bytes are not a syncframe header.
++                this.current_syncword_offset_ = this.findNextSyncwordOffset(offset + 1);
++                continue;
++            }
++            let frame_size = frame_size_words * 2;
+ 
+             if (offset + frame_size > this.data_.byteLength) {
+                 // data not enough for extracting last sample
 diff --git a/src/utils/polyfill.js b/src/utils/polyfill.js
-index 7d250df3af446bcac3646fdd21649f7382cbdeaf..e00a6135a015fe3288571f3c73e5662ebc4401e4 100644
+index 7d250df3af446bcac3646fdd21649f7382cbdeaf..5d2586b63cc0fcc1f48b89dee27685a406308a01 100644
 --- a/src/utils/polyfill.js
 +++ b/src/utils/polyfill.js
-@@ -22,5 +22,7 @@ class Polyfill {
+@@ -20,30 +20,34 @@ class Polyfill {
+ 
+     static install() {
          // ES6 Object.setPrototypeOf
 -        Object.setPrototypeOf = Object.setPrototypeOf || function (obj, proto) {
 -            obj.__proto__ = proto;
@@ -14,7 +36,7 @@ index 7d250df3af446bcac3646fdd21649f7382cbdeaf..e00a6135a015fe3288571f3c73e5662e
 +                return obj;
 +            };
 +        }
-@@ -28,19 +30,21 @@ class Polyfill {
+ 
          // ES6 Object.assign
 -        Object.assign = Object.assign || function (target) {
 -            if (target === undefined || target === null) {
@@ -51,3 +73,6 @@ index 7d250df3af446bcac3646fdd21649f7382cbdeaf..e00a6135a015fe3288571f3c73e5662e
 +                return output;
 +            };
 +        }
+ 
+         // ES6 Promise (missing support in IE11)
+         if (typeof self.Promise !== 'function') {

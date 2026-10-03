@@ -144,6 +144,13 @@ describe("installed Playback Session state", () => {
       },
       preferenceStatus: "not-saved",
     });
+    expect(installedPlaybackDiagnostics(state, [], 0)).toContain(
+      '"codec":"aac-adts","output":"unreported"',
+    );
+    state = reduceInstalledPlaybackState(state, {
+      _tag: "audio-output",
+      output: "undecodable",
+    });
     state = reduceInstalledPlaybackState(state, {
       _tag: "volume",
       volume: Number.POSITIVE_INFINITY,
@@ -190,6 +197,16 @@ describe("installed Playback Session state", () => {
     expect(diagnostics).toContain('"failure":"source-unavailable"');
     expect(diagnostics).toContain('"selection":"saved-preference-fallback"');
     expect(diagnostics).toContain('"preferenceStatus":"not-saved"');
+    expect(diagnostics).toContain('"codec":"aac-adts","output":"undecodable"');
+
+    // A reopened transport is a new player: its predecessor's report is stale.
+    state = reduceInstalledPlaybackState(state, {
+      _tag: "transport-opened",
+      presentation: "android-media3",
+      tracks: [],
+      selection: { _tag: "none" },
+    });
+    expect(state.audio.output).toBeNull();
   });
 
   it("copies bounded media counters without Channel or provider data", () => {

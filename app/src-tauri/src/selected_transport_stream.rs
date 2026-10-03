@@ -79,6 +79,44 @@ pub(crate) enum AudioCodec {
     AacLatm,
     #[serde(rename = "ac-3")]
     Ac3,
+    #[serde(rename = "e-ac-3")]
+    Eac3,
+}
+
+/// The presentation that reads a selected transport. E-AC-3 is an Audio Track
+/// only for a reader that decodes it: listed for one that does not, it would
+/// be a track that plays in silence. For the same reason the rewritten PMT
+/// names each stream by the type its reader finds it under.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TransportReader {
+    /// Android Media3, which decodes every codec listed in [`AudioCodec`].
+    Media3,
+    /// The WebView's Media Source demuxer, which does not read E-AC-3 and
+    /// reads AC-3 only under its ATSC stream type.
+    WebviewMse,
+}
+
+impl TransportReader {
+    /// The presentation this build hands its transports to.
+    pub(crate) const CURRENT: Self = if cfg!(target_os = "android") {
+        Self::Media3
+    } else {
+        Self::WebviewMse
+    };
+
+    const fn reads(self, codec: AudioCodec) -> bool {
+        !matches!((self, codec), (Self::WebviewMse, AudioCodec::Eac3))
+    }
+
+    /// The stream type this reader is told a stream has. DVB carries AC-3 as
+    /// private data named by a descriptor, which the WebView demuxer passes
+    /// over, so for it such a track is written under the ATSC type instead.
+    fn stream_type(self, stream: &ElementaryStream) -> u8 {
+        match (self, stream.stream_type, stream.kind) {
+            (Self::WebviewMse, 0x06, StreamKind::Audio(AudioCodec::Ac3)) => 0x81,
+            (_, stream_type, _) => stream_type,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -228,8 +266,9 @@ pub(crate) struct OpenedSelectedTransport {
 }
 
 /// Discovers one MPEG-TS programme, selects one audio PID, and exposes only a
-/// rewritten PAT/PMT plus the programme's supported video, PCR, and selected
-/// audio packets. Callers never need to understand PSI or packet framing.
+/// rewritten PAT/PMT plus the packets of the programme's supported video, of
+/// its selected audio, and of the PID that carries its clock. Callers never
+/// need to understand PSI or packet framing.
 pub(crate) struct SelectedTransportStream {
     body: PlaybackByteStream,
     framer: PacketFramer,
@@ -241,8 +280,9 @@ impl SelectedTransportStream {
     pub(crate) async fn open(
         body: PlaybackByteStream,
         request: SelectionRequest,
+        reader: TransportReader,
     ) -> Result<OpenedSelectedTransport, TransportStreamError> {
-        match tokio::time::timeout(DISCOVERY_TIMEOUT, Self::discover(body, request)).await {
+        match tokio::time::timeout(DISCOVERY_TIMEOUT, Self::discover(body, request, reader)).await {
             Ok(result) => result,
             Err(_) => Err(TransportStreamError::DiscoveryTimedOut),
         }
@@ -251,9 +291,10 @@ impl SelectedTransportStream {
     async fn discover(
         mut body: PlaybackByteStream,
         request: SelectionRequest,
+        reader: TransportReader,
     ) -> Result<OpenedSelectedTransport, TransportStreamError> {
         let mut framer = PacketFramer::default();
-        let mut discovery = ProgrammeDiscovery::default();
+        let mut discovery = ProgrammeDiscovery::new(reader);
         let mut packets = Vec::new();
         let mut consumed = 0_usize;
 
@@ -283,7 +324,7 @@ impl SelectedTransportStream {
         };
 
         let (selection, selected_pid, tracks) = programme.select_audio(&request);
-        let mut selector = PacketSelector::new(&programme, selected_pid)?;
+        let mut selector = PacketSelector::new(&programme, selected_pid, reader)?;
         let initial = selector.filter(&packets);
         let mut ready = VecDeque::new();
         if !initial.is_empty() {
@@ -380,8 +421,8 @@ fn sync_offset(bytes: &[u8]) -> Option<usize> {
     })
 }
 
-#[derive(Default)]
 struct ProgrammeDiscovery {
+    reader: TransportReader,
     pat: SectionAssembler,
     programmes: Vec<ProgramReference>,
     pmts: HashMap<u16, SectionAssembler>,
@@ -390,6 +431,17 @@ struct ProgrammeDiscovery {
 }
 
 impl ProgrammeDiscovery {
+    fn new(reader: TransportReader) -> Self {
+        Self {
+            reader,
+            pat: SectionAssembler::default(),
+            programmes: Vec::new(),
+            pmts: HashMap::new(),
+            transport_stream_id: None,
+            pat_version: 0,
+        }
+    }
+
     fn inspect(
         &mut self,
         packet: &[u8; TS_PACKET_BYTES],
@@ -424,7 +476,7 @@ impl ProgrammeDiscovery {
             else {
                 continue;
             };
-            let mut programme = parse_pmt(&section, reference.pmt_pid)?;
+            let mut programme = parse_pmt(&section, reference.pmt_pid, self.reader)?;
             programme.transport_stream_id = self
                 .transport_stream_id
                 .ok_or(TransportStreamError::InvalidProgramme)?;
@@ -794,7 +846,11 @@ enum StreamKind {
     Other,
 }
 
-fn parse_pmt(section: &[u8], pmt_pid: u16) -> Result<Programme, TransportStreamError> {
+fn parse_pmt(
+    section: &[u8],
+    pmt_pid: u16,
+    reader: TransportReader,
+) -> Result<Programme, TransportStreamError> {
     validate_section(section, 0x02)?;
     if section.len() < 16 || section[5] & 0x01 == 0 {
         return Err(TransportStreamError::InvalidProgramme);
@@ -833,7 +889,7 @@ fn parse_pmt(section: &[u8], pmt_pid: u16) -> Result<Programme, TransportStreamE
         }
         let descriptors = section[descriptor_start..descriptor_end].to_vec();
         validate_descriptors(&descriptors)?;
-        let kind = classify_stream(stream_type, &descriptors);
+        let kind = classify_stream(stream_type, &descriptors, reader);
         let (language, label) = audio_metadata(&descriptors);
         streams.push(ElementaryStream {
             stream_type,
@@ -894,33 +950,45 @@ fn validate_descriptors(mut descriptors: &[u8]) -> Result<(), TransportStreamErr
     Ok(())
 }
 
-fn classify_stream(stream_type: u8, descriptors: &[u8]) -> StreamKind {
-    match stream_type {
-        0x1b | 0x24 => StreamKind::Video,
-        0x03 => StreamKind::Audio(AudioCodec::Mpeg1Audio),
-        0x04 => StreamKind::Audio(AudioCodec::Mpeg2Audio),
-        0x0f => StreamKind::Audio(AudioCodec::AacAdts),
-        0x11 => StreamKind::Audio(AudioCodec::AacLatm),
-        0x81 => StreamKind::Audio(AudioCodec::Ac3),
-        0x06 if has_ac3_descriptor(descriptors) => StreamKind::Audio(AudioCodec::Ac3),
+fn classify_stream(stream_type: u8, descriptors: &[u8], reader: TransportReader) -> StreamKind {
+    let codec = match stream_type {
+        0x1b | 0x24 => return StreamKind::Video,
+        0x03 => Some(AudioCodec::Mpeg1Audio),
+        0x04 => Some(AudioCodec::Mpeg2Audio),
+        0x0f => Some(AudioCodec::AacAdts),
+        0x11 => Some(AudioCodec::AacLatm),
+        0x81 => Some(AudioCodec::Ac3),
+        0x87 => Some(AudioCodec::Eac3),
+        0x06 => private_audio_codec(descriptors),
+        _ => None,
+    };
+    match codec {
+        Some(codec) if reader.reads(codec) => StreamKind::Audio(codec),
         _ => StreamKind::Other,
     }
 }
 
-fn has_ac3_descriptor(mut descriptors: &[u8]) -> bool {
+/// Names the Dolby codec that a private-data stream's descriptors declare. The
+/// last declaration wins, as it does in Media3's reading of the same table.
+fn private_audio_codec(mut descriptors: &[u8]) -> Option<AudioCodec> {
+    let mut codec = None;
     while descriptors.len() >= 2 {
         let tag = descriptors[0];
         let length = usize::from(descriptors[1]);
         if descriptors.len() < 2 + length {
-            return false;
+            break;
         }
         let payload = &descriptors[2..2 + length];
-        if tag == 0x6a || (tag == 0x05 && payload.starts_with(b"AC-3")) {
-            return true;
+        match tag {
+            0x6a => codec = Some(AudioCodec::Ac3),
+            0x7a => codec = Some(AudioCodec::Eac3),
+            0x05 if payload.starts_with(b"AC-3") => codec = Some(AudioCodec::Ac3),
+            0x05 if payload.starts_with(b"EAC3") => codec = Some(AudioCodec::Eac3),
+            _ => {}
         }
         descriptors = &descriptors[2 + length..];
     }
-    false
+    codec
 }
 
 fn audio_metadata(mut descriptors: &[u8]) -> (Option<String>, Option<String>) {
@@ -989,6 +1057,7 @@ impl PacketSelector {
     fn new(
         programme: &Programme,
         selected_audio_pid: Option<u16>,
+        reader: TransportReader,
     ) -> Result<Self, TransportStreamError> {
         let mut retained_streams = programme
             .streams
@@ -1003,14 +1072,16 @@ impl PacketSelector {
             .iter()
             .find(|stream| stream.pid == programme.pcr_pid)
         {
-            if matches!(pcr_stream.kind, StreamKind::Audio(_))
-                && selected_audio_pid != Some(pcr_stream.pid)
-            {
-                return Err(TransportStreamError::UnsupportedProgramme);
-            }
-            if !retained_streams
-                .iter()
-                .any(|stream| stream.pid == pcr_stream.pid)
+            // The clock may ride an Audio Track that was not selected. Its
+            // packets are kept for the clock, but the PMT does not list it:
+            // a reader passes over a PID it was not told of, so the track
+            // stays unheard.
+            let deselected_audio = matches!(pcr_stream.kind, StreamKind::Audio(_))
+                && selected_audio_pid != Some(pcr_stream.pid);
+            if !deselected_audio
+                && !retained_streams
+                    .iter()
+                    .any(|stream| stream.pid == pcr_stream.pid)
             {
                 retained_streams.push(pcr_stream);
             }
@@ -1023,7 +1094,7 @@ impl PacketSelector {
             retained_pids.insert(programme.pcr_pid);
         }
         let pat = rewritten_pat(programme);
-        let pmt = rewritten_pmt(programme, &retained_streams)?;
+        let pmt = rewritten_pmt(programme, &retained_streams, reader)?;
         Ok(Self {
             pmt_pid: programme.pmt_pid,
             retained_pids,
@@ -1083,6 +1154,7 @@ fn rewritten_pat(programme: &Programme) -> Vec<u8> {
 fn rewritten_pmt(
     programme: &Programme,
     retained_streams: &[&ElementaryStream],
+    reader: TransportReader,
 ) -> Result<Vec<u8>, TransportStreamError> {
     let streams_length = retained_streams
         .iter()
@@ -1116,7 +1188,7 @@ fn rewritten_pmt(
     section.extend_from_slice(&programme.program_descriptors);
     for stream in retained_streams {
         section.extend_from_slice(&[
-            stream.stream_type,
+            reader.stream_type(stream),
             0xe0 | ((stream.pid >> 8) as u8 & 0x1f),
             stream.pid as u8,
             0xf0 | ((stream.descriptors.len() >> 8) as u8 & 0x0f),
@@ -1181,6 +1253,7 @@ mod tests {
             (super::AudioCodec::AacAdts, "aac-adts"),
             (super::AudioCodec::AacLatm, "aac-latm"),
             (super::AudioCodec::Ac3, "ac-3"),
+            (super::AudioCodec::Eac3, "e-ac-3"),
         ] {
             assert_eq!(serde_json::to_value(codec).unwrap(), wire_name);
         }
@@ -1245,7 +1318,8 @@ mod tests {
         assert_eq!(pid, Some(0x103));
         assert!(tracks[1].selected);
 
-        let mut selector = PacketSelector::new(&programme, pid).expect("fixture programme filters");
+        let mut selector = PacketSelector::new(&programme, pid, TransportReader::Media3)
+            .expect("fixture programme filters");
         let packets = vec![
             fixture_packet(0, true, 0, &[0]),
             fixture_packet(0x100, true, 0, &[0]),
@@ -1263,29 +1337,77 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(pids, vec![0, 0x100, 0x101, 0x103]);
 
-        let pmt_packet = output
-            .as_chunks::<TS_PACKET_BYTES>()
-            .0
-            .iter()
-            .find(|packet| ((u16::from(packet[1] & 0x1f) << 8) | u16::from(packet[2])) == 0x100)
-            .expect("rewritten PMT is present");
-        let section_length = (usize::from(pmt_packet[6] & 0x0f) << 8) | usize::from(pmt_packet[7]);
-        let pmt = &pmt_packet[5..5 + 3 + section_length];
+        let pmt = pmt_section(&output);
         assert_eq!(mpeg_crc32(pmt), 0);
-        let rewritten = parse_pmt(pmt, 0x100).expect("rewritten PMT remains valid");
+        let rewritten =
+            parse_pmt(pmt, 0x100, TransportReader::Media3).expect("rewritten PMT remains valid");
         assert_eq!(rewritten.streams.len(), 2);
         assert!(rewritten.streams.iter().any(|stream| stream.pid == 0x101));
         assert!(rewritten.streams.iter().any(|stream| stream.pid == 0x103));
     }
 
     #[test]
-    fn pcr_on_a_deselected_audio_track_is_rejected() {
-        let mut programme = fixture_programme();
-        programme.pcr_pid = 0x102;
-        assert!(matches!(
-            PacketSelector::new(&programme, Some(0x103)),
-            Err(TransportStreamError::UnsupportedProgramme)
-        ));
+    fn a_clock_on_a_deselected_audio_track_is_kept_without_listing_the_track() {
+        for reader in [TransportReader::Media3, TransportReader::WebviewMse] {
+            let mut programme = fixture_programme();
+            programme.pcr_pid = 0x102;
+            let mut selector = PacketSelector::new(&programme, Some(0x103), reader)
+                .expect("the programme opens on the selected track");
+            let output = selector.filter(&[
+                fixture_packet(0, true, 0, &[0]),
+                fixture_packet(0x100, true, 0, &[0]),
+                fixture_packet(0x101, false, 0, &[1]),
+                fixture_packet(0x102, false, 0, &[2]),
+                fixture_packet(0x103, false, 0, &[3]),
+                fixture_packet(0x104, false, 0, &[4]),
+            ]);
+            // The clock's packets pass, the other deselected track's do not.
+            assert_eq!(packet_pids(&output), vec![0, 0x100, 0x101, 0x102, 0x103]);
+
+            let pmt = parse_pmt(pmt_section(&output), 0x100, reader)
+                .expect("rewritten PMT remains valid");
+            assert_eq!(pmt.pcr_pid, 0x102);
+            assert_eq!(
+                pmt.streams
+                    .iter()
+                    .map(|stream| stream.pid)
+                    .collect::<Vec<_>>(),
+                vec![0x101, 0x103],
+                "a reader told of the clock's track would play it beside the selected one",
+            );
+        }
+    }
+
+    #[test]
+    fn private_data_ac_3_is_written_under_the_type_its_reader_finds_it_by() {
+        let programme = fixture_programme();
+        let track = AudioTrackId::generated(1, 0x104, 0x06);
+        for (reader, stream_type) in [
+            (TransportReader::Media3, 0x06),
+            (TransportReader::WebviewMse, 0x81),
+        ] {
+            let mut selector = PacketSelector::new(&programme, Some(0x104), reader)
+                .expect("fixture programme filters");
+            let output = selector.filter(&[fixture_packet(0x100, true, 0, &[0])]);
+            let pmt = parse_pmt(pmt_section(&output), 0x100, reader)
+                .expect("rewritten PMT remains valid");
+            let audio = pmt
+                .streams
+                .iter()
+                .find(|stream| stream.pid == 0x104)
+                .expect("the selected track is listed");
+            assert_eq!(audio.stream_type, stream_type);
+            assert!(matches!(audio.kind, StreamKind::Audio(AudioCodec::Ac3)));
+            assert_eq!(audio.descriptors, vec![0x6a, 0]);
+        }
+        // The Audio Track keeps the identity its signalled type gave it, so a
+        // saved Audio Track Preference still names it.
+        let (_, _, tracks) = programme.select_audio(&SelectionRequest::Requested(track.clone()));
+        assert!(
+            tracks
+                .iter()
+                .any(|listed| listed.selected && listed.id == track)
+        );
     }
 
     #[tokio::test]
@@ -1301,9 +1423,13 @@ mod tests {
             chunks.into_iter().map(Ok::<_, PlaybackReadError>),
         ));
 
-        let opened = SelectedTransportStream::open(body, SelectionRequest::Initial { saved: None })
-            .await
-            .expect("fixture programme is discovered");
+        let opened = SelectedTransportStream::open(
+            body,
+            SelectionRequest::Initial { saved: None },
+            TransportReader::Media3,
+        )
+        .await
+        .expect("fixture programme is discovered");
 
         assert_eq!(opened.tracks.len(), 3);
         assert_eq!(opened.tracks[0].language.as_deref(), Some("eng"));
@@ -1345,10 +1471,13 @@ mod tests {
             Bytes::from(fixture_transport(&programme)),
         )]));
 
-        let opened =
-            SelectedTransportStream::open(body, SelectionRequest::Requested(selected.clone()))
-                .await
-                .expect("requested track opens");
+        let opened = SelectedTransportStream::open(
+            body,
+            SelectionRequest::Requested(selected.clone()),
+            TransportReader::Media3,
+        )
+        .await
+        .expect("requested track opens");
 
         assert!(matches!(
             opened.selection,
@@ -1377,6 +1506,7 @@ mod tests {
             (0x03, AudioCodec::Mpeg1Audio),
             (0x04, AudioCodec::Mpeg2Audio),
             (0x81, AudioCodec::Ac3),
+            (0x87, AudioCodec::Eac3),
             (0x0f, AudioCodec::AacAdts),
             (0x11, AudioCodec::AacLatm),
         ] {
@@ -1387,16 +1517,78 @@ mod tests {
             let body: PlaybackByteStream = Box::pin(stream::iter([Ok::<_, PlaybackReadError>(
                 Bytes::from(fixture_transport(&programme)),
             )]));
-            let opened =
-                SelectedTransportStream::open(body, SelectionRequest::Initial { saved: None })
-                    .await
-                    .expect("selected audio and its clock are supported");
+            let opened = SelectedTransportStream::open(
+                body,
+                SelectionRequest::Initial { saved: None },
+                TransportReader::Media3,
+            )
+            .await
+            .expect("selected audio and its clock are supported");
             assert!(opened.tracks[0].selected);
             assert_eq!(opened.tracks[0].codec(), codec);
             assert_eq!(
                 packet_pids(opened.stream.ready.front().expect("selected output")),
                 vec![0, 0x100, 0x101, 0x102],
             );
+        }
+    }
+
+    #[test]
+    fn private_data_streams_take_the_dolby_codec_their_descriptors_declare() {
+        let codec = |descriptors: &[u8]| match classify_stream(
+            0x06,
+            descriptors,
+            TransportReader::Media3,
+        ) {
+            StreamKind::Audio(codec) => Some(codec),
+            StreamKind::Video | StreamKind::Other => None,
+        };
+        assert_eq!(codec(&[0x6a, 0]), Some(AudioCodec::Ac3));
+        assert_eq!(codec(&[0x7a, 0]), Some(AudioCodec::Eac3));
+        assert_eq!(
+            codec(&[0x05, 4, b'A', b'C', b'-', b'3']),
+            Some(AudioCodec::Ac3)
+        );
+        assert_eq!(
+            codec(&[0x05, 4, b'E', b'A', b'C', b'3']),
+            Some(AudioCodec::Eac3)
+        );
+        assert_eq!(
+            codec(&[0x0a, 4, b'e', b'n', b'g', 0, 0x7a, 0]),
+            Some(AudioCodec::Eac3)
+        );
+        assert_eq!(codec(&[0x6a, 0, 0x7a, 0]), Some(AudioCodec::Eac3));
+        assert_eq!(codec(&[0x59, 0]), None, "subtitles are not an Audio Track");
+    }
+
+    #[tokio::test]
+    async fn e_ac_3_is_an_audio_track_only_for_a_reader_that_decodes_it() {
+        let mut programme = fixture_programme();
+        programme.streams.truncate(2);
+        programme.streams[1].stream_type = 0x87;
+        for (reader, codecs) in [
+            (TransportReader::Media3, vec![AudioCodec::Eac3]),
+            (TransportReader::WebviewMse, Vec::new()),
+        ] {
+            let body: PlaybackByteStream = Box::pin(stream::iter([Ok::<_, PlaybackReadError>(
+                Bytes::from(fixture_transport(&programme)),
+            )]));
+            let opened = SelectedTransportStream::open(
+                body,
+                SelectionRequest::Initial { saved: None },
+                reader,
+            )
+            .await
+            .expect("the programme opens for either reader");
+            assert_eq!(
+                opened
+                    .tracks
+                    .iter()
+                    .map(AudioTrack::codec)
+                    .collect::<Vec<_>>(),
+                codecs,
+            );
+            assert_eq!(opened.selection == AudioSelection::None, codecs.is_empty());
         }
     }
 
@@ -1462,7 +1654,8 @@ mod tests {
         let mut pmt_continuity = 0;
         packetize_section(
             programme.pmt_pid,
-            &rewritten_pmt(programme, &streams).expect("fixture PMT rewrites"),
+            &rewritten_pmt(programme, &streams, TransportReader::Media3)
+                .expect("fixture PMT rewrites"),
             &mut pmt_continuity,
             &mut bytes,
         );
@@ -1470,6 +1663,17 @@ mod tests {
             bytes.extend_from_slice(&fixture_packet(pid, false, 0, &[marker]));
         }
         bytes
+    }
+
+    /// The rewritten PMT section of the fixture programme in selector output.
+    fn pmt_section(output: &[u8]) -> &[u8] {
+        let packet = output
+            .as_chunks::<TS_PACKET_BYTES>()
+            .0
+            .iter()
+            .find(|packet| packet_pid(packet) == 0x100)
+            .expect("rewritten PMT is present");
+        section_from_single_packet(packet)
     }
 
     fn packet_pids(bytes: &[u8]) -> Vec<u16> {

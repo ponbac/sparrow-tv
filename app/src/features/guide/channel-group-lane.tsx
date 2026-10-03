@@ -1,18 +1,39 @@
 import { Radio } from "@base-ui/react/radio";
 import { RadioGroup } from "@base-ui/react/radio-group";
-import { ChevronLeft, ChevronRight } from "lucide-react";
-import { useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { ChevronLeft, ChevronRight, Clock } from "lucide-react";
+import {
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 import type { ChannelGroup } from "../../client/contracts";
 import { groupDisplayName, visibleChannelGroups } from "./board-group-roster";
 import { GroupRosterDialog } from "./group-roster-dialog";
+import { clockLabel } from "./guide-window";
 
 const ALL_GROUPS = "all";
 const GROUP_PREFIX = "group:";
+
+/** The time the now-and-next list looks at, and the chips that change it. */
+export interface GuideTime {
+  /** The row of times is shown. */
+  readonly open: boolean;
+  /** The time the list looks at, or null for now. */
+  readonly chosen: Date | null;
+  /** The later times on offer, earliest first. */
+  readonly options: readonly Date[];
+  readonly onToggle: () => void;
+  readonly onChoose: (time: Date | null) => void;
+}
 
 /** Inputs for the scrollable Channel Group lane and roster. */
 export interface ChannelGroupLaneProps {
   readonly groups: readonly ChannelGroup[];
   readonly activeGroup: string | null;
+  /** Null where the guide is a timeline, which shows every time at once. */
+  readonly time: GuideTime | null;
   readonly excluded: ReadonlySet<string>;
   readonly onSelectGroup: (group: string | null) => void;
   readonly onPrefetchGroup: (group: string | null) => void;
@@ -22,11 +43,13 @@ export interface ChannelGroupLaneProps {
 
 /**
  * Renders Channel Groups as a horizontally browsable lane with overflow
- * steppers and a roster for jumping or excluding groups.
+ * steppers and a roster for jumping or excluding groups. Given a time, the
+ * lane starts with a chip that opens a row of times under it.
  */
 export function ChannelGroupLane({
   groups,
   activeGroup,
+  time,
   excluded,
   onSelectGroup,
   onPrefetchGroup,
@@ -34,6 +57,7 @@ export function ChannelGroupLane({
   onRestoreAll,
 }: ChannelGroupLaneProps) {
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const timesId = useId();
   const visibleGroups = visibleChannelGroups(groups, excluded);
   const overflow = useLaneOverflow(scrollerRef, visibleGroups.length);
   const activeFilter = filterValue(activeGroup);
@@ -60,74 +84,116 @@ export function ChannelGroupLane({
   };
 
   return (
-    <div
-      className="programme-guide__lane"
-      data-overflow={overflow.canBack || overflow.canAhead ? "true" : "false"}
-      data-can-back={overflow.canBack ? "true" : "false"}
-      data-can-ahead={overflow.canAhead ? "true" : "false"}
-    >
-      <button
-        className="programme-guide__lane-step"
-        type="button"
-        aria-label="Earlier Channel Groups"
-        disabled={!overflow.canBack}
-        onClick={() => step(-1)}
+    <>
+      <div
+        className="programme-guide__lane"
+        data-overflow={overflow.canBack || overflow.canAhead ? "true" : "false"}
+        data-can-back={overflow.canBack ? "true" : "false"}
+        data-can-ahead={overflow.canAhead ? "true" : "false"}
       >
-        <ChevronLeft aria-hidden="true" />
-      </button>
-      <div className="programme-guide__groups-scroller" ref={scrollerRef}>
-        <RadioGroup
-          className="programme-guide__groups"
-          value={activeFilter}
-          onValueChange={(value) => onSelectGroup(groupFromFilterValue(value))}
-          aria-label="Channel groups"
-        >
-          <Radio.Root
-            className="programme-guide__group"
-            data-acceptance-group
-            value={ALL_GROUPS}
-            onMouseEnter={() => onPrefetchGroup(null)}
-            onFocus={() => onPrefetchGroup(null)}
+        {time === null ? null : (
+          <button
+            className="programme-guide__when"
+            type="button"
+            aria-controls={time.open ? timesId : undefined}
+            aria-expanded={time.open}
+            aria-pressed={time.chosen !== null}
+            onClick={time.onToggle}
           >
-            All
-          </Radio.Root>
-          {visibleGroups.map((group) => {
-            const groupValue = filterValue(group.name);
-            return (
-              <Radio.Root
-                className="programme-guide__group"
-                data-acceptance-group
-                key={groupValue}
-                value={groupValue}
-                onMouseEnter={() => onPrefetchGroup(group.name)}
-                onFocus={() => onPrefetchGroup(group.name)}
-              >
-                {groupDisplayName(group.name)}
-                <em>{group.channelCount}</em>
-              </Radio.Root>
-            );
-          })}
-        </RadioGroup>
+            <Clock aria-hidden="true" />
+            {time.chosen === null ? "Now" : clockLabel(time.chosen)}
+          </button>
+        )}
+        <button
+          className="programme-guide__lane-step"
+          type="button"
+          aria-label="Earlier Channel Groups"
+          disabled={!overflow.canBack}
+          onClick={() => step(-1)}
+        >
+          <ChevronLeft aria-hidden="true" />
+        </button>
+        <div className="programme-guide__groups-scroller" ref={scrollerRef}>
+          <RadioGroup
+            className="programme-guide__groups"
+            value={activeFilter}
+            onValueChange={(value) => onSelectGroup(groupFromFilterValue(value))}
+            aria-label="Channel groups"
+          >
+            <Radio.Root
+              className="programme-guide__group"
+              data-acceptance-group
+              value={ALL_GROUPS}
+              onMouseEnter={() => onPrefetchGroup(null)}
+              onFocus={() => onPrefetchGroup(null)}
+            >
+              All
+            </Radio.Root>
+            {visibleGroups.map((group) => {
+              const groupValue = filterValue(group.name);
+              return (
+                <Radio.Root
+                  className="programme-guide__group"
+                  data-acceptance-group
+                  key={groupValue}
+                  value={groupValue}
+                  onMouseEnter={() => onPrefetchGroup(group.name)}
+                  onFocus={() => onPrefetchGroup(group.name)}
+                >
+                  {groupDisplayName(group.name)}
+                  <em>{group.channelCount}</em>
+                </Radio.Root>
+              );
+            })}
+          </RadioGroup>
+        </div>
+        <button
+          className="programme-guide__lane-step"
+          type="button"
+          aria-label="Later Channel Groups"
+          disabled={!overflow.canAhead}
+          onClick={() => step(1)}
+        >
+          <ChevronRight aria-hidden="true" />
+        </button>
+        <GroupRosterDialog
+          groups={groups}
+          activeGroup={activeGroup}
+          excluded={excluded}
+          onSelectGroup={onSelectGroup}
+          onPrefetchGroup={onPrefetchGroup}
+          onSetExcluded={onSetExcluded}
+          onRestoreAll={onRestoreAll}
+        />
       </div>
-      <button
-        className="programme-guide__lane-step"
-        type="button"
-        aria-label="Later Channel Groups"
-        disabled={!overflow.canAhead}
-        onClick={() => step(1)}
-      >
-        <ChevronRight aria-hidden="true" />
-      </button>
-      <GroupRosterDialog
-        groups={groups}
-        activeGroup={activeGroup}
-        excluded={excluded}
-        onSelectGroup={onSelectGroup}
-        onPrefetchGroup={onPrefetchGroup}
-        onSetExcluded={onSetExcluded}
-        onRestoreAll={onRestoreAll}
-      />
-    </div>
+      {time?.open === true ? (
+        // Not Channel Groups: these stay out of the lane's radio group.
+        <div
+          className="programme-guide__times"
+          id={timesId}
+          role="group"
+          aria-label="Time"
+        >
+          <button
+            type="button"
+            aria-pressed={time.chosen === null}
+            onClick={() => time.onChoose(null)}
+          >
+            Now
+          </button>
+          {time.options.map((option) => (
+            <button
+              key={option.getTime()}
+              type="button"
+              aria-pressed={time.chosen?.getTime() === option.getTime()}
+              onClick={() => time.onChoose(option)}
+            >
+              {clockLabel(option)}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </>
   );
 }
 

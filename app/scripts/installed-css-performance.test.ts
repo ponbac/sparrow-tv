@@ -9,6 +9,12 @@ import { describe, expect, it } from "vitest";
 const installedStylesRoot = fileURLToPath(new URL("../src/", import.meta.url));
 const THEATER_STYLESHEET = "features/stage/theater.css";
 const THEATER_SCOPE = '.shell[data-layout="theater"]';
+const POCKET_STYLESHEET = "features/stage/pocket.css";
+const POCKET_SCOPE = '.shell[data-layout="pocket"]';
+const SHORT_LANDSCAPE =
+  "(max-width: 1050px) and (max-height: 600px) and (orientation: landscape)";
+/** Where pocket's modes and dock apply: every window but a short landscape one. */
+const NOT_SHORT_LANDSCAPE = `not all and ${SHORT_LANDSCAPE}`;
 
 describe("installed app repaint contract", () => {
   it("scales shell chrome with large-desktop typography", async () => {
@@ -31,7 +37,7 @@ describe("installed app repaint contract", () => {
     expect(declaration(indexStyles, ":root", "--guide-gutter")).toBe(
       "min(20rem, 38%)",
     );
-    // Android dialogs anchor below the stacked masthead at this height.
+    // Android dialogs anchor below the pocket masthead at this height.
     expect(declaration(indexStyles, ":root", "--bar-h")).toBe("2.375rem");
     expect(declaration(indexStyles, "html", "font-size")).toBe(
       "clamp(100%, 0.8vw, 150%)",
@@ -50,7 +56,7 @@ describe("installed app repaint contract", () => {
       "auto auto",
     );
     // Theater has its own masthead and its own, taller guide rows; the
-    // stacked values above are untouched by it.
+    // pocket values above are untouched by it.
     expect(
       declaration(theaterStyles, `:root:has(${THEATER_SCOPE})`, "--bar-h"),
     ).toBe("3.5rem");
@@ -123,22 +129,23 @@ describe("installed app repaint contract", () => {
     expect(blurred).toEqual([]);
   });
 
-  it("scopes every Theater rule to the Theater layout", async () => {
-    const theaterStyles = requireStylesheet(
+  it.each([
+    [THEATER_STYLESHEET, THEATER_SCOPE],
+    [POCKET_STYLESHEET, POCKET_SCOPE],
+  ])("scopes every rule in %s to its own layout", async (path, scope) => {
+    const layoutStyles = requireStylesheet(
       new Map(await installedStylesheets()),
-      THEATER_STYLESHEET,
+      path,
     );
     const unscoped: string[] = [];
     let rules = 0;
 
-    theaterStyles.walkRules((rule) => {
+    layoutStyles.walkRules((rule) => {
       rules += 1;
       // In-tree elements hang off the shell; portalled ones off the root
       // that holds it.
       unscoped.push(
-        ...rule.selectors.filter(
-          (selector) => !selector.includes(THEATER_SCOPE),
-        ),
+        ...rule.selectors.filter((selector) => !selector.includes(scope)),
       );
     });
 
@@ -170,6 +177,180 @@ describe("installed app repaint contract", () => {
     });
 
     expect(moving).toEqual([]);
+  });
+
+  it("lets pocket change nothing over time", async () => {
+    // Native Android video follows the picture's box late, and never between
+    // two sizes: every change of the layout is a jump.
+    const pocketStyles = requireStylesheet(
+      new Map(await installedStylesheets()),
+      POCKET_STYLESHEET,
+    );
+    const moving: string[] = [];
+
+    pocketStyles.walkAtRules("keyframes", (keyframes) => {
+      moving.push(`@keyframes ${keyframes.params}`);
+    });
+    pocketStyles.walkRules((rule) => {
+      rule.walkDecls(/^(transition|animation)/u, (declaration) => {
+        moving.push(`${rule.selector} { ${declaration} }`);
+      });
+    });
+
+    expect(moving).toEqual([]);
+  });
+
+  it("keeps what pocket raises inside the stage under the sheets", async () => {
+    // A sheet's backdrop is a layer of the document with no z-index of its
+    // own. Without a stacking context on the stage, the band's raised button
+    // would lie over it and stay live under an open sheet.
+    const pocketStyles = requireStylesheet(
+      new Map(await installedStylesheets()),
+      POCKET_STYLESHEET,
+    );
+
+    expect(declaration(pocketStyles, `${POCKET_SCOPE} .stage`, "isolation")).toBe(
+      "isolate",
+    );
+  });
+
+  it("gives a short landscape window's control row one line of a fixed height", async () => {
+    // The picture takes what the info block leaves there, and native Android
+    // video does not follow its box while paused or failed: nothing the row
+    // holds may change the block's height.
+    const pocketStyles = requireStylesheet(
+      new Map(await installedStylesheets()),
+      POCKET_STYLESHEET,
+    );
+    const controls = `${POCKET_SCOPE} .hosted-player__controls[data-variant="compact"]`;
+
+    expect(
+      mediaDeclaration(
+        pocketStyles,
+        SHORT_LANDSCAPE,
+        `${POCKET_SCOPE} .now-playing__controls`,
+        "height",
+      ),
+    ).toBe("calc(2.75rem + 1px)");
+    expect(
+      mediaDeclaration(pocketStyles, SHORT_LANDSCAPE, controls, "flex-wrap"),
+    ).toBe("nowrap");
+    expect(
+      mediaDeclaration(
+        pocketStyles,
+        SHORT_LANDSCAPE,
+        `${controls} > .hosted-player__status`,
+        "width",
+      ),
+    ).toBe("auto");
+  });
+
+  it("sizes pocket's picture, and what is placed by it, from the size it is held at", async () => {
+    // While native Android video cannot follow its box, the shell writes the
+    // box's size to the root. A rule that sized the box, the guide beside it
+    // or a sheet under it without reading that size would move the page
+    // under a picture that stays where it is.
+    const pocketStyles = requireStylesheet(
+      new Map(await installedStylesheets()),
+      POCKET_STYLESHEET,
+    );
+    const playing = `${POCKET_SCOPE.slice(0, -1)}][data-playing="true"]`;
+    const monitor = `${POCKET_SCOPE} .stage__monitor`;
+
+    // The height of the box, which the sheets open under.
+    expect(
+      declaration(
+        pocketStyles,
+        `:root:has(${playing}[data-dock="true"])`,
+        "--pocket-picture-h",
+      ),
+    ).toBe("var(--pocket-pinned-h, var(--pocket-band-h))");
+    expect(
+      declaration(
+        pocketStyles,
+        `:root:has(${playing}[data-dock="false"])`,
+        "--pocket-picture-h",
+      ),
+    ).toBe("var(--pocket-pinned-h, var(--pocket-monitor-h))");
+    expect(
+      mediaDeclaration(pocketStyles, NOT_SHORT_LANDSCAPE, monitor, "height"),
+    ).toBe("var(--pocket-picture-h)");
+    // Its width, across the window and in the band.
+    expect(declaration(pocketStyles, monitor, "width")).toBe(
+      "var(--pocket-pinned-w, auto)",
+    );
+    expect(
+      mediaDeclaration(
+        pocketStyles,
+        NOT_SHORT_LANDSCAPE,
+        `${POCKET_SCOPE}[data-dock="true"] .stage__monitor`,
+        "width",
+      ),
+    ).toBe("var(--pocket-pinned-w, var(--pocket-band-w))");
+    expect(
+      mediaDeclaration(
+        pocketStyles,
+        NOT_SHORT_LANDSCAPE,
+        `${POCKET_SCOPE}[data-mode="guide"][data-dock="true"] .stage`,
+        "grid-template-columns",
+      ),
+    ).toBe("var(--pocket-pinned-w, var(--pocket-band-w)) minmax(0, 1fr)");
+    // A short landscape window sizes the box by its column and its row.
+    expect(
+      mediaDeclaration(
+        pocketStyles,
+        SHORT_LANDSCAPE,
+        `${playing} .shell__workspace`,
+        "grid-template-columns",
+      ),
+    ).toBe("minmax(var(--pocket-pinned-w, 0px), 45fr) minmax(0, 55fr)");
+    expect(
+      mediaDeclaration(
+        pocketStyles,
+        SHORT_LANDSCAPE,
+        `${POCKET_SCOPE} .stage`,
+        "grid-template-rows",
+      ),
+    ).toBe("var(--pocket-pinned-h, minmax(0, 1fr)) auto");
+  });
+
+  it("starts pocket's load notice at the top where its box is too low for it", async () => {
+    // Centred content that overflows is cut at both ends, and the cut top
+    // cannot be scrolled to. The notice is centred by auto margins, which
+    // give way first, and the band shows its heading alone from the top left.
+    const pocketStyles = requireStylesheet(
+      new Map(await installedStylesheets()),
+      POCKET_STYLESHEET,
+    );
+    const notice = `${POCKET_SCOPE} .playback-load-notice`;
+    const docked = `${POCKET_SCOPE}[data-dock="true"] .playback-load-notice`;
+
+    expect(declaration(pocketStyles, notice, "display")).toBe("flex");
+    expect(declaration(pocketStyles, notice, "place-content")).toBe("normal");
+    expect(declaration(pocketStyles, notice, "flex-direction")).toBe("column");
+    expect(declaration(pocketStyles, `${notice} h2`, "margin-top")).toBe("auto");
+    expect(
+      declaration(pocketStyles, `${notice}__actions`, "margin-bottom"),
+    ).toBe("auto");
+    expect(
+      mediaDeclaration(pocketStyles, NOT_SHORT_LANDSCAPE, docked, "align-items"),
+    ).toBe("start");
+    expect(
+      mediaDeclaration(
+        pocketStyles,
+        NOT_SHORT_LANDSCAPE,
+        `${docked} h2`,
+        "margin-top",
+      ),
+    ).toBe("0");
+    expect(
+      mediaDeclaration(
+        pocketStyles,
+        NOT_SHORT_LANDSCAPE,
+        `${docked} p, ${docked}__actions`,
+        "display",
+      ),
+    ).toBe("none");
   });
 
   it("never transitions or animates the picture's box", async () => {
@@ -240,7 +421,11 @@ function transitionsOnlyOpacity(value: string): boolean {
 function declarationsByProperty(rule: Rule): ReadonlyMap<string, string> {
   const declarations = new Map<string, string>();
   rule.walkDecls((declaration) => {
-    declarations.set(declaration.prop, declaration.value.trim());
+    // A value written over several lines reads as one.
+    declarations.set(
+      declaration.prop,
+      declaration.value.trim().replace(/\s+/gu, " "),
+    );
   });
   return declarations;
 }
@@ -255,6 +440,28 @@ function declaration(
     // Desktop defaults exclude conditional phone and accessibility overrides.
     if (rule.parent?.type !== "root") return;
     value = declarationsByProperty(rule).get(property) ?? value;
+  });
+  return value;
+}
+
+/** A declaration of a rule that sits directly in the `@media` with these params. */
+function mediaDeclaration(
+  stylesheet: postcss.Root,
+  media: string,
+  selector: string,
+  property: string,
+): string | undefined {
+  let value: string | undefined;
+  stylesheet.walkAtRules("media", (atRule) => {
+    if (atRule.params !== media) return;
+    atRule.each((node) => {
+      if (
+        node.type === "rule" &&
+        node.selector.replace(/\s+/gu, " ") === selector
+      ) {
+        value = declarationsByProperty(node).get(property) ?? value;
+      }
+    });
   });
   return value;
 }

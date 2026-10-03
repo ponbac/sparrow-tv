@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { List } from "lucide-react";
+import { List, Search } from "lucide-react";
 import {
   lazy,
   Suspense,
@@ -31,27 +31,39 @@ import {
 } from "../guide/board-group-roster";
 import { FeedsDialog } from "../guide/feeds-dialog";
 import { familyProgrammes } from "../guide/guide-families";
-import { clockLabel, clockWindow } from "../guide/guide-window";
+import {
+  clockLabel,
+  clockWindow,
+  GUIDE_SPAN_MS,
+  laterTimes,
+  LATER_SPAN_MS,
+} from "../guide/guide-window";
 import { ProgrammeGuide } from "../guide/programme-guide";
 import { useBoardGroupExclusions } from "../guide/use-board-group-exclusions";
 import { useGuideClock } from "../guide/use-guide-clock";
 import { useVariantPreferences } from "../guide/use-variant-preferences";
+import { ChannelBar } from "../stage/channel-bar";
+import { nextDock, pictureFollows } from "../stage/dock";
 import { NowPlaying, type NowPlayingSubject } from "../stage/now-playing";
 import { Stage } from "../stage/stage";
 import {
+  samePicture,
   StageChromeProvider,
   type StageChrome,
   type StagePicture,
 } from "../stage/stage-chrome";
+import { focusPictureReturn, guideSearchInput } from "../stage/stage-dom";
 import { useIdleChrome } from "../stage/use-idle-chrome";
 import { guideRowProgramme, useNowPlaying } from "../stage/use-now-playing";
+import { usePicturePin } from "../stage/use-picture-pin";
 import { useStageKeys } from "../stage/use-stage-keys";
 import { usePictureOverlay, useStageLayout } from "../stage/use-stage-layout";
+import { useTurnFullscreen } from "../stage/use-turn-fullscreen";
+import { useZapStops } from "../stage/use-zap-stops";
 import {
   neighbouringZapStop,
   zapRailStops,
   zapStopOf,
-  zapStops,
   type ZapStop,
 } from "../stage/zap";
 import { ZapRail } from "../stage/zap-rail";
@@ -59,14 +71,16 @@ import { useCatalogSynchronization } from "../status/catalog-synchronization";
 import { sourceFreshness } from "../status/source-freshness";
 import { useGuideCatalog } from "./use-guide-catalog";
 import "../stage/shell.css";
+import "../stage/pocket.css";
 import "../stage/theater.css";
 
 const loadHostedPlayer = () => import("../playback/hosted-player");
 const loadInstalledPlayer = () => import("../playback/installed-player");
-// Rows read around the playing Channel in the stacked layout: enough to hold
-// every Quality Variant of its guide row.
-const STACKED_NEIGHBOURHOOD_SIZE = 9;
-// Theater also offers the Channels on either side of the playing one.
+// Rows read around the playing Channel in the pocket layout: enough to hold
+// its guide row and the one on either side, each with every Quality Variant.
+// A zap that runs past them reads further.
+const POCKET_NEIGHBOURHOOD_SIZE = 21;
+// Theater offers a whole row of the Channels on either side.
 const THEATER_NEIGHBOURHOOD_SIZE = 61;
 // How long the last arrow press waits for another before its Channel is tuned.
 const ZAP_COMMIT_MS = 350;
@@ -102,14 +116,6 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   const runtime = props.runtime ?? "hosted";
   const client = props.client;
   const now = useGuideClock();
-  const guideClock = useMemo(() => {
-    const window = clockWindow(now);
-    return {
-      window,
-      startsAt: clientSchemas.isoInstant.parse(window.startsAt.toISOString()),
-      endsAt: clientSchemas.isoInstant.parse(window.endsAt.toISOString()),
-    };
-  }, [now]);
   const queryClient = useQueryClient();
   const synchronization = useCatalogSynchronization(client);
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
@@ -150,6 +156,26 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   );
   const pictureOverlay = usePictureOverlay(runtime, client);
   const layout = useStageLayout(pictureOverlay);
+  // Pocket's row of times. Until the viewer first opens it the guide reads
+  // what the timeline shows; from then on one longer read covers every time
+  // on offer, so choosing one asks for nothing.
+  const [timeRow, setTimeRow] = useState<"unused" | "open" | "closed">(
+    "unused",
+  );
+  const toggleTimeRow = useCallback(() => {
+    setTimeRow((current) => (current === "open" ? "closed" : "open"));
+  }, []);
+  const [chosenTime, setChosenTime] = useState<Date | null>(null);
+  const guideSpan =
+    layout === "pocket" && timeRow !== "unused" ? LATER_SPAN_MS : GUIDE_SPAN_MS;
+  const guideClock = useMemo(() => {
+    const window = clockWindow(now, guideSpan);
+    return {
+      window,
+      startsAt: clientSchemas.isoInstant.parse(window.startsAt.toISOString()),
+      endsAt: clientSchemas.isoInstant.parse(window.endsAt.toISOString()),
+    };
+  }, [guideSpan, now]);
   // The viewer's choice between the full picture and the guide. The shell
   // shows the guide regardless while there is no picture in the page.
   const [mode, setMode] = useState<"watch" | "guide">("watch");
@@ -160,20 +186,43 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   const [controlsSlot, setControlsSlot] = useState<HTMLElement | null>(null);
   const chrome = useMemo<StageChrome>(
     () => ({
-      controlsSlot: layout === "theater" ? controlsSlot : null,
-      controls: layout === "theater" ? "compact" : "bar",
+      // Both layouts keep the controls in the info block, clear of the picture.
+      controlsSlot,
+      controls: "compact",
       // Fullscreen on the document root outlives Stop and a change of Channel.
       fullscreenTarget: pictureOverlay ? document.documentElement : null,
+      // Above pocket's controls is the picture, which nothing may cover.
+      menuSide: layout === "theater" ? "top" : "bottom",
       reportPicture,
     }),
     [controlsSlot, layout, pictureOverlay, reportPicture],
   );
   const guideForced = playingChannel === null || picture?.external === true;
   const effectiveMode = guideForced ? "guide" : mode;
+  // Whether pocket's picture is the small band beside the guide. It follows
+  // the mode, but a picture that cannot follow its box keeps the size it has.
+  const [docked, setDocked] = useState(false);
+  const follows = pictureFollows(pictureOverlay, picture);
+  const dock = nextDock({ mode: effectiveMode, previous: docked, follows });
+  if (dock !== docked) {
+    setDocked(dock);
+  }
+  // The window can change size as well as the mode: a picture that cannot
+  // follow keeps the very box it has, in pixels.
+  usePicturePin(follows);
   const watching = layout === "theater" && effectiveMode === "watch";
   const chromeVisibility = useIdleChrome(
-    watching && picture?.playing === true,
+    watching && picture?.state === "playing",
   );
+  // A phone turned on its side while its picture plays wants the picture.
+  useTurnFullscreen({
+    watching:
+      layout === "pocket" &&
+      effectiveMode === "watch" &&
+      picture?.state === "playing" &&
+      !picture.external,
+    follows,
+  });
 
   const status = synchronization.status;
   const catalogGeneration = status?.generation ?? null;
@@ -216,7 +265,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     channelLimit:
       layout === "theater"
         ? THEATER_NEIGHBOURHOOD_SIZE
-        : STACKED_NEIGHBOURHOOD_SIZE,
+        : POCKET_NEIGHBOURHOOD_SIZE,
     onGenerationMismatch: synchronization.retryStatus,
   });
 
@@ -271,25 +320,16 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   const preparePlayback =
     runtime === "installed" ? loadInstalledPlayer : loadHostedPlayer;
 
-  // The guide rows a zap moves through; empty until the rows around the
-  // playing Channel are known.
-  const stops = useMemo(
-    () =>
-      playingChannel === null || nowPlaying.rows === null
-        ? []
-        : zapStops(
-            nowPlaying.rows,
-            playingChannel.id,
-            groupExclusions.excluded,
-            variantPreferences,
-          ),
-    [
-      groupExclusions.excluded,
-      nowPlaying.rows,
-      playingChannel,
-      variantPreferences,
-    ],
-  );
+  // The info block and the rail follow a zap at once, ahead of the player.
+  const shownChannel = pendingZap ?? playingChannel;
+  const stops = useZapStops({
+    neighbourhood: nowPlaying.neighbourhood,
+    playing: playingChannel?.id ?? null,
+    shown: shownChannel?.id ?? null,
+    excludedGroups: groupExclusions.excluded,
+    preferences: variantPreferences,
+    onExtend: nowPlaying.extend,
+  });
   const zap = (direction: -1 | 1) => {
     if (playingChannel === null) {
       return;
@@ -318,6 +358,23 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   const showPicture = useCallback(() => {
     setMode("watch");
   }, []);
+  const showGuide = useCallback(() => {
+    setMode("guide");
+  }, []);
+  const showGuideFromBar = useCallback(() => {
+    showGuide();
+    // The bar leaves the layout with the watch screen. Focus moves to the
+    // way back once the band is laid out, so a keyboard keeps its place.
+    requestAnimationFrame(focusPictureReturn);
+  }, [showGuide]);
+  const findInGuide = useCallback(() => {
+    showGuide();
+    // The field can take focus once the guide is back in the layout. The
+    // picture must stay where it is, so nothing scrolls to reach the field.
+    requestAnimationFrame(() => {
+      guideSearchInput()?.focus({ preventScroll: true });
+    });
+  }, [showGuide]);
   useStageKeys({
     active: layout === "theater",
     mode: effectiveMode,
@@ -360,8 +417,6 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   }
 
   const player = renderPlayer({ props, playingChannel, onStop: stop });
-  // The info block and the rail follow a zap at once, ahead of the player.
-  const shownChannel = pendingZap ?? playingChannel;
   const subject: NowPlayingSubject | null =
     playingChannel === null
       ? null
@@ -377,7 +432,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
               nowPlaying.family?.variants.map((variant) => variant.channel) ??
               [],
             programmes: nowPlaying.programmes,
-            loading: nowPlaying.loading,
+            reading: nowPlaying.reading,
           }
         : zapSubject(pendingZap, zapStopOf(stops, pendingZap.id));
   const feeds =
@@ -404,7 +459,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     );
 
   // The one element whose parent depends on the layout: Theater shows it in
-  // the masthead, stacked in the guide's toolbar.
+  // the masthead, pocket in the guide's toolbar.
   const search = (
     <BoardSearch
       client={client}
@@ -422,19 +477,23 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
       data-layout={layout}
       data-mode={effectiveMode}
       data-chrome={chromeVisibility}
+      data-playing={playingChannel !== null}
+      data-dock={dock}
+      data-external={picture?.external === true}
       data-acceptance-catalog-shell
     >
       <ShellMasthead
         now={now}
-        theater={
+        chrome={
           layout === "theater"
             ? {
+                layout,
                 search,
                 guideOpen: effectiveMode === "guide",
                 guideForced,
                 onToggleGuide: toggleGuide,
               }
-            : null
+            : { layout, onFind: findInGuide }
         }
       />
       {status !== null && isRetainedCatalog(status) ? (
@@ -457,13 +516,22 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
                 playingChannel={playingChannel?.id ?? null}
                 now={now}
                 layout={layout}
+                picture={picture}
                 controlsRef={setControlsSlot}
                 onPreparePlayback={preparePlayback}
                 onTuneVariant={tuneVariant}
               />
             }
             rail={
-              watching && shownChannel !== null && stops.length > 0 ? (
+              shownChannel === null ? null : layout === "pocket" ? (
+                <ChannelBar
+                  stops={stops}
+                  current={shownChannel.id}
+                  now={now}
+                  onZap={zap}
+                  onShowGuide={showGuideFromBar}
+                />
+              ) : watching && stops.length > 0 ? (
                 <ZapRail
                   stops={zapRailStops(stops, shownChannel.id)}
                   current={shownChannel.id}
@@ -474,6 +542,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
               ) : null
             }
             keyHints={watching}
+            onShowPicture={layout === "pocket" ? showPicture : null}
           />
         </StageChromeProvider>
         <ProgrammeGuide
@@ -485,6 +554,22 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
           playingChannel={playingChannel?.id ?? null}
           variantPreferences={variantPreferences}
           layout={layout}
+          mode={effectiveMode}
+          time={
+            layout === "pocket"
+              ? {
+                  open: timeRow === "open",
+                  // A chosen time the clock has reached is now.
+                  chosen:
+                    chosenTime !== null && chosenTime.getTime() > now.getTime()
+                      ? chosenTime
+                      : null,
+                  options: laterTimes(now, guideClock.window.endsAt),
+                  onToggle: toggleTimeRow,
+                  onChoose: setChosenTime,
+                }
+              : null
+          }
           loading={guideCatalog.loading}
           replacing={guideCatalog.replacing}
           error={guideError}
@@ -558,32 +643,50 @@ function renderPlayer({
   );
 }
 
+/** What the masthead carries between the wordmark and the clock. */
+type MastheadChrome =
+  | {
+      readonly layout: "theater";
+      readonly search: ReactNode;
+      readonly guideOpen: boolean;
+      /** The guide stays open while there is no picture in the page. */
+      readonly guideForced: boolean;
+      readonly onToggleGuide: () => void;
+    }
+  | {
+      readonly layout: "pocket";
+      /** Opens the guide with its search field ready to type in. */
+      readonly onFind: () => void;
+    };
+
 function ShellMasthead({
   now,
-  theater,
+  chrome,
 }: {
   readonly now: Date;
-  /** What only the Theater masthead carries; null in the stacked layout. */
-  readonly theater: {
-    readonly search: ReactNode;
-    readonly guideOpen: boolean;
-    /** The guide stays open while there is no picture in the page. */
-    readonly guideForced: boolean;
-    readonly onToggleGuide: () => void;
-  } | null;
+  readonly chrome: MastheadChrome;
 }) {
   return (
     <header className="shell__masthead">
       <strong className="shell__wordmark">Sparrow</strong>
-      {theater === null ? null : (
+      {chrome.layout === "pocket" ? (
+        <button
+          className="shell__find"
+          type="button"
+          aria-label="Search"
+          onClick={chrome.onFind}
+        >
+          <Search aria-hidden="true" />
+        </button>
+      ) : (
         <>
-          <div className="shell__search">{theater.search}</div>
+          <div className="shell__search">{chrome.search}</div>
           <button
             className="shell__guide-toggle"
             type="button"
-            aria-pressed={theater.guideOpen}
-            disabled={theater.guideForced}
-            onClick={theater.onToggleGuide}
+            aria-pressed={chrome.guideOpen}
+            disabled={chrome.guideForced}
+            onClick={chrome.onToggleGuide}
           >
             <List aria-hidden="true" />
             Guide
@@ -652,17 +755,9 @@ function zapSubject(
       stop === null
         ? []
         : familyProgrammes(stop.family, stop.target).map(guideRowProgramme),
-    loading: false,
+    // The schedule, and with it the descriptions, is read once it is tuned.
+    reading: "descriptions",
   };
-}
-
-function samePicture(
-  left: StagePicture | null,
-  right: StagePicture | null,
-): boolean {
-  return left === null || right === null
-    ? left === right
-    : left.playing === right.playing && left.external === right.external;
 }
 
 function isRetainedCatalog(status: CatalogStatus): boolean {

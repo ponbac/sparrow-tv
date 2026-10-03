@@ -147,6 +147,23 @@ pub(crate) enum AndroidPlaybackPhase {
     Stopped,
 }
 
+/// What Media3 is doing with the Audio Track of the transport it was given.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum AndroidPlaybackAudio {
+    /// The player has not yet settled what it can play.
+    Pending,
+    /// The device is decoding the track: with a decoder of its own, or in
+    /// the audio output it hands the track to undecoded.
+    DeviceDecoder,
+    /// The decoder bundled with the app is decoding the track.
+    BundledDecoder,
+    /// The transport carries an audio track that nothing here can decode.
+    Undecodable,
+    /// The player found no audio track in the transport.
+    Absent,
+}
+
 /// Aggregate-only Android player status. It cannot contain provider data.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AndroidPlaybackStatus {
@@ -155,6 +172,7 @@ pub(crate) struct AndroidPlaybackStatus {
     dropped_frames: u64,
     buffered_duration_ms: u64,
     silent: bool,
+    audio: AndroidPlaybackAudio,
 }
 
 impl AndroidPlaybackStatus {
@@ -177,6 +195,10 @@ impl AndroidPlaybackStatus {
     pub(crate) const fn silent(self) -> bool {
         self.silent
     }
+
+    pub(crate) const fn audio(self) -> AndroidPlaybackAudio {
+        self.audio
+    }
 }
 
 #[cfg(any(test, target_os = "android"))]
@@ -188,6 +210,7 @@ struct AndroidPlaybackStatusWire {
     dropped_frames: u64,
     buffered_duration_ms: u64,
     silent: bool,
+    audio: AndroidPlaybackAudio,
 }
 
 /// Privacy-safe Android adapter failure.
@@ -211,6 +234,7 @@ fn parse_status_json(value: &str) -> Result<AndroidPlaybackStatus, AndroidPlayba
         dropped_frames: status.dropped_frames,
         buffered_duration_ms: status.buffered_duration_ms,
         silent: status.silent,
+        audio: status.audio,
     })
 }
 
@@ -822,7 +846,7 @@ mod tests {
     fn aggregate_status_is_closed_bounded_and_rejects_extra_context() {
         assert_eq!(
             parse_status_json(
-                r#"{"state":"playing","decodedFrames":1200,"droppedFrames":3,"bufferedDurationMs":1250,"silent":true}"#,
+                r#"{"state":"playing","decodedFrames":1200,"droppedFrames":3,"bufferedDurationMs":1250,"silent":true,"audio":"bundled-decoder"}"#,
             ),
             Ok(AndroidPlaybackStatus {
                 phase: AndroidPlaybackPhase::Playing,
@@ -830,23 +854,44 @@ mod tests {
                 dropped_frames: 3,
                 buffered_duration_ms: 1_250,
                 silent: true,
+                audio: AndroidPlaybackAudio::BundledDecoder,
             })
         );
+        for (wire, audio) in [
+            ("pending", AndroidPlaybackAudio::Pending),
+            ("device-decoder", AndroidPlaybackAudio::DeviceDecoder),
+            ("undecodable", AndroidPlaybackAudio::Undecodable),
+            ("absent", AndroidPlaybackAudio::Absent),
+        ] {
+            assert_eq!(
+                parse_status_json(&format!(
+                    r#"{{"state":"playing","decodedFrames":0,"droppedFrames":0,"bufferedDurationMs":0,"silent":false,"audio":"{wire}"}}"#,
+                ))
+                .map(AndroidPlaybackStatus::audio),
+                Ok(audio)
+            );
+        }
         assert!(
             parse_status_json(
-                r#"{"state":"playing","decodedFrames":0,"droppedFrames":0,"bufferedDurationMs":0,"silent":true,"url":"https://provider.invalid/private"}"#,
+                r#"{"state":"playing","decodedFrames":0,"droppedFrames":0,"bufferedDurationMs":0,"silent":true,"audio":"c2.vendor.decoder"}"#,
             )
             .is_err()
         );
         assert!(
             parse_status_json(
-                r#"{"state":"unknown","decodedFrames":0,"droppedFrames":0,"bufferedDurationMs":0,"silent":true}"#,
+                r#"{"state":"playing","decodedFrames":0,"droppedFrames":0,"bufferedDurationMs":0,"silent":true,"audio":"pending","url":"https://provider.invalid/private"}"#,
+            )
+            .is_err()
+        );
+        assert!(
+            parse_status_json(
+                r#"{"state":"unknown","decodedFrames":0,"droppedFrames":0,"bufferedDurationMs":0,"silent":true,"audio":"pending"}"#,
             )
             .is_err()
         );
         assert!(
             parse_status_json(&format!(
-                r#"{{"state":"playing","decodedFrames":0,"droppedFrames":{},"bufferedDurationMs":0,"silent":true}}"#,
+                r#"{{"state":"playing","decodedFrames":0,"droppedFrames":{},"bufferedDurationMs":0,"silent":true,"audio":"pending"}}"#,
                 MAX_SAFE_COUNTER + 1
             ))
             .is_err()

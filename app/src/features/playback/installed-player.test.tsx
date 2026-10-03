@@ -21,7 +21,11 @@ import type {
   InstalledLifecycleEvents,
   InstalledLifecycleSignal,
 } from "./installed-lifecycle";
-import type { InstalledPlaybackEngine } from "./installed-playback-engine";
+import type {
+  InstalledPlaybackEngine,
+  InstalledPlaybackRequest,
+} from "./installed-playback-engine";
+import { StageChromeProvider, type StageChrome } from "../stage/stage-chrome";
 
 afterEach(() => {
   cleanup();
@@ -361,6 +365,79 @@ describe("InstalledPlayer", () => {
     ).toBeDisabled();
   });
 
+  it("says so when the picture plays without sound", async () => {
+    const acThree = clientSchemas.nativePlaybackDescriptor.parse({
+      ...MULTI_AUDIO_DESCRIPTOR,
+      tracks: [{ ...AUDIO_TRACKS[1], selected: true }],
+      selection: {
+        _tag: "selected",
+        trackId: SPANISH_AUDIO_ID,
+        reason: "first-available",
+      },
+    });
+    let report: InstalledPlaybackRequest["onAudio"] = () => undefined;
+    const engine: InstalledPlaybackEngine = {
+      start: ({ onPlaying, onAudio }) => {
+        report = onAudio;
+        onPlaying();
+        return { stop: () => undefined };
+      },
+    };
+    // The shell is told as well: it words the silence where its layout
+    // keeps the player's own line out of view.
+    const reportPicture = vi.fn<StageChrome["reportPicture"]>();
+    const chrome: StageChrome = {
+      controlsSlot: null,
+      controls: "bar",
+      fullscreenTarget: null,
+      menuSide: "top",
+      reportPicture,
+    };
+    const view = render(
+      <StageChromeProvider value={chrome}>
+        <InstalledPlayer
+          channel={CHANNEL}
+          client={fixtureClient(() => fixtureSession({ start: acThree }).value)}
+          engine={engine}
+          onStop={vi.fn()}
+        />
+      </StageChromeProvider>,
+    );
+    expect(await screen.findByText("On air")).toBeVisible();
+    expect(screen.queryByText(/^No sound/)).toBeNull();
+
+    act(() => report("bundled-decoder"));
+    expect(screen.queryByText(/^No sound/)).toBeNull();
+    expect(reportPicture).toHaveBeenLastCalledWith(
+      expect.objectContaining({ state: "playing", silent: false }),
+    );
+
+    act(() => report("undecodable"));
+    const notice = screen.getByText("No sound: this device cannot play AC-3.");
+    expect(notice).toHaveAttribute("data-warning", "true");
+    expect(reportPicture).toHaveBeenLastCalledWith(
+      expect.objectContaining({ state: "playing", silent: true }),
+    );
+
+    act(() => report("absent"));
+    expect(
+      screen.getByText("No sound: the player found no audio track."),
+    ).toBeVisible();
+    view.unmount();
+
+    render(
+      <InstalledPlayer
+        channel={CHANNEL}
+        client={fixtureClient(() => fixtureSession().value)}
+        engine={playingEngine().value}
+        onStop={vi.fn()}
+      />,
+    );
+    expect(
+      await screen.findByText("No sound: no playable audio track found."),
+    ).toHaveAttribute("data-warning", "true");
+  });
+
   it("does not leak resources across React StrictMode setup replay", async () => {
     const resources: ReturnType<typeof fixtureSession>[] = [];
     const client = fixtureClient(() => {
@@ -454,6 +531,7 @@ describe("InstalledPlayer", () => {
     expect(await screen.findByText("On air")).toBeVisible();
     expect(screen.getByText("Playing in mpv")).toBeVisible();
     expect(screen.getByText("The picture is in the mpv window.")).toBeVisible();
+    expect(screen.queryByText(/^No sound/)).toBeNull();
     expect(screen.getByRole("button", { name: "Mute" })).toBeVisible();
     expect(screen.getByRole("slider", { name: "Volume" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Full screen" })).toBeVisible();
@@ -647,6 +725,7 @@ function androidPresentationFixture() {
         droppedFrames: 0,
         bufferedDurationMs: 0,
         silent: true,
+        audio: "device-decoder" as const,
       }),
     pause: async () => success(undefined),
     resume: async () => success(undefined),

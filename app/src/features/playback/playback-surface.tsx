@@ -21,9 +21,24 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import type { ChannelId } from "../../client/contracts";
-import { useStageChrome } from "../stage/stage-chrome";
+import {
+  controlPresentation,
+  fullscreenToggleTarget,
+  roomUnderPicture,
+  useStageChrome,
+  type WindowBox,
+} from "../stage/stage-chrome";
 import { playerPresentation, type PlayerState } from "./playback-presentation";
 import "./hosted-player.css";
+
+// How a menu held under the picture finds its place: on the other side of
+// its button where that fits, else beside the button, moved along it as far
+// as the room requires.
+const UNDER_PICTURE_AVOIDANCE = {
+  side: "flip",
+  align: "shift",
+  fallbackAxisSide: "end",
+} as const;
 
 /** A less-used action: a plain button in the bar, a "More" menu item when compact. */
 export interface PlaybackSecondaryAction {
@@ -61,12 +76,18 @@ export interface PlaybackSurfaceProps {
   readonly fullscreen: boolean;
   readonly onVolumeChange: (volume: number) => void;
   readonly onToggleMuted: () => void;
-  /** Receives the chrome's fullscreen target, or the player section without one. */
+  /**
+   * Receives the element to make fullscreen: the chrome's target, or the
+   * player section without one. While the player is fullscreen it receives
+   * the element that is, to leave it.
+   */
   readonly onRequestFullscreen: (surface: HTMLElement) => void;
   /** Native video occupies a separate Android surface above the WebView. */
   readonly nativeVideo?: boolean;
   /** The picture is in a separate window (mpv), not in the page. */
   readonly external?: boolean;
+  /** The player knows the picture has no sound the viewer can hear. */
+  readonly silent?: boolean;
   readonly showMediaControls?: boolean;
   readonly stopLabel?: string;
   readonly onStop: () => void;
@@ -95,6 +116,7 @@ export function PlaybackSurface({
   onRequestFullscreen,
   nativeVideo = false,
   external = false,
+  silent = false,
   showMediaControls = true,
   stopLabel = "Stop stream",
   onStop,
@@ -104,6 +126,10 @@ export function PlaybackSurface({
   const surfaceRef = useRef<HTMLElement>(null);
   const hideControls = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [controlsVisible, setControlsVisible] = useState(true);
+  // Where the More menu may open while it must keep clear of the picture;
+  // measured each time it opens, because the picture's box moves with the
+  // window and the layout.
+  const [menuRoom, setMenuRoom] = useState<WindowBox | null>(null);
   const playing = state._tag === "playing";
   const canHideControls = fullscreen && playing;
   const hideWhenIdle = useCallback(function hideWhenIdle() {
@@ -138,14 +164,41 @@ export function PlaybackSurface({
     };
   }, [canHideControls, hideWhenIdle]);
 
+  // Whether this section is the document's fullscreen element. The document
+  // says so itself: the chrome's target can change while the section is
+  // still fullscreen.
+  const [sectionFullscreen, setSectionFullscreen] = useState(false);
+  useEffect(() => {
+    const update = () => {
+      setSectionFullscreen(
+        surfaceRef.current !== null &&
+          document.fullscreenElement === surfaceRef.current,
+      );
+    };
+    document.addEventListener("fullscreenchange", update);
+    update();
+    return () => document.removeEventListener("fullscreenchange", update);
+  }, []);
+
+  const presentation = playerPresentation(state);
   const { reportPicture } = chrome;
   useEffect(() => {
-    reportPicture({ playing, external });
-  }, [reportPicture, playing, external]);
+    reportPicture({
+      state: state._tag,
+      status: presentation.status,
+      external,
+      silent,
+    });
+  }, [reportPicture, state._tag, presentation.status, external, silent]);
   useEffect(() => () => reportPicture(null), [reportPicture]);
 
   const toggleFullscreen = () => {
-    const target = chrome.fullscreenTarget ?? surfaceRef.current;
+    const target = fullscreenToggleTarget({
+      fullscreen,
+      fullscreenElement: document.fullscreenElement,
+      target: chrome.fullscreenTarget,
+      section: surfaceRef.current,
+    });
     if (target !== null) onRequestFullscreen(target);
   };
   const beginBlockedPlayback = () => {
@@ -154,19 +207,21 @@ export function PlaybackSurface({
       void video.play().catch(onAutoplayFailure);
     }
   };
-  const presentation = playerPresentation(state);
-  const compact = chrome.controls === "compact";
+  // While the player section is the fullscreen element the controls are its
+  // own inline bar; the shell's slot lies outside what fullscreen draws.
+  const controlsPlacement = controlPresentation(chrome, sectionFullscreen);
+  const compact = controlsPlacement.variant === "compact";
   // Compact buttons show only an icon; the label stays in the DOM (the
   // accessible name and the text scripts match on) and doubles as the hint.
   const hint = (label: string) => (compact ? { title: label } : {});
 
-  // One order for both variants; the phone layout reorders by class in CSS.
+  // One order for both variants; the pocket layout reorders by class in CSS.
   const controls = (
     <div
       className="hosted-player__controls"
       role="group"
       aria-label="Playback controls"
-      data-variant={chrome.controls}
+      data-variant={controlsPlacement.variant}
     >
       {state._tag === "autoplay-blocked" ? (
         <button
@@ -233,7 +288,7 @@ export function PlaybackSurface({
       {showMediaControls ? (
         <button
           type="button"
-          className="hosted-player__primary-control"
+          className="hosted-player__primary-control hosted-player__fullscreen"
           aria-pressed={fullscreen}
           data-stage-action="fullscreen"
           onClick={toggleFullscreen}
@@ -253,6 +308,7 @@ export function PlaybackSurface({
       ) : null}
       {playerSwitch === undefined ? null : (
         <button
+          className="hosted-player__switch"
           type="button"
           disabled={playerSwitch.disabled ?? false}
           onClick={playerSwitch.onSwitch}
@@ -267,16 +323,38 @@ export function PlaybackSurface({
         </button>
       )}
       {secondaryActions.length === 0 ? null : compact ? (
-        <Menu.Root>
-          <Menu.Trigger aria-label="More" title="More">
+        <Menu.Root
+          onOpenChange={(open) => {
+            const video = videoRef.current;
+            if (open && chrome.menuSide === "bottom" && video !== null) {
+              setMenuRoom(
+                roomUnderPicture(video.getBoundingClientRect().bottom, {
+                  width: window.innerWidth,
+                  height: window.innerHeight,
+                }),
+              );
+            }
+          }}
+        >
+          <Menu.Trigger
+            className="hosted-player__more"
+            aria-label="More"
+            title="More"
+          >
             <Ellipsis aria-hidden="true" />
           </Menu.Trigger>
           <Menu.Portal>
             <Menu.Positioner
               className="hosted-player__menu-positioner"
-              side="top"
+              side={chrome.menuSide}
               align="end"
               sideOffset={6}
+              {...(chrome.menuSide === "bottom" && menuRoom !== null
+                ? {
+                    collisionBoundary: menuRoom,
+                    collisionAvoidance: UNDER_PICTURE_AVOIDANCE,
+                  }
+                : {})}
             >
               <Menu.Popup className="hosted-player__menu">
                 {secondaryActions.map((action) => (
@@ -307,7 +385,7 @@ export function PlaybackSurface({
         ))
       )}
       <button
-        className="hosted-player__primary-control"
+        className="hosted-player__primary-control hosted-player__stop"
         type="button"
         onClick={onStop}
         {...hint(stopLabel)}
@@ -396,9 +474,9 @@ export function PlaybackSurface({
         ) : null}
       </div>
 
-      {chrome.controlsSlot === null
+      {controlsPlacement.slot === null
         ? controls
-        : createPortal(controls, chrome.controlsSlot)}
+        : createPortal(controls, controlsPlacement.slot)}
     </section>
   );
 }

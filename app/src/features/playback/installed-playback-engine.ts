@@ -1,4 +1,5 @@
 import type {
+  AndroidPlaybackAudio,
   ClientError,
   InstalledPlaybackSession,
   InstalledPlaybackTransport,
@@ -30,6 +31,8 @@ export interface InstalledPlaybackRequest {
   ) => void;
   readonly onAutoplayBlocked: () => void;
   readonly onPlaying: () => void;
+  /** Called only by a presentation that can tell what becomes of the Audio Track. */
+  readonly onAudio: (audio: AndroidPlaybackAudio) => void;
 }
 
 /** Platform controls layered over deterministic local presentation cleanup. */

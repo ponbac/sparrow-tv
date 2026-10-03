@@ -261,7 +261,6 @@
 @media (max-width: 760px) {
   .group-roster__backdrop,
   .group-roster__popup {
-    top: var(--mobile-panel-top);
     left: 0;
     width: 100%;
   }

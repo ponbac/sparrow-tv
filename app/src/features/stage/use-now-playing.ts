@@ -1,10 +1,16 @@
-import { keepPreviousData, skipToken, useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo } from "react";
+import {
+  keepPreviousData,
+  queryOptions,
+  skipToken,
+  useQueries,
+  useQuery,
+  type UseQueryResult,
+} from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   CatalogGeneration,
   ChannelId,
   GuideProgramme,
-  GuideWindowChannel,
   IsoInstant,
   ProgrammeSlot,
   SparrowClient,
@@ -18,10 +24,30 @@ import {
   guideFamilies,
   type GuideFamily,
 } from "../guide/guide-families";
+import {
+  extensionAnchors,
+  extensionWith,
+  mergedNeighbourhood,
+  type AroundRead,
+  type NeighbourhoodExtension,
+  type ZapNeighbourhood,
+} from "./zap-neighbourhood";
 
 const SCHEDULE_LIMIT = 8;
+// A further read around a row at the end of the neighbourhood holds as many
+// rows as one read may: half of them lie beyond that row.
+const EXTENSION_LIMIT = 100;
 const IMMUTABLE_CATALOG_STALE_TIME = Number.POSITIVE_INFINITY;
 const NO_PROGRAMMES: readonly NowPlayingProgramme[] = [];
+
+/**
+ * How far the reads about the playing Channel have got. "programmes": no
+ * Programme is known yet and a read is under way. "descriptions": the
+ * Programmes known so far come from guide rows, which carry no description,
+ * and the schedule read that does is under way. "done": nothing more is
+ * coming.
+ */
+export type NowPlayingReading = "programmes" | "descriptions" | "done";
 
 /** A Programme as the info block shows it. */
 export interface NowPlayingProgramme extends ProgrammeSlot {
@@ -47,11 +73,11 @@ export interface NowPlayingInput {
 /** The playing Channel's Programmes and the guide rows around it. */
 export interface NowPlayingRead {
   /**
-   * The guide rows around the playing Channel in Channel Catalog order. Null
-   * unless they belong to the current generation and hold that Channel.
+   * The guide rows around the playing Channel, with any read further on.
+   * Null unless they belong to the current generation and hold that Channel.
    */
-  readonly rows: readonly GuideWindowChannel[] | null;
-  /** The playing Channel's guide row among `rows`. */
+  readonly neighbourhood: ZapNeighbourhood | null;
+  /** The playing Channel's guide row in the neighbourhood. */
   readonly family: GuideFamily | null;
   /**
    * The playing Channel's Programmes from the guide window's start on, in
@@ -59,13 +85,19 @@ export interface NowPlayingRead {
    * neither read has any, and when both fail.
    */
   readonly programmes: readonly NowPlayingProgramme[];
-  /** No Programme is known yet and a read is still under way. */
-  readonly loading: boolean;
+  readonly reading: NowPlayingReading;
+  /**
+   * Reads the guide rows beyond one end of the neighbourhood: before its
+   * first row (`-1`) or after its last (`1`). Asking again for the same end
+   * reads nothing twice, and one neighbourhood grows only so far.
+   */
+  readonly extend: (direction: -1 | 1) => void;
 }
 
 /**
- * Reads the playing Channel's schedule and the guide rows around it. A failed
- * read is never surfaced: the Channel then simply has no Programme data.
+ * Reads the playing Channel's schedule and the guide rows around it, and
+ * further rows on either side when asked. A failed read is never surfaced:
+ * the Channel then simply has no Programme data, or no further rows.
  */
 export function useNowPlaying({
   client,
@@ -108,34 +140,25 @@ export function useNowPlaying({
     retry: false,
     staleTime: IMMUTABLE_CATALOG_STALE_TIME,
   });
+  const aroundRead = (around: ChannelId | null, limit: number) =>
+    aroundReadOptions({ client, generation, around, startsAt, endsAt, limit });
   const neighbourhoodQuery = useQuery({
-    queryKey: [
-      "catalog",
-      "now-playing",
-      "neighbourhood",
-      generation,
-      channel,
-      startsAt,
-      endsAt,
-      channelLimit,
-    ],
-    queryFn:
-      channel === null || generation === null
-        ? skipToken
-        : ({ signal }) =>
-            generationBoundResult(
-              client.guideWindow({
-                around: channel,
-                startsAt,
-                endsAt,
-                channelLimit,
-                signal,
-              }),
-              generation,
-            ),
+    ...aroundRead(channel, channelLimit),
     placeholderData: keepPreviousData,
-    retry: false,
-    staleTime: IMMUTABLE_CATALOG_STALE_TIME,
+  });
+  // The first read shown may still be the previous Channel's: the further
+  // reads go with the read they extend, so a zap past its rows keeps them
+  // until the new Channel's own rows arrive.
+  const first = neighbourhoodQuery.data;
+  const [extension, setExtension] = useState<NeighbourhoodExtension | null>(
+    null,
+  );
+  const further = useQueries({
+    queries: (first === undefined
+      ? []
+      : extensionAnchors(extension, first.around)
+    ).map((anchor) => aroundRead(anchor, EXTENSION_LIMIT)),
+    combine: answeredReads,
   });
 
   const generationMismatch = [scheduleQuery.error, neighbourhoodQuery.error].some(
@@ -149,22 +172,45 @@ export function useNowPlaying({
 
   // The rows shown while the next read is under way may be around another
   // Channel or from the previous generation.
-  const neighbourhood = neighbourhoodQuery.data?.value;
-  const rows =
-    channel !== null &&
-    neighbourhood !== undefined &&
-    neighbourhood.generation === generation &&
-    neighbourhood.items.some((row) => row.channel.id === channel)
-      ? neighbourhood.items
+  const neighbourhood = useMemo(() => {
+    if (
+      channel === null ||
+      first === undefined ||
+      first.page.generation !== generation
+    ) {
+      return null;
+    }
+    const merged = mergedNeighbourhood(
+      first,
+      further.filter((read) => read.page.generation === generation),
+    );
+    return merged.rows.some((row) => row.channel.id === channel)
+      ? merged
       : null;
+  }, [channel, first, further, generation]);
+  const extend = useCallback(
+    (direction: -1 | 1) => {
+      const edge =
+        direction === -1
+          ? neighbourhood?.rows[0]
+          : neighbourhood?.rows.at(-1);
+      if (first === undefined || edge === undefined) {
+        return;
+      }
+      setExtension((current) =>
+        extensionWith(current, first.around, edge.channel.id),
+      );
+    },
+    [first, neighbourhood],
+  );
   const family = useMemo(
     () =>
-      rows === null
+      neighbourhood === null
         ? null
-        : (guideFamilies(rows).find((candidate) =>
+        : (guideFamilies(neighbourhood.rows).find((candidate) =>
             candidate.variants.some((row) => row.channel.id === channel),
           ) ?? null),
-    [channel, rows],
+    [channel, neighbourhood],
   );
   const schedule = scheduleQuery.data?.value.items;
   const programmes = useMemo(() => {
@@ -191,13 +237,75 @@ export function useNowPlaying({
   }, [channel, family, schedule]);
 
   return {
-    rows,
+    neighbourhood,
     family,
     programmes,
-    loading:
+    reading:
       programmes.length === 0 &&
-      (scheduleQuery.isFetching || neighbourhoodQuery.isFetching),
+      (scheduleQuery.isFetching || neighbourhoodQuery.isFetching)
+        ? "programmes"
+        : scheduleQuery.data === undefined && scheduleQuery.isFetching
+          ? "descriptions"
+          : "done",
+    extend,
   };
+}
+
+/** One guide read placed around a Channel; the same read is never made twice. */
+function aroundReadOptions({
+  client,
+  generation,
+  around,
+  startsAt,
+  endsAt,
+  limit,
+}: {
+  readonly client: Pick<SparrowClient, "guideWindow">;
+  readonly generation: CatalogGeneration | null;
+  readonly around: ChannelId | null;
+  readonly startsAt: IsoInstant;
+  readonly endsAt: IsoInstant;
+  readonly limit: number;
+}) {
+  return queryOptions({
+    queryKey: [
+      "catalog",
+      "now-playing",
+      "neighbourhood",
+      generation,
+      around,
+      startsAt,
+      endsAt,
+      limit,
+    ],
+    queryFn:
+      around === null || generation === null
+        ? skipToken
+        : async ({ signal }): Promise<AroundRead> => {
+            const result = await generationBoundResult(
+              client.guideWindow({
+                around,
+                startsAt,
+                endsAt,
+                channelLimit: limit,
+                signal,
+              }),
+              generation,
+            );
+            return { around, limit, page: result.value };
+          },
+    retry: false,
+    staleTime: IMMUTABLE_CATALOG_STALE_TIME,
+  });
+}
+
+/** The reads that have answered, in the order they were asked. */
+function answeredReads(
+  results: readonly UseQueryResult<AroundRead>[],
+): readonly AroundRead[] {
+  return results.flatMap((result) =>
+    result.data === undefined ? [] : [result.data],
+  );
 }
 
 /** A guide row's Programme as the info block shows it: without a description. */

@@ -1,14 +1,19 @@
 import type { ProgrammeSlot } from "../../client/contracts";
 
+const QUARTER_HOUR_MS = 15 * 60 * 1_000;
 const HALF_HOUR_MS = 30 * 60 * 1_000;
-const GUIDE_SPAN_MS = 3 * 60 * 60 * 1_000;
+const HOUR_MS = 60 * 60 * 1_000;
+/** How much time the guide reads: what the timeline grid shows. */
+export const GUIDE_SPAN_MS = 3 * HOUR_MS;
+/** A longer read that covers every time the viewer can choose to look at. */
+export const LATER_SPAN_MS = 8 * HOUR_MS;
 const CLOCK_FORMATTER = new Intl.DateTimeFormat(undefined, {
   hour: "2-digit",
   minute: "2-digit",
   hourCycle: "h23",
 });
 
-/** One stable three-hour guide window anchored to the current half hour. */
+/** One stable guide window anchored to the current half hour. */
 export interface ClockWindow {
   readonly startsAt: Date;
   readonly endsAt: Date;
@@ -24,8 +29,11 @@ export interface ProgrammeLayout {
   readonly timesFit: boolean;
 }
 
-/** Creates the guide window containing `now` without changing every minute. */
-export function clockWindow(now: Date): ClockWindow {
+/**
+ * Creates the guide window containing `now` without changing every minute.
+ * It starts at the half hour and lasts `spanMs`, three hours unless given.
+ */
+export function clockWindow(now: Date, spanMs = GUIDE_SPAN_MS): ClockWindow {
   const startsAt = new Date(
     now.getFullYear(),
     now.getMonth(),
@@ -35,8 +43,38 @@ export function clockWindow(now: Date): ClockWindow {
   );
   return {
     startsAt,
-    endsAt: new Date(startsAt.getTime() + GUIDE_SPAN_MS),
+    endsAt: new Date(startsAt.getTime() + spanMs),
   };
+}
+
+/**
+ * Lists the times the viewer can look ahead to: the instants after `now` and
+ * before `windowEnd` at which the local clock reads a full hour, earliest
+ * first, at most `limit` of them.
+ */
+export function laterTimes(
+  now: Date,
+  windowEnd: Date,
+  limit = 6,
+): readonly Date[] {
+  // Every zone is a whole number of quarter hours from UTC, so a full hour on
+  // the local clock is always a quarter hour in UTC. Asking each one what the
+  // local clock reads follows a change of offset inside the window: an hour
+  // the clock skips is left out, and the hours after it stay full hours.
+  const first =
+    (Math.floor(now.getTime() / QUARTER_HOUR_MS) + 1) * QUARTER_HOUR_MS;
+  const times: Date[] = [];
+  for (
+    let instant = first;
+    instant < windowEnd.getTime() && times.length < limit;
+    instant += QUARTER_HOUR_MS
+  ) {
+    const time = new Date(instant);
+    if (time.getMinutes() === 0) {
+      times.push(time);
+    }
+  }
+  return times;
 }
 
 /** Returns half-hour marks spanning a clock window, including its start. */
@@ -78,14 +116,6 @@ export function programmeLayout(
     live: programmeStart <= nowTime && nowTime < programmeEnd,
     timesFit: visibleEnd - visibleStart >= HALF_HOUR_MS,
   };
-}
-
-/** Returns the Programme airing at `now`, or null between Programmes. */
-export function liveProgramme<Programme extends ProgrammeSlot>(
-  programmes: readonly Programme[],
-  now: Date,
-): Programme | null {
-  return programmes.find((programme) => isProgrammeLive(programme, now)) ?? null;
 }
 
 /** Builds a stable identity for a Programme inside its owning Channel row. */

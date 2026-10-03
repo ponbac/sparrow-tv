@@ -8,7 +8,7 @@ export interface ViewportStub {
 
 /**
  * Gives jsdom a `matchMedia`, which it lacks: without one the shell is always
- * stacked. Every media query answers `theater`, and `resize` flips the answer
+ * pocket. Every media query answers `theater`, and `resize` flips the answer
  * and tells the listeners. Call `vi.unstubAllGlobals()` after the test.
  */
 export function stubViewport(theater: boolean): ViewportStub {

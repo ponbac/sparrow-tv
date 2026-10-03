@@ -10,9 +10,9 @@ afterEach(() => {
 });
 
 describe("useStageLayout", () => {
-  it("is stacked where the window cannot be measured", () => {
+  it("is pocket where the window cannot be measured", () => {
     expect(renderHook(() => useStageLayout(true)).result.current).toBe(
-      "stacked",
+      "pocket",
     );
   });
 
@@ -23,20 +23,20 @@ describe("useStageLayout", () => {
       "theater",
     );
     expect(renderHook(() => useStageLayout(false)).result.current).toBe(
-      "stacked",
+      "pocket",
     );
   });
 
   it("follows the window across the size threshold", () => {
     const viewport = stubViewport(false);
     const layout = renderHook(() => useStageLayout(true));
-    expect(layout.result.current).toBe("stacked");
+    expect(layout.result.current).toBe("pocket");
 
     act(() => viewport.resize(true));
     expect(layout.result.current).toBe("theater");
 
     act(() => viewport.resize(false));
-    expect(layout.result.current).toBe("stacked");
+    expect(layout.result.current).toBe("pocket");
   });
 
   it("is Theater in a small window while the document root is fullscreen", () => {
@@ -45,13 +45,13 @@ describe("useStageLayout", () => {
 
     act(() => enterFullscreen(document.body));
     // Only the root counts: a fullscreen player section covers the shell.
-    expect(layout.result.current).toBe("stacked");
+    expect(layout.result.current).toBe("pocket");
 
     act(() => enterFullscreen(document.documentElement));
     expect(layout.result.current).toBe("theater");
 
     act(() => enterFullscreen(null));
-    expect(layout.result.current).toBe("stacked");
+    expect(layout.result.current).toBe("pocket");
   });
 });
 

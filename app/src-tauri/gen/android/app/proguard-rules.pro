@@ -20,3 +20,6 @@
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
 -keep, includedescriptorclasses class org.rustls.platformverifier.** { *; }
+# The bundled FFmpeg decoder is entered from, and calls back into, native code.
+-keep class io.github.anilbeesetti.nextlib.media3ext.ffdecoder.** { *; }
+-keep class androidx.media3.decoder.SimpleDecoderOutputBuffer { *; }

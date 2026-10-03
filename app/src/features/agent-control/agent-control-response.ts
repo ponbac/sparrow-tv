@@ -50,7 +50,13 @@ const diagnostics = z.object({
     })
     .optional(),
   audio: z
-    .object({ trackCount: count, selection: label, preferenceStatus: label })
+    .object({
+      trackCount: count,
+      selection: label,
+      preferenceStatus: label,
+      codec: label.optional(),
+      output: label.optional(),
+    })
     .optional(),
   media: media.nullable().optional(),
   transitions: z

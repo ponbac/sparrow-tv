@@ -144,6 +144,9 @@ dependencies {
     )
     implementation("androidx.media3:media3-exoplayer:$media3Version")
     implementation("androidx.media3:media3-ui:$media3Version")
+    // FFmpeg audio decoders for codecs the device has none for. Each release
+    // is built against one Media3 version: change the two together.
+    implementation("io.github.anilbeesetti:nextlib-media3ext:$media3Version-0.15.0")
     implementation("androidx.webkit:webkit:1.14.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.activity:activity-ktx:1.10.1")

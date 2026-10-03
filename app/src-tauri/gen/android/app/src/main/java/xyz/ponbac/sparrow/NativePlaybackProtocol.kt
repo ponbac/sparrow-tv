@@ -85,6 +85,48 @@ internal fun NativePlaybackControls.withForcedSilence(forceSilent: Boolean): Nat
     this
   }
 
+/** What the player made of the audio tracks in the transport it was given. */
+internal enum class NativePlaybackAudioTracks {
+  UNKNOWN,
+  ABSENT,
+  UNDECODABLE,
+  SELECTED,
+}
+
+/** What the player is doing with the Audio Track, as the status reports it. */
+internal enum class NativePlaybackAudio(val wire: String) {
+  PENDING("pending"),
+  DEVICE_DECODER("device-decoder"),
+  BUNDLED_DECODER("bundled-decoder"),
+  UNDECODABLE("undecodable"),
+  ABSENT("absent"),
+}
+
+/** Every decoder of the bundled FFmpeg library names itself with this prefix. */
+internal const val BUNDLED_AUDIO_DECODER_PREFIX = "ffmpeg"
+
+/**
+ * A selected track is heard once a decoder has started on it, or once the
+ * audio output has taken it undecoded: an HDMI route that accepts the codec is
+ * handed the track as it is, and no decoder ever starts in the player. Until
+ * either happens it is pending. The decoder's name never leaves this function.
+ */
+internal fun nativePlaybackAudio(
+  tracks: NativePlaybackAudioTracks,
+  decoderName: String?,
+  passthrough: Boolean,
+): NativePlaybackAudio = when (tracks) {
+  NativePlaybackAudioTracks.UNKNOWN -> NativePlaybackAudio.PENDING
+  NativePlaybackAudioTracks.ABSENT -> NativePlaybackAudio.ABSENT
+  NativePlaybackAudioTracks.UNDECODABLE -> NativePlaybackAudio.UNDECODABLE
+  NativePlaybackAudioTracks.SELECTED -> when {
+    decoderName == null ->
+      if (passthrough) NativePlaybackAudio.DEVICE_DECODER else NativePlaybackAudio.PENDING
+    decoderName.startsWith(BUNDLED_AUDIO_DECODER_PREFIX) -> NativePlaybackAudio.BUNDLED_DECODER
+    else -> NativePlaybackAudio.DEVICE_DECODER
+  }
+}
+
 internal enum class NativePlaybackStartDecision {
   CREATE,
   UPDATE,

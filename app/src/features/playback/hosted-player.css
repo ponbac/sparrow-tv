@@ -265,7 +265,7 @@
   font-size: 0.8125rem;
 }
 
-.hosted-player__audio-status[data-fallback="true"] {
+.hosted-player__audio-status[data-warning="true"] {
   color: var(--amber);
 }
 

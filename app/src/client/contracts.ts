@@ -104,7 +104,12 @@ export interface InstalledCapabilities {
 
 /** Audio codecs that the native MPEG-TS selector can safely forward. */
 export type AudioCodec =
-  "mpeg-1-audio" | "mpeg-2-audio" | "aac-adts" | "aac-latm" | "ac-3";
+  | "mpeg-1-audio"
+  | "mpeg-2-audio"
+  | "aac-adts"
+  | "aac-latm"
+  | "ac-3"
+  | "e-ac-3";
 
 /** Safe programme metadata for one compatible native Audio Track. */
 export interface AudioTrack {
@@ -551,6 +556,22 @@ export interface AndroidPlaybackViewport {
   readonly fullscreen: boolean;
 }
 
+/**
+ * What the Android Media3 presentation is doing with the Audio Track it was
+ * given. Only the two decoder values mean sound is being produced, by the
+ * device (a decoder of its own, or an output it passes the track to
+ * undecoded) or by the decoder bundled with the app. "pending" is a track no
+ * decoder has started on yet, "undecodable" one that nothing on the device or
+ * in the app can play, and "absent" a transport in which the player found no
+ * audio track.
+ */
+export type AndroidPlaybackAudio =
+  | "pending"
+  | "device-decoder"
+  | "bundled-decoder"
+  | "undecodable"
+  | "absent";
+
 /** Safe aggregate state reported by the Android Media3 presentation. */
 export interface AndroidPlaybackStatus {
   readonly state: "starting" | "playing" | "paused" | "failed" | "stopped";
@@ -559,6 +580,7 @@ export interface AndroidPlaybackStatus {
   readonly bufferedDurationMs: number;
   /** Whether the Media3 instance's effective app-scoped output is silent. */
   readonly silent: boolean;
+  readonly audio: AndroidPlaybackAudio;
 }
 
 /** Initial presentation values paired with one exact native stream generation. */
@@ -1145,6 +1167,7 @@ const audioCodecSchema: z.ZodType<AudioCodec> = z.enum([
   "aac-adts",
   "aac-latm",
   "ac-3",
+  "e-ac-3",
 ]);
 const audioTrackSchema: z.ZodType<AudioTrack> = z.strictObject({
   id: audioTrackIdSchema,
@@ -1247,6 +1270,13 @@ const androidPlaybackStatusSchema: z.ZodType<AndroidPlaybackStatus> =
     droppedFrames: safeUnsignedIntegerSchema,
     bufferedDurationMs: safeUnsignedIntegerSchema,
     silent: z.boolean(),
+    audio: z.enum([
+      "pending",
+      "device-decoder",
+      "bundled-decoder",
+      "undecodable",
+      "absent",
+    ]),
   });
 const playbackDescriptorSchema: z.ZodType<PlaybackDescriptor> = z.union([
   hostedPlaybackDescriptorSchema,

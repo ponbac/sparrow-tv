@@ -12,11 +12,14 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.common.util.Util
 import androidx.media3.datasource.DataSource
 import androidx.media3.exoplayer.DecoderCounters
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -209,7 +212,7 @@ internal class NativePlaybackController(
       }
       playerView = createdPlayerView
       val createdPlayer =
-        ExoPlayer.Builder(activity)
+        ExoPlayer.Builder(activity, NativePlaybackRenderersFactory(activity))
           .setReleaseTimeoutMs(NATIVE_PLAYBACK_RELEASE_TIMEOUT_MS)
           .setDetachSurfaceTimeoutMs(NATIVE_PLAYBACK_RELEASE_TIMEOUT_MS)
           .build()
@@ -433,6 +436,9 @@ internal class NativePlaybackController(
     private var controls = initialControls
     private val renderedFrames = NativePlaybackFrameCounter()
     private var droppedFrames = 0L
+    private var audioTracks = NativePlaybackAudioTracks.UNKNOWN
+    private var audioDecoder: String? = null
+    private var audioPassthrough = false
     private var released = false
 
     fun applyInitialControls() {
@@ -480,12 +486,13 @@ internal class NativePlaybackController(
         }
       return String.format(
         Locale.ROOT,
-        "{\"state\":\"%s\",\"decodedFrames\":%d,\"droppedFrames\":%d,\"bufferedDurationMs\":%d,\"silent\":%s}",
+        "{\"state\":\"%s\",\"decodedFrames\":%d,\"droppedFrames\":%d,\"bufferedDurationMs\":%d,\"silent\":%s,\"audio\":\"%s\"}",
         phase.wire,
         renderedFrames.value().coerceAtMost(MAX_SAFE_COUNTER),
         droppedFrames.coerceAtMost(MAX_SAFE_COUNTER),
         bufferedDuration.coerceAtMost(MAX_SAFE_COUNTER),
         controls.muted || controls.volume == 0.0f,
+        nativePlaybackAudio(audioTracks, audioDecoder, audioPassthrough).wire,
       )
     }
 
@@ -528,6 +535,51 @@ internal class NativePlaybackController(
     override fun onPlayerError(error: PlaybackException) {
       if (!released) {
         phase = Phase.FAILED
+      }
+    }
+
+    override fun onTracksChanged(tracks: Tracks) {
+      if (released) {
+        return
+      }
+      val audio = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+      audioTracks =
+        when {
+          tracks.isEmpty -> NativePlaybackAudioTracks.UNKNOWN
+          audio.isEmpty() -> NativePlaybackAudioTracks.ABSENT
+          // Media3 leaves a track unselected when no renderer can decode it.
+          audio.none { it.isSelected } -> NativePlaybackAudioTracks.UNDECODABLE
+          else -> NativePlaybackAudioTracks.SELECTED
+        }
+    }
+
+    override fun onAudioDecoderInitialized(
+      eventTime: AnalyticsListener.EventTime,
+      decoderName: String,
+      initializedTimestampMs: Long,
+      initializationDurationMs: Long,
+    ) {
+      if (!released) {
+        audioDecoder = decoderName
+      }
+    }
+
+    override fun onAudioDecoderReleased(
+      eventTime: AnalyticsListener.EventTime,
+      decoderName: String,
+    ) {
+      if (!released && audioDecoder == decoderName) {
+        audioDecoder = null
+      }
+    }
+
+    override fun onAudioTrackInitialized(
+      eventTime: AnalyticsListener.EventTime,
+      audioTrackConfig: AudioSink.AudioTrackConfig,
+    ) {
+      if (!released) {
+        // An output opened for encoded audio is given the track undecoded.
+        audioPassthrough = !Util.isEncodingLinearPcm(audioTrackConfig.encoding)
       }
     }
 

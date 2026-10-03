@@ -5,6 +5,7 @@ import {
   type GuideFamily,
   type VariantPreferences,
 } from "../guide/guide-families";
+import type { ZapNeighbourhood } from "./zap-neighbourhood";
 
 const RAIL_LENGTH = 6;
 // The current stop sits third in the rail, so two earlier ones stay in view.
@@ -23,29 +24,57 @@ export interface ZapStop {
 /**
  * The guide rows a zap moves through, in Channel Catalog order: the rows
  * around the playing Channel without those of excluded Channel Groups. The
- * playing Channel's own row always stays. Empty when the rows do not hold the
- * playing Channel.
+ * playing Channel's own row always stays. A row at an end of the
+ * neighbourhood that does not reach the end of the Channel Catalog may be cut
+ * short of some of its Quality Variants, so it is left out until a further
+ * read completes it. Empty when the rows do not hold the playing Channel.
  */
 export function zapStops(
-  rows: readonly GuideWindowChannel[],
+  neighbourhood: ZapNeighbourhood,
   playing: ChannelId,
   excludedGroups: ReadonlySet<string>,
   preferences: VariantPreferences,
 ): readonly ZapStop[] {
+  const families = guideFamilies(neighbourhood.rows);
   const stops: ZapStop[] = [];
   let found = false;
-  for (const family of guideFamilies(rows)) {
+  families.forEach((family, index) => {
     const playingVariant = family.variants.find(
       (variant) => variant.channel.id === playing,
     );
+    const cut =
+      (index === 0 && !neighbourhood.startReached) ||
+      (index === families.length - 1 && !neighbourhood.endReached);
     if (playingVariant !== undefined) {
       found = true;
       stops.push({ family, target: playingVariant });
-    } else if (!excludedGroups.has(family.group)) {
+    } else if (!cut && !excludedGroups.has(family.group)) {
       stops.push({ family, target: preferredVariant(family, preferences) });
     }
-  }
+  });
   return found ? stops : [];
+}
+
+/**
+ * The sides on which `from` has no stop beside it although the Channel
+ * Catalog goes on: where the rows around the playing Channel must be read
+ * further for a zap to go on. None while `from` is not among the stops.
+ */
+export function zapSidesToRead(
+  stops: readonly ZapStop[],
+  neighbourhood: ZapNeighbourhood,
+  from: ChannelId,
+): readonly (-1 | 1)[] {
+  if (stopIndex(stops, from) === -1) {
+    return [];
+  }
+  return ([-1, 1] as const).filter(
+    (direction) =>
+      neighbouringZapStop(stops, from, direction) === null &&
+      !(direction === -1
+        ? neighbourhood.startReached
+        : neighbourhood.endReached),
+  );
 }
 
 /** The stop whose guide row holds the Channel, or null. */

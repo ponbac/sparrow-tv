@@ -1,5 +1,11 @@
 import { Tooltip } from "@base-ui/react/tooltip";
-import { useMemo, useState, type ReactNode } from "react";
+import {
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import type {
   ChannelGroup,
   ChannelId,
@@ -7,10 +13,11 @@ import type {
   ClientError,
   GuideWindowChannel,
 } from "../../client/contracts";
-import { ChannelGroupLane } from "./channel-group-lane";
+import { ChannelGroupLane, type GuideTime } from "./channel-group-lane";
 import {
   guideFamilies,
   preferredVariant,
+  type GuideFamily,
   type VariantPreferences,
 } from "./guide-families";
 import {
@@ -19,10 +26,12 @@ import {
   playheadPercent,
   type ClockWindow,
 } from "./guide-window";
+import { revealScrollTop } from "./list-scroll";
 import { ProgrammeGuideRow } from "./programme-guide-row";
+import { ProgrammeListRow } from "./programme-list-row";
 import "./programme-guide.css";
 
-/** Inputs for the dense shell timetable. */
+/** Inputs for the guide: Theater's timetable or pocket's now-and-next list. */
 export interface ProgrammeGuideProps {
   readonly rows: readonly GuideWindowChannel[];
   readonly groups: readonly ChannelGroup[];
@@ -32,8 +41,18 @@ export interface ProgrammeGuideProps {
   readonly playingChannel: ChannelId | null;
   /** The picture quality chosen per guide row. */
   readonly variantPreferences: VariantPreferences;
-  /** Theater docks the guide under the picture; stacked puts it below the stage. */
-  readonly layout: "theater" | "stacked";
+  /**
+   * Theater docks the guide under the picture as a timeline; pocket puts it
+   * below the stage as a list of what each Channel has on.
+   */
+  readonly layout: "theater" | "pocket";
+  /**
+   * The shell's mode. Entering guide mode brings pocket's playing row to the
+   * middle of the list.
+   */
+  readonly mode: "watch" | "guide";
+  /** The time pocket's list looks at; null in Theater. */
+  readonly time: GuideTime | null;
   readonly loading: boolean;
   readonly replacing: boolean;
   readonly error: ClientError | null;
@@ -61,7 +80,11 @@ export interface ProgrammeGuideProps {
   readonly status: ReactNode;
 }
 
-/** Renders channel groups, the shared time axis, and overlapping Programme cells. */
+/**
+ * Renders the Channel Groups and the guide's rows: in Theater a shared time
+ * axis with overlapping Programme cells, in pocket one now-and-next row per
+ * Channel.
+ */
 export function ProgrammeGuide({
   rows,
   groups,
@@ -71,6 +94,8 @@ export function ProgrammeGuide({
   playingChannel,
   variantPreferences,
   layout,
+  mode,
+  time,
   loading,
   replacing,
   error,
@@ -91,15 +116,29 @@ export function ProgrammeGuide({
   feeds,
   status,
 }: ProgrammeGuideProps) {
-  const marks = clockMarks(window);
   const families = useMemo(() => guideFamilies(rows), [rows]);
   const nowFraction = playheadPercent(window, now) / 100;
   const nowLeft = `calc(var(--guide-gutter) + (100% - var(--guide-gutter)) * ${nowFraction})`;
   const [channelNameTooltip] = useState(() => Tooltip.createHandle<string>());
+  const boardRef = useListScroll({ layout, mode, playingChannel, activeGroup });
   const boardEmpty =
     emptyState === undefined &&
     groups.length > 0 &&
     excludedGroups.size === groups.length;
+  // What a row is given whichever body shows it.
+  const rowProps = (family: GuideFamily) => ({
+    family,
+    preferred: preferredVariant(family, variantPreferences),
+    now,
+    playingChannel: family.variants.some(
+      (variant) => variant.channel.id === playingChannel,
+    )
+      ? playingChannel
+      : null,
+    onPreparePlayback,
+    onTune,
+    onTuneVariant,
+  });
 
   return (
     <section
@@ -117,6 +156,7 @@ export function ProgrammeGuide({
         <ChannelGroupLane
           groups={groups}
           activeGroup={activeGroup}
+          time={time}
           excluded={excludedGroups}
           onSelectGroup={onSelectGroup}
           onPrefetchGroup={onPrefetchGroup}
@@ -127,31 +167,17 @@ export function ProgrammeGuide({
         <div className="programme-guide__panel">
           <div
             className="programme-guide__board"
+            ref={boardRef}
             aria-busy={loading || replacing}
           >
-            <div className="programme-guide__ruler" aria-hidden="true">
-              <span />
-              <div>
-                {marks.map((mark, index) => {
-                  const fraction = index / marks.length;
-                  return (
-                    <time
-                      key={mark.toISOString()}
-                      className={mark.getMinutes() === 0 ? "is-hour" : undefined}
-                      style={{
-                        left: `${fraction * 100}%`,
-                        "--from-now": fraction - nowFraction,
-                      }}
-                    >
-                      {clockLabel(mark)}
-                    </time>
-                  );
-                })}
-              </div>
-              <span className="programme-guide__now" style={{ left: nowLeft }}>
-                {clockLabel(now)}
-              </span>
-            </div>
+            {layout === "theater" ? (
+              <GuideRuler
+                window={window}
+                now={now}
+                nowFraction={nowFraction}
+                nowLeft={nowLeft}
+              />
+            ) : null}
 
             {loading && rows.length === 0 ? (
               <GuideNotice tone="loading" title="Opening the guide">
@@ -177,7 +203,7 @@ export function ProgrammeGuide({
                     ? "Open Choose groups and show a group to fill the guide."
                     : "This group has no channels right now.")}
               </GuideNotice>
-            ) : (
+            ) : layout === "theater" ? (
               <Tooltip.Provider delay={400}>
                 <div className="programme-guide__rows">
                   <div
@@ -188,26 +214,25 @@ export function ProgrammeGuide({
                   {families.map((family) => (
                     <ProgrammeGuideRow
                       key={family.number}
-                      family={family}
-                      preferred={preferredVariant(family, variantPreferences)}
+                      {...rowProps(family)}
                       window={window}
-                      now={now}
-                      playingChannel={
-                        family.variants.some(
-                          (variant) => variant.channel.id === playingChannel,
-                        )
-                          ? playingChannel
-                          : null
-                      }
                       channelNameTooltip={channelNameTooltip}
-                      onPreparePlayback={onPreparePlayback}
-                      onTune={onTune}
-                      onTuneVariant={onTuneVariant}
                     />
                   ))}
                 </div>
                 <ChannelNameTooltip handle={channelNameTooltip} />
               </Tooltip.Provider>
+            ) : (
+              <div className="programme-guide__rows">
+                {families.map((family) => (
+                  <ProgrammeListRow
+                    key={family.number}
+                    {...rowProps(family)}
+                    at={time?.chosen ?? null}
+                    pending={replacing}
+                  />
+                ))}
+              </div>
             )}
 
             {error !== null && rows.length > 0 ? (
@@ -237,6 +262,102 @@ export function ProgrammeGuide({
         </div>
       </div>
     </section>
+  );
+}
+
+/**
+ * Decides where pocket's list is scrolled to, and returns the ref for the
+ * board that scrolls. Another Channel Group starts at its top. Entering guide
+ * mode puts the playing row in the middle of the list. A change of Channel
+ * while the list is on screen moves the list only when the row is out of
+ * view, so a row just chosen stays under the finger. The offset is assigned
+ * directly: `scrollIntoView` may also scroll the clipped ancestors and drag
+ * the picture's box with them.
+ */
+function useListScroll({
+  layout,
+  mode,
+  playingChannel,
+  activeGroup,
+}: Pick<
+  ProgrammeGuideProps,
+  "layout" | "mode" | "playingChannel" | "activeGroup"
+>) {
+  const boardRef = useRef<HTMLDivElement>(null);
+  const lastMode = useRef<ProgrammeGuideProps["mode"] | null>(null);
+  useLayoutEffect(() => {
+    if (layout === "pocket" && boardRef.current !== null) {
+      boardRef.current.scrollTop = 0;
+    }
+  }, [activeGroup, layout]);
+  useLayoutEffect(() => {
+    const entered = mode === "guide" && lastMode.current !== "guide";
+    lastMode.current = mode;
+    const board = boardRef.current;
+    // Watch mode takes the guide out of the layout: nothing to scroll.
+    if (layout !== "pocket" || board === null || board.clientHeight === 0) {
+      return;
+    }
+    const row = board.querySelector<HTMLElement>(
+      '.programme-guide__row[data-playing="true"]',
+    );
+    if (row === null) {
+      return;
+    }
+    const rowBox = row.getBoundingClientRect();
+    const scrollTop = revealScrollTop(
+      {
+        top: rowBox.top - board.getBoundingClientRect().top + board.scrollTop,
+        height: rowBox.height,
+      },
+      { scrollTop: board.scrollTop, height: board.clientHeight },
+      entered,
+    );
+    if (scrollTop !== board.scrollTop) {
+      board.scrollTop = scrollTop;
+    }
+  }, [layout, mode, playingChannel]);
+  return boardRef;
+}
+
+/** The timeline's half-hour marks and the clock on its now-line. */
+function GuideRuler({
+  window,
+  now,
+  nowFraction,
+  nowLeft,
+}: {
+  readonly window: ClockWindow;
+  readonly now: Date;
+  /** Where now falls in the window, from 0 to 1. */
+  readonly nowFraction: number;
+  readonly nowLeft: string;
+}) {
+  const marks = clockMarks(window);
+  return (
+    <div className="programme-guide__ruler" aria-hidden="true">
+      <span />
+      <div>
+        {marks.map((mark, index) => {
+          const fraction = index / marks.length;
+          return (
+            <time
+              key={mark.toISOString()}
+              className={mark.getMinutes() === 0 ? "is-hour" : undefined}
+              style={{
+                left: `${fraction * 100}%`,
+                "--from-now": fraction - nowFraction,
+              }}
+            >
+              {clockLabel(mark)}
+            </time>
+          );
+        })}
+      </div>
+      <span className="programme-guide__now" style={{ left: nowLeft }}>
+        {clockLabel(now)}
+      </span>
+    </div>
   );
 }
 

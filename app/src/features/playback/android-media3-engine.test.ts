@@ -41,6 +41,7 @@ describe("Android Media3 playback adapter", () => {
         droppedFrames: 0,
         bufferedDurationMs: 0,
         silent: true,
+        audio: "pending",
       },
     };
     const presentation = presentationFixture(status);
@@ -49,6 +50,7 @@ describe("Android Media3 playback adapter", () => {
     >(async () => success(presentation));
     const playing = vi.fn();
     const failure = vi.fn();
+    const audio = vi.fn();
     const video = document.createElement("video");
     video.volume = 0.7;
     video.muted = true;
@@ -58,6 +60,7 @@ describe("Android Media3 playback adapter", () => {
       video,
       onFailure: failure,
       onAutoplayBlocked: vi.fn(),
+      onAudio: audio,
       onPlaying: playing,
     });
     if (typeof started === "string") {
@@ -84,17 +87,26 @@ describe("Android Media3 playback adapter", () => {
       "provider",
     );
 
+    // The first status is passed on whatever it says, later ones on a change.
+    expect(audio).not.toHaveBeenCalled();
+    fixture.runNextTask();
+    await flushPromises();
+    expect(audio.mock.calls).toEqual([["pending"]]);
+    expect(playing).not.toHaveBeenCalled();
+
     status.value = {
       state: "playing",
       decodedFrames: 1_200,
       droppedFrames: 3,
       bufferedDurationMs: 1_500,
       silent: true,
+      audio: "bundled-decoder",
     };
     fixture.runNextTask();
     await flushPromises();
     expect(playing).toHaveBeenCalledTimes(1);
     expect(failure).not.toHaveBeenCalled();
+    expect(audio.mock.calls).toEqual([["pending"], ["bundled-decoder"]]);
     expect(video.dataset).toMatchObject({
       playbackEngine: "android-media3",
       playbackState: "playing",
@@ -102,11 +114,13 @@ describe("Android Media3 playback adapter", () => {
       droppedFrames: "3",
       bufferedDurationMs: "1500",
       processSilent: "true",
+      playbackAudio: "bundled-decoder",
     });
 
     fixture.runNextTask();
     await flushPromises();
     expect(playing).toHaveBeenCalledTimes(1);
+    expect(audio).toHaveBeenCalledTimes(2);
 
     const fullscreenViewport = {
       left: 0,
@@ -132,6 +146,7 @@ describe("Android Media3 playback adapter", () => {
       droppedFrames: 4,
       bufferedDurationMs: 0,
       silent: true,
+      audio: "device-decoder",
     };
     fixture.runNextTask();
     await flushPromises();
@@ -154,6 +169,7 @@ describe("Android Media3 playback adapter", () => {
       droppedFrames: 0,
       bufferedDurationMs: 1_000,
       silent: true,
+      audio: "device-decoder",
     } });
     const started = createAndroidMedia3PlaybackEngine({
       ...fixture.runtime,
@@ -164,6 +180,7 @@ describe("Android Media3 playback adapter", () => {
       video: document.createElement("video"),
       onFailure: vi.fn(),
       onAutoplayBlocked: vi.fn(),
+      onAudio: vi.fn(),
       onPlaying: vi.fn(),
     });
     if (typeof started === "string") throw new Error("expected a Media3 handle");
@@ -206,6 +223,7 @@ describe("Android Media3 playback adapter", () => {
       video: document.createElement("video"),
       onFailure: failure,
       onAutoplayBlocked: vi.fn(),
+      onAudio: vi.fn(),
       onPlaying: vi.fn(),
     });
     if (typeof started === "string") {
@@ -229,6 +247,7 @@ describe("Android Media3 playback adapter", () => {
         droppedFrames: 0,
         bufferedDurationMs: 0,
         silent: true,
+        audio: "device-decoder",
       } satisfies AndroidPlaybackStatus,
     };
     const presentation = presentationFixture(status);
@@ -242,6 +261,7 @@ describe("Android Media3 playback adapter", () => {
       video: document.createElement("video"),
       onFailure: failure,
       onAutoplayBlocked: vi.fn(),
+      onAudio: vi.fn(),
       onPlaying: vi.fn(),
     });
     if (typeof started === "string") {
@@ -289,6 +309,7 @@ describe("Android Media3 playback adapter", () => {
       video: document.createElement("video"),
       onFailure: failure,
       onAutoplayBlocked: vi.fn(),
+      onAudio: vi.fn(),
       onPlaying: vi.fn(),
     });
     if (typeof started === "string") {
@@ -312,6 +333,7 @@ describe("Android Media3 playback adapter", () => {
         droppedFrames: 0,
         bufferedDurationMs: 0,
         silent: true,
+        audio: "device-decoder",
       } satisfies AndroidPlaybackStatus,
     };
     const presentation = presentationFixture(status);
@@ -324,6 +346,7 @@ describe("Android Media3 playback adapter", () => {
       video: document.createElement("video"),
       onFailure: failure,
       onAutoplayBlocked: vi.fn(),
+      onAudio: vi.fn(),
       onPlaying: vi.fn(),
     });
     if (typeof started === "string") {
@@ -351,6 +374,7 @@ describe("Android Media3 playback adapter", () => {
         droppedFrames: 0,
         bufferedDurationMs: 2_000,
         silent: true,
+        audio: "device-decoder",
       } satisfies AndroidPlaybackStatus,
     };
     const presentation = presentationFixture(status);
@@ -364,6 +388,7 @@ describe("Android Media3 playback adapter", () => {
       video: document.createElement("video"),
       onFailure: failure,
       onAutoplayBlocked: vi.fn(),
+      onAudio: vi.fn(),
       onPlaying: playing,
     });
     if (typeof started === "string") {

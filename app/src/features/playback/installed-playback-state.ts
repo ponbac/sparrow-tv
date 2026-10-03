@@ -1,4 +1,5 @@
 import type {
+  AndroidPlaybackAudio,
   AudioPreferenceStatus,
   AudioSelection,
   AudioTrack,
@@ -28,6 +29,11 @@ export interface InstalledPlaybackAudio {
   readonly tracks: readonly AudioTrack[];
   readonly selection: AudioSelection;
   readonly preferenceStatus: AudioPreferenceStatus | null;
+  /**
+   * What the presentation does with the selected Audio Track. Null until it
+   * says, and always for a presentation that cannot tell.
+   */
+  readonly output: AndroidPlaybackAudio | null;
 }
 
 /** Safe installed presentation identity, never a provider or native handle. */
@@ -139,6 +145,7 @@ export type InstalledPlaybackEvent =
       readonly preferenceStatus?: AudioPreferenceStatus;
     }
   | { readonly _tag: "playing"; readonly now: number }
+  | { readonly _tag: "audio-output"; readonly output: AndroidPlaybackAudio }
   | { readonly _tag: "autoplay-blocked" }
   | {
       readonly _tag: "suspending";
@@ -180,6 +187,7 @@ export const INITIAL_INSTALLED_PLAYBACK_AUDIO: InstalledPlaybackAudio =
     tracks: Object.freeze([]),
     selection: Object.freeze({ _tag: "none" }),
     preferenceStatus: null,
+    output: null,
   });
 
 /** Creates the transport-free initial state without acquiring any resource. */
@@ -251,8 +259,12 @@ export function reduceInstalledPlaybackState(
           selection: event.selection,
           preferenceStatus:
             event.preferenceStatus ?? state.audio.preferenceStatus,
+          // A fresh transport is a fresh player: what it does is not yet known.
+          output: null,
         },
       };
+    case "audio-output":
+      return { ...state, audio: { ...state.audio, output: event.output } };
     case "playing":
       requireSelectedChannel(state);
       return { ...state, phase: { _tag: "playing", stableSince: event.now } };
