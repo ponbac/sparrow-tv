@@ -85,12 +85,14 @@ pub(crate) enum AudioCodec {
 
 /// The presentation that reads a selected transport. E-AC-3 is an Audio Track
 /// only for a reader that decodes it: listed for one that does not, it would
-/// be a track that plays in silence.
+/// be a track that plays in silence. For the same reason the rewritten PMT
+/// names each stream by the type its reader finds it under.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TransportReader {
     /// Android Media3, which decodes every codec listed in [`AudioCodec`].
     Media3,
-    /// The WebView's Media Source demuxer, which does not read E-AC-3.
+    /// The WebView's Media Source demuxer, which does not read E-AC-3 and
+    /// reads AC-3 only under its ATSC stream type.
     WebviewMse,
 }
 
@@ -104,6 +106,16 @@ impl TransportReader {
 
     const fn reads(self, codec: AudioCodec) -> bool {
         !matches!((self, codec), (Self::WebviewMse, AudioCodec::Eac3))
+    }
+
+    /// The stream type this reader is told a stream has. DVB carries AC-3 as
+    /// private data named by a descriptor, which the WebView demuxer passes
+    /// over, so for it such a track is written under the ATSC type instead.
+    fn stream_type(self, stream: &ElementaryStream) -> u8 {
+        match (self, stream.stream_type, stream.kind) {
+            (Self::WebviewMse, 0x06, StreamKind::Audio(AudioCodec::Ac3)) => 0x81,
+            (_, stream_type, _) => stream_type,
+        }
     }
 }
 
@@ -254,8 +266,9 @@ pub(crate) struct OpenedSelectedTransport {
 }
 
 /// Discovers one MPEG-TS programme, selects one audio PID, and exposes only a
-/// rewritten PAT/PMT plus the programme's supported video, PCR, and selected
-/// audio packets. Callers never need to understand PSI or packet framing.
+/// rewritten PAT/PMT plus the packets of the programme's supported video, of
+/// its selected audio, and of the PID that carries its clock. Callers never
+/// need to understand PSI or packet framing.
 pub(crate) struct SelectedTransportStream {
     body: PlaybackByteStream,
     framer: PacketFramer,
@@ -311,7 +324,7 @@ impl SelectedTransportStream {
         };
 
         let (selection, selected_pid, tracks) = programme.select_audio(&request);
-        let mut selector = PacketSelector::new(&programme, selected_pid)?;
+        let mut selector = PacketSelector::new(&programme, selected_pid, reader)?;
         let initial = selector.filter(&packets);
         let mut ready = VecDeque::new();
         if !initial.is_empty() {
@@ -1044,6 +1057,7 @@ impl PacketSelector {
     fn new(
         programme: &Programme,
         selected_audio_pid: Option<u16>,
+        reader: TransportReader,
     ) -> Result<Self, TransportStreamError> {
         let mut retained_streams = programme
             .streams
@@ -1058,14 +1072,16 @@ impl PacketSelector {
             .iter()
             .find(|stream| stream.pid == programme.pcr_pid)
         {
-            if matches!(pcr_stream.kind, StreamKind::Audio(_))
-                && selected_audio_pid != Some(pcr_stream.pid)
-            {
-                return Err(TransportStreamError::UnsupportedProgramme);
-            }
-            if !retained_streams
-                .iter()
-                .any(|stream| stream.pid == pcr_stream.pid)
+            // The clock may ride an Audio Track that was not selected. Its
+            // packets are kept for the clock, but the PMT does not list it:
+            // a reader passes over a PID it was not told of, so the track
+            // stays unheard.
+            let deselected_audio = matches!(pcr_stream.kind, StreamKind::Audio(_))
+                && selected_audio_pid != Some(pcr_stream.pid);
+            if !deselected_audio
+                && !retained_streams
+                    .iter()
+                    .any(|stream| stream.pid == pcr_stream.pid)
             {
                 retained_streams.push(pcr_stream);
             }
@@ -1078,7 +1094,7 @@ impl PacketSelector {
             retained_pids.insert(programme.pcr_pid);
         }
         let pat = rewritten_pat(programme);
-        let pmt = rewritten_pmt(programme, &retained_streams)?;
+        let pmt = rewritten_pmt(programme, &retained_streams, reader)?;
         Ok(Self {
             pmt_pid: programme.pmt_pid,
             retained_pids,
@@ -1138,6 +1154,7 @@ fn rewritten_pat(programme: &Programme) -> Vec<u8> {
 fn rewritten_pmt(
     programme: &Programme,
     retained_streams: &[&ElementaryStream],
+    reader: TransportReader,
 ) -> Result<Vec<u8>, TransportStreamError> {
     let streams_length = retained_streams
         .iter()
@@ -1171,7 +1188,7 @@ fn rewritten_pmt(
     section.extend_from_slice(&programme.program_descriptors);
     for stream in retained_streams {
         section.extend_from_slice(&[
-            stream.stream_type,
+            reader.stream_type(stream),
             0xe0 | ((stream.pid >> 8) as u8 & 0x1f),
             stream.pid as u8,
             0xf0 | ((stream.descriptors.len() >> 8) as u8 & 0x0f),
@@ -1301,7 +1318,8 @@ mod tests {
         assert_eq!(pid, Some(0x103));
         assert!(tracks[1].selected);
 
-        let mut selector = PacketSelector::new(&programme, pid).expect("fixture programme filters");
+        let mut selector = PacketSelector::new(&programme, pid, TransportReader::Media3)
+            .expect("fixture programme filters");
         let packets = vec![
             fixture_packet(0, true, 0, &[0]),
             fixture_packet(0x100, true, 0, &[0]),
@@ -1319,14 +1337,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(pids, vec![0, 0x100, 0x101, 0x103]);
 
-        let pmt_packet = output
-            .as_chunks::<TS_PACKET_BYTES>()
-            .0
-            .iter()
-            .find(|packet| ((u16::from(packet[1] & 0x1f) << 8) | u16::from(packet[2])) == 0x100)
-            .expect("rewritten PMT is present");
-        let section_length = (usize::from(pmt_packet[6] & 0x0f) << 8) | usize::from(pmt_packet[7]);
-        let pmt = &pmt_packet[5..5 + 3 + section_length];
+        let pmt = pmt_section(&output);
         assert_eq!(mpeg_crc32(pmt), 0);
         let rewritten =
             parse_pmt(pmt, 0x100, TransportReader::Media3).expect("rewritten PMT remains valid");
@@ -1336,13 +1347,67 @@ mod tests {
     }
 
     #[test]
-    fn pcr_on_a_deselected_audio_track_is_rejected() {
-        let mut programme = fixture_programme();
-        programme.pcr_pid = 0x102;
-        assert!(matches!(
-            PacketSelector::new(&programme, Some(0x103)),
-            Err(TransportStreamError::UnsupportedProgramme)
-        ));
+    fn a_clock_on_a_deselected_audio_track_is_kept_without_listing_the_track() {
+        for reader in [TransportReader::Media3, TransportReader::WebviewMse] {
+            let mut programme = fixture_programme();
+            programme.pcr_pid = 0x102;
+            let mut selector = PacketSelector::new(&programme, Some(0x103), reader)
+                .expect("the programme opens on the selected track");
+            let output = selector.filter(&[
+                fixture_packet(0, true, 0, &[0]),
+                fixture_packet(0x100, true, 0, &[0]),
+                fixture_packet(0x101, false, 0, &[1]),
+                fixture_packet(0x102, false, 0, &[2]),
+                fixture_packet(0x103, false, 0, &[3]),
+                fixture_packet(0x104, false, 0, &[4]),
+            ]);
+            // The clock's packets pass, the other deselected track's do not.
+            assert_eq!(packet_pids(&output), vec![0, 0x100, 0x101, 0x102, 0x103]);
+
+            let pmt = parse_pmt(pmt_section(&output), 0x100, reader)
+                .expect("rewritten PMT remains valid");
+            assert_eq!(pmt.pcr_pid, 0x102);
+            assert_eq!(
+                pmt.streams
+                    .iter()
+                    .map(|stream| stream.pid)
+                    .collect::<Vec<_>>(),
+                vec![0x101, 0x103],
+                "a reader told of the clock's track would play it beside the selected one",
+            );
+        }
+    }
+
+    #[test]
+    fn private_data_ac_3_is_written_under_the_type_its_reader_finds_it_by() {
+        let programme = fixture_programme();
+        let track = AudioTrackId::generated(1, 0x104, 0x06);
+        for (reader, stream_type) in [
+            (TransportReader::Media3, 0x06),
+            (TransportReader::WebviewMse, 0x81),
+        ] {
+            let mut selector = PacketSelector::new(&programme, Some(0x104), reader)
+                .expect("fixture programme filters");
+            let output = selector.filter(&[fixture_packet(0x100, true, 0, &[0])]);
+            let pmt = parse_pmt(pmt_section(&output), 0x100, reader)
+                .expect("rewritten PMT remains valid");
+            let audio = pmt
+                .streams
+                .iter()
+                .find(|stream| stream.pid == 0x104)
+                .expect("the selected track is listed");
+            assert_eq!(audio.stream_type, stream_type);
+            assert!(matches!(audio.kind, StreamKind::Audio(AudioCodec::Ac3)));
+            assert_eq!(audio.descriptors, vec![0x6a, 0]);
+        }
+        // The Audio Track keeps the identity its signalled type gave it, so a
+        // saved Audio Track Preference still names it.
+        let (_, _, tracks) = programme.select_audio(&SelectionRequest::Requested(track.clone()));
+        assert!(
+            tracks
+                .iter()
+                .any(|listed| listed.selected && listed.id == track)
+        );
     }
 
     #[tokio::test]
@@ -1589,7 +1654,8 @@ mod tests {
         let mut pmt_continuity = 0;
         packetize_section(
             programme.pmt_pid,
-            &rewritten_pmt(programme, &streams).expect("fixture PMT rewrites"),
+            &rewritten_pmt(programme, &streams, TransportReader::Media3)
+                .expect("fixture PMT rewrites"),
             &mut pmt_continuity,
             &mut bytes,
         );
@@ -1597,6 +1663,17 @@ mod tests {
             bytes.extend_from_slice(&fixture_packet(pid, false, 0, &[marker]));
         }
         bytes
+    }
+
+    /// The rewritten PMT section of the fixture programme in selector output.
+    fn pmt_section(output: &[u8]) -> &[u8] {
+        let packet = output
+            .as_chunks::<TS_PACKET_BYTES>()
+            .0
+            .iter()
+            .find(|packet| packet_pid(packet) == 0x100)
+            .expect("rewritten PMT is present");
+        section_from_single_packet(packet)
     }
 
     fn packet_pids(bytes: &[u8]) -> Vec<u16> {
