@@ -150,7 +150,7 @@ describe("hosted mpegts.js adapter", () => {
     expect(fixture.calls).not.toContain("play");
   });
 
-  it("opens only the branded Sparrow route and releases the player idempotently", () => {
+  it("opens only the branded Sparrow route with a jitter-tolerant live buffer and releases the player idempotently", () => {
     const fixture = runtimeFixture();
     const engine = createMpegtsPlaybackEngine(fixture.runtime);
     const failure = vi.fn();
@@ -177,6 +177,8 @@ describe("hosted mpegts.js adapter", () => {
       enableStashBuffer: false,
       lazyLoad: false,
       liveBufferLatencyChasing: true,
+      liveBufferLatencyMaxLatency: 4,
+      liveBufferLatencyMinRemain: 2,
       autoCleanupSourceBuffer: true,
     });
 

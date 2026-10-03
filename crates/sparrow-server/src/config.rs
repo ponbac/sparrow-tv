@@ -4,11 +4,11 @@ use sparrow_core::{SourceConfiguration, SourceConfigurationInput, SparrowCore};
 
 use crate::{
     StartupError,
-    auth::{DeploymentAuth, DeploymentCredential},
+    auth::{DEFAULT_USERNAME, DeploymentCredential},
 };
 
 pub(crate) struct HostedConfig {
-    pub(crate) authentication: DeploymentAuth,
+    pub(crate) authentication: DeploymentCredential,
     pub(crate) source: SourceConfiguration,
     pub(crate) app_root: PathBuf,
 }
@@ -33,14 +33,14 @@ impl HostedConfig {
 
 fn deployment_auth(
     environment: impl Fn(&str) -> Result<Option<String>, StartupError>,
-) -> Result<DeploymentAuth, StartupError> {
+) -> Result<DeploymentCredential, StartupError> {
     match environment("SPARROW_AUTH_MODE")?.as_deref() {
-        Some("public") => Ok(DeploymentAuth::Public),
         None | Some("basic") => {
+            let username = environment("SPARROW_AUTH_USERNAME")?
+                .unwrap_or_else(|| DEFAULT_USERNAME.to_owned());
             let password = environment("PASSWORD")?.ok_or(StartupError::Configuration)?;
-            let credential = DeploymentCredential::new(password.as_bytes())
-                .map_err(|_| StartupError::Configuration)?;
-            Ok(DeploymentAuth::Basic(credential))
+            DeploymentCredential::with_username(&username, password.as_bytes())
+                .map_err(|_| StartupError::Configuration)
         }
         Some(_) => Err(StartupError::Configuration),
     }
@@ -80,11 +80,12 @@ mod tests {
     fn authentication(
         mode: Option<&str>,
         password: Option<&str>,
-    ) -> Result<DeploymentAuth, StartupError> {
+    ) -> Result<DeploymentCredential, StartupError> {
         deployment_auth(|name| {
             Ok(match name {
                 "SPARROW_AUTH_MODE" => mode.map(str::to_owned),
                 "PASSWORD" => password.map(str::to_owned),
+                "SPARROW_AUTH_USERNAME" => None,
                 _ => panic!("unexpected environment lookup"),
             })
         })
@@ -99,22 +100,85 @@ mod tests {
                     Err(StartupError::Configuration)
                 ));
             }
-            assert!(matches!(
-                authentication(mode, Some("synthetic-password")),
-                Ok(DeploymentAuth::Basic(_))
-            ));
+            assert!(authentication(mode, Some("synthetic-password")).is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_username_replaces_the_legacy_basic_username() {
+        use axum::{
+            Router,
+            body::Body,
+            http::{Request, StatusCode, header},
+            middleware,
+            routing::get,
+        };
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        use tower::ServiceExt as _;
+
+        let credential = deployment_auth(|name| {
+            Ok(match name {
+                "SPARROW_AUTH_MODE" => Some("basic".into()),
+                "SPARROW_AUTH_USERNAME" => Some("ponbac".into()),
+                "PASSWORD" => Some("synthetic-custom-password".into()),
+                _ => panic!("unexpected environment lookup"),
+            })
+        })
+        .expect("custom credentials are valid");
+        let router = Router::new().route("/probe", get(|| async { "ok" })).layer(
+            middleware::from_fn_with_state(credential, crate::auth::require_authentication),
+        );
+        for (username, password, expected) in [
+            ("ponbac", "synthetic-custom-password", StatusCode::OK),
+            (
+                "sparrow",
+                "synthetic-custom-password",
+                StatusCode::UNAUTHORIZED,
+            ),
+            ("ponbac", "wrong-password", StatusCode::UNAUTHORIZED),
+        ] {
+            let request = Request::builder()
+                .uri("/probe")
+                .header(
+                    header::AUTHORIZATION,
+                    format!(
+                        "Basic {}",
+                        STANDARD.encode(format!("{username}:{password}"))
+                    ),
+                )
+                .body(Body::empty())
+                .unwrap();
+            let response = router.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), expected);
         }
     }
 
     #[test]
-    fn public_mode_never_reads_even_an_invalid_rollback_password() {
-        let auth = deployment_auth(|name| match name {
-            "SPARROW_AUTH_MODE" => Ok(Some("public".into())),
-            "PASSWORD" => panic!("public mode must not read retained passwords"),
-            _ => panic!("unexpected environment lookup"),
-        })
-        .expect("public needs no password");
-        assert!(matches!(auth, DeploymentAuth::Public));
+    fn malformed_usernames_fail_closed_without_echoing_credentials() {
+        for username in [
+            "",
+            "user:canary",
+            "user\ncanary",
+            "user\0canary",
+            &"u".repeat(129),
+        ] {
+            let error = deployment_auth(|name| {
+                Ok(match name {
+                    "SPARROW_AUTH_MODE" => None,
+                    "SPARROW_AUTH_USERNAME" => Some(username.into()),
+                    "PASSWORD" => Some("synthetic-password-canary".into()),
+                    _ => panic!("unexpected environment lookup"),
+                })
+            })
+            .expect_err("invalid usernames must not start serving");
+            assert_eq!(error, StartupError::Configuration);
+            let diagnostic = format!("{error:?} {error}");
+            assert!(!diagnostic.contains("canary"));
+        }
+    }
+
+    #[test]
+    fn public_mode_is_rejected_even_with_a_retained_password() {
         for password in [
             None,
             Some(""),
@@ -123,7 +187,7 @@ mod tests {
         ] {
             assert!(matches!(
                 authentication(Some("public"), password),
-                Ok(DeploymentAuth::Public)
+                Err(StartupError::Configuration)
             ));
         }
     }
@@ -140,8 +204,7 @@ mod tests {
             "mode-secret-canary",
         ] {
             let error = authentication(Some(mode), Some("password-secret-canary"))
-                .err()
-                .expect("invalid modes must not start serving");
+                .expect_err("invalid modes must not start serving");
             assert_eq!(error, StartupError::Configuration);
             let diagnostic = format!("{error:?} {error}");
             assert!(!diagnostic.contains("mode-secret-canary"));

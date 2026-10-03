@@ -15,9 +15,7 @@ use sparrow_source_http::{HttpPlaybackAccess, HttpSourceAccess};
 use thiserror::Error;
 
 use crate::{
-    api::AppState,
-    auth::{DeploymentAuth, DeploymentCredential},
-    config::HostedConfig,
+    api::AppState, auth::DeploymentCredential, config::HostedConfig,
     memory_snapshot_store::MemorySnapshotStore,
 };
 
@@ -26,7 +24,8 @@ const BIND_ADDRESS: &str = "0.0.0.0:33733";
 /// Builds the complete hosted router around one shared catalog core.
 ///
 /// `/health` and the root redirect are public. Authentication is applied once
-/// around both same-origin interfaces: `/app` and `/api/v1`.
+/// around both same-origin interfaces: `/app` and `/api/v1`, using the default
+/// username `sparrow`. The deployment entry point also accepts a configured username.
 pub fn router(
     core: Arc<SparrowCore>,
     password: impl AsRef<[u8]>,
@@ -34,48 +33,23 @@ pub fn router(
 ) -> Result<Router, RouterBuildError> {
     let credential = DeploymentCredential::new(password.as_ref())?;
     let playback = HttpPlaybackAccess::new().map_err(|_| RouterBuildError::PlaybackAdapter)?;
-    Ok(hosted_router(
-        core,
-        playback,
-        DeploymentAuth::Basic(credential),
-        app_root.into(),
-    ))
-}
-
-/// Builds the hosted SPA and API without requiring viewer credentials.
-///
-/// Explicitly choosing this router exposes catalog, playback, events, and manual
-/// refresh to every reachable client. Source Configuration remains readonly.
-pub fn public_router(
-    core: Arc<SparrowCore>,
-    app_root: impl Into<PathBuf>,
-) -> Result<Router, RouterBuildError> {
-    let playback = HttpPlaybackAccess::new().map_err(|_| RouterBuildError::PlaybackAdapter)?;
-    Ok(hosted_router(
-        core,
-        playback,
-        DeploymentAuth::Public,
-        app_root.into(),
-    ))
+    Ok(hosted_router(core, playback, credential, app_root.into()))
 }
 
 fn hosted_router(
     core: Arc<SparrowCore>,
     playback: HttpPlaybackAccess,
-    authentication: DeploymentAuth,
+    credential: DeploymentCredential,
     app_root: PathBuf,
 ) -> Router {
     let interfaces = Router::new()
         .nest("/api/v1", api::router())
-        .nest_service("/app", static_app::service(app_root));
-    let interfaces = match authentication {
-        DeploymentAuth::Public => interfaces,
-        DeploymentAuth::Basic(credential) => interfaces.layer(middleware::from_fn_with_state(
+        .nest_service("/app", static_app::service(app_root))
+        .layer(middleware::from_fn_with_state(
             credential,
             auth::require_authentication,
-        )),
-    }
-    .with_state(AppState::new(core, playback));
+        ))
+        .with_state(AppState::new(core, playback));
 
     Router::new()
         .route("/health", get(health))
@@ -120,6 +94,8 @@ async fn health() -> axum::Json<Health> {
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum RouterBuildError {
+    #[error("the deployment username is invalid")]
+    InvalidUsername,
     #[error("the deployment password is required")]
     MissingPassword,
     #[error("the deployment password exceeds the supported size")]
