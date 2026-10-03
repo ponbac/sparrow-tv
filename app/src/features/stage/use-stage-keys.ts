@@ -1,5 +1,9 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
-import { focusStageMonitor, stageSearchInput } from "./stage-dom";
+import {
+  focusStageMonitor,
+  playerFullscreenButton,
+  stageSearchInput,
+} from "./stage-dom";
 
 // Where a key belongs to what has focus: typing, or moving through a list.
 const OWNS_EVERY_KEY =
@@ -114,9 +118,7 @@ function handleStageKey(
  * goes fullscreen. With no player the document root does.
  */
 function toggleFullscreen(): void {
-  const button = document.querySelector<HTMLElement>(
-    '[data-stage-action="fullscreen"]',
-  );
+  const button = playerFullscreenButton();
   if (button !== null) {
     button.click();
     return;

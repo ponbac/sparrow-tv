@@ -36,6 +36,16 @@ export function isPictureTap(
   );
 }
 
+/**
+ * The player's own Full screen button, or null while there is no player.
+ * Pressing it lets the player decide what goes fullscreen.
+ */
+export function playerFullscreenButton(): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    '[data-stage-action="fullscreen"]',
+  );
+}
+
 /** Reports whether focus is on one of the channel bar's buttons. */
 export function focusIsInChannelBar(): boolean {
   return document.activeElement?.closest(".channel-bar") != null;

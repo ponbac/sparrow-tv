@@ -58,6 +58,7 @@ import { guideRowProgramme, useNowPlaying } from "../stage/use-now-playing";
 import { usePicturePin } from "../stage/use-picture-pin";
 import { useStageKeys } from "../stage/use-stage-keys";
 import { usePictureOverlay, useStageLayout } from "../stage/use-stage-layout";
+import { useTurnFullscreen } from "../stage/use-turn-fullscreen";
 import { useZapStops } from "../stage/use-zap-stops";
 import {
   neighbouringZapStop,
@@ -213,6 +214,15 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   const chromeVisibility = useIdleChrome(
     watching && picture?.state === "playing",
   );
+  // A phone turned on its side while its picture plays wants the picture.
+  useTurnFullscreen({
+    watching:
+      layout === "pocket" &&
+      effectiveMode === "watch" &&
+      picture?.state === "playing" &&
+      !picture.external,
+    follows,
+  });
 
   const status = synchronization.status;
   const catalogGeneration = status?.generation ?? null;

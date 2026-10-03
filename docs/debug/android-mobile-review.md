@@ -60,8 +60,9 @@ configuration out of review screenshots and logs.
   counters. The app must enter watch mode: the picture across the window, the
   lower third, one row of controls, what follows, and the channel bar at the
   bottom. Nothing may lie over the picture. Open **More**: the menu must open
-  downward, clear of it. In landscape it must open beside its button, towards
-  the list, and still clear of the picture.
+  downward, clear of it. In landscape with the two columns showing (the turn
+  takes a live picture fullscreen: leave that with Back) it must open beside
+  its button, towards the list, and still clear of the picture.
 - Press **Guide** in the channel bar. The native picture must follow its box
   into the band at the top left, the playing row must be in the middle of the
   list, and no part of the guide may sit under the picture. Return with the
@@ -103,11 +104,21 @@ configuration out of review screenshots and logs.
 - Fail a source refresh while playing, then restore it and refresh again. The
   native picture must follow the video slot when the retained-catalog banner
   appears and disappears, even when the slot's size stays unchanged.
-- Rotate to landscape in each mode. The picture, the lower third and the
-  controls must be at the left and the list at the right, with no channel bar
-  and no band. Rotate back: the mode must be the one it was.
-- Still in landscape, pause, resume, and choose **Copy diagnostics** from
-  **More**. The picture's box must keep its height through all of it: the
+- In watch mode with a live picture, rotate to landscape. The picture must go
+  fullscreen: it fills the display with no system bars. Rotate back: fullscreen
+  must end and watch mode return. Rotate again and leave fullscreen with Back:
+  the layout below must show, and rotating upright must not change the mode.
+- In guide mode, and in watch mode while paused, rotate to landscape. Nothing
+  goes fullscreen: the picture, the lower third and the controls must be at
+  the left and the list at the right, with no channel bar and no band. Rotate
+  back: the mode must be the one it was.
+- Enter fullscreen with the button in portrait, then rotate both ways. The
+  picture must stay fullscreen until Back or the exit button.
+- Rotate to landscape while watching, pause in the fullscreen the turn began,
+  and rotate back. The picture cannot follow while paused, so fullscreen must
+  stay. Resume: fullscreen must then end and the watch screen return.
+- In landscape with the two columns showing, pause, resume, and choose
+  **Copy diagnostics** from **More**. The picture's box must keep its height through all of it: the
   controls stay on one line, which scrolls sideways to the message. No part
   of the lower third may be covered by a picture left at its old size.
   Pause again and tap the search field: the keyboard takes most of the
@@ -129,8 +140,8 @@ configuration out of review screenshots and logs.
   `audio.output` as `bundled-decoder`, and `adb shell dumpsys media.audio_flinger`
   must list an active track for the app. A fixture with no audio, or with a
   codec the transport does not forward, must show "No sound" beside the
-  Channel's name in both orientations, and the reason under the controls in
-  portrait.
+  Channel's name in portrait and in the two columns of landscape, and the
+  reason under the controls in portrait.
 
 For debug APKs, connect `agent-browser` to the app's forwarded WebView DevTools
 socket and use DOM controls. Capture the device with `adb exec-out screencap -p`:

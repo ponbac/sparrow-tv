@@ -2237,6 +2237,75 @@ describe("CatalogBrowser pocket layout", () => {
     );
   });
 
+  it("takes a watched picture fullscreen when the phone is turned on its side", async () => {
+    const client = new FakeSparrowClient({ pictureOverlay: false });
+    const user = userEvent.setup();
+    const orientation = Object.assign(new EventTarget(), {
+      type: "portrait-primary",
+    });
+    Object.defineProperty(window.screen, "orientation", {
+      configurable: true,
+      value: orientation,
+    });
+    const turn = (type: OrientationType) => {
+      orientation.type = type;
+      act(() => {
+        orientation.dispatchEvent(new Event("change"));
+      });
+    };
+    // A phone: a small window, held in the hand.
+    vi.stubGlobal("matchMedia", (media: string) => ({
+      matches: media === "(pointer: coarse)",
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    }));
+    renderInstalledBrowser(client);
+    await user.click(
+      await screen.findByRole("button", { name: "Tune World News" }),
+    );
+    const video = await screen.findByLabelText("World News live video");
+    const bar = within(await screen.findByRole("group", { name: "Channels" }));
+    await screen.findByRole("button", { name: "Pause" });
+    const player = video.closest<HTMLElement>(".hosted-player");
+    if (player === null) {
+      throw new Error("expected the player section");
+    }
+    const section = stubRequestFullscreen(player, { enters: true });
+    const exit = vi.fn(async () => section.exit());
+    Object.defineProperty(document, "exitFullscreen", {
+      configurable: true,
+      value: exit,
+    });
+    try {
+      // Browsing the guide, a turn only turns the layout.
+      await user.click(bar.getByRole("button", { name: "Guide" }));
+      turn("landscape-primary");
+      expect(section.request).not.toHaveBeenCalled();
+      turn("portrait-primary");
+
+      // Watching, it takes the picture fullscreen, and upright ends that.
+      await user.click(screen.getByRole("button", { name: "Back to the picture" }));
+      expect(requireShell()).toHaveAttribute("data-mode", "watch");
+      turn("landscape-primary");
+      expect(section.request).toHaveBeenCalledTimes(1);
+      // The player hears of the fullscreen it asked for before the next turn.
+      await act(async () => {});
+      turn("portrait-primary");
+      expect(exit).toHaveBeenCalledTimes(1);
+
+      // A paused picture stays where it is.
+      await user.click(screen.getByRole("button", { name: "Pause" }));
+      await screen.findByRole("button", { name: "Resume" });
+      turn("landscape-primary");
+      expect(section.request).toHaveBeenCalledTimes(1);
+    } finally {
+      section.restore();
+      vi.unstubAllGlobals();
+      Reflect.deleteProperty(document, "exitFullscreen");
+      Reflect.deleteProperty(window.screen, "orientation");
+    }
+  });
+
   it("keeps the picture's box while native video cannot follow it", async () => {
     const client = new FakeSparrowClient({ pictureOverlay: false });
     const user = userEvent.setup();
