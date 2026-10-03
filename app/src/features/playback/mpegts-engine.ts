@@ -67,6 +67,8 @@ export interface MpegtsRuntime {
       readonly enableStashBuffer: boolean;
       readonly lazyLoad: boolean;
       readonly liveBufferLatencyChasing: boolean;
+      readonly liveBufferLatencyMaxLatency?: number;
+      readonly liveBufferLatencyMinRemain?: number;
       readonly autoCleanupSourceBuffer: boolean;
       readonly enableWorker?: false;
       readonly lazyLoadRecoverDuration?: number;
@@ -181,6 +183,10 @@ export function createMpegtsPlaybackEngine(
             enableStashBuffer: false,
             lazyLoad: false,
             liveBufferLatencyChasing: true,
+            // The 1.5s/0.5s defaults repeatedly seek into starvation on bursty
+            // delivery. Keep a jitter reserve without abandoning live catch-up.
+            liveBufferLatencyMaxLatency: 4,
+            liveBufferLatencyMinRemain: 2,
             autoCleanupSourceBuffer: true,
           },
         );
