@@ -1384,6 +1384,7 @@ function androidPresentationFixture() {
         droppedFrames: 0,
         bufferedDurationMs: 0,
         silent: true,
+        audio: "device-decoder" as const,
       }),
     pause: async () => success(undefined),
     resume: async () => success(undefined),

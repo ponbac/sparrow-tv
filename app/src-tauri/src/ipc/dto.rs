@@ -11,7 +11,7 @@ pub(crate) use sparrow_client_contract::{
 };
 
 use crate::{
-    android_playback::{AndroidPlaybackPhase, AndroidPlaybackStatus},
+    android_playback::{AndroidPlaybackAudio, AndroidPlaybackPhase, AndroidPlaybackStatus},
     playback::{InstalledPlaybackStart, PlaybackManagerError, StartedPlayback},
     selected_transport_stream::{AudioSelection, AudioTrack},
 };
@@ -95,6 +95,7 @@ pub(crate) struct AndroidPlaybackStatusDto {
     dropped_frames: u64,
     buffered_duration_ms: u64,
     silent: bool,
+    audio: &'static str,
 }
 
 impl From<AndroidPlaybackStatus> for AndroidPlaybackStatusDto {
@@ -111,6 +112,13 @@ impl From<AndroidPlaybackStatus> for AndroidPlaybackStatusDto {
             dropped_frames: status.dropped_frames(),
             buffered_duration_ms: status.buffered_duration_ms(),
             silent: status.silent(),
+            audio: match status.audio() {
+                AndroidPlaybackAudio::Pending => "pending",
+                AndroidPlaybackAudio::DeviceDecoder => "device-decoder",
+                AndroidPlaybackAudio::BundledDecoder => "bundled-decoder",
+                AndroidPlaybackAudio::Undecodable => "undecodable",
+                AndroidPlaybackAudio::Absent => "absent",
+            },
         }
     }
 }

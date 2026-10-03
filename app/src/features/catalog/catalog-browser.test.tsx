@@ -2266,9 +2266,14 @@ describe("CatalogBrowser pocket layout", () => {
     await screen.findByRole("button", { name: "Pause" });
     expect(shell).toHaveAttribute("data-mode", "guide");
     expect(shell).toHaveAttribute("data-dock", "true");
+    // The fixture's transport carries no Audio Track, which is all the state
+    // line has left to say of a live picture.
     expect(
-      document.querySelector(".now-playing__state"),
+      stage.queryByText("Paused", { selector: ".now-playing__state" }),
     ).not.toBeInTheDocument();
+    expect(
+      stage.getByText("No sound", { selector: ".now-playing__state" }),
+    ).toHaveAttribute("data-state", "silent");
 
     // And the other way: paused in the band, it stays band-sized in watch mode.
     await user.click(screen.getByRole("button", { name: "Pause" }));

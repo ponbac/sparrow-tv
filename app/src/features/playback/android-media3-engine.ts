@@ -1,4 +1,5 @@
 import type {
+  AndroidPlaybackAudio,
   AndroidPlaybackPresentation,
   AndroidPlaybackViewport,
   InstalledPlaybackSession,
@@ -40,6 +41,8 @@ export interface AndroidMedia3PlaybackRequest {
   ) => void;
   readonly onAutoplayBlocked: () => void;
   readonly onPlaying: () => void;
+  /** Receives what Media3 does with the Audio Track, each time that changes. */
+  readonly onAudio: (audio: AndroidPlaybackAudio) => void;
 }
 
 /** Narrow Android engine seam used by the platform router and focused tests. */
@@ -71,7 +74,7 @@ export function createAndroidMedia3PlaybackEngine(
   return {
     start(request) {
       const initialViewport = runtime.measureViewport(request.video);
-      markPlaybackStatus(request.video, "starting", 0, 0, 0, false);
+      markPlaybackStatus(request.video, "starting", 0, 0, 0, false, "pending");
       let viewport: AndroidPlaybackViewport | null = initialViewport;
 
       let active = true;
@@ -80,6 +83,7 @@ export function createAndroidMedia3PlaybackEngine(
       let startingStatusPolls = 0;
       let stalledPlayingPolls = 0;
       let lastDecodedFrames = 0;
+      let reportedAudio: AndroidPlaybackAudio | null = null;
       let presentation: AndroidPlaybackPresentation | null = null;
       let cancelStatusPoll: (() => void) | null = null;
       let cancelViewportWait: (() => void) | null = null;
@@ -155,7 +159,12 @@ export function createAndroidMedia3PlaybackEngine(
                 result.value.droppedFrames,
                 result.value.bufferedDurationMs,
                 result.value.silent,
+                result.value.audio,
               );
+              if (result.value.audio !== reportedAudio) {
+                reportedAudio = result.value.audio;
+                request.onAudio(reportedAudio);
+              }
               switch (result.value.state) {
                 case "playing":
                   startingStatusPolls = 0;
@@ -328,6 +337,7 @@ function markPlaybackStatus(
   droppedFrames: number,
   bufferedDurationMs: number,
   silent: boolean,
+  audio: AndroidPlaybackAudio,
 ): void {
   video.dataset.playbackEngine = "android-media3";
   video.dataset.playbackState = state;
@@ -335,6 +345,7 @@ function markPlaybackStatus(
   video.dataset.droppedFrames = String(droppedFrames);
   video.dataset.bufferedDurationMs = String(bufferedDurationMs);
   video.dataset.processSilent = String(silent);
+  video.dataset.playbackAudio = audio;
 }
 
 function clearPlaybackStatus(video: HTMLVideoElement): void {
@@ -344,6 +355,7 @@ function clearPlaybackStatus(video: HTMLVideoElement): void {
   delete video.dataset.droppedFrames;
   delete video.dataset.bufferedDurationMs;
   delete video.dataset.processSilent;
+  delete video.dataset.playbackAudio;
 }
 
 /** Creates the browser geometry adapter used by Android's native overlay. */

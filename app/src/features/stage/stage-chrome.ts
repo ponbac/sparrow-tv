@@ -9,6 +9,8 @@ export interface StagePicture {
   readonly status: string;
   /** The picture is in a separate window (mpv), not in the page. */
   readonly external: boolean;
+  /** The player knows the picture has no sound the viewer can hear. */
+  readonly silent: boolean;
 }
 
 /** The shell's side of the player chrome: where controls go and how they look. */
@@ -131,5 +133,6 @@ export function samePicture(
     ? left === right
     : left.state === right.state &&
         left.status === right.status &&
-        left.external === right.external;
+        left.external === right.external &&
+        left.silent === right.silent;
 }

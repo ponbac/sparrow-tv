@@ -78,6 +78,8 @@ export function installedPlaybackDiagnostics(
       trackCount: boundedInteger(state.audio.tracks.length, 32),
       selection: safeAudioSelection(state),
       preferenceStatus: state.audio.preferenceStatus ?? "none",
+      codec: state.audio.tracks.find((track) => track.selected)?.codec ?? "none",
+      output: state.audio.output ?? "unreported",
     },
     media: projectMedia(media),
     transitions: transitions.slice(-MAX_TRANSITIONS).map((transition) => ({

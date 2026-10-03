@@ -47,5 +47,5 @@ describe("pictureFollows", () => {
 });
 
 function picture(state: StagePicture["state"]): StagePicture {
-  return { state, status: "", external: false };
+  return { state, status: "", external: false, silent: false };
 }

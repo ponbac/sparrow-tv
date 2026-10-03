@@ -31,7 +31,7 @@ use crate::{
     screen_wake::ScreenWake,
     selected_transport_stream::{
         AudioSelection, AudioTrack, AudioTrackId, PreferenceStatus, SelectedTransportStream,
-        SelectionRequest, TransportStreamError,
+        SelectionRequest, TransportReader, TransportStreamError,
     },
 };
 pub(crate) use mpv::MpvFailure;
@@ -89,7 +89,8 @@ struct MpegTsPlaybackTransportSelector;
 impl PlaybackTransportSelector for MpegTsPlaybackTransportSelector {
     fn open(&self, body: PlaybackByteStream, request: SelectionRequest) -> TransportOpenFuture {
         Box::pin(async move {
-            let opened = SelectedTransportStream::open(body, request).await?;
+            let opened =
+                SelectedTransportStream::open(body, request, TransportReader::CURRENT).await?;
             Ok(PreparedPlaybackTransport {
                 body: Box::pin(opened.stream),
                 tracks: opened.tracks,

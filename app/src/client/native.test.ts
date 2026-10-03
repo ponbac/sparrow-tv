@@ -1091,6 +1091,7 @@ describe("installed Tauri Sparrow client", () => {
       droppedFrames: 2,
       bufferedDurationMs: 1_250,
       silent: true,
+      audio: "device-decoder",
     } as const;
     const ipc = new FakeNativeIpc((command, args) => {
       switch (command) {
@@ -1269,6 +1270,7 @@ describe("installed Tauri Sparrow client", () => {
             droppedFrames: 0,
             bufferedDurationMs: 500,
             silent: true,
+            audio: "device-decoder",
             source: "https://user:secret@provider.invalid/private.ts",
           });
         case NATIVE_COMMANDS.stopAndroidPlayback:

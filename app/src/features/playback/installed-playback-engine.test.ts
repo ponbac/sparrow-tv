@@ -242,6 +242,7 @@ function requestFixture(
     video: document.createElement("video"),
     onFailure: callbacks.onFailure ?? vi.fn(),
     onAutoplayBlocked: vi.fn(),
+    onAudio: vi.fn(),
     onPlaying: callbacks.onPlaying ?? vi.fn(),
   };
 }
@@ -273,6 +274,7 @@ function androidPresentationFixture(): AndroidPlaybackPresentation {
         droppedFrames: 0,
         bufferedDurationMs: 0,
         silent: true,
+        audio: "device-decoder",
       }),
     pause: async () => success(undefined),
     resume: async () => success(undefined),

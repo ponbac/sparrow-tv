@@ -30,6 +30,51 @@ class NativePlaybackProtocolTest {
   }
 
   @Test
+  fun audioIsHeardOnceADecoderOrAnEncodedOutputHasTakenASelectedTrack() {
+    val unknown = NativePlaybackAudioTracks.UNKNOWN
+    val selected = NativePlaybackAudioTracks.SELECTED
+    assertEquals(
+      NativePlaybackAudio.PENDING,
+      nativePlaybackAudio(unknown, "c2.android.aac.decoder", passthrough = false),
+    )
+    assertEquals(
+      NativePlaybackAudio.PENDING,
+      nativePlaybackAudio(selected, null, passthrough = false),
+    )
+    assertEquals(
+      NativePlaybackAudio.DEVICE_DECODER,
+      nativePlaybackAudio(selected, "c2.android.aac.decoder", passthrough = false),
+    )
+    assertEquals(
+      NativePlaybackAudio.BUNDLED_DECODER,
+      nativePlaybackAudio(selected, "ffmpeg8.0-eac3", passthrough = false),
+    )
+    // An output that takes the encoded track starts no decoder in the player.
+    assertEquals(
+      NativePlaybackAudio.DEVICE_DECODER,
+      nativePlaybackAudio(selected, null, passthrough = true),
+    )
+    // Neither a decoder nor an output left over from an earlier track makes
+    // an undecodable or missing one heard.
+    assertEquals(
+      NativePlaybackAudio.UNDECODABLE,
+      nativePlaybackAudio(
+        NativePlaybackAudioTracks.UNDECODABLE,
+        "c2.android.aac.decoder",
+        passthrough = true,
+      ),
+    )
+    assertEquals(
+      NativePlaybackAudio.ABSENT,
+      nativePlaybackAudio(NativePlaybackAudioTracks.ABSENT, null, passthrough = true),
+    )
+    assertEquals(
+      listOf("pending", "device-decoder", "bundled-decoder", "undecodable", "absent"),
+      NativePlaybackAudio.entries.map { it.wire },
+    )
+  }
+
+  @Test
   fun identityAcceptsOnlyBoundedOpaqueHandles() {
     val identity = NativePlaybackIdentity.parse(
       "play1_0123456789abcdef0123456789abcdef_a",

@@ -80,18 +80,37 @@ describe("NowPlaying", () => {
     const paused = {
       now: "2026-09-01T20:45:00.000Z",
       programmes: [programme("Evening Film", "20:30", "21:30")],
-      picture: { state: "paused", status: "Paused" },
+      picture: { state: "paused", status: "Paused", silent: false },
     } as const;
+    const playing = { state: "playing", status: "On air", silent: false } as const;
     const { rerender } = renderInfo(paused);
 
     expect(screen.getByText("Paused")).toHaveAttribute("data-state", "paused");
 
-    rerender(info({ ...paused, picture: { state: "playing", status: "On air" } }));
+    rerender(info({ ...paused, picture: playing }));
     expect(screen.queryByText("On air")).not.toBeInTheDocument();
+    expect(screen.queryByText("No sound")).not.toBeInTheDocument();
+
+    // A picture that plays without sound is not simply playing.
+    rerender(info({ ...paused, picture: { ...playing, silent: true } }));
+    expect(screen.getByText("No sound")).toHaveAttribute("data-state", "silent");
+
+    // Not playing, the state it is in is what matters.
+    rerender(info({ ...paused, picture: { ...paused.picture, silent: true } }));
+    expect(screen.getByText("Paused")).toBeInTheDocument();
+    expect(screen.queryByText("No sound")).not.toBeInTheDocument();
 
     // Theater shows the state over the picture, inside the player.
     rerender(info({ ...paused, layout: "theater" }));
     expect(screen.queryByText("Paused")).not.toBeInTheDocument();
+    rerender(
+      info({
+        ...paused,
+        layout: "theater",
+        picture: { ...playing, silent: true },
+      }),
+    );
+    expect(screen.queryByText("No sound")).not.toBeInTheDocument();
   });
 
   it("marks what follows as unsettled while the description may still arrive", () => {
@@ -155,7 +174,7 @@ interface InfoInput {
   readonly programmes: readonly NowPlayingProgramme[];
   readonly reading?: NowPlayingReading;
   readonly layout?: StageLayout;
-  readonly picture?: Pick<StagePicture, "state" | "status">;
+  readonly picture?: Pick<StagePicture, "state" | "status" | "silent">;
 }
 
 function renderInfo(input: InfoInput) {

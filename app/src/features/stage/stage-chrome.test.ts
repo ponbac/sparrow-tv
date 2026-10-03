@@ -126,6 +126,7 @@ describe("samePicture", () => {
     state: "playing",
     status: "On air",
     external: false,
+    silent: false,
   };
 
   it("matches reports that say the same thing", () => {
@@ -141,6 +142,7 @@ describe("samePicture", () => {
       false,
     );
     expect(samePicture(playing, { ...playing, external: true })).toBe(false);
+    expect(samePicture(playing, { ...playing, silent: true })).toBe(false);
     expect(samePicture(playing, null)).toBe(false);
     expect(samePicture(null, playing)).toBe(false);
   });

@@ -46,7 +46,7 @@ export interface NowPlayingProps {
    */
   readonly layout: StageLayout;
   /** What the player says of its picture; null while there is no player. */
-  readonly picture: Pick<StagePicture, "state" | "status"> | null;
+  readonly picture: Pick<StagePicture, "state" | "status" | "silent"> | null;
   /** Receives the element the player puts its controls in. */
   readonly controlsRef: (element: HTMLDivElement | null) => void;
   readonly onPreparePlayback: () => void;
@@ -87,13 +87,19 @@ export function NowPlaying({
             )}
             {/* Nothing is drawn over pocket's picture, and native video
                 covers the player's own overlay, so the state is worded here.
-                The player's heading is what announces it. */}
-            {layout === "pocket" &&
-            picture !== null &&
-            picture.state !== "playing" ? (
-              <span className="now-playing__state" data-state={picture.state}>
-                {picture.status}
-              </span>
+                The player's heading is what announces it. A picture playing
+                without sound is worded here too: the player's own line about
+                it ends the control row, out of view in a short window. */}
+            {layout === "pocket" && picture !== null ? (
+              picture.state !== "playing" ? (
+                <span className="now-playing__state" data-state={picture.state}>
+                  {picture.status}
+                </span>
+              ) : picture.silent ? (
+                <span className="now-playing__state" data-state="silent">
+                  No sound
+                </span>
+              ) : null
             ) : null}
             {subject.variants.length > 1 ? (
               <QualitySwitch

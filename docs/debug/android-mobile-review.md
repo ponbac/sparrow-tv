@@ -124,6 +124,13 @@ configuration out of review screenshots and logs.
   return and the icon controls are back in their row.
 - Change Audio Track, switch Channel, pause/resume, and background/foreground
   the Activity. Check recovery and stop without overlapping Playback Sessions.
+- Play fixtures whose only Audio Track is AC-3, E-AC-3 and MPEG audio layer II,
+  which the emulator has no decoder for. **Copy diagnostics** must report
+  `audio.output` as `bundled-decoder`, and `adb shell dumpsys media.audio_flinger`
+  must list an active track for the app. A fixture with no audio, or with a
+  codec the transport does not forward, must show "No sound" beside the
+  Channel's name in both orientations, and the reason under the controls in
+  portrait.
 
 For debug APKs, connect `agent-browser` to the app's forwarded WebView DevTools
 socket and use DOM controls. Capture the device with `adb exec-out screencap -p`:

@@ -850,6 +850,11 @@ export class InstalledPlaybackRunner {
       onPlaying: () => {
         this.#markPlaying(sessionEpoch, transportEpoch, session, video);
       },
+      onAudio: (output) => {
+        if (this.#matchesTransport(sessionEpoch, transportEpoch, session)) {
+          this.#dispatch({ _tag: "audio-output", output });
+        }
+      },
     });
     registered = true;
     if (typeof started === "string") {

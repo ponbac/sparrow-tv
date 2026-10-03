@@ -284,6 +284,7 @@ it("tells the shell the state of its picture and where it is, until it unmounts"
     state: "starting",
     status: "Tuning",
     external: false,
+    silent: false,
   });
 
   view.rerender(
@@ -295,6 +296,7 @@ it("tells the shell the state of its picture and where it is, until it unmounts"
     state: "playing",
     status: "On air",
     external: true,
+    silent: false,
   });
 
   // A failure is reported under the name the player's heading gives it.
@@ -314,6 +316,20 @@ it("tells the shell the state of its picture and where it is, until it unmounts"
     state: "failed",
     status: "Signal lost",
     external: false,
+    silent: false,
+  });
+
+  // A picture the player knows to be without sound is reported as such.
+  view.rerender(
+    <CompactChrome reportPicture={reportPicture}>
+      <PlaybackSurface {...props} silent />
+    </CompactChrome>,
+  );
+  expect(reportPicture).toHaveBeenLastCalledWith({
+    state: "playing",
+    status: "On air",
+    external: false,
+    silent: true,
   });
   expect(reportPicture).not.toHaveBeenCalledWith(null);
 

@@ -86,6 +86,8 @@ export interface PlaybackSurfaceProps {
   readonly nativeVideo?: boolean;
   /** The picture is in a separate window (mpv), not in the page. */
   readonly external?: boolean;
+  /** The player knows the picture has no sound the viewer can hear. */
+  readonly silent?: boolean;
   readonly showMediaControls?: boolean;
   readonly stopLabel?: string;
   readonly onStop: () => void;
@@ -114,6 +116,7 @@ export function PlaybackSurface({
   onRequestFullscreen,
   nativeVideo = false,
   external = false,
+  silent = false,
   showMediaControls = true,
   stopLabel = "Stop stream",
   onStop,
@@ -184,8 +187,9 @@ export function PlaybackSurface({
       state: state._tag,
       status: presentation.status,
       external,
+      silent,
     });
-  }, [reportPicture, state._tag, presentation.status, external]);
+  }, [reportPicture, state._tag, presentation.status, external, silent]);
   useEffect(() => () => reportPicture(null), [reportPicture]);
 
   const toggleFullscreen = () => {

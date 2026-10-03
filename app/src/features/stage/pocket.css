@@ -230,7 +230,8 @@
 }
 
 .shell[data-layout="pocket"]
-  .now-playing__state[data-state="autoplay-blocked"] {
+  .now-playing__state[data-state="autoplay-blocked"],
+.shell[data-layout="pocket"] .now-playing__state[data-state="silent"] {
   color: var(--amber);
 }
 
