@@ -635,6 +635,46 @@ async fn stale_not_configured_and_unavailable_are_ordinary_client_errors() {
 }
 
 #[tokio::test]
+async fn authenticated_viewers_cannot_read_or_write_source_configuration() {
+    let app = TestApp::fixture(BROWSE_M3U).await;
+    let capabilities = get_json(&app.router, "/api/v1/capabilities").await;
+    assert_eq!(capabilities["sourceConfiguration"], "deployment-readonly");
+    let generation = app.core.status().generation();
+
+    for path in [
+        "/api/v1/configuration",
+        "/api/v1/source-configuration",
+        "/api/v1/sources",
+    ] {
+        for method in [
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+        ] {
+            let mut request = request(method, path, Some(PASSWORD));
+            request
+                .headers_mut()
+                .insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+            *request.body_mut() =
+                Body::from(r#"{"m3u":"https://untrusted.fixture.invalid/source"}"#);
+            let response = send(&app.router, request).await;
+            assert_invalid_input(&response, "route", "invalid-format");
+            for canary in [
+                PASSWORD,
+                CONFIGURATION_CANARY,
+                PROVIDER_CANARY,
+                "untrusted.fixture.invalid",
+            ] {
+                assert!(!response.text.contains(canary));
+            }
+        }
+    }
+    assert_eq!(app.core.status().generation(), generation);
+}
+
+#[tokio::test]
 async fn same_origin_responses_never_enable_cors_or_expose_private_values() {
     let app = TestApp::fixture(BROWSE_M3U).await;
     let mut cors_request = request(Method::GET, "/api/v1/channels?limit=100", Some(PASSWORD));

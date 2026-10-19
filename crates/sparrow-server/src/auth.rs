@@ -11,7 +11,8 @@ use subtle::ConstantTimeEq;
 
 use crate::{RouterBuildError, api::ErrorEnvelope};
 
-const USERNAME_PREFIX: &[u8] = b"sparrow:";
+pub(crate) const DEFAULT_USERNAME: &str = "sparrow";
+const MAX_USERNAME_BYTES: usize = 128;
 const MAX_PASSWORD_BYTES: usize = 1024;
 const MAX_AUTHORIZATION_BYTES: usize = 2048;
 const CHALLENGE: &str = "Basic realm=\"sparrow\", charset=\"UTF-8\"";
@@ -23,6 +24,17 @@ pub(crate) struct DeploymentCredential {
 
 impl DeploymentCredential {
     pub(crate) fn new(password: &[u8]) -> Result<Self, RouterBuildError> {
+        Self::with_username(DEFAULT_USERNAME, password)
+    }
+
+    pub(crate) fn with_username(username: &str, password: &[u8]) -> Result<Self, RouterBuildError> {
+        if username.is_empty()
+            || username.len() > MAX_USERNAME_BYTES
+            || username.contains(':')
+            || username.chars().any(char::is_control)
+        {
+            return Err(RouterBuildError::InvalidUsername);
+        }
         if password.is_empty() {
             return Err(RouterBuildError::MissingPassword);
         }
@@ -31,7 +43,8 @@ impl DeploymentCredential {
         }
 
         let mut hasher = blake3::Hasher::new();
-        hasher.update(USERNAME_PREFIX);
+        hasher.update(username.as_bytes());
+        hasher.update(b":");
         hasher.update(password);
         Ok(Self {
             digest: *hasher.finalize().as_bytes(),
