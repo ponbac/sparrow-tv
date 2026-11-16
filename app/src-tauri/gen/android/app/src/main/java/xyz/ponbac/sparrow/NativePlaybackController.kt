@@ -1,6 +1,7 @@
 package xyz.ponbac.sparrow
 
 import android.graphics.Color
+import android.graphics.Rect
 import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
@@ -13,6 +14,7 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
+import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.common.util.Util
 import androidx.media3.datasource.DataSource
@@ -34,6 +36,10 @@ internal class NativePlaybackController(
 ) {
   private var host: PlaybackHost? = null
   private val lifecycleFence = NativePlaybackLifecycleFence()
+  private var pictureInPicture = false
+  private var pictureInPictureCover: View? = null
+  private var pictureListener: (() -> Unit)? = null
+  private var videoAspect = pictureInPictureAspect(0, 0, 1f)
 
   fun start(
     sessionId: String,
@@ -173,8 +179,9 @@ internal class NativePlaybackController(
     }
   }
 
+  /** Rust's lifecycle suspension: everything goes while the app is stopped. */
   fun suspendAll(): Boolean = onMain(false) {
-    host?.unbindAll(revealWebContent = false)
+    host?.suspendForLifecycle()
     true
   }
 
@@ -193,6 +200,68 @@ internal class NativePlaybackController(
   fun resumeForLifecycle(): Boolean = onMain(false) {
     lifecycleFence.resume()
     true
+  }
+
+  /** Called on the main thread when the picture's size or place changes. */
+  fun setPictureListener(listener: (() -> Unit)?) {
+    pictureListener = listener
+  }
+
+  /** The playing video's shape for a picture-in-picture window. */
+  fun videoAspect(): Pair<Int, Int> = videoAspect
+
+  /**
+   * Where the picture is on screen, for the window to grow out of. Inside
+   * picture-in-picture the picture is the window, and its bounds say nothing.
+   */
+  fun pictureBounds(): Rect? = if (pictureInPicture) null else host?.pictureBounds()
+
+  /**
+   * The picture-in-picture window shows the whole Activity, so the picture
+   * fills it over an opaque cover for as long as it lasts: the page below
+   * never shows in it, whether or not a picture is bound. Leaving puts the
+   * picture back where the page last placed it, or shows the page when
+   * nothing is playing.
+   */
+  fun setPictureInPicture(active: Boolean) {
+    if (pictureInPicture == active) {
+      return
+    }
+    pictureInPicture = active
+    val parent = activity.window.decorView as? ViewGroup ?: return
+    if (active) {
+      val cover = View(activity).apply {
+        setBackgroundColor(Color.BLACK)
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+      }
+      runCatching {
+        parent.addView(
+          cover,
+          FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+          ),
+        )
+        pictureInPictureCover = cover
+      }
+      host?.setPictureInPicture(true)
+    } else {
+      host?.setPictureInPicture(false)
+      pictureInPictureCover?.let { cover -> runCatching { parent.removeView(cover) } }
+      pictureInPictureCover = null
+    }
+  }
+
+  private fun onVideoSize(videoSize: VideoSize) {
+    // A reset player reports an unknown size: keep the last known shape.
+    if (videoSize.width > 0 && videoSize.height > 0) {
+      videoAspect = pictureInPictureAspect(
+        videoSize.width,
+        videoSize.height,
+        videoSize.pixelWidthHeightRatio,
+      )
+      pictureListener?.invoke()
+    }
   }
 
   private fun createPlaybackHost(): PlaybackHost? {
@@ -218,8 +287,21 @@ internal class NativePlaybackController(
           .build()
       player = createdPlayer
       createdPlayerView.player = createdPlayer
+      createdPlayer.addListener(
+        object : Player.Listener {
+          override fun onVideoSizeChanged(videoSize: VideoSize) = onVideoSize(videoSize)
+        },
+      )
+      createdPlayerView.addOnLayoutChangeListener { _, left, top, right, bottom,
+          oldLeft, oldTop, oldRight, oldBottom ->
+        if (left != oldLeft || top != oldTop || right != oldRight || bottom != oldBottom) {
+          pictureListener?.invoke()
+        }
+      }
       parent.addView(createdPlayerView)
-      PlaybackHost(activity, parent, createdPlayerView, createdPlayer)
+      PlaybackHost(activity, parent, createdPlayerView, createdPlayer).also {
+        it.setPictureInPicture(pictureInPicture)
+      }
     } catch (_: RuntimeException) {
       runCatching { playerView?.player = null }
       runCatching { player?.release() }
@@ -266,6 +348,17 @@ internal class NativePlaybackController(
   ) {
     private var binding: PlaybackBinding? = null
     private var released = false
+    /**
+     * The presentation the lifecycle took away, as the page last saw it. The
+     * page hears of the suspension by an event that can arrive after its
+     * next status read; until it suspends or stops the presentation itself,
+     * the presentation reads as paused rather than missing, which would start
+     * a recovery.
+     */
+    private var lifecycleSuspended: Pair<NativePlaybackIdentity, String>? = null
+    private var pictureInPicture = false
+    /** The page's last placement outside picture-in-picture. */
+    private var placement: NativePlaybackViewport? = null
 
     val identity: NativePlaybackIdentity?
       get() = binding?.identity
@@ -278,6 +371,7 @@ internal class NativePlaybackController(
       if (released || binding != null) {
         return false
       }
+      lifecycleSuspended = null
       val created = PlaybackBinding(identity, player, controls)
       binding = created
       return try {
@@ -310,13 +404,27 @@ internal class NativePlaybackController(
     }
 
     fun status(identity: NativePlaybackIdentity): String =
-      binding?.takeIf { it.identity == identity }?.statusJson() ?: ""
+      binding?.takeIf { it.identity == identity }?.statusJson()
+        ?: lifecycleSuspended?.takeIf { it.first == identity }?.second
+        ?: ""
+
+    fun suspendForLifecycle() {
+      val current = binding ?: return
+      current.pauseForLifecycle()
+      val status = current.statusJson()
+      unbind(current.identity, revealWebContent = false)
+      lifecycleSuspended = current.identity to status
+    }
+
+    private fun isLifecycleSuspended(identity: NativePlaybackIdentity): Boolean =
+      lifecycleSuspended?.first == identity
 
     fun setControls(
       identity: NativePlaybackIdentity,
       controls: NativePlaybackControls,
     ): Boolean {
-      val current = binding?.takeIf { it.identity == identity } ?: return false
+      val current = binding?.takeIf { it.identity == identity }
+        ?: return isLifecycleSuspended(identity)
       current.setControls(controls)
       return true
     }
@@ -326,7 +434,7 @@ internal class NativePlaybackController(
       viewport: NativePlaybackViewport,
     ): Boolean {
       if (binding?.identity != identity) {
-        return false
+        return isLifecycleSuspended(identity)
       }
       setViewport(viewport)
       return true
@@ -336,6 +444,9 @@ internal class NativePlaybackController(
       identity: NativePlaybackIdentity,
       revealWebContent: Boolean,
     ): Boolean {
+      if (isLifecycleSuspended(identity)) {
+        lifecycleSuspended = null
+      }
       val current = binding ?: return true
       if (current.identity != identity) {
         return false
@@ -353,16 +464,14 @@ internal class NativePlaybackController(
       sessionId: String,
       revealWebContent: Boolean,
     ): Boolean {
+      if (lifecycleSuspended?.first?.sessionId == sessionId) {
+        lifecycleSuspended = null
+      }
       val current = binding ?: return true
       if (current.identity.sessionId != sessionId) {
         return false
       }
       return unbind(current.identity, revealWebContent)
-    }
-
-    fun unbindAll(revealWebContent: Boolean) {
-      val current = binding ?: return
-      unbind(current.identity, revealWebContent)
     }
 
     fun pauseForLifecycle() {
@@ -373,9 +482,36 @@ internal class NativePlaybackController(
     }
 
     fun revealWebContent() {
-      if (!released) {
+      // Picture-in-picture shows only the picture; leaving it decides.
+      if (!released && !pictureInPicture) {
         directWebContentChild(parent)?.bringToFront()
       }
+    }
+
+    fun setPictureInPicture(active: Boolean) {
+      if (released || pictureInPicture == active) {
+        return
+      }
+      pictureInPicture = active
+      if (active) {
+        fillWindow()
+        return
+      }
+      // A placement made inside picture-in-picture was for the small window.
+      val last = placement
+      if (binding != null && last != null) {
+        place(last)
+      } else {
+        revealWebContent()
+      }
+    }
+
+    fun pictureBounds(): Rect? {
+      if (released || playerView.width == 0 || playerView.height == 0) {
+        return null
+      }
+      val bounds = Rect()
+      return if (playerView.getGlobalVisibleRect(bounds)) bounds else null
     }
 
     fun release() {
@@ -395,6 +531,23 @@ internal class NativePlaybackController(
       if (released) {
         return
       }
+      if (pictureInPicture) {
+        fillWindow()
+        return
+      }
+      placement = viewport
+      place(viewport)
+    }
+
+    private fun fillWindow() {
+      playerView.layoutParams = FrameLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.MATCH_PARENT,
+      )
+      playerView.bringToFront()
+    }
+
+    private fun place(viewport: NativePlaybackViewport) {
       val webView = findWebView(parent) ?: return
       val webLocation = IntArray(2)
       val parentLocation = IntArray(2)

@@ -1,4 +1,4 @@
-import { useLayoutEffect } from "react";
+import { useLayoutEffect, useState } from "react";
 import { stageMonitorSize } from "./stage-dom";
 
 /** The root properties `pocket.css` sizes a held picture by. */
@@ -16,11 +16,27 @@ const PINNED_HEIGHT = "--pocket-pinned-h";
  * the document root in pixels. The root, because the sheets are portalled
  * outside the shell and open under the picture's bottom edge. The properties
  * are removed when the picture follows again or the player goes away.
+ *
+ * Android's picture-in-picture window shrinks the page, and Android puts the
+ * picture back over its box only while it plays. A picture that stopped
+ * following during or before picture-in-picture is therefore not pinned again
+ * until it follows: leaving the window shows the page in its place, at the
+ * size the expanded window gives it.
  */
-export function usePicturePin(follows: boolean): void {
+export function usePicturePin(
+  follows: boolean,
+  pictureInPicture: boolean,
+): void {
+  const [shrunk, setShrunk] = useState(false);
+  if (pictureInPicture && !shrunk) {
+    setShrunk(true);
+  } else if (follows && !pictureInPicture && shrunk) {
+    setShrunk(false);
+  }
+  const hold = !follows && !pictureInPicture && !shrunk;
   // Before paint, so the box is never drawn at a size the picture has left.
   useLayoutEffect(() => {
-    if (follows) {
+    if (!hold) {
       return;
     }
     const size = stageMonitorSize();
@@ -34,5 +50,5 @@ export function usePicturePin(follows: boolean): void {
       root.style.removeProperty(PINNED_WIDTH);
       root.style.removeProperty(PINNED_HEIGHT);
     };
-  }, [follows]);
+  }, [hold]);
 }

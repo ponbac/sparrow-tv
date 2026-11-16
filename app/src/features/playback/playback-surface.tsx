@@ -6,6 +6,7 @@ import {
   Minimize2,
   MonitorPlay,
   Pause,
+  PictureInPicture2,
   RotateCcw,
   Square,
   Volume2,
@@ -85,6 +86,8 @@ interface PlaybackSurfaceInputs {
     readonly disabled?: boolean;
   };
   readonly secondaryActions?: readonly PlaybackSecondaryAction[];
+  /** Shrinks the app into Android's picture-in-picture window. */
+  readonly pictureInPicture?: { readonly onEnter: () => void };
   readonly volume: number;
   readonly muted: boolean;
   readonly fullscreen: boolean;
@@ -121,6 +124,7 @@ export function PlaybackSurface({
   status,
   playerSwitch,
   secondaryActions = [],
+  pictureInPicture,
   volume,
   muted,
   fullscreen,
@@ -303,6 +307,17 @@ export function PlaybackSurface({
         </>
       ) : null}
       {audio}
+      {pictureInPicture === undefined ? null : (
+        <button
+          type="button"
+          className="hosted-player__primary-control hosted-player__picture-in-picture"
+          onClick={pictureInPicture.onEnter}
+          {...hint("Picture in picture")}
+        >
+          <PictureInPicture2 aria-hidden="true" />
+          <span>Picture in picture</span>
+        </button>
+      )}
       {showMediaControls ? (
         <button
           type="button"

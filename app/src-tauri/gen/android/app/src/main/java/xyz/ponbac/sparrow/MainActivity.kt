@@ -1,5 +1,6 @@
 package xyz.ponbac.sparrow
 
+import android.content.res.Configuration
 import android.os.Bundle
 import android.graphics.Color
 import android.os.Looper
@@ -14,10 +15,17 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import java.util.concurrent.TimeUnit
 
 class MainActivity : TauriActivity() {
   private var documentFullscreen = false
+  private var webView: WebView? = null
+  private var started = false
+  private var playerBridge: AndroidPlayerBridge? = null
+  private var audioFocus: PlaybackAudioFocus? = null
+  private var pictureInPicture: PictureInPicturePlayback? = null
   private val nativePlayback by lazy {
     NativePlaybackController(
       this,
@@ -56,6 +64,32 @@ class MainActivity : TauriActivity() {
 
   override fun onWebViewCreate(webView: WebView) {
     super.onWebViewCreate(webView)
+    this.webView = webView
+    val focus = PlaybackAudioFocus(this) { playerBridge?.send(AndroidPlayerEvent.PAUSE) }
+    val window = PictureInPicturePlayback(this, nativePlayback) { command ->
+      playerBridge?.send(command)
+    }
+    audioFocus = focus
+    pictureInPicture = window
+    val setPlayback = { playback: AndroidPlayerPlayback ->
+      window.setPlayback(playback)
+      focus.setPlaying(playback == AndroidPlayerPlayback.PLAYING)
+    }
+    playerBridge = AndroidPlayerBridge(
+      webView,
+      pictureInPictureSupported = window.supported,
+      isInPictureInPicture = { isInPictureInPictureMode },
+    ) { request ->
+      when (request) {
+        is AndroidPlayerRequest.Playback -> setPlayback(request.playback)
+        AndroidPlayerRequest.EnterPictureInPicture ->
+          if (!window.enter()) {
+            playerBridge?.send(AndroidPlayerEvent.PICTURE_IN_PICTURE_REJECTED)
+          }
+        // A new page has no Playback Session until its player says so.
+        AndroidPlayerRequest.Ready -> setPlayback(AndroidPlayerPlayback.NONE)
+      }
+    }
     WebViewFullscreen(this, webView) { fullscreen ->
       documentFullscreen = fullscreen
       applyFullscreenSystemBars()
@@ -74,23 +108,77 @@ class MainActivity : TauriActivity() {
     }
   }
 
-  override fun onPause() {
-    // Rust owns final stream teardown. Pause/hide immediately here, then let
-    // its lifecycle path cancel a blocked DataSource read before release.
-    nativePlayback.pauseForLifecycle()
+  // A Playback Session lives while the picture can be seen: from onStart to
+  // onStop, not onResume to onPause. Picture-in-picture, split screen and a
+  // dialog over the app pause the Activity and leave the picture on screen.
+  // Rust owns final stream teardown; see `android_lifecycle`.
+
+  override fun onStart() {
+    super.onStart()
+    nativePlayback.resumeForLifecycle()
     clearPlaybackKeepScreenOn()
-    super.onPause()
+    // Back on screen in picture-in-picture (the screen was off) there is no
+    // onResume to wake the page.
+    webView?.onResume()
+    started = true
+    reportPlaybackVisibility(true)
+    // The page can miss an event that reaches its WebView while it wakes.
+    // Once the WebView has drawn again it can hear, so say it once more; the
+    // page ignores a repeated resume.
+    val view = webView
+    if (view != null && WebViewFeature.isFeatureSupported(WebViewFeature.VISUAL_STATE_CALLBACK)) {
+      WebViewCompat.postVisualStateCallback(view, 0) {
+        if (started) {
+          reportPlaybackVisibility(true)
+        }
+      }
+    }
   }
 
   override fun onResume() {
     super.onResume()
     applyFullscreenSystemBars()
-    nativePlayback.resumeForLifecycle()
-    clearPlaybackKeepScreenOn()
   }
 
+  override fun onPause() {
+    super.onPause()
+    // wry pauses the WebView here, which hides the page and throttles its
+    // timers. The page drives the picture while it is still on screen.
+    webView?.onResume()
+  }
+
+  override fun onStop() {
+    started = false
+    // Pause and hide immediately; Rust then cancels a blocked DataSource read
+    // before release.
+    nativePlayback.pauseForLifecycle()
+    clearPlaybackKeepScreenOn()
+    webView?.onPause()
+    reportPlaybackVisibility(false)
+    super.onStop()
+  }
+
+  override fun onUserLeaveHint() {
+    super.onUserLeaveHint()
+    pictureInPicture?.onUserLeaveHint()
+  }
+
+  override fun onPictureInPictureModeChanged(
+    isInPictureInPictureMode: Boolean,
+    newConfig: Configuration,
+  ) {
+    super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+    nativePlayback.setPictureInPicture(isInPictureInPictureMode)
+    playerBridge?.sendPictureInPicture(isInPictureInPictureMode)
+  }
+
+  /** Implemented by the app's Rust library, which wry has loaded by now. */
+  private external fun reportPlaybackVisibility(visible: Boolean)
+
   override fun onDestroy() {
-    // onPause gives Rust the first chance to cancel any blocked native read.
+    pictureInPicture?.release()
+    audioFocus?.release()
+    // onStop gives Rust the first chance to cancel any blocked native read.
     // Media3 release/detach are also bounded in NativePlaybackController so a
     // missing lifecycle callback cannot indefinitely block Activity teardown.
     nativePlayback.pauseForLifecycle()

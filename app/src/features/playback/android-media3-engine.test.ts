@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { androidPortFixture } from "../../test/android-port-fixture";
+import { createAndroidPlayerBridge } from "./android-player-bridge";
 import {
   clientSchemas,
   type AndroidPlaybackPresentation,
@@ -410,6 +412,44 @@ describe("Android Media3 playback adapter", () => {
 });
 
 describe("browser Android Media3 viewport runtime", () => {
+  it("places a picture off the page while the window is picture-in-picture", () => {
+    const video = document.createElement("video");
+    document.body.append(video);
+    // The small page has pushed the picture's box out of view.
+    vi.spyOn(video, "getBoundingClientRect").mockReturnValue(
+      viewportRectangle(0, 4000, 640, 360),
+    );
+    const port = androidPortFixture();
+    const playerWindow = createAndroidPlayerBridge(port.value);
+    const runtime = createBrowserAndroidMedia3Runtime(playerWindow);
+    const listener = vi.fn();
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) =>
+      frames.push(callback),
+    );
+    const nextFrame = () => frames.shift()?.(0);
+    const release = runtime.observeViewport(video, listener);
+    try {
+      expect(runtime.measureViewport(video)).toBeNull();
+      port.deliver("picture-in-picture:on");
+      nextFrame();
+      expect(listener).toHaveBeenLastCalledWith({
+        left: 32_768,
+        top: 32_768,
+        width: 1,
+        height: 1,
+        fullscreen: false,
+      });
+      port.deliver("picture-in-picture:off");
+      nextFrame();
+      expect(listener).toHaveBeenLastCalledWith(null);
+    } finally {
+      release();
+      video.remove();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("tracks scroll-only movement and releases scroll listeners and pending work", () => {
     const scrollContainer = document.createElement("div");
     const video = document.createElement("video");

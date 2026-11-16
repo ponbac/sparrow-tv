@@ -12,6 +12,7 @@ import {
 } from "react";
 import type { HostedPlaybackEngine } from "../playback/mpegts-engine";
 import type { InstalledPlaybackEngine } from "../playback/installed-playback-engine";
+import { useAndroidPlayerWindow } from "../playback/android-player-bridge";
 import { PlaybackLoadBoundary } from "../playback/playback-load-boundary";
 import {
   clientSchemas,
@@ -216,7 +217,8 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   }
   // The window can change size as well as the mode: a picture that cannot
   // follow keeps the very box it has, in pixels.
-  usePicturePin(follows);
+  const { pictureInPicture } = useAndroidPlayerWindow();
+  usePicturePin(follows, pictureInPicture);
   const watching = layout === "theater" && effectiveMode === "watch";
   const chromeVisibility = useIdleChrome(
     watching && picture?.state === "playing",

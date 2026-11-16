@@ -9,6 +9,10 @@ import type {
   HostedPlaybackFailure,
   HostedPlaybackHandle,
 } from "./mpegts-engine";
+import {
+  androidPlayerBridge,
+  type AndroidPlayerBridge,
+} from "./android-player-bridge";
 import { clientPlaybackFailure } from "./playback-failure";
 
 const STATUS_POLL_INTERVAL_MS = 250;
@@ -358,10 +362,21 @@ function clearPlaybackStatus(video: HTMLVideoElement): void {
   delete video.dataset.playbackAudio;
 }
 
-/** Creates the browser geometry adapter used by Android's native overlay. */
-export function createBrowserAndroidMedia3Runtime(): AndroidMedia3Runtime {
+/**
+ * Creates the browser geometry adapter used by Android's native overlay.
+ * In a picture-in-picture window the picture fills the window and the page's
+ * box says nothing (it is often outside the small page entirely), so a
+ * picture started there is placed off the page until the window grows.
+ */
+export function createBrowserAndroidMedia3Runtime(
+  playerWindow: AndroidPlayerBridge | null = androidPlayerBridge,
+): AndroidMedia3Runtime {
+  const measure = (video: HTMLVideoElement) =>
+    playerWindow?.getSnapshot().pictureInPicture === true
+      ? HIDDEN_PLAYBACK_VIEWPORT
+      : measureViewport(video);
   return {
-    measureViewport,
+    measureViewport: measure,
     observeViewport(video, listener) {
       let animationFrame: number | null = null;
       const update = () => {
@@ -370,7 +385,7 @@ export function createBrowserAndroidMedia3Runtime(): AndroidMedia3Runtime {
         }
         animationFrame = window.requestAnimationFrame(() => {
           animationFrame = null;
-          listener(measureViewport(video));
+          listener(measure(video));
         });
       };
       const observer =
@@ -388,7 +403,9 @@ export function createBrowserAndroidMedia3Runtime(): AndroidMedia3Runtime {
       const visualViewport = window.visualViewport;
       visualViewport?.addEventListener("resize", update);
       visualViewport?.addEventListener("scroll", update);
+      const releaseWindow = playerWindow?.subscribe(update);
       return () => {
+        releaseWindow?.();
         if (animationFrame !== null) {
           window.cancelAnimationFrame(animationFrame);
           animationFrame = null;

@@ -135,6 +135,18 @@ configuration out of review screenshots and logs.
   return and the icon controls are back in their row.
 - Change Audio Track, switch Channel, pause/resume, and background/foreground
   the Activity. Check recovery and stop without overlapping Playback Sessions.
+- Check picture-in-picture ([ADR 0008](../adr/0008-keep-android-playback-while-the-picture-can-be-seen.md)).
+  Playing, go Home: the picture must shrink into a window that shows only the
+  picture, and its frame counter must keep advancing. Use the window's Pause
+  and Play; the page must read "Paused" and then "On air". Expand it: the
+  picture must be back in its box. Pause in the window and expand: the page
+  must show its paused box at full size, and Resume must put the picture in
+  it. Turn the screen off and on with the window showing: the stream suspends
+  and resumes. Dismiss the window: the page must read "Paused", and returning
+  must resume. With `adb shell appops set xyz.ponbac.sparrow
+  PICTURE_IN_PICTURE ignore`, Home must pause as before and the player's
+  Picture in picture button must say it is unavailable. A timer alarm
+  (`android.intent.action.SET_TIMER`) must pause a playing picture.
 - Play fixtures whose only Audio Track is AC-3, E-AC-3 and MPEG audio layer II,
   which the emulator has no decoder for. **Copy diagnostics** must report
   `audio.output` as `bundled-decoder`, and `adb shell dumpsys media.audio_flinger`

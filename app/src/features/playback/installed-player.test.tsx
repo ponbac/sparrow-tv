@@ -26,6 +26,8 @@ import type {
   InstalledPlaybackRequest,
 } from "./installed-playback-engine";
 import { StageChromeProvider, type StageChrome } from "../stage/stage-chrome";
+import { createAndroidPlayerBridge } from "./android-player-bridge";
+import { androidPortFixture } from "../../test/android-port-fixture";
 
 afterEach(() => {
   cleanup();
@@ -742,3 +744,109 @@ function success<Value>(value: Value): {
 } {
   return { ok: true, value };
 }
+
+describe("InstalledPlayer on Android", () => {
+  const ANDROID_DESCRIPTOR = clientSchemas.nativePlaybackDescriptor.parse({
+    ...DESCRIPTOR,
+    presentation: "android-media3",
+  });
+  const ANDROID_REOPENED = clientSchemas.nativePlaybackDescriptor.parse({
+    ...REOPENED_DESCRIPTOR,
+    presentation: "android-media3",
+  });
+
+  function renderAndroid() {
+    const session = fixtureSession({
+      start: ANDROID_DESCRIPTOR,
+      reopen: ANDROID_REOPENED,
+      restart: ANDROID_REOPENED,
+    });
+    const client = fixtureClient(() => session.value);
+    const lifecycle = lifecycleFixture();
+    const port = androidPortFixture();
+    const androidPlayer = createAndroidPlayerBridge(port.value);
+    const view = render(
+      <InstalledPlayer
+        channel={CHANNEL}
+        client={client}
+        engine={playingEngine().value}
+        lifecycleEvents={lifecycle.value}
+        androidPlayer={androidPlayer}
+        onStop={vi.fn()}
+      />,
+    );
+    return { session, lifecycle, port, view };
+  }
+
+  it("plays on while the document is hidden and pauses when Android stops the app", async () => {
+    const hidden = vi
+      .spyOn(document, "visibilityState", "get")
+      .mockReturnValue("hidden");
+    const { session, lifecycle, port } = renderAndroid();
+    expect(await screen.findByText("On air")).toBeVisible();
+    await waitFor(() => expect(lifecycle.subscribe).toHaveBeenCalledTimes(1));
+
+    // The WebView hides the page whenever the Activity pauses, as it does
+    // for picture-in-picture.
+    fireEvent(document, new Event("visibilitychange"));
+    expect(session.suspend).not.toHaveBeenCalled();
+    expect(port.sent).toContain("playback:playing");
+
+    await act(async () => lifecycle.emit("suspended"));
+    expect(await screen.findByText("Paused")).toBeVisible();
+    expect(session.suspend).toHaveBeenCalledTimes(1);
+    hidden.mockRestore();
+  });
+
+  it("enters picture-in-picture on request and obeys its Pause and Play buttons", async () => {
+    const user = userEvent.setup();
+    const { session, port, view } = renderAndroid();
+    expect(await screen.findByText("On air")).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Picture in picture" }),
+    ).toBeNull();
+
+    act(() => port.deliver("capabilities:picture-in-picture"));
+    await user.click(screen.getByRole("button", { name: "Picture in picture" }));
+    expect(port.sent.at(-1)).toBe("enter-picture-in-picture");
+
+    act(() => port.deliver("command:pause"));
+    expect(await screen.findByText("Paused")).toBeVisible();
+    expect(session.suspend).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(port.sent.at(-1)).toBe("playback:paused"));
+
+    act(() => port.deliver("command:play"));
+    expect(await screen.findByText("On air")).toBeVisible();
+    expect(session.reopen).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(port.sent.at(-1)).toBe("playback:playing"));
+
+    act(() => port.deliver("picture-in-picture:rejected"));
+    expect(
+      await screen.findByText(/Picture in picture is unavailable/),
+    ).toBeVisible();
+
+    view.unmount();
+    expect(port.sent.at(-1)).toBe("playback:none");
+  });
+
+  it("never offers it for a picture the page draws itself", async () => {
+    const port = androidPortFixture();
+    const session = fixtureSession();
+    render(
+      <InstalledPlayer
+        channel={CHANNEL}
+        client={fixtureClient(() => session.value)}
+        engine={playingEngine().value}
+        lifecycleEvents={lifecycleFixture().value}
+        androidPlayer={createAndroidPlayerBridge(port.value)}
+        onStop={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText("On air")).toBeVisible();
+    act(() => port.deliver("capabilities:picture-in-picture"));
+    expect(
+      screen.queryByRole("button", { name: "Picture in picture" }),
+    ).toBeNull();
+    expect(port.sent).not.toContain("playback:playing");
+  });
+});
