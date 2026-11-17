@@ -26,6 +26,7 @@ const PINNED_HEIGHT = "--pocket-pinned-h";
 export function usePicturePin(
   follows: boolean,
   pictureInPicture: boolean,
+  television = false,
 ): void {
   const [shrunk, setShrunk] = useState(false);
   if (pictureInPicture && !shrunk) {
@@ -39,16 +40,26 @@ export function usePicturePin(
     if (!hold) {
       return;
     }
-    const size = stageMonitorSize();
-    if (size === null) {
-      return;
-    }
     const root = document.documentElement;
-    root.style.setProperty(PINNED_WIDTH, `${size.width}px`);
-    root.style.setProperty(PINNED_HEIGHT, `${size.height}px`);
-    return () => {
+    function unpin() {
       root.style.removeProperty(PINNED_WIDTH);
       root.style.removeProperty(PINNED_HEIGHT);
+    }
+    function measure() {
+      unpin();
+      // Android temporarily restores its default page scale in element fullscreen.
+      // The hidden monitor has the right coordinates again on fullscreen exit.
+      if (television && document.fullscreenElement) return;
+      const size = stageMonitorSize();
+      if (size === null) return;
+      root.style.setProperty(PINNED_WIDTH, `${size.width}px`);
+      root.style.setProperty(PINNED_HEIGHT, `${size.height}px`);
+    }
+    measure();
+    if (television) document.addEventListener("fullscreenchange", measure);
+    return () => {
+      document.removeEventListener("fullscreenchange", measure);
+      unpin();
     };
-  }, [hold]);
+  }, [hold, television]);
 }

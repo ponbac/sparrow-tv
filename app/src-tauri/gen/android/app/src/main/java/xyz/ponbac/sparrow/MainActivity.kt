@@ -27,6 +27,8 @@ class MainActivity : TauriActivity() {
   private var started = false
   private var playerBridge: AndroidPlayerBridge? = null
   private var televisionControls: AndroidTvControls? = null
+  internal val televisionFullscreen: Boolean?
+    get() = if (televisionControls == null) null else documentFullscreen
   private var audioFocus: PlaybackAudioFocus? = null
   private var pictureInPicture: PictureInPicturePlayback? = null
   private val nativePlayback by lazy {
@@ -97,7 +99,9 @@ class MainActivity : TauriActivity() {
     }
     playerBridge = bridge
     WebViewFullscreen(this, webView) { fullscreen ->
+      val changed = documentFullscreen != fullscreen
       documentFullscreen = fullscreen
+      if (changed && televisionControls != null) nativePlayback.revealRetiredPicture()
       applyFullscreenSystemBars()
       ViewCompat.requestApplyInsets(findViewById(android.R.id.content))
     }

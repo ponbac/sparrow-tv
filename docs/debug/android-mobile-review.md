@@ -16,11 +16,12 @@ for performance claims.
 
 ## Android TV and NVIDIA Shield
 
-Install the same universal Android APK. Sparrow appears in the TV launcher
-and uses a TV layout with room around the screen edges. From farther away the
-active control has an amber outline. Use the D-pad to browse and center or
-gamepad **A** to tune a Channel in fullscreen. The controls make room for the
-picture at idle. **Back** or gamepad **B** dismisses the keyboard or a panel,
+Install the same universal Android APK. Sparrow appears in the TV launcher.
+The Guide uses the full app surface. Its live preview sits beside search
+and Channel Groups on wide TVs, with the Channel grid below. An inset amber
+outline marks the focused control even at the edges. Use the D-pad to browse.
+Press center or gamepad **A** to tune a Channel in fullscreen. The controls
+hide when idle. **Back** or gamepad **B** dismisses the keyboard or a panel,
 and returns to the Guide from playback. From the Guide, Back returns you to
 Android TV.
 
@@ -44,7 +45,12 @@ with representative Channels at the display's resolution. A generated 4K
 HEVC feed with one-pixel bars can expose unwanted scaling. Compare the native
 video buffer, source crop and display frame in `adb shell dumpsys SurfaceFlinger`
 with the active HDMI mode. The Android TV interface can use a smaller buffer
-than its separate video surface.
+than its separate video surface. On a Shield with a 1920 × 1080 UI override
+and 4K HDMI output, expect a 1920 × 1080 Guide viewport. Check that the
+visual viewport matches its layout width before and after using the search
+keyboard or fullscreen. Pause in fullscreen and exit, then resume and dock
+the picture. The retired frame must clear the Watch controls. The live preview
+must align with the first Guide column and the listings must reach both edges.
 
 ## Local toolchain
 

@@ -224,7 +224,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   // The window can change size as well as the mode: a picture that cannot
   // follow keeps the very box it has, in pixels.
   const { pictureInPicture } = useAndroidPlayerWindow();
-  usePicturePin(follows, pictureInPicture);
+  usePicturePin(follows, pictureInPicture, television);
   const watching = layout === "theater" && effectiveMode === "watch";
   const chromeVisibility = useIdleChrome(
     watching && picture?.state === "playing",
@@ -522,6 +522,17 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     />
   );
 
+  // Keep a held native picture at the same origin when the viewer changes mode.
+  const inlineMasthead = television && layout === "pocket" && (playingChannel === null || dock);
+  const mastheadInGuide = inlineMasthead && effectiveMode === "guide";
+  const identity = {
+    wordmark: <strong className="shell__wordmark">Sparrow</strong>,
+    clock: (
+      <time className="shell__clock" dateTime={now.toISOString()}>
+        {clockLabel(now)}
+      </time>
+    ),
+  };
   return (
     <div
       className="shell"
@@ -531,23 +542,26 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
       data-chrome={chromeVisibility}
       data-playing={playingChannel !== null}
       data-dock={dock}
+      data-inline-masthead={inlineMasthead || undefined}
       data-external={picture?.external === true}
       data-acceptance-catalog-shell
     >
-      <ShellMasthead
-        now={now}
-        chrome={
-          layout === "theater"
-            ? {
-                layout,
-                search,
-                guideOpen: effectiveMode === "guide",
-                guideForced,
-                onToggleGuide: toggleGuide,
-              }
-            : { layout, onFind: findInGuide }
-        }
-      />
+      {mastheadInGuide ? null : (
+        <ShellMasthead
+          {...identity}
+          chrome={
+            layout === "theater"
+              ? {
+                  layout,
+                  search,
+                  guideOpen: effectiveMode === "guide",
+                  guideForced,
+                  onToggleGuide: toggleGuide,
+                }
+              : { layout, onFind: findInGuide }
+          }
+        />
+      )}
       {status !== null && isRetainedCatalog(status) ? (
         <aside
           className="shell__retained"
@@ -600,6 +614,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
         </StageChromeProvider>
         <ProgrammeGuide
           television={television}
+          masthead={mastheadInGuide ? identity : undefined}
           rows={rows}
           groups={groups}
           activeGroup={activeGroup}
@@ -714,15 +729,17 @@ type MastheadChrome =
     };
 
 function ShellMasthead({
-  now,
+  wordmark,
+  clock,
   chrome,
 }: {
-  readonly now: Date;
+  readonly wordmark: ReactNode;
+  readonly clock: ReactNode;
   readonly chrome: MastheadChrome;
 }) {
   return (
     <header className="shell__masthead">
-      <strong className="shell__wordmark">Sparrow</strong>
+      {wordmark}
       {chrome.layout === "pocket" ? (
         <button
           className="shell__find"
@@ -748,9 +765,7 @@ function ShellMasthead({
           </button>
         </>
       )}
-      <time className="shell__clock" dateTime={now.toISOString()}>
-        {clockLabel(now)}
-      </time>
+      {clock}
     </header>
   );
 }

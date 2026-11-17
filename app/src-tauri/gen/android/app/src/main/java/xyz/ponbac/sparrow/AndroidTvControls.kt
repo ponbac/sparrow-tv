@@ -20,6 +20,8 @@ internal class AndroidTvControls(
   }
 
   init {
+    webView.settings.useWideViewPort = true
+    webView.settings.loadWithOverviewMode = true
     activity.onBackPressedDispatcher.addCallback(activity, back)
     WebViewCompat.addDocumentStartJavaScript(
       webView,

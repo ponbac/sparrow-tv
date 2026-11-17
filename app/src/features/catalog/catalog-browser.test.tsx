@@ -59,6 +59,7 @@ afterEach(() => {
   localStorage.clear();
   Reflect.deleteProperty(document, "fullscreenElement");
   Reflect.deleteProperty(document, "exitFullscreen");
+  document.documentElement.removeAttribute("data-television");
 });
 
 const HOSTED_CAPABILITIES = clientSchemas.capabilities.parse({
@@ -2443,7 +2444,8 @@ describe("CatalogBrowser pocket layout", () => {
     }
   });
 
-  it("keeps the picture's box while native video cannot follow it", async () => {
+  it.each(["phone", "television"])("keeps the held picture and Watch search on %s", async (device) => {
+    document.documentElement.toggleAttribute("data-television", device === "television");
     const client = new FakeSparrowClient({ pictureOverlay: false });
     const user = userEvent.setup();
     renderInstalledBrowser(client);
@@ -2484,9 +2486,16 @@ describe("CatalogBrowser pocket layout", () => {
     // And the other way: paused in the band, it stays band-sized in watch mode.
     await user.click(screen.getByRole("button", { name: "Pause" }));
     await screen.findByRole("button", { name: "Resume" });
+    if (device === "television") {
+      const toolbar = shell.querySelector(".programme-guide__toolbar");
+      expect(toolbar).toContainElement(screen.getByText("Sparrow"));
+      expect(toolbar?.querySelector("time")).toBeInTheDocument();
+      expect(shell.querySelector(".shell__masthead")).toBeNull();
+    }
     await user.click(screen.getByRole("button", { name: "Back to the picture" }));
     expect(shell).toHaveAttribute("data-mode", "watch");
     expect(shell).toHaveAttribute("data-dock", "true");
+    expect(within(requireMasthead()).getByRole("button", { name: "Search" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Resume" }));
     await screen.findByRole("button", { name: "Pause" });
     expect(shell).toHaveAttribute("data-dock", "false");

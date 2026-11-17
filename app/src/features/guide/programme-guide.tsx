@@ -35,6 +35,8 @@ import "./programme-guide.css";
 export interface ProgrammeGuideProps {
   /** Keeps the More channels action reachable during a TV page load. */
   readonly television?: boolean;
+  /** The TV Guide shares its toolbar with the shell's wordmark and clock. */
+  readonly masthead?: { readonly wordmark: ReactNode; readonly clock: ReactNode };
   readonly rows: readonly GuideWindowChannel[];
   readonly groups: readonly ChannelGroup[];
   readonly activeGroup: string | null;
@@ -89,6 +91,7 @@ export interface ProgrammeGuideProps {
  */
 export function ProgrammeGuide({
   television = false,
+  masthead,
   rows,
   groups,
   activeGroup,
@@ -168,9 +171,11 @@ export function ProgrammeGuide({
       aria-label="Programme guide"
     >
       <header className="programme-guide__toolbar">
+        {masthead?.wordmark}
         {search}
         {feeds}
         <div className="programme-guide__status">{status}</div>
+        {masthead?.clock}
       </header>
 
       <div className="programme-guide__body">
