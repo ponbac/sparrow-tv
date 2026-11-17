@@ -15,13 +15,23 @@ import type {
 } from "../../client/contracts";
 import { bindAgentControlPlayback } from "../agent-control/agent-control-binding";
 import {
+  androidPlayerBridge,
+  androidPlayerPlayback,
+  useAndroidPlayerWindow,
+  type AndroidPlayerBridge,
+} from "./android-player-bridge";
+import {
   tauriInstalledLifecycleEvents,
   type InstalledLifecycleEvents,
 } from "./installed-lifecycle";
-import { createInstalledPlaybackRunner } from "./installed-playback-runner";
+import {
+  createInstalledPlaybackRunner,
+  type InstalledPlaybackRunner,
+} from "./installed-playback-runner";
 import {
   installedPlayerState,
   type InstalledPlaybackAudio,
+  type InstalledPlaybackPhase,
 } from "./installed-playback-state";
 import {
   installedPlaybackEngine,
@@ -41,6 +51,8 @@ export interface InstalledPlayerProps {
   readonly onStop: () => void;
   readonly engine?: InstalledPlaybackEngine;
   readonly lifecycleEvents?: InstalledLifecycleEvents;
+  /** The Android window around the native player; null off Android. */
+  readonly androidPlayer?: AndroidPlayerBridge | null;
 }
 
 /** Plays one Channel through an owned, recoverable, opaque native session. */
@@ -50,6 +62,7 @@ export function InstalledPlayer({
   onStop,
   engine = installedPlaybackEngine,
   lifecycleEvents = tauriInstalledLifecycleEvents,
+  androidPlayer = androidPlayerBridge,
 }: InstalledPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
@@ -72,9 +85,11 @@ export function InstalledPlayer({
       createInstalledPlaybackRunner({
         client,
         engine,
-        initiallyVisible: document.visibilityState !== "hidden",
+        // Android's window says when the picture is seen; see below.
+        initiallyVisible:
+          androidPlayer !== null || document.visibilityState !== "hidden",
       }),
-    [client, engine],
+    [androidPlayer, client, engine],
   );
   const state = useSyncExternalStore(
     runner.subscribe,
@@ -108,6 +123,12 @@ export function InstalledPlayer({
   }, [channel.id, channel.name, runner]);
 
   useEffect(() => {
+    // On Android the Activity's start and stop are the lifecycle events
+    // below. The document is also hidden whenever the Activity pauses, which
+    // a picture-in-picture window does while the picture plays on.
+    if (androidPlayer !== null) {
+      return;
+    }
     const updateVisibility = () => {
       void runner.setVisible(document.visibilityState !== "hidden");
     };
@@ -115,7 +136,7 @@ export function InstalledPlayer({
     updateVisibility();
     return () =>
       document.removeEventListener("visibilitychange", updateVisibility);
-  }, [runner]);
+  }, [androidPlayer, runner]);
 
   useEffect(() => {
     let disposed = false;
@@ -156,15 +177,38 @@ export function InstalledPlayer({
       document.removeEventListener("fullscreenchange", updateFullscreen);
   }, [runner]);
 
+  const playerWindow = useAndroidPlayerWindow(androidPlayer);
+  const [pictureInPictureRejected, setPictureInPictureRejected] =
+    useState(false);
+  const windowPlayback = androidPlayerPlayback(state);
+  useEffect(() => {
+    androidPlayer?.reportPlayback(windowPlayback);
+  }, [androidPlayer, windowPlayback]);
+  // Without a player there is nothing left for the window to show.
+  useEffect(() => () => androidPlayer?.reportPlayback("none"), [androidPlayer]);
+  useEffect(() => {
+    if (androidPlayer === null) {
+      return;
+    }
+    const release = androidPlayer.subscribeEvents((event) => {
+      if (event._tag === "picture-in-picture-rejected") {
+        setPictureInPictureRejected(true);
+        return;
+      }
+      if (event.command === "pause") {
+        // The runner refuses a pause that has nothing to pause.
+        void runner.pause();
+        return;
+      }
+      recoveryActionFor(runner.getSnapshot().phase, runner)?.onAction();
+    });
+    return release;
+  }, [androidPlayer, runner]);
+
   const phase = state.phase;
   const transportReleased = phase._tag === "failed";
   const usesMpv = state.presentation === "linux-mpv";
-  const recoveryAction =
-    phase._tag === "paused"
-      ? { label: "Resume", onAction: () => void runner.resume() }
-      : phase._tag === "failed" && phase.canRestart
-        ? { label: "Restart", onAction: () => void runner.restart() }
-        : undefined;
+  const recoveryAction = recoveryActionFor(phase, runner);
   const canPause =
     phase._tag === "starting" ||
     phase._tag === "playing" ||
@@ -278,7 +322,21 @@ export function InstalledPlayer({
               </label>
             ),
           })}
-      {...(audioStatus === null && copyStatus === null
+      {...(androidPlayer !== null &&
+      playerWindow.pictureInPictureSupported &&
+      windowPlayback !== "none"
+        ? {
+            pictureInPicture: {
+              onEnter: () => {
+                setPictureInPictureRejected(false);
+                androidPlayer.enterPictureInPicture();
+              },
+            },
+          }
+        : {})}
+      {...(audioStatus === null &&
+      copyStatus === null &&
+      !pictureInPictureRejected
         ? {}
         : {
             status: (
@@ -297,6 +355,12 @@ export function InstalledPlayer({
                     {copyStatus}
                   </span>
                 )}
+                {pictureInPictureRejected ? (
+                  <span className="hosted-player__copy-status" role="status">
+                    Picture in picture is unavailable. It may be off for
+                    Sparrow in Android settings.
+                  </span>
+                ) : null}
               </>
             ),
           })}
@@ -335,6 +399,20 @@ export function InstalledPlayer({
       onAutoplayFailure={() => void runner.reportAutoplayFailure()}
     />
   );
+}
+
+/** What Play does for a stopped picture: Resume it, or Restart a failure. */
+function recoveryActionFor(
+  phase: InstalledPlaybackPhase,
+  runner: Pick<InstalledPlaybackRunner, "resume" | "restart">,
+): { readonly label: string; readonly onAction: () => void } | undefined {
+  if (phase._tag === "paused") {
+    return { label: "Resume", onAction: () => void runner.resume() };
+  }
+  if (phase._tag === "failed" && phase.canRestart) {
+    return { label: "Restart", onAction: () => void runner.restart() };
+  }
+  return undefined;
 }
 
 function audioTrackLabel(track: AudioTrack, index: number): string {

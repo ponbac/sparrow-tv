@@ -502,7 +502,7 @@
 
 .shell[data-layout="pocket"]
   .hosted-player__controls[data-variant="compact"]
-  > .hosted-player__fullscreen {
+  > :is(.hosted-player__picture-in-picture, .hosted-player__fullscreen) {
   order: 5;
 }
 

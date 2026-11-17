@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 mod agent_control;
+mod android_lifecycle;
 mod android_playback;
 mod audio_preferences;
 mod config_store;
@@ -46,6 +47,8 @@ pub fn run() {
             app.state::<runtime::InstalledRuntimeSlot>()
                 .fill(runtime)
                 .map_err(|_| runtime::InstalledStartupError::Core)?;
+            #[cfg(target_os = "android")]
+            android_lifecycle::bind(app.handle().clone());
             agent_control::start(app.handle().clone());
             Ok(())
         })
@@ -289,7 +292,7 @@ fn initialize_android_certificate_verifier() -> Result<(), ()> {
 
 fn report_lifecycle(app: &tauri::AppHandle, event: tauri::RunEvent) {
     use sparrow_core::LifecycleSignal;
-    use tauri::{Emitter as _, Manager as _};
+    use tauri::Manager as _;
 
     if matches!(&event, tauri::RunEvent::Exit) {
         if let Some(runtime) = app
@@ -303,32 +306,46 @@ fn report_lifecycle(app: &tauri::AppHandle, event: tauri::RunEvent) {
 
     let signal = match event {
         tauri::RunEvent::Ready => Some(LifecycleSignal::Started),
+        // Android reports its Activity's visibility itself; see
+        // `android_lifecycle`. tao's pause and resume would suspend a
+        // picture that is still on screen in picture-in-picture.
+        #[cfg(not(target_os = "android"))]
         tauri::RunEvent::Resumed => Some(LifecycleSignal::Resumed),
-        #[cfg(mobile)]
+        #[cfg(all(mobile, not(target_os = "android")))]
         tauri::RunEvent::WindowEvent {
             event: tauri::WindowEvent::Suspended,
             ..
         } => Some(LifecycleSignal::Suspended),
-        #[cfg(mobile)]
+        #[cfg(all(mobile, not(target_os = "android")))]
         tauri::RunEvent::WindowEvent {
             event: tauri::WindowEvent::Resumed,
             ..
         } => Some(LifecycleSignal::Resumed),
         _ => None,
     };
-    if let (Some(signal), Some(runtime)) = (
-        signal,
-        app.try_state::<runtime::InstalledRuntimeSlot>()
-            .and_then(|slot| slot.ready()),
-    ) {
-        let app = app.clone();
-        let dispatch = runtime.dispatch_lifecycle(signal, move |event| {
-            let _ = app.emit("sparrow://playback-lifecycle", event);
-        });
-        tauri::async_runtime::spawn(async move {
-            let _ = dispatch.await;
-        });
+    if let Some(signal) = signal {
+        dispatch_lifecycle_signal(app, signal);
     }
+}
+
+/// Hands one lifecycle signal to the installed runtime, which orders signals
+/// by the time of this call and publishes each confirmed change to the page.
+fn dispatch_lifecycle_signal(app: &tauri::AppHandle, signal: sparrow_core::LifecycleSignal) {
+    use tauri::{Emitter as _, Manager as _};
+
+    let Some(runtime) = app
+        .try_state::<runtime::InstalledRuntimeSlot>()
+        .and_then(|slot| slot.ready())
+    else {
+        return;
+    };
+    let app = app.clone();
+    let dispatch = runtime.dispatch_lifecycle(signal, move |event| {
+        let _ = app.emit("sparrow://playback-lifecycle", event);
+    });
+    tauri::async_runtime::spawn(async move {
+        let _ = dispatch.await;
+    });
 }
 
 #[cfg(all(test, target_os = "linux"))]
