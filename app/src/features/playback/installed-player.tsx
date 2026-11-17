@@ -195,12 +195,17 @@ export function InstalledPlayer({
         setPictureInPictureRejected(true);
         return;
       }
-      if (event.command === "pause") {
+      if (event._tag !== "command") return;
+      const phase = runner.getSnapshot().phase;
+      if (
+        event.command === "pause" ||
+        (event.command === "toggle" && canPausePlayback(phase))
+      ) {
         // The runner refuses a pause that has nothing to pause.
         void runner.pause();
         return;
       }
-      recoveryActionFor(runner.getSnapshot().phase, runner)?.onAction();
+      recoveryActionFor(phase, runner)?.onAction();
     });
     return release;
   }, [androidPlayer, runner]);
@@ -209,10 +214,7 @@ export function InstalledPlayer({
   const transportReleased = phase._tag === "failed";
   const usesMpv = state.presentation === "linux-mpv";
   const recoveryAction = recoveryActionFor(phase, runner);
-  const canPause =
-    phase._tag === "starting" ||
-    phase._tag === "playing" ||
-    phase._tag === "recovering";
+  const canPause = canPausePlayback(phase);
   const canRestart =
     phase._tag !== "idle" &&
     phase._tag !== "stopping" &&
@@ -398,6 +400,14 @@ export function InstalledPlayer({
       onStop={stop}
       onAutoplayFailure={() => void runner.reportAutoplayFailure()}
     />
+  );
+}
+
+function canPausePlayback(phase: InstalledPlaybackPhase): boolean {
+  return (
+    phase._tag === "starting" ||
+    phase._tag === "playing" ||
+    phase._tag === "recovering"
   );
 }
 

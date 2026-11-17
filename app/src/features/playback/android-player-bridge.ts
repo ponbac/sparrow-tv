@@ -15,7 +15,8 @@ export interface AndroidPlayerWindow {
 
 /** Something the Android window asks of the page's player. */
 export type AndroidPlayerWindowEvent =
-  | { readonly _tag: "command"; readonly command: "play" | "pause" }
+  | { readonly _tag: "command"; readonly command: "play" | "pause" | "toggle" }
+  | { readonly _tag: "television-channel"; readonly direction: -1 | 1 }
   | { readonly _tag: "picture-in-picture-rejected" };
 
 /**
@@ -29,8 +30,12 @@ export interface AndroidPlayerBridge {
   readonly subscribeEvents: (
     listener: (event: AndroidPlayerWindowEvent) => void,
   ) => () => void;
+  /** Gives the TV shell first refusal of Android Back. */
+  readonly subscribeTelevisionBack: (listener: () => void) => () => void;
   readonly reportPlayback: (playback: AndroidPlayerPlayback) => void;
   readonly enterPictureInPicture: () => void;
+  /** Returns an unhandled TV Back press to Android. */
+  readonly defaultTelevisionBack: () => void;
 }
 
 /** The object Android injects into the page (a WebMessageListener). */
@@ -50,6 +55,10 @@ const windowMessageSchema = z.enum([
   "picture-in-picture:rejected",
   "command:play",
   "command:pause",
+  "command:toggle",
+  "tv:back",
+  "tv:channel-up",
+  "tv:channel-down",
 ]);
 
 const NO_WINDOW: AndroidPlayerWindow = Object.freeze({
@@ -66,6 +75,7 @@ export function createAndroidPlayerBridge(
   }
   let snapshot = NO_WINDOW;
   let reported: AndroidPlayerPlayback | null = null;
+  let onTelevisionBack: (() => void) | null = null;
   const listeners = new Set<() => void>();
   const eventListeners = new Set<(event: AndroidPlayerWindowEvent) => void>();
   const update = (next: Partial<AndroidPlayerWindow>) => {
@@ -95,6 +105,17 @@ export function createAndroidPlayerBridge(
         return emit({ _tag: "command", command: "play" });
       case "command:pause":
         return emit({ _tag: "command", command: "pause" });
+      case "command:toggle":
+        return emit({ _tag: "command", command: "toggle" });
+      case "tv:back":
+        // The shell may still be loading when Android first sends Back.
+        if (onTelevisionBack === null) port.postMessage("tv:default-back");
+        else onTelevisionBack();
+        return;
+      case "tv:channel-up":
+        return emit({ _tag: "television-channel", direction: 1 });
+      case "tv:channel-down":
+        return emit({ _tag: "television-channel", direction: -1 });
     }
   });
   port.postMessage("ready");
@@ -108,6 +129,12 @@ export function createAndroidPlayerBridge(
       eventListeners.add(listener);
       return () => eventListeners.delete(listener);
     },
+    subscribeTelevisionBack: (listener) => {
+      onTelevisionBack = listener;
+      return () => {
+        if (onTelevisionBack === listener) onTelevisionBack = null;
+      };
+    },
     reportPlayback: (playback) => {
       if (playback !== reported) {
         reported = playback;
@@ -115,6 +142,7 @@ export function createAndroidPlayerBridge(
       }
     },
     enterPictureInPicture: () => port.postMessage("enter-picture-in-picture"),
+    defaultTelevisionBack: () => port.postMessage("tv:default-back"),
   };
 }
 

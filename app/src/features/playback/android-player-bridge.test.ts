@@ -56,6 +56,35 @@ describe("Android player bridge", () => {
     ]);
   });
 
+  it("returns Back to Android until the TV shell can handle it", () => {
+    const port = androidPortFixture();
+    const bridge = createAndroidPlayerBridge(port.value);
+    if (bridge === null) throw new Error("bridge expected");
+    const events: AndroidPlayerWindowEvent[] = [];
+    bridge.subscribeEvents((event) => events.push(event));
+    port.deliver("tv:back");
+    expect(port.sent).toEqual(["ready", "tv:default-back"]);
+
+    const onBack = vi.fn();
+    const release = bridge.subscribeTelevisionBack(onBack);
+    port.deliver("tv:back");
+    expect(onBack).toHaveBeenCalledTimes(1);
+    expect(port.sent).toHaveLength(2);
+    release();
+    port.deliver("tv:back");
+    expect(port.sent.at(-1)).toBe("tv:default-back");
+    expect(port.sent).toHaveLength(3);
+
+    port.deliver("tv:channel-down");
+    port.deliver("tv:channel-up");
+    port.deliver("command:toggle");
+    expect(events).toEqual([
+      { _tag: "television-channel", direction: -1 },
+      { _tag: "television-channel", direction: 1 },
+      { _tag: "command", command: "toggle" },
+    ]);
+  });
+
   it("offers the window only what a native picture can do", () => {
     const native = { presentation: "android-media3" } as const;
     expect(

@@ -15,6 +15,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactNode,
@@ -141,7 +142,24 @@ export function PlaybackSurface({
   onAutoplayFailure,
 }: PlaybackSurfaceProps) {
   const chrome = useStageChrome();
+  const { television, fullscreenTune } = chrome;
   const surfaceRef = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    const section = surfaceRef.current;
+    if (
+      !television ||
+      section === null ||
+      fullscreenTune?.channel !== channel.id ||
+      !fullscreenTune.take() ||
+      document.fullscreenElement != null ||
+      navigator.userActivation?.isActive !== true
+    ) {
+      return;
+    }
+    // The viewer's activation may expire while the player chunk loads. The
+    // existing fullscreenchange observers reconcile the native viewport.
+    void section.requestFullscreen?.().catch(() => undefined);
+  }, [channel.id, fullscreenTune, television]);
   const hideControls = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [controlsVisible, setControlsVisible] = useState(true);
   // Where the More menu may open while it must keep clear of the picture;
@@ -188,15 +206,15 @@ export function PlaybackSurface({
   const [sectionFullscreen, setSectionFullscreen] = useState(false);
   useEffect(() => {
     const update = () => {
-      setSectionFullscreen(
-        surfaceRef.current !== null &&
-          document.fullscreenElement === surfaceRef.current,
-      );
+      const section = surfaceRef.current;
+      const active = section !== null && document.fullscreenElement === section;
+      setSectionFullscreen(active);
+      if (television && active) section.focus({ preventScroll: true });
     };
     document.addEventListener("fullscreenchange", update);
     update();
     return () => document.removeEventListener("fullscreenchange", update);
-  }, []);
+  }, [television]);
 
   const presentation = playerPresentation(state);
   const { reportPicture } = chrome;
@@ -438,7 +456,7 @@ export function PlaybackSurface({
       className="hosted-player"
       aria-labelledby="playback-player-heading"
       ref={surfaceRef}
-      tabIndex={0}
+      tabIndex={television ? -1 : 0}
       data-controls-visible={controlsVisible || !canHideControls}
       data-native-video={nativeVideo}
       onPointerMove={revealControls}
@@ -447,6 +465,22 @@ export function PlaybackSurface({
       onChangeCapture={revealControls}
       onKeyDown={(event) => {
         revealControls();
+        if (television && sectionFullscreen && event.target === event.currentTarget) {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            if (!event.repeat) (pause?.onPause ?? recoveryAction?.onAction)?.();
+            return;
+          }
+          if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+            event.preventDefault();
+            requestAnimationFrame(() => {
+              surfaceRef.current?.querySelector<HTMLButtonElement>(
+                ".hosted-player__controls button:not(:disabled)",
+              )?.focus({ preventScroll: true });
+            });
+            return;
+          }
+        }
         // Portalled controls and the More menu still bubble here through React.
         if (
           event.target instanceof HTMLElement &&

@@ -1,9 +1,11 @@
 package xyz.ponbac.sparrow
 
+import android.app.UiModeManager
 import android.content.res.Configuration
 import android.os.Bundle
 import android.graphics.Color
 import android.os.Looper
+import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -24,6 +26,7 @@ class MainActivity : TauriActivity() {
   private var webView: WebView? = null
   private var started = false
   private var playerBridge: AndroidPlayerBridge? = null
+  private var televisionControls: AndroidTvControls? = null
   private var audioFocus: PlaybackAudioFocus? = null
   private var pictureInPicture: PictureInPicturePlayback? = null
   private val nativePlayback by lazy {
@@ -75,7 +78,7 @@ class MainActivity : TauriActivity() {
       window.setPlayback(playback)
       focus.setPlaying(playback == AndroidPlayerPlayback.PLAYING)
     }
-    playerBridge = AndroidPlayerBridge(
+    val bridge = AndroidPlayerBridge(
       webView,
       pictureInPictureSupported = window.supported,
       isInPictureInPicture = { isInPictureInPictureMode },
@@ -88,14 +91,28 @@ class MainActivity : TauriActivity() {
           }
         // A new page has no Playback Session until its player says so.
         AndroidPlayerRequest.Ready -> setPlayback(AndroidPlayerPlayback.NONE)
+        AndroidPlayerRequest.TelevisionDefaultBack -> televisionControls?.defaultBack()
+        AndroidPlayerRequest.TelevisionPageLeaving -> Unit // Handled by the bridge.
       }
     }
+    playerBridge = bridge
     WebViewFullscreen(this, webView) { fullscreen ->
       documentFullscreen = fullscreen
       applyFullscreenSystemBars()
       ViewCompat.requestApplyInsets(findViewById(android.R.id.content))
     }
+    val mode = getSystemService(UiModeManager::class.java)?.currentModeType
+    if (
+      mode == Configuration.UI_MODE_TYPE_TELEVISION &&
+      WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) &&
+      WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
+    ) {
+      televisionControls = AndroidTvControls(this, webView, bridge)
+    }
   }
+
+  override fun dispatchKeyEvent(event: KeyEvent): Boolean =
+    televisionControls?.dispatchKeyEvent(event) == true || super.dispatchKeyEvent(event)
 
   private fun applyFullscreenSystemBars() {
     val controller = WindowCompat.getInsetsController(window, window.decorView)

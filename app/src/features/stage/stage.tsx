@@ -6,6 +6,8 @@ import "./stage.css";
 
 /** Inputs for the picture and the block of information beside it. */
 export interface StageProps {
+  /** On a TV the shell keeps focus on an actionable control. */
+  readonly television?: boolean;
   /** The playing Channel, or null while nothing is playing. */
   readonly playingChannel: ChannelId | null;
   /** The player for the playing Channel; null shows the standby note. */
@@ -29,6 +31,7 @@ export interface StageProps {
 
 /** Presents live playback above its information so native Android video never obscures controls. */
 export function Stage({
+  television = false,
   playingChannel,
   player,
   info,
@@ -38,7 +41,7 @@ export function Stage({
 }: StageProps) {
   const monitorRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (playingChannel === null) return;
+    if (playingChannel === null || television) return;
     // Let search dialogs restore focus first, then dismiss the soft keyboard
     // without scrolling the fixed stage away from its native video viewport.
     const frame = requestAnimationFrame(() => {
@@ -49,7 +52,7 @@ export function Stage({
       }
     });
     return () => cancelAnimationFrame(frame);
-  }, [playingChannel]);
+  }, [playingChannel, television]);
 
   return (
     <section className="stage" aria-labelledby="stage-heading">
@@ -84,7 +87,7 @@ export function Stage({
             onShowPicture();
             // The button leaves the layout with the guide; focus goes on to
             // the picture it returned to.
-            monitorRef.current?.focus({ preventScroll: true });
+            if (!television) monitorRef.current?.focus({ preventScroll: true });
           }}
         >
           <Maximize2 aria-hidden="true" />

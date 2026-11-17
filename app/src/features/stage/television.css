@@ -1,0 +1,100 @@
+/* Shared compact controls still fit TV's 960px-wide WebView. */
+/* Android TV displays often render the UI at half the panel's resolution. */
+html[data-television] {
+  font-size: clamp(100%, 1.95vw, 135%);
+  --bar-h: 2.75rem;
+  --tv-edge: clamp(1rem, 4vw, 3rem);
+  --tv-edge-block: clamp(0.5rem, 2.5vh, 1.5rem);
+}
+
+html[data-television] .shell {
+  grid-template-rows: var(--bar-h) auto minmax(0, 1fr);
+  padding: var(--tv-edge-block) var(--tv-edge);
+}
+
+/* The Guide background reaches the screen edge. Its controls stay inset. */
+html[data-television] .shell[data-mode="guide"] {
+  background: var(--panel);
+}
+
+html[data-television] .shell[data-mode="guide"] .shell__masthead {
+  background: none;
+}
+
+html[data-television]:has(.shell[data-pocket="stacked"]) {
+  --pocket-channel-bar-h: 3.25rem;
+  /* Reserve a second line for playback status below the buttons. */
+  --pocket-lower-third-h: 10rem;
+  --pocket-monitor-height-limit: 65dvh;
+  --pocket-screen-insets-block: calc(2 * var(--tv-edge-block));
+}
+
+/* Put programme time beside the title so the picture gets more height. */
+html[data-television] .shell[data-pocket="stacked"][data-mode="watch"] .now-playing {
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: repeat(3, max-content) minmax(0, 1fr);
+}
+
+html[data-television] .shell[data-mode="watch"] .now-playing__channel {
+  grid-column: 2 / -1;
+}
+
+html[data-television] .shell[data-mode="watch"] .now-playing h1 {
+  grid-column-end: 3;
+  -webkit-line-clamp: 1;
+}
+
+html[data-television] .shell[data-mode="watch"] .now-playing__meter {
+  grid-area: 2 / 3;
+}
+
+html[data-television] .shell[data-mode="watch"] .now-playing__controls {
+  grid-row: 3;
+}
+
+html[data-television] .shell[data-mode="watch"] .now-playing__later {
+  grid-row: 4;
+}
+
+/* An inset amber and dark ring stays visible on either fill and inside clipped rows. */
+html[data-television] :is(button, a, input, select, [role="radio"], [role="menuitem"]):focus {
+  outline: 3px solid var(--amber);
+  outline-offset: -3px;
+  box-shadow: inset 0 0 0 6px var(--on-amber);
+}
+
+html[data-television] :is(.stage__monitor, .hosted-player):focus {
+  outline: none;
+}
+
+html[data-television] .shell[data-layout="pocket"] .group-roster-trigger {
+  width: auto;
+  gap: 0.375rem;
+  padding-inline: 0.625rem;
+}
+
+html[data-television] .shell[data-layout="pocket"] .group-roster-trigger span {
+  position: static;
+  width: auto;
+  height: auto;
+  clip-path: none;
+}
+
+/* The remote operates TV volume. Left and right are kept for navigation. */
+html[data-television] .shell .hosted-player__controls[data-variant] > .hosted-player__volume {
+  display: none;
+}
+
+html[data-television] .hosted-player:fullscreen[data-native-video="true"]
+  :is(.hosted-player__heading, .hosted-player__controls) {
+  padding-inline: var(--tv-edge);
+}
+
+/* Keep portalled sheets under the native picture and within the safe area. */
+html[data-television]:has(.shell[data-pocket="stacked"])
+  :is(.feeds-dialog__backdrop, .group-roster__backdrop, .board-search-desk__backdrop,
+      .feeds-dialog__popup, .group-roster__popup, .board-search-desk__popup) {
+  top: calc(var(--tv-edge-block) + var(--bar-h) + var(--pocket-banner-h) + var(--pocket-picture-h));
+  right: var(--tv-edge);
+  bottom: var(--tv-edge-block);
+}

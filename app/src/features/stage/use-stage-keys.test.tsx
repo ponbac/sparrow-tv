@@ -161,6 +161,26 @@ describe("useStageKeys", () => {
     expect(screen.getByLabelText("Search")).not.toHaveFocus();
   });
 
+  it("uses TV arrows to zap only from fullscreen and leaves the audio picker alone", () => {
+    const keys = renderKeys({ active: false, television: true });
+    expect(fireEvent.keyDown(document.body, { key: "ArrowDown" })).toBe(true);
+    expect(keys.onZap).not.toHaveBeenCalled();
+
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      value: document.documentElement,
+    });
+    try {
+      fireEvent.keyDown(screen.getByLabelText("Audio track"), { key: "ArrowDown" });
+      expect(keys.onZap).not.toHaveBeenCalled();
+
+      expect(fireEvent.keyDown(document.body, { key: "ArrowDown" })).toBe(false);
+      expect(keys.onZap.mock.calls).toEqual([[1]]);
+    } finally {
+      Reflect.deleteProperty(document, "fullscreenElement");
+    }
+  });
+
   it("still hears a key when the shell renders again while the key is being delivered", () => {
     // A browser runs React's pending render between two listeners of one key
     // press. This listener comes first and renders in the middle of it.
@@ -196,7 +216,7 @@ describe("useStageKeys", () => {
   });
 });
 
-type KeysState = Pick<StageKeys, "active" | "mode" | "guideForced"> & {
+type KeysState = Pick<StageKeys, "active" | "mode" | "guideForced" | "television"> & {
   /** Whether a player, with its Full screen button, is on the stage. */
   readonly player: boolean;
 };

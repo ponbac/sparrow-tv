@@ -22,6 +22,12 @@ internal sealed interface AndroidPlayerRequest {
   /** The viewer pressed Picture in picture. */
   data object EnterPictureInPicture : AndroidPlayerRequest
 
+  /** No TV screen or overlay handled Back. Let Android finish the navigation. */
+  data object TelevisionDefaultBack : AndroidPlayerRequest
+
+  /** The TV document is leaving and can no longer accept commands. */
+  data object TelevisionPageLeaving : AndroidPlayerRequest
+
   companion object {
     fun parse(message: String): AndroidPlayerRequest? = when (message) {
       "ready" -> Ready
@@ -29,6 +35,8 @@ internal sealed interface AndroidPlayerRequest {
       "playback:paused" -> Playback(AndroidPlayerPlayback.PAUSED)
       "playback:none" -> Playback(AndroidPlayerPlayback.NONE)
       "enter-picture-in-picture" -> EnterPictureInPicture
+      "tv:default-back" -> TelevisionDefaultBack
+      "tv:page-leaving" -> TelevisionPageLeaving
       else -> null
     }
   }
@@ -45,6 +53,10 @@ internal object AndroidPlayerEvent {
   const val PICTURE_IN_PICTURE_REJECTED = "picture-in-picture:rejected"
   const val PLAY = "command:play"
   const val PAUSE = "command:pause"
+  const val TOGGLE_PLAYBACK = "command:toggle"
+  const val TELEVISION_BACK = "tv:back"
+  const val TELEVISION_CHANNEL_UP = "tv:channel-up"
+  const val TELEVISION_CHANNEL_DOWN = "tv:channel-down"
 }
 
 /**

@@ -14,6 +14,38 @@ background/resume on Android. Emulator frame timing is not a physical-device
 performance result; retain the [physical playback acceptance](../acceptance/android-playback-performance.md)
 for performance claims.
 
+## Android TV and NVIDIA Shield
+
+Install the same universal Android APK. Sparrow appears in the TV launcher
+and uses a TV layout with room around the screen edges. From farther away the
+active control has an amber outline. Use the D-pad to browse and center or
+gamepad **A** to tune a Channel in fullscreen. The controls make room for the
+picture at idle. **Back** or gamepad **B** dismisses the keyboard or a panel,
+and returns to the Guide from playback. From the Guide, Back returns you to
+Android TV.
+
+On the watch screen the channel bar offers the previous and next Channel.
+In fullscreen, **Up** goes to the previous Channel and **Down** goes to the
+next. **Left** or **Right** reveal the playback controls. Center on the
+picture pauses or resumes. A dedicated
+**Play/Pause** key works wherever the Channel is playing. Gamepad **L1/R1** and
+dedicated **Channel down/up** keys work in and out of fullscreen. Volume keys
+control the TV's volume.
+
+For an emulator run, use an Android TV image and select its serial before
+installing a debug APK. Start the launcher activity and drive the app with
+`adb shell input dpad keyevent KEYCODE_DPAD_DOWN`, `KEYCODE_DPAD_CENTER`,
+and `adb shell input keyevent KEYCODE_BACK`. Check the Sources sheet and
+keyboard, Guide and playback focus, channel changes, fullscreen, and Back.
+Use a generated catalog and live test feed. Capture native playback frames
+separately from the guide. On physical Shield, repeat the controls with the
+actual remote and controller, and check video pacing and decoder behavior
+with representative Channels at the display's resolution. A generated 4K
+HEVC feed with one-pixel bars can expose unwanted scaling. Compare the native
+video buffer, source crop and display frame in `adb shell dumpsys SurfaceFlinger`
+with the active HDMI mode. The Android TV interface can use a smaller buffer
+than its separate video surface.
+
 ## Local toolchain
 
 Point `ANDROID_HOME` at the installed SDK and `NDK_HOME` at its

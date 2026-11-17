@@ -15,6 +15,8 @@ const OWNS_ARROWS = 'input[type="range"], [role="radiogroup"], [role="slider"]';
 export interface StageKeys {
   /** The keys work in the Theater layout only. */
   readonly active: boolean;
+  /** The TV uses up and down to change Channel in player fullscreen. */
+  readonly television?: boolean;
   /** The mode the shell is showing. */
   readonly mode: "watch" | "guide";
   /** The guide cannot be closed: there is no picture in the page to show. */
@@ -38,7 +40,7 @@ export function useStageKeys(keys: StageKeys): void {
   useLayoutEffect(() => {
     latest.current = keys;
   });
-  const { active } = keys;
+  const active = keys.active || keys.television === true;
   useEffect(() => {
     if (!active) {
       return;
@@ -56,7 +58,7 @@ export function useStageKeys(keys: StageKeys): void {
 
 function handleStageKey(
   event: KeyboardEvent,
-  { mode, guideForced, onToggleGuide, onWatch, onZap }: StageKeys,
+  { active, television, mode, guideForced, onToggleGuide, onWatch, onZap }: StageKeys,
 ): void {
   if (
     event.defaultPrevented ||
@@ -67,6 +69,14 @@ function handleStageKey(
     return;
   }
   const key = event.key.toLowerCase();
+  if (
+    !active &&
+    (!television ||
+      document.fullscreenElement == null ||
+      (key !== "arrowup" && key !== "arrowdown"))
+  ) {
+    return;
+  }
   const target = event.target instanceof Element ? event.target : null;
   if (target?.closest(OWNS_EVERY_KEY) != null) {
     // The search field gives focus back once it has nothing left to close.

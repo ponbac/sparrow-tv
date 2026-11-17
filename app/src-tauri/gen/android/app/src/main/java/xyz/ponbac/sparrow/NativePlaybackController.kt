@@ -277,6 +277,7 @@ internal class NativePlaybackController(
         setKeepContentOnPlayerReset(true)
         isClickable = false
         isFocusable = false
+        descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
       }
       playerView = createdPlayerView

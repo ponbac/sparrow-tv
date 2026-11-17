@@ -2111,6 +2111,23 @@ describe("CatalogBrowser Theater layout", () => {
     expect(shell).toHaveAttribute("data-mode", "watch");
   });
 
+  it("applies a burst of Channel presses before React commits a render", async () => {
+    const client = new FakeSparrowClient();
+    await watchWorldNews(renderHostedBrowser, client);
+    vi.useFakeTimers();
+
+    act(() => {
+      fireEvent.keyDown(document.body, { key: "ArrowDown" });
+      fireEvent.keyDown(document.body, { key: "ArrowUp" });
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(350);
+    });
+
+    expect(screen.getByLabelText("World News live video")).toBeInTheDocument();
+    expect(client.playbackInputs).toHaveLength(1);
+  });
+
   it("tunes nothing when the arrows end on the playing Channel or run past the list", async () => {
     const client = new FakeSparrowClient();
     const { heading } = await watchWorldNews(renderHostedBrowser, client);

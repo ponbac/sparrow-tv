@@ -34,16 +34,18 @@
      two-line title and the control row, then the channel bar. */
   --pocket-lower-third-h: 11.5rem;
   --pocket-channel-bar-h: 3.875rem;
+  --pocket-monitor-height-limit: 52dvh;
+  --pocket-screen-insets-block: 0px;
   /* 16:9 across the window and at most about half its height. A short window
      takes the picture down further, as far as the band's height, so the
      lines and controls under it keep their room. */
   --pocket-monitor-h: min(
     56.25vw,
-    52dvh,
+    var(--pocket-monitor-height-limit),
     max(
       var(--pocket-band-h),
       calc(
-        100dvh - var(--bar-h) - var(--pocket-banner-h) -
+        100dvh - var(--pocket-screen-insets-block) - var(--bar-h) - var(--pocket-banner-h) -
           var(--pocket-lower-third-h) - var(--pocket-channel-bar-h)
       )
     )
@@ -1153,316 +1155,312 @@
   white-space: normal;
 }
 
-/* Modes and the dock: everywhere but a short landscape window. */
-@media not all and (max-width: 1050px) and (max-height: 600px) and (orientation: landscape) {
-  /* The search button opens the guide; in the guide the field is in view. */
-  .shell[data-layout="pocket"][data-mode="guide"] .shell__find {
-    display: none;
-  }
+/* Modes and the dock: tall pocket windows and televisions. */
+/* The search button opens the guide; in the guide the field is in view. */
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="guide"] .shell__find {
+  display: none;
+}
 
-  .shell[data-layout="pocket"] .stage__monitor {
-    height: var(--pocket-picture-h);
-  }
+.shell[data-layout="pocket"]:where([data-pocket="stacked"]) .stage__monitor {
+  height: var(--pocket-picture-h);
+}
 
-  .shell[data-layout="pocket"][data-dock="true"] .stage__monitor {
-    width: var(--pocket-pinned-w, var(--pocket-band-w));
-  }
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-dock="true"] .stage__monitor {
+  width: var(--pocket-pinned-w, var(--pocket-band-w));
+}
 
-  /* The band is too small for the player's sentences. */
-  .shell[data-layout="pocket"][data-dock="true"] .hosted-player__overlay,
-  .shell[data-layout="pocket"][data-dock="true"] .stage__player-loading {
-    padding: 0.375rem;
-  }
+/* The band is too small for the player's sentences. */
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-dock="true"] .hosted-player__overlay,
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-dock="true"] .stage__player-loading {
+  padding: 0.375rem;
+}
 
-  .shell[data-layout="pocket"][data-dock="true"] .hosted-player__overlay p,
-  .shell[data-layout="pocket"][data-dock="true"] .stage__player-loading {
-    font-size: 0.8125rem;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-dock="true"] .hosted-player__overlay p,
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-dock="true"] .stage__player-loading {
+  font-size: 0.8125rem;
+}
 
-  .shell[data-layout="pocket"][data-dock="true"] .hosted-player__overlay span {
-    display: none;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-dock="true"] .hosted-player__overlay span {
+  display: none;
+}
 
-  /* Nor for the notice of a player that could not load. The band says what
-     happened, in small type from its top left; the sentence and the buttons
-     are in watch mode, a tap on the band away. */
-  .shell[data-layout="pocket"][data-dock="true"] .playback-load-notice {
-    align-items: start;
-    padding: 0.375rem;
-    text-align: left;
-  }
+/* Nor for the notice of a player that could not load. The band says what
+   happened, in small type from its top left; the sentence and the buttons
+   are in watch mode, a tap on the band away. */
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-dock="true"] .playback-load-notice {
+  align-items: start;
+  padding: 0.375rem;
+  text-align: left;
+}
 
-  .shell[data-layout="pocket"][data-dock="true"] .playback-load-notice h2 {
-    margin-top: 0;
-    font-size: 0.8125rem;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-dock="true"] .playback-load-notice h2 {
+  margin-top: 0;
+  font-size: 0.8125rem;
+}
 
-  .shell[data-layout="pocket"][data-dock="true"] .playback-load-notice p,
-  .shell[data-layout="pocket"][data-dock="true"]
-    .playback-load-notice__actions {
-    display: none;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-dock="true"] .playback-load-notice p,
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-dock="true"]
+  .playback-load-notice__actions {
+  display: none;
+}
 
-  /* Watch mode: the stage fills the workspace as a column. The picture and
-     the channel bar keep their heights; the info block takes what is left
-     and only its later block scrolls. The guide stays mounted, out of the
-     layout. */
+/* Watch mode: the stage fills the workspace as a column. The picture and
+   the channel bar keep their heights; the info block takes what is left
+   and only its later block scrolls. The guide stays mounted, out of the
+   layout. */
 
-  .shell[data-layout="pocket"][data-mode="watch"] .shell__workspace {
-    grid-template-rows: minmax(0, 1fr);
-  }
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="watch"] .shell__workspace {
+  grid-template-rows: minmax(0, 1fr);
+}
 
-  .shell[data-layout="pocket"][data-mode="watch"] .programme-guide {
-    display: none;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="watch"] .programme-guide {
+  display: none;
+}
 
-  .shell[data-layout="pocket"][data-mode="watch"] .stage {
-    grid-template-rows: auto minmax(0, 1fr) auto;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="watch"] .stage {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
 
-  /* The four lines keep their heights whatever room there is; a window too
-     short for them cuts the last, never one into the next. */
-  .shell[data-layout="pocket"][data-mode="watch"] .now-playing {
-    min-height: 0;
-    grid-template-rows: repeat(4, max-content) minmax(0, 1fr);
-    overflow: clip;
-  }
+/* The four lines keep their heights whatever room there is; a window too
+   short for them cuts the last, never one into the next. */
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="watch"] .now-playing {
+  min-height: 0;
+  grid-template-rows: repeat(4, max-content) minmax(0, 1fr);
+  overflow: clip;
+}
 
-  /* Guide mode: the guide is under the stage, and nothing of the stage but
-     the picture and a few lines about it is shown. */
+/* Guide mode: the guide is under the stage, and nothing of the stage but
+   the picture and a few lines about it is shown. */
 
-  .shell[data-layout="pocket"][data-mode="guide"] .now-playing__controls,
-  .shell[data-layout="pocket"][data-mode="guide"] .now-playing__later,
-  .shell[data-layout="pocket"][data-mode="guide"] .channel-bar {
-    display: none;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="guide"] .now-playing__controls,
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="guide"] .now-playing__later,
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="guide"] .channel-bar {
+  display: none;
+}
 
-  /* The guide was opened while the picture could not follow its box: the
-     picture keeps its width and the info block gives way. A tap on the
-     picture returns to it. */
-  .shell[data-layout="pocket"][data-mode="guide"][data-dock="false"]
-    .now-playing {
-    display: none;
-  }
+/* The guide was opened while the picture could not follow its box: the
+   picture keeps its width and the info block gives way. A tap on the
+   picture returns to it. */
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="guide"][data-dock="false"]
+  .now-playing {
+  display: none;
+}
 
-  /* Docked: the band. The picture at the left, three lines beside it. */
+/* Docked: the band. The picture at the left, three lines beside it. */
 
-  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"] .stage {
-    grid-template-columns:
-      var(--pocket-pinned-w, var(--pocket-band-w))
-      minmax(0, 1fr);
-    grid-template-rows: auto;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="guide"][data-dock="true"] .stage {
+  grid-template-columns:
+    var(--pocket-pinned-w, var(--pocket-band-w))
+    minmax(0, 1fr);
+  grid-template-rows: auto;
+}
 
-  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
-    .stage__monitor {
-    grid-area: 1 / 1;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="guide"][data-dock="true"]
+  .stage__monitor {
+  grid-area: 1 / 1;
+}
 
-  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
-    .now-playing {
-    --band-lines-h: 3.875rem;
-    height: var(--pocket-band-h);
-    grid-area: 1 / 2;
-    grid-template-rows: 1.125rem 1.25rem 1.125rem;
-    row-gap: 0.1875rem;
-    align-content: start;
-    padding: calc((var(--pocket-band-h) - var(--band-lines-h)) / 2) 2.5rem 0
-      0.6875rem;
-    overflow: clip;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="guide"][data-dock="true"]
+  .now-playing {
+  --band-lines-h: 3.875rem;
+  height: var(--pocket-band-h);
+  grid-area: 1 / 2;
+  grid-template-rows: 1.125rem 1.25rem 1.125rem;
+  row-gap: 0.1875rem;
+  align-content: start;
+  padding: calc((var(--pocket-band-h) - var(--band-lines-h)) / 2) 2.5rem 0
+    0.6875rem;
+  overflow: clip;
+}
 
-  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
-    .now-playing__number {
-    padding: 0 0.3125rem;
-    font-size: 0.75rem;
-    line-height: 1.0625rem;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="guide"][data-dock="true"]
+  .now-playing__number {
+  padding: 0 0.3125rem;
+  font-size: 0.75rem;
+  line-height: 1.0625rem;
+}
 
-  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
-    .now-playing__channel {
-    gap: 0.4375rem;
-    font-size: 0.78125rem;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="guide"][data-dock="true"]
+  .now-playing__channel {
+  gap: 0.4375rem;
+  font-size: 0.78125rem;
+}
 
-  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
-    .now-playing__group,
-  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
-    .now-playing
-    .quality-switch,
-  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
-    .now-playing__meter
-    time {
-    display: none;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="guide"][data-dock="true"]
+  .now-playing__group,
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="guide"][data-dock="true"]
+  .now-playing
+  .quality-switch,
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="guide"][data-dock="true"]
+  .now-playing__meter
+  time {
+  display: none;
+}
 
-  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
-    .now-playing
-    h1 {
-    margin: 0;
-    font-size: 0.9375rem;
-    line-height: 1.25rem;
-    -webkit-line-clamp: 1;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="guide"][data-dock="true"]
+  .now-playing
+  h1 {
+  margin: 0;
+  font-size: 0.9375rem;
+  line-height: 1.25rem;
+  -webkit-line-clamp: 1;
+}
 
-  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
-    .now-playing__meter {
-    height: 1.125rem;
-    margin: 0;
-    font-size: 0.75rem;
-    line-height: 1.125rem;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="guide"][data-dock="true"]
+  .now-playing__meter {
+  height: 1.125rem;
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.125rem;
+}
 
-  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
-    .now-playing__progress {
-    max-width: 14rem;
-    height: 0.1875rem;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="guide"][data-dock="true"]
+  .now-playing__progress {
+  max-width: 14rem;
+  height: 0.1875rem;
+}
 
-  /* Over the lines beside the picture, with its icon at the right edge. */
-  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
-    .stage__undock {
-    z-index: 1;
-    display: grid;
-    grid-area: 1 / 2;
-    place-items: center end;
-    padding: 0 0.6875rem 0 0;
-    color: var(--dim);
-    border: 0;
-    background: none;
-  }
+/* Over the lines beside the picture, with its icon at the right edge. */
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="guide"][data-dock="true"]
+  .stage__undock {
+  z-index: 1;
+  display: grid;
+  grid-area: 1 / 2;
+  place-items: center end;
+  padding: 0 0.6875rem 0 0;
+  color: var(--dim);
+  border: 0;
+  background: none;
+}
 
-  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
-    .stage__undock:focus-visible {
-    outline-offset: -2px;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="guide"][data-dock="true"]
+  .stage__undock:focus-visible {
+  outline-offset: -2px;
+}
 
-  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
-    .stage__undock
-    svg {
-    width: 1.1875rem;
-    height: 1.1875rem;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="guide"][data-dock="true"]
+  .stage__undock
+  svg {
+  width: 1.1875rem;
+  height: 1.1875rem;
+}
 
-  /* While mpv holds the picture there is no watch mode to reach the controls
-     from: they take a row of their own under the band, and the band has
-     nothing to return to. */
+/* While mpv holds the picture there is no watch mode to reach the controls
+   from: they take a row of their own under the band, and the band has
+   nothing to return to. */
 
-  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"][data-external="true"]
-    .now-playing {
-    height: auto;
-    grid-template-rows: 1.125rem 1.25rem 1.125rem auto;
-    padding-right: 0.6875rem;
-    overflow: visible;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="guide"][data-dock="true"][data-external="true"]
+  .now-playing {
+  height: auto;
+  grid-template-rows: 1.125rem 1.25rem 1.125rem auto;
+  padding-right: 0.6875rem;
+  overflow: visible;
+}
 
-  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"][data-external="true"]
-    .now-playing__controls {
-    display: block;
-    margin: calc((var(--pocket-band-h) - var(--band-lines-h)) / 2) -0.6875rem
-      0 calc(-1 * (var(--pocket-band-w) + 0.6875rem));
-  }
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="guide"][data-dock="true"][data-external="true"]
+  .now-playing__controls {
+  display: block;
+  margin: calc((var(--pocket-band-h) - var(--band-lines-h)) / 2) -0.6875rem
+    0 calc(-1 * (var(--pocket-band-w) + 0.6875rem));
+}
 
-  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"][data-external="true"]
-    .stage__undock {
-    display: none;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="stacked"])[data-mode="guide"][data-dock="true"][data-external="true"]
+  .stage__undock {
+  display: none;
+}
 
-  /* The search results run the width of the window, not of the field. */
-  :root:has(.shell[data-layout="pocket"]) .board-search__positioner {
-    width: calc(100vw - 1.25rem);
-    max-width: 35rem;
-  }
+/* The search results run the width of the window, not of the field. */
+:root:has(.shell[data-layout="pocket"]:where([data-pocket="stacked"])) .board-search__positioner {
+  width: calc(100vw - 1.25rem);
+  max-width: 35rem;
+}
 
-  /* Sheets open from the guide, under the picture: across a narrow window,
-     as a panel at the right edge of a wide one. */
+/* Sheets open from the guide, under the picture: across a narrow window,
+   as a panel at the right edge of a wide one. */
 
-  :root:has(.shell[data-layout="pocket"]) .feeds-dialog__backdrop,
-  :root:has(.shell[data-layout="pocket"]) .group-roster__backdrop,
-  :root:has(.shell[data-layout="pocket"]) .board-search-desk__backdrop {
-    top: calc(
-      var(--bar-h) + var(--pocket-banner-h) + var(--pocket-picture-h)
-    );
-    left: 0;
-  }
+:root:has(.shell[data-layout="pocket"]:where([data-pocket="stacked"])) .feeds-dialog__backdrop,
+:root:has(.shell[data-layout="pocket"]:where([data-pocket="stacked"])) .group-roster__backdrop,
+:root:has(.shell[data-layout="pocket"]:where([data-pocket="stacked"])) .board-search-desk__backdrop {
+  top: calc(
+    var(--bar-h) + var(--pocket-banner-h) + var(--pocket-picture-h)
+  );
+  left: 0;
+}
 
-  :root:has(.shell[data-layout="pocket"]) .feeds-dialog__popup,
-  :root:has(.shell[data-layout="pocket"]) .group-roster__popup,
-  :root:has(.shell[data-layout="pocket"]) .board-search-desk__popup {
-    top: calc(
-      var(--bar-h) + var(--pocket-banner-h) + var(--pocket-picture-h)
-    );
-    left: auto;
-    width: min(100%, 36rem);
-  }
+:root:has(.shell[data-layout="pocket"]:where([data-pocket="stacked"])) .feeds-dialog__popup,
+:root:has(.shell[data-layout="pocket"]:where([data-pocket="stacked"])) .group-roster__popup,
+:root:has(.shell[data-layout="pocket"]:where([data-pocket="stacked"])) .board-search-desk__popup {
+  top: calc(
+    var(--bar-h) + var(--pocket-banner-h) + var(--pocket-picture-h)
+  );
+  left: auto;
+  width: min(100%, 36rem);
 }
 
 /* A phone on its side: the picture, its lower third and the controls in the
    left column, the guide in the right, both always in view. Modes and the
    dock change nothing here. */
-@media (max-width: 1050px) and (max-height: 600px) and (orientation: landscape) {
-  /* A picture held at its size keeps its width, and its column with it. */
-  .shell[data-layout="pocket"][data-playing="true"] .shell__workspace {
-    grid-template-columns:
-      minmax(var(--pocket-pinned-w, 0px), 45fr)
-      minmax(0, 55fr);
-    grid-template-rows: minmax(0, 1fr);
-  }
+/* A picture held at its size keeps its width, and its column with it. */
+.shell[data-layout="pocket"]:where([data-pocket="split"])[data-playing="true"] .shell__workspace {
+  grid-template-columns:
+    minmax(var(--pocket-pinned-w, 0px), 45fr)
+    minmax(0, 55fr);
+  grid-template-rows: minmax(0, 1fr);
+}
 
-  .shell[data-layout="pocket"][data-playing="true"] .programme-guide {
-    grid-area: 1 / 2;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="split"])[data-playing="true"] .programme-guide {
+  grid-area: 1 / 2;
+}
 
-  /* The picture gives way here: it takes what the info block leaves. Held
-     at its size it gives way no longer, and the info block is cut instead. */
-  .shell[data-layout="pocket"] .stage {
-    grid-template-rows: var(--pocket-pinned-h, minmax(0, 1fr)) auto;
-  }
+/* The picture gives way here: it takes what the info block leaves. Held
+   at its size it gives way no longer, and the info block is cut instead. */
+.shell[data-layout="pocket"]:where([data-pocket="split"]) .stage {
+  grid-template-rows: var(--pocket-pinned-h, minmax(0, 1fr)) auto;
+}
 
-  .shell[data-layout="pocket"] .now-playing {
-    padding: 0.5rem 0.75rem 0;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="split"]) .now-playing {
+  padding: 0.5rem 0.75rem 0;
+}
 
-  .shell[data-layout="pocket"] .now-playing h1 {
-    -webkit-line-clamp: 1;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="split"]) .now-playing h1 {
+  -webkit-line-clamp: 1;
+}
 
-  /* The picture takes what the info block leaves, and native Android video
-     does not follow its box while paused or failed. So the control row is
-     one line of a fixed height whatever it holds: it scrolls sideways
-     rather than wrap, and the status messages come last in it. */
-  .shell[data-layout="pocket"] .now-playing__controls {
-    height: calc(2.75rem + 1px);
-    min-height: 0;
-    margin: 0.5rem -0.75rem 0;
-    overflow: clip;
-    border-bottom: 0;
-  }
+/* The picture takes what the info block leaves, and native Android video
+   does not follow its box while paused or failed. So the control row is
+   one line of a fixed height whatever it holds: it scrolls sideways
+   rather than wrap, and the status messages come last in it. */
+.shell[data-layout="pocket"]:where([data-pocket="split"]) .now-playing__controls {
+  height: calc(2.75rem + 1px);
+  min-height: 0;
+  margin: 0.5rem -0.75rem 0;
+  overflow: clip;
+  border-bottom: 0;
+}
 
-  .shell[data-layout="pocket"]
-    .hosted-player__controls[data-variant="compact"] {
-    flex-wrap: nowrap;
-    overflow: auto hidden;
-    overscroll-behavior-x: contain;
-    scrollbar-width: none;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="split"])
+  .hosted-player__controls[data-variant="compact"] {
+  flex-wrap: nowrap;
+  overflow: auto hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
 
-  .shell[data-layout="pocket"]
-    .hosted-player__controls[data-variant="compact"]::-webkit-scrollbar {
-    display: none;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="split"])
+  .hosted-player__controls[data-variant="compact"]::-webkit-scrollbar {
+  display: none;
+}
 
-  .shell[data-layout="pocket"]
-    .hosted-player__controls[data-variant="compact"]
-    > .hosted-player__status {
-    width: auto;
-    min-width: 0;
-    overflow: visible;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="split"])
+  .hosted-player__controls[data-variant="compact"]
+  > .hosted-player__status {
+  width: auto;
+  min-width: 0;
+  overflow: visible;
+}
 
-  .shell[data-layout="pocket"] .shell__find,
-  .shell[data-layout="pocket"] .now-playing__later,
-  .shell[data-layout="pocket"] .channel-bar {
-    display: none;
-  }
+.shell[data-layout="pocket"]:where([data-pocket="split"]) .shell__find,
+.shell[data-layout="pocket"]:where([data-pocket="split"]) .now-playing__later,
+.shell[data-layout="pocket"]:where([data-pocket="split"]) .channel-bar {
+  display: none;
 }

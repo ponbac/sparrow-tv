@@ -84,6 +84,55 @@ it("hides fullscreen chrome only during playback and restores it for touch, keyb
   expect(surface).toHaveAttribute("data-controls-visible", "true");
 });
 
+it("requests section fullscreen only for the matching television tune", () => {
+  const props = surfaceProps();
+  const requestFullscreen = vi.fn(() => Promise.resolve());
+  const take = vi.fn(() => true);
+  const chrome: StageChrome = {
+    controls: "bar",
+    controlsSlot: null,
+    fullscreenTarget: null,
+    menuSide: "bottom",
+    reportPicture: () => undefined,
+    fullscreenTune: { channel: props.channel.id, take },
+  };
+  const player = (value: StageChrome) => (
+    <StageChromeProvider value={value}>
+      <PlaybackSurface {...props} />
+    </StageChromeProvider>
+  );
+  Object.defineProperty(navigator, "userActivation", {
+    configurable: true,
+    value: { isActive: true },
+  });
+  Object.defineProperty(HTMLElement.prototype, "requestFullscreen", {
+    configurable: true,
+    value: requestFullscreen,
+  });
+  try {
+    const view = render(player(chrome));
+    expect(requestFullscreen).not.toHaveBeenCalled();
+    expect(take).not.toHaveBeenCalled();
+
+    const other = channelFixture({ id: "other", name: "Other", group: "" });
+    view.rerender(
+      player({ ...chrome, television: true, fullscreenTune: { channel: other.id, take } }),
+    );
+    expect(requestFullscreen).not.toHaveBeenCalled();
+    expect(take).not.toHaveBeenCalled();
+
+    view.rerender(player({ ...chrome, television: true }));
+    expect(take).toHaveBeenCalledTimes(1);
+    expect(requestFullscreen).toHaveBeenCalledTimes(1);
+    expect(requestFullscreen.mock.contexts[0]).toBe(
+      screen.getByRole("region", { name: "Demo" }),
+    );
+  } finally {
+    Reflect.deleteProperty(navigator, "userActivation");
+    Reflect.deleteProperty(HTMLElement.prototype, "requestFullscreen");
+  }
+});
+
 it("keeps the button text that acceptance scripts match on in both control variants", () => {
   const props = { ...surfaceProps(), ...everyControl().slots };
   const view = render(<PlaybackSurface {...props} />);

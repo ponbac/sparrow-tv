@@ -5,12 +5,19 @@ import { successfulQueryResult } from "../../client/query-result";
 
 /** A window this large has room to lay the chrome over the picture. */
 const THEATER_VIEWPORT = "(min-width: 1051px) and (min-height: 601px)";
+const SHORT_LANDSCAPE =
+  "(max-width: 1050px) and (max-height: 600px) and (orientation: landscape)";
 
 /**
  * How the shell arranges picture, info and guide. Theater lays the chrome over
  * a picture that fills the window; pocket keeps everything clear of the picture.
  */
 export type StageLayout = "theater" | "pocket";
+
+/** Splits a sideways phone into two panes. A television keeps watch and guide modes. */
+export function useSplitPocket(television: boolean): boolean {
+  return useSyncExternalStore(subscribeToShortLandscape, hasShortLandscape) && !television;
+}
 
 /**
  * Reads whether page content may be drawn over the picture. Hosted always
@@ -79,10 +86,22 @@ function fullscreenElement(): Element | null {
 }
 
 function subscribeToViewport(onChange: () => void): () => void {
+  return subscribeToMedia(THEATER_VIEWPORT, onChange);
+}
+
+function subscribeToShortLandscape(onChange: () => void): () => void {
+  return subscribeToMedia(SHORT_LANDSCAPE, onChange);
+}
+
+function hasShortLandscape(): boolean {
+  return window.matchMedia?.(SHORT_LANDSCAPE).matches ?? false;
+}
+
+function subscribeToMedia(query: string, onChange: () => void): () => void {
   if (typeof window.matchMedia !== "function") {
     return () => undefined;
   }
-  const viewport = window.matchMedia(THEATER_VIEWPORT);
+  const viewport = window.matchMedia(query);
   viewport.addEventListener("change", onChange);
   return () => viewport.removeEventListener("change", onChange);
 }
