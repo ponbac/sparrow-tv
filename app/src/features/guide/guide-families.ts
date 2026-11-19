@@ -92,6 +92,26 @@ export function preferredVariant(
   return best;
 }
 
+/** The closest lower quality in the family of the Channel that actually stalled. */
+export function lowerQualityVariant(
+  rows: readonly GuideWindowChannel[],
+  channel: ChannelSummary,
+): ChannelSummary | null {
+  const current = rows.find((row) => row.channel.id === channel.id);
+  if (current === undefined) return null;
+  const currentRank = qualityRank(current);
+  let best: GuideWindowChannel | null = null;
+  let bestRank = -1;
+  for (const row of rows) {
+    const rank = qualityRank(row);
+    if (row.channel.number === current.channel.number && rank < currentRank && rank > bestRank) {
+      best = row;
+      bestRank = rank;
+    }
+  }
+  return best?.channel ?? null;
+}
+
 /**
  * The variant whose Programmes stand for the family: the preferred one, or
  * the first variant with any when the preferred one has no guide data.

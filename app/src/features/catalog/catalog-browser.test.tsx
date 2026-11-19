@@ -962,6 +962,59 @@ describe("CatalogBrowser shell", () => {
     ]);
   });
 
+  it("steps down once on a TV source timeout using the open Guide, then honors a fresh tune", async () => {
+    document.documentElement.setAttribute("data-television", "");
+    const fhd = channelFixture({
+      ...SVT1_HD, id: "svt1-fhd", name: "SVT1 FHD",
+      variant: { quality: "fhd", baseName: "SVT1" },
+    });
+    const neighbourhood = deferred<void>();
+    const client = new FakeSparrowClient({
+      pictureOverlay: false,
+      transport: {
+        _tag: "tauri-native-stream", presentation: "android-media3",
+        streamHandle: clientSchemas.nativeStreamHandle.parse(`stream1_${"b".repeat(16)}`),
+        tracks: [], selection: { _tag: "none" },
+      },
+      guide: async (input) => {
+        if (input.around) await neighbourhood.promise;
+        return success(guidePage(input, {
+          rows: [SVT1_SD, SVT1_HD, fhd, WORLD_NEWS].map(channel =>
+            guideRow(channel, input, "Rapport")),
+        }));
+      },
+    });
+    const first = client.createPlaybackSession();
+    const sessions = vi.spyOn(client, "createPlaybackSession").mockReturnValueOnce({
+      ...first,
+      start: async () => failure({ _tag: "playback-failed", reason: "timed-out", retryable: true }),
+    });
+    let stall = () => {};
+    const engine: InstalledPlaybackEngine = { start: request => {
+      stall = () => request.onFailure("stream-interrupted", true);
+      request.onPlaying();
+      return { stop: () => undefined };
+    }};
+    renderBrowser(<CatalogBrowser client={client} runtime="installed" playbackEngine={engine} />, "installed");
+    const row = await screen.findByRole("button", { name: "Tune SVT1" });
+    fireEvent.click(row);
+    await screen.findByText("FHD stalled. Switched to HD.");
+    expect(sessions).toHaveBeenNthCalledWith(1, { id: fhd.id });
+    expect(sessions).toHaveBeenNthCalledWith(2, { id: SVT1_HD.id });
+    await act(async () => stall());
+    expect(sessions).toHaveBeenCalledTimes(2);
+    fireEvent.click(row);
+    await waitFor(() => expect(sessions).toHaveBeenNthCalledWith(3, { id: fhd.id }));
+
+    // A remote zap already in progress takes precedence over a second fallback.
+    await act(async () => neighbourhood.resolve());
+    const next = await screen.findByRole("button", { name: /Next channel, .*World News/u });
+    fireEvent.click(next);
+    await act(async () => stall());
+    await waitFor(() => expect(sessions).toHaveBeenNthCalledWith(4, { id: WORLD_NEWS.id }));
+    expect(sessions).toHaveBeenCalledTimes(4);
+  });
+
   it("plays a row's best quality until the viewer picks another, and remembers the pick", async () => {
     const client = new FakeSparrowClient({ guide: variantGuide });
     const user = userEvent.setup();

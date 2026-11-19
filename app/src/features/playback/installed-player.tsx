@@ -1,11 +1,13 @@
 import { AudioLines, RotateCcw, ScrollText } from "lucide-react";
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
 } from "react";
+import { qualityLabel } from "../guide/guide-families";
 import { clientSchemas } from "../../client/contracts";
 import type {
   AudioCodec,
@@ -31,6 +33,7 @@ import {
 import {
   installedPlayerState,
   type InstalledPlaybackAudio,
+  type InstalledPlaybackChannel,
   type InstalledPlaybackPhase,
 } from "./installed-playback-state";
 import {
@@ -43,7 +46,8 @@ import {
 } from "./playback-surface";
 
 export interface InstalledPlayerProps {
-  readonly channel: { readonly id: ChannelId; readonly name: string };
+  readonly channel: InstalledPlaybackChannel;
+  readonly onInitialStall?: (channel: ChannelId) => void;
   readonly client: Pick<
     InstalledSparrowClient,
     "createPlaybackSession" | "capabilities"
@@ -58,6 +62,7 @@ export interface InstalledPlayerProps {
 /** Plays one Channel through an owned, recoverable, opaque native session. */
 export function InstalledPlayer({
   channel,
+  onInitialStall,
   client,
   onStop,
   engine = installedPlaybackEngine,
@@ -97,6 +102,19 @@ export function InstalledPlayer({
     runner.getSnapshot,
   );
 
+  useLayoutEffect(() => {
+    if (!onInitialStall) return;
+    const check = () => {
+      const current = runner.getSnapshot();
+      if (current.visible && current.channel?.id === channel.id &&
+          current.phase._tag === "recovering" && current.phase.initialStall) {
+        onInitialStall(channel.id);
+      }
+    };
+    check();
+    return runner.subscribe(check);
+  }, [channel.id, onInitialStall, runner]);
+
   useEffect(() => {
     return bindAgentControlPlayback({
       channelName: channel.name,
@@ -111,16 +129,17 @@ export function InstalledPlayer({
     });
   }, [channel.name, onStop, runner]);
 
+  const { id, name, qualityFallback } = channel;
   useEffect(() => {
     const video = videoRef.current;
     if (video === null) {
       return;
     }
-    void runner.select({ id: channel.id, name: channel.name }, video);
+    void runner.select({ id, name, ...(qualityFallback ? { qualityFallback } : {}) }, video);
     return () => {
       void runner.stop();
     };
-  }, [channel.id, channel.name, runner]);
+  }, [id, name, qualityFallback, runner]);
 
   useEffect(() => {
     // On Android the Activity's start and stop are the lifecycle events
@@ -337,12 +356,18 @@ export function InstalledPlayer({
           }
         : {})}
       {...(audioStatus === null &&
+      !channel.qualityFallback &&
       copyStatus === null &&
       !pictureInPictureRejected
         ? {}
         : {
             status: (
               <>
+                {channel.qualityFallback && (
+                  <span className="hosted-player__copy-status" role="status">
+                    {qualityLabel(channel.qualityFallback.from)} stalled. Switched to {qualityLabel(channel.qualityFallback.to)}.
+                  </span>
+                )}
                 {audioStatus === null ? null : (
                   <span
                     className="hosted-player__audio-status"

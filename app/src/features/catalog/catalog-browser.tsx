@@ -11,6 +11,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import type { InstalledPlaybackChannel } from "../playback/installed-playback-state";
 import type { HostedPlaybackEngine } from "../playback/mpegts-engine";
 import type { InstalledPlaybackEngine } from "../playback/installed-playback-engine";
 import { useAndroidPlayerWindow } from "../playback/android-player-bridge";
@@ -32,7 +33,7 @@ import {
   visibleGuideRows,
 } from "../guide/board-group-roster";
 import { FeedsDialog } from "../guide/feeds-dialog";
-import { familyProgrammes } from "../guide/guide-families";
+import { familyProgrammes, lowerQualityVariant } from "../guide/guide-families";
 import {
   clockLabel,
   clockWindow,
@@ -121,6 +122,8 @@ type CatalogBrowserProps =
       readonly playbackEngine?: InstalledPlaybackEngine;
     };
 
+type PlayingChannel = ChannelSummary & Pick<InstalledPlaybackChannel, "qualityFallback">;
+
 /** Owns the shell's catalog reads, the playing Channel, and source controls. */
 export function CatalogBrowser(props: CatalogBrowserProps) {
   const runtime = props.runtime ?? "hosted";
@@ -136,7 +139,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   const boardGroup = resolvedActiveGroup(activeGroup, groupExclusions.excluded);
   const { preferences: variantPreferences, prefer: preferVariant } =
     useVariantPreferences();
-  const [playingChannel, setPlayingChannel] = useState<ChannelSummary | null>(
+  const [playingChannel, setPlayingChannel] = useState<PlayingChannel | null>(
     null,
   );
   const [fullscreenTune, setFullscreenTune] =
@@ -463,11 +466,32 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     loadMore,
     rows.length,
   ]);
+  const fallBack = useCallback(
+    (failedId: ChannelSummary["id"]) => {
+      if (playingChannel?.id !== failedId || !playingChannel.variant ||
+          playingChannel.qualityFallback || pendingZap !== null) return;
+
+      const lower =
+        lowerQualityVariant(nowPlaying.family?.variants ?? [], playingChannel) ??
+        lowerQualityVariant(guideCatalog.rows, playingChannel);
+      if (!lower?.variant) return;
+      const qualityFallback = { from: playingChannel.variant.quality, to: lower.variant.quality };
+      setPlayingChannel((current) =>
+        current === playingChannel ? { ...lower, qualityFallback } : current,
+      );
+    },
+    [guideCatalog.rows, nowPlaying.family, pendingZap, playingChannel],
+  );
   if (synchronization.statusPending) {
     return <CatalogLoading />;
   }
 
-  const player = renderPlayer({ props, playingChannel, onStop: stop });
+  const player = renderPlayer({
+    props,
+    playingChannel,
+    onStop: stop,
+    ...(television ? { onInitialStall: fallBack } : {}),
+  });
   const subject: NowPlayingSubject | null =
     playingChannel === null
       ? null
@@ -672,10 +696,12 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
 function renderPlayer({
   props,
   playingChannel,
+  onInitialStall,
   onStop,
 }: {
   readonly props: CatalogBrowserProps;
-  readonly playingChannel: ChannelSummary | null;
+  readonly playingChannel: PlayingChannel | null;
+  readonly onInitialStall?: (channel: ChannelSummary["id"]) => void;
   readonly onStop: () => void;
 }): ReactNode {
   if (playingChannel === null) {
@@ -690,6 +716,7 @@ function renderPlayer({
       <Suspense fallback={<PlayerLoading />}>
         {props.runtime === "installed" ? (
           <InstalledPlayer
+            {...(onInitialStall ? { onInitialStall } : {})}
             channel={playingChannel}
             client={props.client}
             onStop={onStop}

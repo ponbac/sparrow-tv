@@ -31,6 +31,20 @@ describe("Agent Control CLI real Unix sockets", () => {
     expect(result.stderr).toBe('{"ok":false,"error":{"_tag":"cli"}}\n');
   });
 
+  test("snapshots preserve the fallback qualities and strip extra fields", async () => {
+    const response = JSON.parse(snapshot(100, 10));
+    response.result.diagnostics.qualityFallback = { from: "fhd", to: "hd", extra: token };
+    const result = await withSocket(
+      (socket) => socket.end(JSON.stringify(response) + "\n"),
+      ["snapshot"],
+    );
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout).result.diagnostics.qualityFallback).toEqual({
+      from: "fhd", to: "hd",
+    });
+    expect(result.stdout).not.toContain(token);
+  });
+
   test("bounds unterminated responses", async () => {
     const result = await withSocket(
       (socket) => socket.write("x".repeat(300_000)),

@@ -33,6 +33,7 @@ const media = z.object({
   totalVideoFrames: count.optional(),
   droppedVideoFrames: count.optional(),
 });
+const quality = z.enum(["sd", "hd", "fhd", "uhd"]);
 const diagnostics = z.object({
   phase,
   version: z.literal(2).optional(),
@@ -41,6 +42,7 @@ const diagnostics = z.object({
   transport: label.optional(),
   failure: label.nullable().optional(),
   recoveryCount: count.optional(),
+  qualityFallback: z.object({ from: quality, to: quality }).optional(),
   playingDurationMs: count.optional(),
   controls: z
     .object({

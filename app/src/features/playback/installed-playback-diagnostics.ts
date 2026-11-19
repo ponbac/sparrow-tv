@@ -58,6 +58,7 @@ export function installedPlaybackDiagnostics(
     version: 2,
     engine: playbackEngine(state),
     phase: state.phase._tag,
+    ...(state.channel?.qualityFallback ? { qualityFallback: state.channel.qualityFallback } : {}),
     intent: safeIntent(state.phase),
     transport:
       state.presentation === "linux-mpv"
