@@ -176,8 +176,16 @@ export function createGuideContractSchemas(
   const guideWindow = dependencies.pageSchema(guideWindowChannelSchema);
   const guideWindowFor = (
     input: GuideWindowCorrelationInput,
-  ): z.ZodType<GuideWindow> =>
-    dependencies
+  ): z.ZodType<GuideWindow> => {
+    const windowStartNs = instantNanoseconds(input.startsAt);
+    const windowEndNs = instantNanoseconds(input.endsAt);
+    const windowBounded =
+      windowStartNs !== null &&
+      windowEndNs !== null &&
+      windowEndNs - windowStartNs > 0n &&
+      windowEndNs - windowStartNs <= MAX_GUIDE_WINDOW_NANOSECONDS;
+
+    return dependencies
       .requestedPageSchema(guideWindowChannelSchema, input.channelLimit)
       .refine(
         (page) =>
@@ -201,15 +209,26 @@ export function createGuideContractSchemas(
         { message: "A guide page cannot repeat a Channel." },
       )
       .refine(
-        (page) =>
-          isBoundedGuideWindow(input.startsAt, input.endsAt) &&
-          page.items.every((row) =>
-            row.programmes.every(
-              (programme) =>
-                isInstantBefore(programme.startsAt, input.endsAt) &&
-                isInstantBefore(input.startsAt, programme.endsAt),
-            ),
-          ),
+        (page) => {
+          if (!windowBounded || windowStartNs === null || windowEndNs === null) {
+            return false;
+          }
+          for (const row of page.items) {
+            for (const programme of row.programmes) {
+              const startNs = instantNanoseconds(programme.startsAt);
+              const endNs = instantNanoseconds(programme.endsAt);
+              if (
+                startNs === null ||
+                endNs === null ||
+                startNs >= windowEndNs ||
+                windowStartNs >= endNs
+              ) {
+                return false;
+              }
+            }
+          }
+          return true;
+        },
         { message: "Guide Programmes must overlap the requested UTC window." },
       )
       .refine(
@@ -218,39 +237,48 @@ export function createGuideContractSchemas(
           page.items.some((row) => row.channel.id === input.around),
         { message: "A guide page around a Channel must contain that Channel." },
       );
+  };
 
   return Object.freeze({ guideWindow, guideWindowFor });
 }
 
-function isBoundedGuideWindow(
-  startsAt: IsoInstant,
-  endsAt: IsoInstant,
-): boolean {
-  const start = instantNanoseconds(startsAt);
-  const end = instantNanoseconds(endsAt);
-  if (start === null || end === null) {
-    return false;
-  }
-  const duration = end - start;
-  return duration > 0n && duration <= MAX_GUIDE_WINDOW_NANOSECONDS;
-}
+const MAX_INSTANT_CACHE_ENTRIES = 2_048;
+const instantNanosecondsCache = new Map<string, bigint | null>();
 
 function instantNanoseconds(value: IsoInstant): bigint | null {
+  const cached = instantNanosecondsCache.get(value);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const parsed = parseInstantNanoseconds(value);
+  if (instantNanosecondsCache.size >= MAX_INSTANT_CACHE_ENTRIES) {
+    instantNanosecondsCache.clear();
+  }
+  instantNanosecondsCache.set(value, parsed);
+  return parsed;
+}
+
+function parseInstantNanoseconds(value: IsoInstant): bigint | null {
   const parts = ISO_INSTANT_PARTS.exec(value);
   if (parts === null) {
     return null;
   }
   const wholeSeconds = parts[1];
-  const fraction = parts[2] ?? "";
+  const fraction = parts[2];
   const offset = parts[3];
   if (wholeSeconds === undefined || offset === undefined) {
     return null;
   }
-  const milliseconds = Date.parse(`${wholeSeconds}${offset}`);
+  const milliseconds = Date.parse(
+    fraction === undefined ? value : `${wholeSeconds}${offset}`,
+  );
   if (!Number.isSafeInteger(milliseconds)) {
     return null;
   }
+  const base = BigInt(milliseconds) * NANOSECONDS_PER_MILLISECOND;
+  if (fraction === undefined || fraction.length === 0) {
+    return base;
+  }
   const normalizedFraction = fraction.slice(0, 9).padEnd(9, "0");
-  const nanoseconds = BigInt(normalizedFraction);
-  return BigInt(milliseconds) * NANOSECONDS_PER_MILLISECOND + nanoseconds;
+  return base + BigInt(normalizedFraction);
 }

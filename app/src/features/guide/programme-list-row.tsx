@@ -119,6 +119,7 @@ export const ProgrammeListRow = memo(function ProgrammeListRow({
           currentChannel={playingChannel ?? preferred.channel.id}
           playingChannel={playingChannel}
           acceptanceChannel
+          focusable={false}
           onPreparePlayback={onPreparePlayback}
           onTuneVariant={onTuneVariant}
         />

@@ -4,7 +4,6 @@ use crate::domain::{CoreError, SearchTerm, SelectionPrefix, normalize_search_tex
 
 pub(super) const SEARCH_CANCELLATION_CHECKPOINT_BYTES: usize = 4 * 1024;
 
-#[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct SearchIndex {
     // Normalized fields share one allocation; each document retains only offsets
     // instead of one or two independently allocated Strings.
@@ -65,21 +64,20 @@ impl SearchIndexBuilder {
     }
 }
 
-#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy)]
 pub(super) struct SearchField {
-    start: usize,
-    end: usize,
+    pub(super) start: usize,
+    pub(super) end: usize,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct SearchDocument {
     pub(super) primary: SearchField,
-    secondary_start: usize,
-    secondary_end: usize,
+    pub(super) secondary_start: usize,
+    pub(super) secondary_end: usize,
 }
 
 impl SearchDocument {
-    fn new(primary: SearchField, secondary: Option<SearchField>) -> Self {
+    pub(super) fn new(primary: SearchField, secondary: Option<SearchField>) -> Self {
         let (secondary_start, secondary_end) =
             secondary.map_or((usize::MAX, usize::MAX), |field| (field.start, field.end));
         Self {

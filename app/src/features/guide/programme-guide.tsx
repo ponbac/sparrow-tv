@@ -1,9 +1,14 @@
 import { Tooltip } from "@base-ui/react/tooltip";
 import {
+  memo,
+  useCallback,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  type FocusEvent,
+  type KeyboardEvent,
   type ReactNode,
 } from "react";
 import type {
@@ -20,6 +25,7 @@ import {
   type GuideFamily,
   type VariantPreferences,
 } from "./guide-families";
+import { handleGuideArrowKey } from "./guide-navigation";
 import {
   clockLabel,
   clockMarks,
@@ -84,18 +90,21 @@ export interface ProgrammeGuideProps {
   readonly status: ReactNode;
 }
 
+const AUTO_LOAD_SCROLL_THRESHOLD_PX = 480;
+const AUTO_LOAD_FOCUS_TAIL_ROWS = 8;
+
 /**
  * Renders the Channel Groups and the guide's rows: in Theater a shared time
  * axis with overlapping Programme cells, in pocket one now-and-next row per
  * Channel.
  */
-export function ProgrammeGuide({
+export const ProgrammeGuide = memo(function ProgrammeGuide({
   television = false,
   masthead,
   rows,
   groups,
   activeGroup,
-  window,
+  window: guideWindow,
   now,
   playingChannel,
   variantPreferences,
@@ -123,9 +132,10 @@ export function ProgrammeGuide({
   status,
 }: ProgrammeGuideProps) {
   const families = useMemo(() => guideFamilies(rows), [rows]);
-  const nowFraction = playheadPercent(window, now) / 100;
+  const nowFraction = playheadPercent(guideWindow, now) / 100;
   const nowLeft = `calc(var(--guide-gutter) + (100% - var(--guide-gutter)) * ${nowFraction})`;
   const [channelNameTooltip] = useState(() => Tooltip.createHandle<string>());
+  const sectionRef = useRef<HTMLElement>(null);
   const boardRef = useListScroll({ layout, mode, playingChannel, activeGroup });
   const paginationBusy = loadingMore || replacing;
   const pageFocus = useRef<{
@@ -145,6 +155,88 @@ export function ProgrammeGuide({
     );
     channelButtons?.[request.existingRows]?.focus();
   }, [activeGroup, boardRef, families.length, mode, paginationBusy]);
+  const morePointerDownRef = useRef(false);
+  const autoLoadTriggeredForCountRef = useRef<number | null>(null);
+  const canAutoLoad = hasMore && !paginationBusy && error === null;
+  const requestAutoLoad = useCallback(() => {
+    if (!canAutoLoad || autoLoadTriggeredForCountRef.current === rows.length) {
+      return;
+    }
+    autoLoadTriggeredForCountRef.current = rows.length;
+    onLoadMore();
+  }, [canAutoLoad, onLoadMore, rows.length]);
+
+  useEffect(() => {
+    if (
+      autoLoadTriggeredForCountRef.current !== null &&
+      (autoLoadTriggeredForCountRef.current !== rows.length || !canAutoLoad)
+    ) {
+      autoLoadTriggeredForCountRef.current = null;
+    }
+  }, [canAutoLoad, rows.length]);
+
+  useEffect(() => {
+    const board = boardRef.current;
+    if (board === null || !canAutoLoad) {
+      return;
+    }
+    const onScroll = () => {
+      if (board.scrollTop <= 0) {
+        return;
+      }
+      const threshold = Math.max(
+        AUTO_LOAD_SCROLL_THRESHOLD_PX,
+        board.clientHeight * 1.5,
+      );
+      if (board.scrollHeight - board.scrollTop - board.clientHeight <= threshold) {
+        requestAutoLoad();
+      }
+    };
+    // On large TV viewports (e.g. 4K Shield), the first page can fit inside
+    // the multi-column grid with no scrollbar; scrolling downward still loads.
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY <= 0) {
+        return;
+      }
+      const threshold = Math.max(
+        AUTO_LOAD_SCROLL_THRESHOLD_PX,
+        board.clientHeight * 1.5,
+      );
+      if (board.scrollHeight - board.scrollTop - board.clientHeight <= threshold) {
+        requestAutoLoad();
+      }
+    };
+    board.addEventListener("scroll", onScroll, { passive: true });
+    board.addEventListener("wheel", onWheel, { passive: true });
+    return () => {
+      board.removeEventListener("scroll", onScroll);
+      board.removeEventListener("wheel", onWheel);
+    };
+  }, [boardRef, canAutoLoad, requestAutoLoad]);
+
+  const onRowsFocus = useCallback(
+    (event: FocusEvent<HTMLDivElement>) => {
+      if (!canAutoLoad || !(event.target instanceof Element)) {
+        return;
+      }
+      const row = event.target.closest(".programme-guide__row");
+      if (row === null) {
+        return;
+      }
+      let followingRows = 0;
+      let sibling = row.nextElementSibling;
+      while (sibling !== null && followingRows < AUTO_LOAD_FOCUS_TAIL_ROWS) {
+        if (sibling.classList.contains("programme-guide__row")) {
+          followingRows += 1;
+        }
+        sibling = sibling.nextElementSibling;
+      }
+      if (followingRows < AUTO_LOAD_FOCUS_TAIL_ROWS) {
+        requestAutoLoad();
+      }
+    },
+    [canAutoLoad, requestAutoLoad],
+  );
   const boardEmpty =
     emptyState === undefined &&
     groups.length > 0 &&
@@ -164,11 +256,31 @@ export function ProgrammeGuide({
     onTuneVariant,
   });
 
+  const onKeyDownCapture = useCallback(
+    (event: KeyboardEvent<HTMLElement>) => {
+      const section = sectionRef.current;
+      if (section === null) {
+        return;
+      }
+      handleGuideArrowKey(event, {
+        section,
+        board: boardRef.current,
+        layout,
+        mode,
+        hasMore,
+        onRequestMore: requestAutoLoad,
+      });
+    },
+    [boardRef, hasMore, layout, mode, requestAutoLoad],
+  );
+
   return (
     <section
+      ref={sectionRef}
       className="programme-guide"
       data-layout={layout}
       aria-label="Programme guide"
+      onKeyDownCapture={onKeyDownCapture}
     >
       <header className="programme-guide__toolbar">
         {masthead?.wordmark}
@@ -198,7 +310,7 @@ export function ProgrammeGuide({
           >
             {layout === "theater" ? (
               <GuideRuler
-                window={window}
+                window={guideWindow}
                 now={now}
                 nowFraction={nowFraction}
                 nowLeft={nowLeft}
@@ -231,7 +343,7 @@ export function ProgrammeGuide({
               </GuideNotice>
             ) : layout === "theater" ? (
               <Tooltip.Provider delay={400}>
-                <div className="programme-guide__rows">
+                <div className="programme-guide__rows" onFocus={onRowsFocus}>
                   <div
                     className="programme-guide__playhead"
                     aria-hidden="true"
@@ -241,7 +353,7 @@ export function ProgrammeGuide({
                     <ProgrammeGuideRow
                       key={family.number}
                       {...rowProps(family)}
-                      window={window}
+                      window={guideWindow}
                       channelNameTooltip={channelNameTooltip}
                     />
                   ))}
@@ -249,7 +361,7 @@ export function ProgrammeGuide({
                 <ChannelNameTooltip handle={channelNameTooltip} />
               </Tooltip.Provider>
             ) : (
-              <div className="programme-guide__rows">
+              <div className="programme-guide__rows" onFocus={onRowsFocus}>
                 {families.map((family) => (
                   <ProgrammeListRow
                     key={family.number}
@@ -274,9 +386,30 @@ export function ProgrammeGuide({
               <button
                 className="programme-guide__more"
                 type="button"
-                disabled={!television && paginationBusy}
-                aria-disabled={television && paginationBusy ? true : undefined}
+                aria-disabled={paginationBusy || undefined}
+                onPointerDown={() => {
+                  morePointerDownRef.current = true;
+                }}
+                onPointerCancel={() => {
+                  morePointerDownRef.current = false;
+                }}
+                onBlur={() => {
+                  morePointerDownRef.current = false;
+                }}
+                onFocus={(event) => {
+                  if (!morePointerDownRef.current && canAutoLoad) {
+                    if (television) {
+                      pageFocus.current = {
+                        button: event.currentTarget,
+                        existingRows: families.length,
+                        group: activeGroup,
+                      };
+                    }
+                    requestAutoLoad();
+                  }
+                }}
                 onClick={(event) => {
+                  morePointerDownRef.current = false;
                   if (paginationBusy) return;
                   if (television && event.currentTarget === document.activeElement) {
                     pageFocus.current = {
@@ -285,7 +418,11 @@ export function ProgrammeGuide({
                       group: activeGroup,
                     };
                   }
-                  onLoadMore();
+                  if (canAutoLoad) {
+                    requestAutoLoad();
+                  } else {
+                    onLoadMore();
+                  }
                 }}
               >
                 {replacing
@@ -300,7 +437,7 @@ export function ProgrammeGuide({
       </div>
     </section>
   );
-}
+});
 
 /**
  * Decides where pocket's list is scrolled to, and returns the ref for the

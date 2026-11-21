@@ -25,6 +25,7 @@ import {
 
 const GROUP_PAGE_SIZE = 100;
 const GUIDE_CHANNEL_PAGE_SIZE = 40;
+const GUIDE_CONTINUATION_PAGE_SIZE = 100;
 const IMMUTABLE_CATALOG_STALE_TIME = Number.POSITIVE_INFINITY;
 
 type CatalogPageResult<Value> = {
@@ -311,7 +312,10 @@ function guideWindowQueryOptions({
         client.guideWindow({
           startsAt,
           endsAt,
-          channelLimit: GUIDE_CHANNEL_PAGE_SIZE,
+          channelLimit:
+            pageParam === null
+              ? GUIDE_CHANNEL_PAGE_SIZE
+              : GUIDE_CONTINUATION_PAGE_SIZE,
           ...(group === null ? {} : { group }),
           ...(pageParam === null
             ? {}

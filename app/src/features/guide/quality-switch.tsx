@@ -15,6 +15,12 @@ export interface QualitySwitchProps {
    * sets this; a Channel must carry the mark exactly once.
    */
   readonly acceptanceChannel?: boolean;
+  /**
+   * Keeps inline row chips out of keyboard / TV D-pad traversal so moving
+   * between Channels stays one stop per Channel; pointer/touch clicks still
+   * work, and the watch screen keeps its own chips focusable.
+   */
+  readonly focusable?: boolean;
   readonly onPreparePlayback: () => void;
   readonly onTuneVariant: (channel: ChannelSummary) => void;
 }
@@ -26,6 +32,7 @@ export function QualitySwitch({
   currentChannel,
   playingChannel,
   acceptanceChannel = false,
+  focusable = true,
   onPreparePlayback,
   onTuneVariant,
 }: QualitySwitchProps) {
@@ -44,6 +51,7 @@ export function QualitySwitch({
           <button
             key={channel.id}
             type="button"
+            tabIndex={focusable ? undefined : -1}
             data-acceptance-channel={acceptanceChannel ? true : undefined}
             data-current={channel.id === currentChannel}
             aria-label={`Tune ${channel.name}`}

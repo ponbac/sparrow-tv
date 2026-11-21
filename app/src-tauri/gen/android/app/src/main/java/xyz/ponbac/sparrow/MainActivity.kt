@@ -4,6 +4,7 @@ import android.app.UiModeManager
 import android.content.res.Configuration
 import android.os.Bundle
 import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.os.Looper
 import android.view.KeyEvent
 import android.view.View
@@ -47,6 +48,8 @@ class MainActivity : TauriActivity() {
       statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
       navigationBarStyle = SystemBarStyle.dark(Color.BLACK),
     )
+    window.setBackgroundDrawable(ColorDrawable(Color.BLACK))
+    window.decorView.setBackgroundColor(Color.BLACK)
     super.onCreate(savedInstanceState)
     val content = findViewById<View>(android.R.id.content)
     content.setBackgroundColor(Color.BLACK)
@@ -69,6 +72,7 @@ class MainActivity : TauriActivity() {
 
   override fun onWebViewCreate(webView: WebView) {
     super.onWebViewCreate(webView)
+    webView.setBackgroundColor(Color.BLACK)
     this.webView = webView
     val focus = PlaybackAudioFocus(this) { playerBridge?.send(AndroidPlayerEvent.PAUSE) }
     val window = PictureInPicturePlayback(this, nativePlayback) { command ->

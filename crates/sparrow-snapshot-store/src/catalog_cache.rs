@@ -38,7 +38,8 @@ impl CatalogCache {
         if &header[..32] != key {
             return None;
         }
-        let mut bytes = Vec::new();
+        let payload_len = (metadata.len() - HEADER_BYTES as u64) as usize;
+        let mut bytes = Vec::with_capacity(payload_len);
         file.take(MAX_BYTES + 1).read_to_end(&mut bytes).ok()?;
         if bytes.len() as u64 + HEADER_BYTES as u64 > MAX_BYTES
             || blake3::hash(&bytes).as_bytes() != &header[32..]

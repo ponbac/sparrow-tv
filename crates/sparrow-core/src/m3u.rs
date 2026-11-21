@@ -1,4 +1,4 @@
-use std::{io::BufRead, sync::Arc};
+use std::{collections::HashSet, io::BufRead, sync::Arc};
 
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
@@ -12,7 +12,8 @@ pub(crate) struct ParsedChannel {
     pub(crate) tvg_id: Arc<str>,
     pub(crate) name: Arc<str>,
     pub(crate) group: Arc<str>,
-    pub(crate) playback: Arc<Url>,
+    /// Validated HTTP(S) playback location; parsed into `url::Url` lazily on tune.
+    pub(crate) playback: Arc<str>,
 }
 
 struct PendingEntry {
@@ -31,6 +32,9 @@ struct MetadataAttributes {
 
 pub(crate) fn parse(reader: &mut dyn BufRead) -> Result<Vec<ParsedChannel>, SafeFailure> {
     let mut channels = Vec::new();
+    let empty: Arc<str> = Arc::from("");
+    let mut interned_groups: HashSet<Arc<str>> = HashSet::new();
+    interned_groups.insert(Arc::clone(&empty));
     let mut pending: Option<PendingEntry> = None;
     let mut header_seen = false;
     let mut first_line = true;
@@ -106,11 +110,23 @@ pub(crate) fn parse(reader: &mut dyn BufRead) -> Result<Vec<ParsedChannel>, Safe
             )
         })?;
         let playback = parse_playback(line, entry.number)?;
+        let tvg_id = if entry.tvg_id.is_empty() {
+            Arc::clone(&empty)
+        } else {
+            Arc::from(entry.tvg_id)
+        };
+        let group = if let Some(existing) = interned_groups.get(entry.group.as_str()) {
+            Arc::clone(existing)
+        } else {
+            let group: Arc<str> = Arc::from(entry.group);
+            interned_groups.insert(Arc::clone(&group));
+            group
+        };
         channels.push(ParsedChannel {
-            tvg_id: Arc::from(entry.tvg_id),
+            tvg_id,
             name: Arc::from(entry.name),
-            group: Arc::from(entry.group),
-            playback: Arc::new(playback),
+            group,
+            playback: Arc::from(playback.as_str()),
         });
     }
 
@@ -377,7 +393,25 @@ fn character_at(input: &str, cursor: usize) -> Option<char> {
 }
 
 pub(crate) fn normalize_presentation(value: &str) -> String {
-    let mut normalized = String::new();
+    if value.is_ascii() {
+        let mut normalized = String::with_capacity(value.len());
+        let mut whitespace_pending = false;
+        for byte in value.bytes() {
+            // Match `char::is_whitespace()` for all ASCII bytes: 0x09..=0x0D and 0x20.
+            if matches!(byte, b' ' | b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r') {
+                whitespace_pending = !normalized.is_empty();
+            } else {
+                if whitespace_pending {
+                    normalized.push(' ');
+                    whitespace_pending = false;
+                }
+                normalized.push(byte as char);
+            }
+        }
+        return normalized;
+    }
+
+    let mut normalized = String::with_capacity(value.len());
     let mut whitespace_pending = false;
 
     for character in value.nfkc() {

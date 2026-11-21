@@ -80,6 +80,10 @@ impl CoreAdapters {
         self.snapshot_store.as_ref()
     }
 
+    pub(crate) fn snapshot_store_arc(&self) -> Arc<dyn SnapshotStore> {
+        Arc::clone(&self.snapshot_store)
+    }
+
     pub(crate) fn clock(&self) -> &dyn Clock {
         self.clock.as_ref()
     }

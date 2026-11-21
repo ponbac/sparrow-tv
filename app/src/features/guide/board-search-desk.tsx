@@ -1,6 +1,12 @@
 import { Dialog } from "@base-ui/react/dialog";
 import { Search, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FocusEvent,
+} from "react";
 import type {
   CatalogGeneration,
   ChannelSummary,
@@ -34,6 +40,9 @@ export interface BoardSearchDeskProps {
   readonly onTune: (channel: ChannelSummary) => void;
 }
 
+const SEARCH_AUTO_LOAD_SCROLL_THRESHOLD_PX = 480;
+const SEARCH_AUTO_LOAD_FOCUS_TAIL_ROWS = 6;
+
 /**
  * Full Channel search over the guide pane. Ranking stays catalog-wide; the
  * desk leaves out hidden Channel Groups until the viewer includes them.
@@ -51,8 +60,11 @@ export function BoardSearchDesk({
   onTune,
 }: BoardSearchDeskProps) {
   const [includeExcluded, setIncludeExcluded] = useState(false);
+  const [listElement, setListElement] = useState<HTMLDivElement | null>(null);
   const termInput = useRef<HTMLInputElement>(null);
   const closedByTune = useRef(false);
+  const morePointerDownRef = useRef(false);
+  const autoLoadTriggeredForCountRef = useRef<number | null>(null);
   useEffect(() => {
     if (open) closedByTune.current = false;
   }, [open]);
@@ -120,6 +132,82 @@ export function BoardSearchDesk({
     }
     loadMore();
   }, [loadMore, shouldAdvance]);
+
+  const canAutoLoad =
+    presentation === "ready" && hasMore && !loadingMore && error === null;
+  const requestAutoLoad = useCallback(() => {
+    if (
+      !canAutoLoad ||
+      autoLoadTriggeredForCountRef.current === channels.length
+    ) {
+      return;
+    }
+    autoLoadTriggeredForCountRef.current = channels.length;
+    loadMore();
+  }, [canAutoLoad, channels.length, loadMore]);
+
+  useEffect(() => {
+    if (
+      autoLoadTriggeredForCountRef.current !== null &&
+      (autoLoadTriggeredForCountRef.current !== channels.length || !canAutoLoad)
+    ) {
+      autoLoadTriggeredForCountRef.current = null;
+    }
+  }, [canAutoLoad, channels.length]);
+
+  useEffect(() => {
+    if (listElement === null || !canAutoLoad) {
+      return;
+    }
+    const onScroll = () => {
+      if (listElement.scrollTop <= 0) {
+        return;
+      }
+      const threshold = Math.max(
+        SEARCH_AUTO_LOAD_SCROLL_THRESHOLD_PX,
+        listElement.clientHeight * 1.5,
+      );
+      if (
+        listElement.scrollHeight -
+          listElement.scrollTop -
+          listElement.clientHeight <=
+        threshold
+      ) {
+        requestAutoLoad();
+      }
+    };
+    listElement.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      listElement.removeEventListener("scroll", onScroll);
+    };
+  }, [canAutoLoad, listElement, requestAutoLoad]);
+
+  const onListFocus = useCallback(
+    (event: FocusEvent<HTMLDivElement>) => {
+      if (!canAutoLoad || !(event.target instanceof Element)) {
+        return;
+      }
+      const row = event.target.closest(".board-search-desk__row");
+      if (row === null) {
+        return;
+      }
+      let followingRows = 0;
+      let sibling = row.nextElementSibling;
+      while (
+        sibling !== null &&
+        followingRows < SEARCH_AUTO_LOAD_FOCUS_TAIL_ROWS
+      ) {
+        if (sibling.classList.contains("board-search-desk__row")) {
+          followingRows += 1;
+        }
+        sibling = sibling.nextElementSibling;
+      }
+      if (followingRows < SEARCH_AUTO_LOAD_FOCUS_TAIL_ROWS) {
+        requestAutoLoad();
+      }
+    },
+    [canAutoLoad, requestAutoLoad],
+  );
 
   return (
     <Dialog.Root
@@ -195,7 +283,12 @@ export function BoardSearchDesk({
             ) : null}
           </div>
 
-          <div className="board-search-desk__list" role="list">
+          <div
+            className="board-search-desk__list"
+            ref={setListElement}
+            role="list"
+            onFocus={onListFocus}
+          >
             {presentation === "invalid" ? (
               <p className="board-search-desk__state" role="alert">
                 That search is too long. Shorten it and try again.
@@ -276,8 +369,27 @@ export function BoardSearchDesk({
               <button
                 className="board-search-desk__more"
                 type="button"
-                disabled={loadingMore}
-                onClick={loadMore}
+                aria-disabled={loadingMore || undefined}
+                onPointerDown={() => {
+                  morePointerDownRef.current = true;
+                }}
+                onPointerCancel={() => {
+                  morePointerDownRef.current = false;
+                }}
+                onBlur={() => {
+                  morePointerDownRef.current = false;
+                }}
+                onFocus={() => {
+                  if (!morePointerDownRef.current) {
+                    requestAutoLoad();
+                  }
+                }}
+                onClick={() => {
+                  morePointerDownRef.current = false;
+                  if (!loadingMore) {
+                    loadMore();
+                  }
+                }}
               >
                 {loadingMore ? "Loading more channels…" : "More channels"}
               </button>

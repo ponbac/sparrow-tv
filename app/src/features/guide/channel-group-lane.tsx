@@ -2,8 +2,12 @@ import { Radio } from "@base-ui/react/radio";
 import { RadioGroup } from "@base-ui/react/radio-group";
 import { ChevronLeft, ChevronRight, Clock } from "lucide-react";
 import {
+  memo,
+  useCallback,
+  useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type RefObject,
@@ -15,6 +19,7 @@ import { clockLabel } from "./guide-window";
 
 const ALL_GROUPS = "all";
 const GROUP_PREFIX = "group:";
+const FOCUS_PREFETCH_DEBOUNCE_MS = 150;
 
 /** The time the now-and-next list looks at, and the chips that change it. */
 export interface GuideTime {
@@ -46,7 +51,7 @@ export interface ChannelGroupLaneProps {
  * steppers and a roster for jumping or excluding groups. Given a time, the
  * lane starts with a chip that opens a row of times under it.
  */
-export function ChannelGroupLane({
+export const ChannelGroupLane = memo(function ChannelGroupLane({
   groups,
   activeGroup,
   time,
@@ -57,10 +62,34 @@ export function ChannelGroupLane({
   onRestoreAll,
 }: ChannelGroupLaneProps) {
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const focusPrefetchTimerRef = useRef<number | null>(null);
   const timesId = useId();
-  const visibleGroups = visibleChannelGroups(groups, excluded);
+  const visibleGroups = useMemo(
+    () => visibleChannelGroups(groups, excluded),
+    [groups, excluded],
+  );
   const overflow = useLaneOverflow(scrollerRef, visibleGroups.length);
   const activeFilter = filterValue(activeGroup);
+
+  const cancelFocusPrefetch = useCallback(() => {
+    if (focusPrefetchTimerRef.current !== null) {
+      window.clearTimeout(focusPrefetchTimerRef.current);
+      focusPrefetchTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleFocusPrefetch = useCallback(
+    (group: string | null) => {
+      cancelFocusPrefetch();
+      focusPrefetchTimerRef.current = window.setTimeout(() => {
+        focusPrefetchTimerRef.current = null;
+        onPrefetchGroup(group);
+      }, FOCUS_PREFETCH_DEBOUNCE_MS);
+    },
+    [cancelFocusPrefetch, onPrefetchGroup],
+  );
+
+  useEffect(() => cancelFocusPrefetch, [cancelFocusPrefetch]);
 
   useLayoutEffect(() => {
     const scroller = scrollerRef.current;
@@ -125,7 +154,13 @@ export function ChannelGroupLane({
               data-acceptance-group
               value={ALL_GROUPS}
               onMouseEnter={() => onPrefetchGroup(null)}
-              onFocus={() => onPrefetchGroup(null)}
+              onFocus={(event) => {
+                if (scrollerRef.current !== null) {
+                  scrollChildIntoLane(scrollerRef.current, event.currentTarget);
+                }
+                scheduleFocusPrefetch(null);
+              }}
+              onBlur={cancelFocusPrefetch}
             >
               All
             </Radio.Root>
@@ -138,7 +173,16 @@ export function ChannelGroupLane({
                   key={groupValue}
                   value={groupValue}
                   onMouseEnter={() => onPrefetchGroup(group.name)}
-                  onFocus={() => onPrefetchGroup(group.name)}
+                  onFocus={(event) => {
+                    if (scrollerRef.current !== null) {
+                      scrollChildIntoLane(
+                        scrollerRef.current,
+                        event.currentTarget,
+                      );
+                    }
+                    scheduleFocusPrefetch(group.name);
+                  }}
+                  onBlur={cancelFocusPrefetch}
                 >
                   {groupDisplayName(group.name)}
                   <em>{group.channelCount}</em>
@@ -195,7 +239,7 @@ export function ChannelGroupLane({
       ) : null}
     </>
   );
-}
+});
 
 function useLaneOverflow(
   scrollerRef: RefObject<HTMLDivElement | null>,
@@ -212,6 +256,7 @@ function useLaneOverflow(
       return;
     }
 
+    let scrollFrame: number | null = null;
     const measure = () => {
       const max = Math.max(0, node.scrollWidth - node.clientWidth);
       const canBack = node.scrollLeft > 1;
@@ -222,17 +267,30 @@ function useLaneOverflow(
           : { canBack, canAhead },
       );
     };
+    const onScroll = () => {
+      if (scrollFrame !== null) {
+        return;
+      }
+      scrollFrame = window.requestAnimationFrame(() => {
+        scrollFrame = null;
+        measure();
+      });
+    };
 
     measure();
     const observer =
       typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
     observer?.observe(node);
-    node.addEventListener("scroll", measure, { passive: true });
+    node.addEventListener("scroll", onScroll, { passive: true });
     node.addEventListener("wheel", onLaneWheel, { passive: false });
     window.addEventListener("resize", measure);
     return () => {
+      if (scrollFrame !== null) {
+        window.cancelAnimationFrame(scrollFrame);
+        scrollFrame = null;
+      }
       observer?.disconnect();
-      node.removeEventListener("scroll", measure);
+      node.removeEventListener("scroll", onScroll);
       node.removeEventListener("wheel", onLaneWheel);
       window.removeEventListener("resize", measure);
     };

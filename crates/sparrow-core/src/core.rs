@@ -31,6 +31,8 @@ use crate::{
 
 const M3U_DECODED_LIMIT: u64 = 128 * 1024 * 1024;
 const EPG_DECODED_LIMIT: u64 = 64 * 1024 * 1024;
+const BLOCKING_OFFLOAD_BYTES: u64 = 32 * 1024;
+const BLOCKING_OFFLOAD_CHANNELS: usize = 64;
 const FRESHNESS: chrono::Duration = chrono::Duration::hours(6);
 const EVENT_CAPACITY: usize = 32;
 const BACKOFF_MINUTES: [i64; 4] = [1, 5, 15, 60];
@@ -154,16 +156,22 @@ impl SparrowCore {
             )));
         };
 
-        let cached = recover_catalog_cache(&configuration, &adapters).await;
+        let configuration = Arc::new(configuration);
+        let freshness = if progressive {
+            RecoveredFreshness::AgeBased
+        } else {
+            RecoveredFreshness::PendingRevalidation
+        };
+        let cached = recover_catalog_cache(&configuration, &adapters, freshness).await;
         let cache_hit = cached.is_some();
         let defer_epg = cached.is_none() && progressive && configuration.has_epg();
         let mut recovered = match cached {
             Some(view) => RecoveredConfiguration { view },
             None => {
                 recover_configuration_parts(
-                    &configuration,
+                    Arc::clone(&configuration),
                     &adapters,
-                    RecoveredFreshness::PendingRevalidation,
+                    freshness,
                     !defer_epg,
                 )
                 .await
@@ -178,7 +186,7 @@ impl SparrowCore {
                 },
             );
         }
-        let core = Self::from_runtime(CoreRuntime::new(
+        let core = Self::from_runtime(CoreRuntime::new_shared(
             Some(configuration),
             adapters,
             recovered.view,
@@ -664,11 +672,25 @@ impl CoreRuntime {
         view: CoreView,
         bootstrap_failures: BootstrapFailures,
     ) -> Self {
+        Self::new_shared(
+            configuration.map(Arc::new),
+            adapters,
+            view,
+            bootstrap_failures,
+        )
+    }
+
+    fn new_shared(
+        configuration: Option<Arc<SourceConfiguration>>,
+        adapters: CoreAdapters,
+        view: CoreView,
+        bootstrap_failures: BootstrapFailures,
+    ) -> Self {
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
         let runtime = Self {
             configuration: RwLock::new(ConfigurationState {
                 epoch: 0,
-                configuration: configuration.map(Arc::new),
+                configuration,
                 ready: true,
             }),
             configuration_transition: AsyncMutex::new(()),
@@ -738,7 +760,7 @@ impl CoreRuntime {
         };
 
         let recovered = recover_configuration(
-            configuration.as_ref(),
+            Arc::clone(&configuration),
             &self.adapters,
             RecoveredFreshness::AgeBased,
         )
@@ -1012,21 +1034,74 @@ impl CoreRuntime {
         context: &ConfigurationContext,
         recovered: RecoveryAttempt<xmltv::ParsedGuide>,
     ) {
-        {
+        struct BuiltEpgCatalog {
+            m3u_checksum: [u8; 32],
+            catalog: Arc<ChannelCatalog>,
+            generation: crate::domain::CatalogGeneration,
+        }
+
+        let epg_loaded = recovered.loaded;
+        let epg_diagnostic = recovered.diagnostic;
+        let epg_terminal_failure = recovered.terminal_failure;
+        let mut cached_build: Option<BuiltEpgCatalog> = None;
+
+        loop {
+            let current = self.view.load_full();
+            if !self.epoch_is_current_ready(context.epoch) || current.sources.epg.is_some() {
+                return;
+            }
+            let built_for_m3u = match (&current.sources.m3u, &epg_loaded) {
+                (Some(m3u), Some(loaded)) => {
+                    let m3u_checksum = *m3u.candidate.metadata().checksum();
+                    if cached_build
+                        .as_ref()
+                        .is_none_or(|built| built.m3u_checksum != m3u_checksum)
+                    {
+                        let generation = context.configuration.catalog_generation(
+                            &m3u_checksum,
+                            Some(loaded.candidate.metadata().checksum()),
+                        );
+                        let catalog = ChannelCatalog::from_parsed(
+                            context.configuration.as_ref(),
+                            Arc::clone(&m3u.parsed),
+                            Some(Arc::clone(&loaded.value)),
+                            generation,
+                        );
+                        cached_build = Some(BuiltEpgCatalog {
+                            m3u_checksum,
+                            catalog: Arc::new(catalog),
+                            generation,
+                        });
+                    }
+                    Some(m3u_checksum)
+                }
+                _ => None,
+            };
+
             let _publication = self.publication.lock().expect("publication lock poisoned");
             let current = self.view.load_full();
             // Configuration changes and manual refreshes win over delayed recovery.
             if !self.epoch_is_current_ready(context.epoch) || current.sources.epg.is_some() {
                 return;
             }
+            let current_m3u_checksum = current
+                .sources
+                .m3u
+                .as_ref()
+                .map(|source| *source.candidate.metadata().checksum());
+            if epg_loaded.is_some() && current_m3u_checksum != built_for_m3u {
+                drop(_publication);
+                continue;
+            }
+
             let mut sources = current.sources.clone();
             let mut status = current.status.clone();
-            let state = match recovered.loaded {
+            let state = match epg_loaded {
                 Some(loaded) => {
                     let state = recovered_source_state(
                         loaded.validated_at,
                         self.adapters.clock().now(),
-                        RecoveredFreshness::PendingRevalidation,
+                        RecoveredFreshness::AgeBased,
                     );
                     sources.epg = Some(SourceContribution {
                         parsed: loaded.value,
@@ -1035,14 +1110,17 @@ impl CoreRuntime {
                     state
                 }
                 None => SourceState::Unavailable {
-                    failure: recovered.terminal_failure,
+                    failure: epg_terminal_failure,
                 },
             };
             status.set_source_state(SourceKind::Epg, state);
-            status.set_recovery(SourceKind::Epg, recovered.diagnostic);
-            let content_changed = sources.epg.is_some();
-            let (catalog, generation) =
-                self.build_catalog(&context.configuration, &sources, &current, content_changed);
+            status.set_recovery(SourceKind::Epg, epg_diagnostic);
+            let (catalog, generation) = match cached_build {
+                Some(built) if sources.epg.is_some() => {
+                    (Some(built.catalog), Some(built.generation))
+                }
+                _ => (current.catalog.clone(), current.status.generation()),
+            };
             status.set_generation(generation);
             self.view.store(Arc::new(CoreView {
                 status: status.clone(),
@@ -1062,6 +1140,7 @@ impl CoreRuntime {
                     generation,
                 });
             }
+            break;
         }
         self.queue_catalog_cache();
     }
@@ -1446,7 +1525,7 @@ impl CoreRuntime {
         match fetched {
             FetchedSource::Modified(loaded) => {
                 let validated_at = loaded.validated_at;
-                Ok(if self.publish_m3u(context, loaded) {
+                Ok(if self.publish_m3u(context, loaded).await {
                     RefreshOutcome::Updated { validated_at }
                 } else {
                     RefreshOutcome::NotConfigured
@@ -1497,7 +1576,7 @@ impl CoreRuntime {
         match fetched {
             FetchedSource::Modified(loaded) => {
                 let validated_at = loaded.validated_at;
-                Ok(if self.publish_epg(context, loaded) {
+                Ok(if self.publish_epg(context, loaded).await {
                     RefreshOutcome::Updated { validated_at }
                 } else {
                     RefreshOutcome::NotConfigured
@@ -1521,102 +1600,236 @@ impl CoreRuntime {
         }
     }
 
-    fn publish_m3u(
+    async fn publish_m3u(
         &self,
         context: &ConfigurationContext,
         loaded: LoadedSource<Vec<m3u::ParsedChannel>>,
     ) -> bool {
-        let _publication = self.publication.lock().expect("publication lock poisoned");
-        if !self.epoch_is_current_ready(context.epoch) {
-            return false;
-        }
-        let current = self.view.load_full();
-        let mut sources = current.sources.clone();
-        let content_changed = sources.m3u.as_ref().is_none_or(|source| {
-            source.candidate.metadata().checksum() != loaded.candidate.metadata().checksum()
-        });
-        let parsed = if content_changed {
-            loaded.value
-        } else {
-            Arc::clone(
-                &sources
-                    .m3u
+        let mut built_for_epg: Option<(
+            Option<[u8; 32]>,
+            Arc<ChannelCatalog>,
+            crate::domain::CatalogGeneration,
+        )> = None;
+        loop {
+            if !self.epoch_is_current_ready(context.epoch) {
+                return false;
+            }
+            let current = self.view.load_full();
+            let content_changed = current.sources.m3u.as_ref().is_none_or(|source| {
+                source.candidate.metadata().checksum() != loaded.candidate.metadata().checksum()
+            });
+            let current_epg_checksum = current
+                .sources
+                .epg
+                .as_ref()
+                .map(|source| *source.candidate.metadata().checksum());
+            if content_changed
+                && built_for_epg
                     .as_ref()
-                    .expect("unchanged content has a current contribution")
-                    .parsed,
-            )
-        };
-        sources.m3u = Some(SourceContribution {
-            parsed,
-            candidate: loaded.candidate,
-        });
-        self.publish_sources(
-            context.configuration.as_ref(),
-            current.as_ref(),
-            sources,
-            SourceKind::M3u,
-            loaded.validated_at,
-            content_changed,
-        );
-        true
+                    .is_none_or(|(checksum, _, _)| *checksum != current_epg_checksum)
+            {
+                let configuration = Arc::clone(&context.configuration);
+                let m3u_parsed = Arc::clone(&loaded.value);
+                let epg_parsed = current
+                    .sources
+                    .epg
+                    .as_ref()
+                    .map(|source| Arc::clone(&source.parsed));
+                let generation = configuration.catalog_generation(
+                    loaded.candidate.metadata().checksum(),
+                    current_epg_checksum.as_ref(),
+                );
+                let offload = should_offload_catalog_build(&m3u_parsed, epg_parsed.as_deref());
+                let catalog = run_blocking_if(offload, move || {
+                    Arc::new(ChannelCatalog::from_parsed(
+                        configuration.as_ref(),
+                        m3u_parsed,
+                        epg_parsed,
+                        generation,
+                    ))
+                })
+                .await;
+                built_for_epg = Some((current_epg_checksum, catalog, generation));
+            }
+
+            let _publication = self.publication.lock().expect("publication lock poisoned");
+            if !self.epoch_is_current_ready(context.epoch) {
+                return false;
+            }
+            let current = self.view.load_full();
+            let content_changed_now = current.sources.m3u.as_ref().is_none_or(|source| {
+                source.candidate.metadata().checksum() != loaded.candidate.metadata().checksum()
+            });
+            let epg_checksum_now = current
+                .sources
+                .epg
+                .as_ref()
+                .map(|source| *source.candidate.metadata().checksum());
+            if content_changed_now
+                && built_for_epg
+                    .as_ref()
+                    .is_none_or(|(checksum, _, _)| *checksum != epg_checksum_now)
+            {
+                drop(_publication);
+                continue;
+            }
+
+            let mut sources = current.sources.clone();
+            let parsed = if content_changed_now {
+                loaded.value
+            } else {
+                Arc::clone(
+                    &sources
+                        .m3u
+                        .as_ref()
+                        .expect("unchanged content has a current contribution")
+                        .parsed,
+                )
+            };
+            sources.m3u = Some(SourceContribution {
+                parsed,
+                candidate: loaded.candidate,
+            });
+            let (catalog, generation) = if content_changed_now {
+                let (_, catalog, generation) = built_for_epg.expect("catalog was built");
+                (Some(catalog), Some(generation))
+            } else {
+                (current.catalog.clone(), current.status.generation())
+            };
+            self.commit_published_sources(
+                current.as_ref(),
+                sources,
+                SourceKind::M3u,
+                loaded.validated_at,
+                content_changed_now,
+                catalog,
+                generation,
+            );
+            return true;
+        }
     }
 
-    fn publish_epg(
+    async fn publish_epg(
         &self,
         context: &ConfigurationContext,
         loaded: LoadedSource<xmltv::ParsedGuide>,
     ) -> bool {
-        let _publication = self.publication.lock().expect("publication lock poisoned");
-        if !self.epoch_is_current_ready(context.epoch) {
-            return false;
-        }
-        let current = self.view.load_full();
-        let mut sources = current.sources.clone();
-        let content_changed = sources.epg.as_ref().is_none_or(|source| {
-            source.candidate.metadata().checksum() != loaded.candidate.metadata().checksum()
-        });
-        let parsed = if content_changed {
-            loaded.value
-        } else {
-            Arc::clone(
-                &sources
-                    .epg
+        let mut built_for_m3u: Option<(
+            [u8; 32],
+            Arc<ChannelCatalog>,
+            crate::domain::CatalogGeneration,
+        )> = None;
+        loop {
+            if !self.epoch_is_current_ready(context.epoch) {
+                return false;
+            }
+            let current = self.view.load_full();
+            let content_changed = current.sources.epg.as_ref().is_none_or(|source| {
+                source.candidate.metadata().checksum() != loaded.candidate.metadata().checksum()
+            });
+            if content_changed && let Some(m3u) = current.sources.m3u.as_ref() {
+                let m3u_checksum = *m3u.candidate.metadata().checksum();
+                if built_for_m3u
                     .as_ref()
-                    .expect("unchanged content has a current contribution")
-                    .parsed,
-            )
-        };
-        sources.epg = Some(SourceContribution {
-            parsed,
-            candidate: loaded.candidate,
-        });
-        self.publish_sources(
-            context.configuration.as_ref(),
-            current.as_ref(),
-            sources,
-            SourceKind::Epg,
-            loaded.validated_at,
-            content_changed,
-        );
-        true
+                    .is_none_or(|(checksum, _, _)| *checksum != m3u_checksum)
+                {
+                    let configuration = Arc::clone(&context.configuration);
+                    let m3u_parsed = Arc::clone(&m3u.parsed);
+                    let epg_parsed = Arc::clone(&loaded.value);
+                    let generation = configuration.catalog_generation(
+                        &m3u_checksum,
+                        Some(loaded.candidate.metadata().checksum()),
+                    );
+                    let offload = should_offload_catalog_build(&m3u_parsed, Some(&epg_parsed));
+                    let catalog = run_blocking_if(offload, move || {
+                        Arc::new(ChannelCatalog::from_parsed(
+                            configuration.as_ref(),
+                            m3u_parsed,
+                            Some(epg_parsed),
+                            generation,
+                        ))
+                    })
+                    .await;
+                    built_for_m3u = Some((m3u_checksum, catalog, generation));
+                }
+            }
+
+            let _publication = self.publication.lock().expect("publication lock poisoned");
+            if !self.epoch_is_current_ready(context.epoch) {
+                return false;
+            }
+            let current = self.view.load_full();
+            let content_changed_now = current.sources.epg.as_ref().is_none_or(|source| {
+                source.candidate.metadata().checksum() != loaded.candidate.metadata().checksum()
+            });
+            let current_m3u_checksum = current
+                .sources
+                .m3u
+                .as_ref()
+                .map(|source| *source.candidate.metadata().checksum());
+            if content_changed_now
+                && let Some(m3u_checksum) = current_m3u_checksum
+                && built_for_m3u
+                    .as_ref()
+                    .is_none_or(|(checksum, _, _)| *checksum != m3u_checksum)
+            {
+                drop(_publication);
+                continue;
+            }
+
+            let mut sources = current.sources.clone();
+            let parsed = if content_changed_now {
+                loaded.value
+            } else {
+                Arc::clone(
+                    &sources
+                        .epg
+                        .as_ref()
+                        .expect("unchanged content has a current contribution")
+                        .parsed,
+                )
+            };
+            sources.epg = Some(SourceContribution {
+                parsed,
+                candidate: loaded.candidate,
+            });
+            let (catalog, generation) = if sources.m3u.is_none() {
+                (None, None)
+            } else if content_changed_now {
+                let (_, catalog, generation) = built_for_m3u.expect("catalog was built");
+                (Some(catalog), Some(generation))
+            } else {
+                (current.catalog.clone(), current.status.generation())
+            };
+            self.commit_published_sources(
+                current.as_ref(),
+                sources,
+                SourceKind::Epg,
+                loaded.validated_at,
+                content_changed_now,
+                catalog,
+                generation,
+            );
+            return true;
+        }
     }
 
-    fn publish_sources(
+    #[allow(clippy::too_many_arguments)]
+    fn commit_published_sources(
         &self,
-        configuration: &SourceConfiguration,
         current: &CoreView,
         sources: PublishedSources,
         refreshed: SourceKind,
         validated_at: chrono::DateTime<chrono::Utc>,
         content_changed: bool,
+        catalog: Option<Arc<ChannelCatalog>>,
+        generation: Option<crate::domain::CatalogGeneration>,
     ) {
         let mut status = current.status.clone();
         status.set_source_state(
             refreshed,
             source_state(validated_at, self.adapters.clock().now()),
         );
-        let (catalog, generation) =
-            self.build_catalog(configuration, &sources, current, content_changed);
         status.set_generation(generation);
         self.view.store(Arc::new(CoreView {
             status: status.clone(),
@@ -1634,40 +1847,6 @@ impl CoreRuntime {
                 generation,
             });
         }
-    }
-
-    fn build_catalog(
-        &self,
-        configuration: &SourceConfiguration,
-        sources: &PublishedSources,
-        current: &CoreView,
-        content_changed: bool,
-    ) -> (
-        Option<Arc<ChannelCatalog>>,
-        Option<crate::domain::CatalogGeneration>,
-    ) {
-        let Some(m3u) = sources.m3u.as_ref() else {
-            return (None, None);
-        };
-        if !content_changed {
-            return (current.catalog.clone(), current.status.generation());
-        }
-        let epg_checksum = sources
-            .epg
-            .as_ref()
-            .map(|source| source.candidate.metadata().checksum());
-        let generation =
-            configuration.catalog_generation(m3u.candidate.metadata().checksum(), epg_checksum);
-        let catalog = ChannelCatalog::from_parsed(
-            configuration,
-            Arc::clone(&m3u.parsed),
-            sources
-                .epg
-                .as_ref()
-                .map(|source| Arc::clone(&source.parsed)),
-            generation,
-        );
-        (Some(Arc::new(catalog)), Some(generation))
     }
 
     fn publish_revalidation(
@@ -1921,6 +2100,7 @@ enum RecoveredFreshness {
 async fn recover_catalog_cache(
     configuration: &SourceConfiguration,
     adapters: &CoreAdapters,
+    freshness: RecoveredFreshness,
 ) -> Option<CoreView> {
     let store = adapters.snapshot_store();
     if !store.catalog_cache_enabled() {
@@ -1974,25 +2154,21 @@ async fn recover_catalog_cache(
     );
     // The independently checksummed derived copy is usable even if raw payloads
     // later suffer damage; raw validation/adoption still runs on every cache miss.
-    let bytes = store.read_catalog_cache(&key)?;
-    let catalog = ChannelCatalog::decode_cache(&bytes, generation)?;
+    let store_arc = adapters.snapshot_store_arc();
+    let catalog = run_blocking(move || {
+        let bytes = store_arc.read_catalog_cache(&key)?;
+        ChannelCatalog::decode_cache(&bytes, generation)
+    })
+    .await?;
     if catalog.cached_guide().is_some() != epg.is_some() {
         return None;
     }
     let now = adapters.clock().now();
-    let m3u_state = recovered_source_state(
-        m3u.metadata().validated_at(),
-        now,
-        RecoveredFreshness::PendingRevalidation,
-    );
+    let m3u_state = recovered_source_state(m3u.metadata().validated_at(), now, freshness);
     let epg_state = configuration.has_epg().then(|| {
         epg.as_ref()
             .map_or(SourceState::Unavailable { failure: None }, |e| {
-                recovered_source_state(
-                    e.metadata().validated_at(),
-                    now,
-                    RecoveredFreshness::PendingRevalidation,
-                )
+                recovered_source_state(e.metadata().validated_at(), now, freshness)
             })
     });
     let sources = PublishedSources {
@@ -2019,7 +2195,7 @@ async fn recover_catalog_cache(
 }
 
 async fn recover_configuration(
-    configuration: &SourceConfiguration,
+    configuration: Arc<SourceConfiguration>,
     adapters: &CoreAdapters,
     freshness: RecoveredFreshness,
 ) -> RecoveredConfiguration {
@@ -2027,19 +2203,19 @@ async fn recover_configuration(
 }
 
 async fn recover_configuration_parts(
-    configuration: &SourceConfiguration,
+    configuration: Arc<SourceConfiguration>,
     adapters: &CoreAdapters,
     freshness: RecoveredFreshness,
     include_epg: bool,
 ) -> RecoveredConfiguration {
     let m3u_recovery = recover_source(
         adapters,
-        SnapshotSource::m3u(configuration),
+        SnapshotSource::m3u(configuration.as_ref()),
         M3U_DECODED_LIMIT,
         m3u::parse,
     );
     let epg_recovery = async {
-        match SnapshotSource::epg(configuration).filter(|_| include_epg) {
+        match SnapshotSource::epg(configuration.as_ref()).filter(|_| include_epg) {
             Some(source) => recover_source(adapters, source, EPG_DECODED_LIMIT, xmltv::parse).await,
             None => RecoveryAttempt {
                 loaded: None,
@@ -2063,18 +2239,29 @@ async fn recover_configuration_parts(
     let generation = m3u.as_ref().map(|m3u| {
         configuration.catalog_generation(&m3u.checksum, epg.as_ref().map(|epg| &epg.checksum))
     });
-    let catalog = generation.map(|generation| {
-        Arc::new(ChannelCatalog::from_parsed(
-            configuration,
-            Arc::clone(
+    let catalog = match generation {
+        Some(generation) => {
+            let configuration = Arc::clone(&configuration);
+            let m3u_value = Arc::clone(
                 &m3u.as_ref()
                     .expect("a recovered generation has an M3U contribution")
                     .value,
-            ),
-            epg.as_ref().map(|epg| Arc::clone(&epg.value)),
-            generation,
-        ))
-    });
+            );
+            let epg_value = epg.as_ref().map(|epg| Arc::clone(&epg.value));
+            let offload = should_offload_catalog_build(&m3u_value, epg_value.as_deref());
+            let catalog = run_blocking_if(offload, move || {
+                Arc::new(ChannelCatalog::from_parsed(
+                    configuration.as_ref(),
+                    m3u_value,
+                    epg_value,
+                    generation,
+                ))
+            })
+            .await;
+            Some(catalog)
+        }
+        None => None,
+    };
     let m3u_state = m3u
         .as_ref()
         .map(|m3u| recovered_source_state(m3u.validated_at, adapters.clock().now(), freshness));
@@ -2273,7 +2460,7 @@ struct RecoveryAttempt<T> {
     terminal_failure: Option<SafeFailure>,
 }
 
-async fn recover_source<T>(
+async fn recover_source<T: Send + 'static>(
     adapters: &CoreAdapters,
     source: SnapshotSource,
     decoded_limit: u64,
@@ -2352,7 +2539,7 @@ async fn recover_source<T>(
     }
 }
 
-async fn recover_candidate<T>(
+async fn recover_candidate<T: Send + 'static>(
     store: &dyn crate::ports::SnapshotStore,
     expected: SnapshotSource,
     candidate: &SnapshotCandidate,
@@ -2381,39 +2568,46 @@ async fn recover_candidate<T>(
             operation: SnapshotOperation::OpenCandidate,
             reason,
         })?;
-    let mut reader = CandidateReader::new(reader, decoded_limit);
-    let parsed = parse(&mut reader);
-    let drain = io::copy(&mut reader, &mut io::sink());
-    if reader.exceeded_limit {
-        return Err(SafeFailure::DecodedLimitExceeded {
-            kind: expected.kind(),
-            limit_bytes: decoded_limit,
-        });
-    }
-    if reader.read_failed || drain.is_err() {
-        return Err(SafeFailure::Snapshot {
-            kind: expected.kind(),
-            operation: SnapshotOperation::OpenCandidate,
-            reason: crate::domain::StoreError::Unavailable,
-        });
-    }
-    if reader.decoded_bytes != metadata.decoded_bytes() {
-        return Err(SafeFailure::SnapshotRecovery {
-            kind: expected.kind(),
-            reason: SnapshotRecoveryReason::LengthMismatch,
-        });
-    }
-    if reader.checksum.finalize().as_bytes() != metadata.checksum() {
-        return Err(SafeFailure::SnapshotRecovery {
-            kind: expected.kind(),
-            reason: SnapshotRecoveryReason::ChecksumMismatch,
-        });
-    }
-    let value = parsed?;
+    let expected_kind = expected.kind();
+    let expected_bytes = metadata.decoded_bytes();
+    let expected_checksum = *metadata.checksum();
+    let offload = expected_bytes >= BLOCKING_OFFLOAD_BYTES;
+    let value = run_blocking_if(offload, move || {
+        let mut reader = CandidateReader::new(reader, decoded_limit);
+        let parsed = parse(&mut reader);
+        let drain = io::copy(&mut reader, &mut io::sink());
+        if reader.exceeded_limit {
+            return Err(SafeFailure::DecodedLimitExceeded {
+                kind: expected_kind,
+                limit_bytes: decoded_limit,
+            });
+        }
+        if reader.read_failed || drain.is_err() {
+            return Err(SafeFailure::Snapshot {
+                kind: expected_kind,
+                operation: SnapshotOperation::OpenCandidate,
+                reason: crate::domain::StoreError::Unavailable,
+            });
+        }
+        if reader.decoded_bytes != expected_bytes {
+            return Err(SafeFailure::SnapshotRecovery {
+                kind: expected_kind,
+                reason: SnapshotRecoveryReason::LengthMismatch,
+            });
+        }
+        if reader.checksum.finalize().as_bytes() != &expected_checksum {
+            return Err(SafeFailure::SnapshotRecovery {
+                kind: expected_kind,
+                reason: SnapshotRecoveryReason::ChecksumMismatch,
+            });
+        }
+        parsed
+    })
+    .await?;
 
     Ok(LoadedSource {
         value: Arc::new(value),
-        checksum: *metadata.checksum(),
+        checksum: expected_checksum,
         validated_at: metadata.validated_at(),
         candidate: candidate.clone(),
     })
@@ -2529,7 +2723,7 @@ fn recovered_source_state(
     }
 }
 
-async fn load_source<T>(
+async fn load_source<T: Send + 'static>(
     adapters: &CoreAdapters,
     request: SourceRequest,
     snapshot: SnapshotSource,
@@ -2554,7 +2748,7 @@ enum FetchedSource<T> {
     },
 }
 
-async fn fetch_source<T>(
+async fn fetch_source<T: Send + 'static>(
     adapters: &CoreAdapters,
     request: SourceRequest,
     snapshot: SnapshotSource,
@@ -2680,14 +2874,18 @@ async fn fetch_source<T>(
             }));
         }
     };
-    let value = match parse(reader.as_mut()) {
+    let parsed = run_blocking_if(decoded_bytes >= BLOCKING_OFFLOAD_BYTES, move || {
+        let result = parse(reader.as_mut());
+        drop(reader);
+        result
+    })
+    .await;
+    let value = match parsed {
         Ok(value) => value,
         Err(failure) => {
-            drop(reader);
             return Err(staged.reject(failure));
         }
     };
-    drop(reader);
 
     let checksum = *checksum.finalize().as_bytes();
     let validated_at = adapters.clock().now();
@@ -2725,6 +2923,40 @@ async fn fetch_source<T>(
         validated_at,
         candidate,
     }))
+}
+
+fn should_offload_catalog_build(
+    channels: &[m3u::ParsedChannel],
+    guide: Option<&xmltv::ParsedGuide>,
+) -> bool {
+    channels.len() >= BLOCKING_OFFLOAD_CHANNELS
+        || guide.is_some_and(|guide| guide.programmes.len() >= BLOCKING_OFFLOAD_CHANNELS)
+}
+
+async fn run_blocking_if<F, R>(offload: bool, job: F) -> R
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    if offload {
+        run_blocking(job).await
+    } else {
+        job()
+    }
+}
+
+async fn run_blocking<F, R>(job: F) -> R
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => handle
+            .spawn_blocking(job)
+            .await
+            .expect("blocking core task did not panic"),
+        Err(_) => job(),
+    }
 }
 
 fn valid_adoption(before: &SnapshotCandidate, after: &SnapshotCandidate) -> bool {

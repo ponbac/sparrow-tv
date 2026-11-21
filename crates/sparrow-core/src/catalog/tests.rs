@@ -8,11 +8,10 @@ use std::{
 use chrono::{DateTime, Utc};
 use proptest::prelude::*;
 use static_assertions::assert_not_impl_any;
-use url::Url;
 
 use crate::{
     domain::{
-        CatalogGeneration, ChannelId, ChannelQuery, CoreError, PageCursor, PageLimit, PageRequest,
+        CatalogGeneration, ChannelQuery, CoreError, PageCursor, PageLimit, PageRequest,
         SearchRequest, SearchTerm, SourceConfiguration, SourceConfigurationInput,
     },
     m3u::ParsedChannel,
@@ -424,8 +423,6 @@ fn ranked_selection_keeps_only_the_requested_prefix_and_counts_every_match() {
 
 #[test]
 fn schedule_overlap_index_preserves_long_running_programmes_and_resets_per_channel() {
-    let first_channel = fixture_channel_id('a');
-    let second_channel = fixture_channel_id('b');
     let guide = ParsedGuide {
         channels: Vec::new(),
         programmes: vec![
@@ -438,23 +435,23 @@ fn schedule_overlap_index_preserves_long_running_programmes_and_resets_per_chann
     };
     let programmes = vec![
         CatalogProgramme {
-            channel_id: first_channel.clone(),
+            channel_index: 0,
             source_index: 0,
         },
         CatalogProgramme {
-            channel_id: first_channel.clone(),
+            channel_index: 0,
             source_index: 1,
         },
         CatalogProgramme {
-            channel_id: first_channel,
+            channel_index: 0,
             source_index: 2,
         },
         CatalogProgramme {
-            channel_id: second_channel.clone(),
+            channel_index: 1,
             source_index: 3,
         },
         CatalogProgramme {
-            channel_id: second_channel,
+            channel_index: 1,
             source_index: 4,
         },
     ];
@@ -484,8 +481,8 @@ fn schedule_overlap_index_locates_deep_history_in_logarithmic_probes() {
     const PADDING: usize = 7;
     const SCHEDULE_LENGTH: usize = 4_096;
     const FIRST_POSSIBLE: usize = 4_000;
-    let sources = std::iter::repeat_n(usize::MAX, PADDING)
-        .chain(0..SCHEDULE_LENGTH)
+    let sources = std::iter::repeat_n(u32::MAX, PADDING)
+        .chain(0..SCHEDULE_LENGTH as u32)
         .collect::<Vec<_>>();
     let index = ScheduleOverlapIndex {
         prefix_max_end_sources: sources.into_boxed_slice(),
@@ -528,11 +525,6 @@ fn generation(discriminator: u8) -> CatalogGeneration {
     configuration().catalog_generation(&[discriminator; 32], None)
 }
 
-fn fixture_channel_id(discriminator: char) -> ChannelId {
-    ChannelId::parse(format!("ch1_{}", discriminator.to_string().repeat(64)))
-        .expect("fixture Channel ID is canonical")
-}
-
 fn parsed_programme(starts_at: i64, ends_at: i64) -> ParsedProgramme {
     ParsedProgramme {
         guide_channel_id: Arc::from("fixture"),
@@ -560,10 +552,7 @@ fn parsed_channel(name: &str, group: &str) -> ParsedChannel {
         tvg_id: Arc::from(""),
         name: Arc::from(name),
         group: Arc::from(group),
-        playback: Arc::new(
-            Url::parse("https://media.fixture.invalid/channel")
-                .expect("fixture playback location is valid"),
-        ),
+        playback: Arc::from("https://media.fixture.invalid/channel"),
     }
 }
 
@@ -578,12 +567,9 @@ fn unique_channels(count: usize, reversed: bool) -> Vec<ParsedChannel> {
             tvg_id: Arc::from(""),
             name: Arc::from(format!("Channel {index:04}")),
             group: Arc::from(format!("Group {:02}", index % 11)),
-            playback: Arc::new(
-                Url::parse(&format!(
-                    "https://media.fixture.invalid/channel/{index}?token=private-{index}"
-                ))
-                .expect("generated playback location is valid"),
-            ),
+            playback: Arc::from(format!(
+                "https://media.fixture.invalid/channel/{index}?token=private-{index}"
+            )),
         })
         .collect()
 }
@@ -599,12 +585,9 @@ fn duplicate_channels(count: usize, reversed: bool) -> Vec<ParsedChannel> {
             tvg_id: Arc::from(""),
             name: Arc::from("Duplicate"),
             group: Arc::from("News"),
-            playback: Arc::new(
-                Url::parse(&format!(
-                    "https://media.fixture.invalid/backup/{index}?token=private-{index}"
-                ))
-                .expect("generated playback location is valid"),
-            ),
+            playback: Arc::from(format!(
+                "https://media.fixture.invalid/backup/{index}?token=private-{index}"
+            )),
         })
         .collect()
 }

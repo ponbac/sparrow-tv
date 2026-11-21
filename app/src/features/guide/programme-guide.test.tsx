@@ -631,6 +631,225 @@ describe("ProgrammeGuide Channel Groups", () => {
   });
 });
 
+describe("ProgrammeGuide automatic pagination", () => {
+  it("loads more channels when scrolled near the bottom, not at initial scrollTop 0", () => {
+    const onLoadMore = vi.fn();
+    const { container } = renderGuide({
+      layout: "pocket",
+      hasMore: true,
+      onLoadMore,
+    });
+    const board = requirePart(container, ".programme-guide__board");
+    expect(onLoadMore).not.toHaveBeenCalled();
+
+    Object.defineProperty(board, "clientHeight", {
+      configurable: true,
+      value: 500,
+    });
+    Object.defineProperty(board, "scrollHeight", {
+      configurable: true,
+      value: 2_000,
+    });
+
+    // At scrollTop 0 (cold start), scrolling does not eagerly load page 2.
+    board.scrollTop = 0;
+    fireEvent.scroll(board);
+    expect(onLoadMore).not.toHaveBeenCalled();
+
+    // Still far from the bottom: does not trigger yet.
+    board.scrollTop = 200;
+    fireEvent.scroll(board);
+    expect(onLoadMore).not.toHaveBeenCalled();
+
+    // Within 1.5 viewports of the bottom: automatically loads more channels.
+    board.scrollTop = 1_100;
+    fireEvent.scroll(board);
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads more channels on D-pad focus near the end without dropping button focus", () => {
+    const onLoadMore = vi.fn();
+    const { rerender } = renderGuide({
+      layout: "pocket",
+      hasMore: true,
+      onLoadMore,
+    });
+
+    fireEvent.focus(
+      screen.getByRole("button", { name: `Tune ${LONG_CHANNEL_ROW.channel.name}` }),
+    );
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
+
+    rerender({
+      layout: "pocket",
+      hasMore: true,
+      loadingMore: true,
+      onLoadMore,
+    });
+    const more = screen.getByRole("button", { name: "Loading more channels…" });
+    expect(more).toHaveAttribute("aria-disabled", "true");
+    expect(more).not.toBeDisabled();
+    fireEvent.click(more);
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ProgrammeGuide D-pad and arrow navigation", () => {
+  const SVT1_SD: GuideWindowChannel = {
+    channel: channelFixture({
+      id: "nav-svt1-sd",
+      name: "SVT1 SD",
+      group: "Sweden",
+      number: 1,
+      variant: { quality: "sd", baseName: "SVT1" },
+    }),
+    programmes: [],
+    programmesTruncated: false,
+  };
+  const SVT1_HD: GuideWindowChannel = {
+    channel: channelFixture({
+      id: "nav-svt1-hd",
+      name: "SVT1 HD",
+      group: "Sweden",
+      number: 1,
+      variant: { quality: "hd", baseName: "SVT1" },
+    }),
+    programmes: [],
+    programmesTruncated: false,
+  };
+  const SVT2_HD: GuideWindowChannel = {
+    channel: channelFixture({
+      id: "nav-svt2-hd",
+      name: "SVT2 HD",
+      group: "Sweden",
+      number: 2,
+      variant: { quality: "hd", baseName: "SVT2" },
+    }),
+    programmes: [],
+    programmesTruncated: false,
+  };
+  const SVT2_FHD: GuideWindowChannel = {
+    channel: channelFixture({
+      id: "nav-svt2-fhd",
+      name: "SVT2 FHD",
+      group: "Sweden",
+      number: 2,
+      variant: { quality: "fhd", baseName: "SVT2" },
+    }),
+    programmes: [],
+    programmesTruncated: false,
+  };
+
+  it("moves straight down from a Channel Group chip into the channels without switching groups", () => {
+    const onSelectGroup = vi.fn();
+    renderGuide({
+      layout: "pocket",
+      groups: GROUPS,
+      rows: [SVT1_SD, SVT1_HD, SVT2_HD, SVT2_FHD],
+      onSelectGroup,
+    });
+
+    const lane = screen.getByRole("radiogroup", { name: "Channel groups" });
+    const allChip = within(lane).getByRole("radio", { name: "All" });
+    allChip.focus();
+
+    fireEvent.keyDown(allChip, { key: "ArrowDown" });
+
+    const svt1Button = screen.getByRole("button", { name: "Tune SVT1" });
+    expect(svt1Button).toHaveFocus();
+    expect(onSelectGroup).not.toHaveBeenCalled();
+
+    // Moving down again steps straight to the next channel, skipping inline quality chips.
+    fireEvent.keyDown(svt1Button, { key: "ArrowDown" });
+    const svt2Button = screen.getByRole("button", { name: "Tune SVT2" });
+    expect(svt2Button).toHaveFocus();
+
+    // Moving back up returns to the first channel, then straight back to the active group chip.
+    fireEvent.keyDown(svt2Button, { key: "ArrowUp" });
+    expect(svt1Button).toHaveFocus();
+    fireEvent.keyDown(svt1Button, { key: "ArrowUp" });
+    expect(allChip).toHaveFocus();
+  });
+
+  it("moves down from Choose groups into channels and keeps inline quality chips out of tab/D-pad order", () => {
+    renderGuide({
+      layout: "pocket",
+      groups: GROUPS,
+      rows: [SVT1_SD, SVT1_HD, SVT2_HD, SVT2_FHD],
+    });
+
+    for (const chip of within(
+      screen.getAllByRole("group", { name: "Picture quality" })[0],
+    ).getAllByRole("button")) {
+      expect(chip).toHaveAttribute("tabindex", "-1");
+    }
+
+    const rosterButton = screen.getByRole("button", { name: "Choose groups" });
+    rosterButton.focus();
+    fireEvent.keyDown(rosterButton, { key: "ArrowDown" });
+    expect(screen.getByRole("button", { name: "Tune SVT1" })).toHaveFocus();
+  });
+
+  it("prefers toolbar buttons on ArrowUp to avoid popping up TV keyboards, while still letting ArrowLeft reach search and ArrowDown leave it", () => {
+    render(
+      <ProgrammeGuide
+        rows={[SVT1_SD, SVT1_HD]}
+        groups={GROUPS}
+        activeGroup={null}
+        window={WINDOW}
+        now={NOW}
+        playingChannel={null}
+        variantPreferences={new Map()}
+        layout="pocket"
+        mode="guide"
+        time={null}
+        loading={false}
+        replacing={false}
+        error={null}
+        hasMore={false}
+        loadingMore={false}
+        onSelectGroup={vi.fn()}
+        onPrefetchGroup={vi.fn()}
+        excludedGroups={new Set()}
+        onSetGroupExcluded={vi.fn()}
+        onRestoreExcludedGroups={vi.fn()}
+        onPreparePlayback={vi.fn()}
+        onTune={vi.fn()}
+        onTuneVariant={vi.fn()}
+        onRetry={vi.fn()}
+        onLoadMore={vi.fn()}
+        search={
+          <input
+            type="search"
+            aria-label="Search channels"
+            aria-expanded="false"
+            defaultValue=""
+          />
+        }
+        feeds={<button type="button">Sources</button>}
+        status={null}
+      />,
+    );
+
+    const lane = screen.getByRole("radiogroup", { name: "Channel groups" });
+    const allChip = within(lane).getByRole("radio", { name: "All" });
+    const sourcesButton = screen.getByRole("button", { name: "Sources" });
+    const searchInput = screen.getByRole("searchbox", {
+      name: "Search channels",
+    });
+
+    allChip.focus();
+    fireEvent.keyDown(allChip, { key: "ArrowUp" });
+    expect(sourcesButton).toHaveFocus();
+
+    fireEvent.keyDown(sourcesButton, { key: "ArrowLeft" });
+    expect(searchInput).toHaveFocus();
+
+    fireEvent.keyDown(searchInput, { key: "ArrowDown" });
+    expect(allChip).toHaveFocus();
+  });
+});
+
 interface GuideOverrides {
   readonly television?: boolean;
   readonly hasMore?: boolean;
@@ -653,6 +872,7 @@ interface GuideOverrides {
   readonly onSetGroupExcluded?: (name: string, exclude: boolean) => void;
   readonly onTune?: (channel: ChannelSummary) => void;
   readonly onTuneVariant?: (channel: ChannelSummary) => void;
+  readonly onLoadMore?: () => void;
 }
 
 function renderGuide(overrides: GuideOverrides = {}) {
@@ -693,7 +913,7 @@ function guide(overrides: GuideOverrides) {
       onTune={overrides.onTune ?? vi.fn()}
       onTuneVariant={overrides.onTuneVariant ?? vi.fn()}
       onRetry={vi.fn()}
-      onLoadMore={overrides.loadMore ?? vi.fn()}
+      onLoadMore={overrides.onLoadMore ?? overrides.loadMore ?? vi.fn()}
       search={<div />}
       feeds={<div />}
       status={null}

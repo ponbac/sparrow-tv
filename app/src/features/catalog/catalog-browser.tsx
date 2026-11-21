@@ -482,6 +482,101 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     },
     [guideCatalog.rows, nowPlaying.family, pendingZap, playingChannel],
   );
+  const visibleGuideNowRef = useRef(now);
+  const guideHiddenInPocket =
+    layout === "pocket" && !splitPocket && effectiveMode === "watch";
+  if (!guideHiddenInPocket) {
+    visibleGuideNowRef.current = now;
+  }
+  const guideNow = visibleGuideNowRef.current;
+
+  const guideTime = useMemo(
+    () =>
+      layout === "pocket"
+        ? {
+            open: timeRow === "open",
+            // A chosen time the clock has reached is now.
+            chosen:
+              chosenTime !== null && chosenTime.getTime() > guideNow.getTime()
+                ? chosenTime
+                : null,
+            options: laterTimes(guideNow, guideClock.window.endsAt),
+            onToggle: toggleTimeRow,
+            onChoose: setChosenTime,
+          }
+        : null,
+    [chosenTime, guideClock.window.endsAt, guideNow, layout, timeRow, toggleTimeRow],
+  );
+  const guideEmpty = useMemo(
+    () => guideEmptyState(runtime, status, browseEnabled),
+    [browseEnabled, runtime, status],
+  );
+  const feeds = useMemo(
+    () =>
+      props.runtime === "installed" ? (
+        <FeedsDialog
+          runtime="installed"
+          client={props.sourceConfiguration ?? props.client}
+          status={status}
+          refreshing={synchronization.refreshing}
+          refreshResult={synchronization.refreshResult}
+          latestEvent={synchronization.latestEvent}
+          onRefresh={synchronization.requestRefresh}
+          onApplied={applyInstalledConfiguration}
+        />
+      ) : (
+        <FeedsDialog
+          runtime="hosted"
+          status={status}
+          refreshing={synchronization.refreshing}
+          refreshResult={synchronization.refreshResult}
+          latestEvent={synchronization.latestEvent}
+          onRefresh={synchronization.requestRefresh}
+        />
+      ),
+    [
+      applyInstalledConfiguration,
+      props,
+      status,
+      synchronization.latestEvent,
+      synchronization.refreshResult,
+      synchronization.refreshing,
+      synchronization.requestRefresh,
+    ],
+  );
+
+  // The one element whose parent depends on the layout: Theater shows it in
+  // the masthead, pocket in the guide's toolbar.
+  const search = useMemo(
+    () => (
+      <BoardSearch
+        client={client}
+        generation={authoritativeGeneration}
+        excludedGroups={groupExclusions.excluded}
+        onGenerationMismatch={synchronization.retryStatus}
+        onPreparePlayback={preparePlayback}
+        onTune={tuneVariantFromGuide}
+      />
+    ),
+    [
+      authoritativeGeneration,
+      client,
+      groupExclusions.excluded,
+      preparePlayback,
+      synchronization.retryStatus,
+      tuneVariantFromGuide,
+    ],
+  );
+  const guideStatus = useMemo(
+    () => (
+      <>
+        <StatusReadout source="m3u" status={status} now={guideNow} />
+        <StatusReadout source="epg" status={status} now={guideNow} />
+      </>
+    ),
+    [guideNow, status],
+  );
+
   if (synchronization.statusPending) {
     return <CatalogLoading />;
   }
@@ -510,41 +605,6 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
             reading: nowPlaying.reading,
           }
         : zapSubject(pendingZap.channel, zapStopOf(stops, pendingZap.channel.id));
-  const feeds =
-    props.runtime === "installed" ? (
-      <FeedsDialog
-        runtime="installed"
-        client={props.sourceConfiguration ?? props.client}
-        status={status}
-        refreshing={synchronization.refreshing}
-        refreshResult={synchronization.refreshResult}
-        latestEvent={synchronization.latestEvent}
-        onRefresh={synchronization.requestRefresh}
-        onApplied={applyInstalledConfiguration}
-      />
-    ) : (
-      <FeedsDialog
-        runtime="hosted"
-        status={status}
-        refreshing={synchronization.refreshing}
-        refreshResult={synchronization.refreshResult}
-        latestEvent={synchronization.latestEvent}
-        onRefresh={synchronization.requestRefresh}
-      />
-    );
-
-  // The one element whose parent depends on the layout: Theater shows it in
-  // the masthead, pocket in the guide's toolbar.
-  const search = (
-    <BoardSearch
-      client={client}
-      generation={authoritativeGeneration}
-      excludedGroups={groupExclusions.excluded}
-      onGenerationMismatch={synchronization.retryStatus}
-      onPreparePlayback={preparePlayback}
-      onTune={tuneVariantFromGuide}
-    />
-  );
 
   // Keep a held native picture at the same origin when the viewer changes mode.
   const inlineMasthead = television && layout === "pocket" && (playingChannel === null || dock);
@@ -643,32 +703,18 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
           groups={groups}
           activeGroup={activeGroup}
           window={guideClock.window}
-          now={now}
+          now={guideNow}
           playingChannel={playingChannel?.id ?? null}
           variantPreferences={variantPreferences}
           layout={layout}
           mode={effectiveMode}
-          time={
-            layout === "pocket"
-              ? {
-                  open: timeRow === "open",
-                  // A chosen time the clock has reached is now.
-                  chosen:
-                    chosenTime !== null && chosenTime.getTime() > now.getTime()
-                      ? chosenTime
-                      : null,
-                  options: laterTimes(now, guideClock.window.endsAt),
-                  onToggle: toggleTimeRow,
-                  onChoose: setChosenTime,
-                }
-              : null
-          }
+          time={guideTime}
           loading={guideCatalog.loading}
           replacing={guideCatalog.replacing}
           error={guideError}
           hasMore={guideCatalog.hasMore}
           loadingMore={guideCatalog.loadingMore}
-          emptyState={guideEmptyState(runtime, status, browseEnabled)}
+          emptyState={guideEmpty}
           onSelectGroup={setActiveGroup}
           onPrefetchGroup={guideCatalog.prefetchGroup}
           excludedGroups={groupExclusions.excluded}
@@ -681,12 +727,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
           onLoadMore={guideCatalog.loadMore}
           search={layout === "theater" ? null : search}
           feeds={feeds}
-          status={
-            <>
-              <StatusReadout source="m3u" status={status} now={now} />
-              <StatusReadout source="epg" status={status} now={now} />
-            </>
-          }
+          status={guideStatus}
         />
       </main>
     </div>

@@ -548,11 +548,20 @@ internal class NativePlaybackController(
     }
 
     private fun fillWindow() {
-      playerView.layoutParams = FrameLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT,
-        ViewGroup.LayoutParams.MATCH_PARENT,
-      )
-      playerView.bringToFront()
+      val current = playerView.layoutParams as? FrameLayout.LayoutParams
+      if (
+        current == null ||
+        current.width != ViewGroup.LayoutParams.MATCH_PARENT ||
+        current.height != ViewGroup.LayoutParams.MATCH_PARENT ||
+        current.leftMargin != 0 ||
+        current.topMargin != 0
+      ) {
+        playerView.layoutParams = FrameLayout.LayoutParams(
+          ViewGroup.LayoutParams.MATCH_PARENT,
+          ViewGroup.LayoutParams.MATCH_PARENT,
+        )
+      }
+      bringPlayerToFrontIfNeeded()
     }
 
     private fun place(viewport: NativePlaybackViewport) {
@@ -561,12 +570,29 @@ internal class NativePlaybackController(
       val parentLocation = IntArray(2)
       webView.getLocationInWindow(webLocation)
       parent.getLocationInWindow(parentLocation)
-      playerView.layoutParams =
-        FrameLayout.LayoutParams(viewport.width, viewport.height).apply {
-          leftMargin = webLocation[0] - parentLocation[0] + viewport.left
-          topMargin = webLocation[1] - parentLocation[1] + viewport.top
-        }
-      playerView.bringToFront()
+      val leftMargin = webLocation[0] - parentLocation[0] + viewport.left
+      val topMargin = webLocation[1] - parentLocation[1] + viewport.top
+      val current = playerView.layoutParams as? FrameLayout.LayoutParams
+      if (
+        current == null ||
+        current.width != viewport.width ||
+        current.height != viewport.height ||
+        current.leftMargin != leftMargin ||
+        current.topMargin != topMargin
+      ) {
+        playerView.layoutParams =
+          FrameLayout.LayoutParams(viewport.width, viewport.height).apply {
+            this.leftMargin = leftMargin
+            this.topMargin = topMargin
+          }
+      }
+      bringPlayerToFrontIfNeeded()
+    }
+
+    private fun bringPlayerToFrontIfNeeded() {
+      if (parent.childCount > 0 && parent.getChildAt(parent.childCount - 1) !== playerView) {
+        playerView.bringToFront()
+      }
     }
 
     private fun resetPlayer() {

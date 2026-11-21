@@ -570,6 +570,17 @@ impl ChannelId {
         Ok(Self(Arc::from(value)))
     }
 
+    /// Parses a borrowed canonical identifier without an intermediate `String` allocation.
+    pub(crate) fn parse_str(value: &str) -> Result<Self, CoreError> {
+        if !is_canonical_channel_id(value) {
+            return Err(CoreError::InvalidInput {
+                field: InputField::ChannelId,
+                reason: InputReason::InvalidFormat,
+            });
+        }
+        Ok(Self(Arc::from(value)))
+    }
+
     /// Returns the opaque value for an explicit transport projection.
     pub fn as_str(&self) -> &str {
         &self.0
@@ -680,6 +691,23 @@ impl ChannelGroupFilter {
 }
 
 pub(crate) fn normalize_search_text(value: &str) -> String {
+    if value.is_ascii() {
+        let mut normalized = String::with_capacity(value.len());
+        let mut whitespace_pending = false;
+        for byte in value.bytes() {
+            if matches!(byte, b' ' | b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r') {
+                whitespace_pending = !normalized.is_empty();
+            } else {
+                if whitespace_pending {
+                    normalized.push(' ');
+                    whitespace_pending = false;
+                }
+                normalized.push(byte.to_ascii_lowercase() as char);
+            }
+        }
+        return normalized;
+    }
+
     let compatibility_normalized = value.nfkc().collect::<String>();
     let mut normalized = String::with_capacity(compatibility_normalized.len());
 
