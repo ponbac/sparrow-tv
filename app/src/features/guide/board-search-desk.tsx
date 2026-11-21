@@ -3,6 +3,7 @@ import { Search, X } from "lucide-react";
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type FocusEvent,
@@ -77,9 +78,14 @@ export function BoardSearchDesk({
   const termInput = useRef<HTMLInputElement>(null);
   const searchEdit = useTelevisionInputEdit(television);
   const closedByTune = useRef(false);
+  const pendingInitialResultFocusRef = useRef(false);
   const autoLoadTriggeredForCountRef = useRef<number | null>(null);
   useEffect(() => {
-    if (open) closedByTune.current = false;
+    if (open) {
+      closedByTune.current = false;
+    } else {
+      pendingInitialResultFocusRef.current = false;
+    }
   }, [open]);
   const requestTerm = canonicalSearchTerm(term);
   const requestValid = searchTermFits(term);
@@ -256,6 +262,33 @@ export function BoardSearchDesk({
     },
   });
 
+  useLayoutEffect(() => {
+    if (
+      !pendingInitialResultFocusRef.current ||
+      !open ||
+      !television ||
+      presentation === "loading"
+    ) {
+      return;
+    }
+    pendingInitialResultFocusRef.current = false;
+    const popup = popupRef.current;
+    if (popup === null) return;
+    const closeButton = popup.querySelector<HTMLElement>(
+      ".board-search-desk__close",
+    );
+    if (closeButton === null || document.activeElement !== closeButton) {
+      return;
+    }
+    const target =
+      popup.querySelector<HTMLElement>(".board-search-desk__pick") ??
+      popup.querySelector<HTMLElement>(".board-search-desk__state button");
+    if (target !== null) {
+      target.focus({ preventScroll: true });
+      revealInScrollContainer(listElement, target);
+    }
+  }, [listElement, open, presentation, television]);
+
   return (
     <Dialog.Root
       open={open}
@@ -274,19 +307,29 @@ export function BoardSearchDesk({
           className="board-search-desk__popup"
           initialFocus={() => {
             if (television && term.trim().length > 0) {
-              return (
+              const readyTarget =
                 popupRef.current?.querySelector<HTMLElement>(
                   ".board-search-desk__pick",
                 ) ??
                 popupRef.current?.querySelector<HTMLElement>(
                   ".board-search-desk__state button",
-                ) ??
+                );
+              if (readyTarget != null) {
+                pendingInitialResultFocusRef.current = false;
+                return readyTarget;
+              }
+              const closeButton =
                 popupRef.current?.querySelector<HTMLElement>(
                   ".board-search-desk__close",
-                ) ??
-                termInput.current
-              );
+                );
+              if (closeButton != null) {
+                pendingInitialResultFocusRef.current =
+                  presentation === "loading";
+                return closeButton;
+              }
+              return termInput.current;
             }
+            pendingInitialResultFocusRef.current = false;
             return termInput.current;
           }}
           // Stage takes focus on tune; restoring the search input here

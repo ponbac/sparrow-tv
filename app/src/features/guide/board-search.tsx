@@ -25,6 +25,7 @@ import {
   searchTermFits,
 } from "./board-search-term";
 import { useTelevisionInputEdit } from "./dialog-navigation";
+import { revealInScrollContainer } from "../stage/stage-dom";
 import { channelTitle, qualityLabel } from "./guide-families";
 import { focusGuideFallback } from "./guide-navigation";
 import { clockLabel } from "./guide-window";
@@ -75,6 +76,7 @@ export function BoardSearch({
 }: BoardSearchProps) {
   const queryClient = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const searchEdit = useTelevisionInputEdit(television);
   const [searchBoundary, setSearchBoundary] = useState<HTMLElement | null>(null);
   const bindSearchBoundary = useCallback((element: HTMLElement | null) => {
@@ -273,6 +275,31 @@ export function BoardSearch({
                 event.preventBaseUIHandler();
                 return;
               }
+              if (
+                television &&
+                popupOpen &&
+                event.key === "ArrowDown" &&
+                !event.altKey &&
+                !event.ctrlKey &&
+                !event.metaKey
+              ) {
+                // On Android TV WebView, pressing Center (KEYCODE_DPAD_CENTER)
+                // on a focused editable <input> re-opens the soft keyboard
+                // instead of firing Enter. Move real DOM focus into the option
+                // list so D-pad Center activates suggestions directly.
+                const firstOption = listRef.current?.querySelector<HTMLElement>(
+                  ".board-search__result",
+                );
+                if (firstOption != null) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  event.preventBaseUIHandler();
+                  searchEdit.stopEditing();
+                  firstOption.focus({ preventScroll: true });
+                  revealInScrollContainer(listRef.current, firstOption);
+                  return;
+                }
+              }
               if (searchEdit.handleKeyDown(event, { popupOpen })) {
                 event.preventBaseUIHandler();
                 return;
@@ -300,7 +327,14 @@ export function BoardSearch({
             sideOffset={7}
             collisionBoundary={searchBoundary ?? undefined}
           >
-            <Autocomplete.Popup className="board-search__popup">
+            <Autocomplete.Popup
+              className="board-search__popup"
+              onFocus={(event) => {
+                if (television) {
+                  event.preventBaseUIHandler();
+                }
+              }}
+            >
               {presentation === "invalid" ? (
                 <p className="board-search__state" role="alert">
                   That search is too long. Shorten it and try again.
@@ -311,7 +345,86 @@ export function BoardSearch({
                 </p>
               ) : (
                 <>
-                  <Autocomplete.List className="board-search__results">
+                  <Autocomplete.List
+                    ref={listRef}
+                    className="board-search__results"
+                    onKeyDown={(event) => {
+                      if (
+                        !television ||
+                        event.defaultPrevented ||
+                        event.nativeEvent.isComposing ||
+                        event.altKey ||
+                        event.ctrlKey ||
+                        event.metaKey ||
+                        !(event.target instanceof HTMLElement)
+                      ) {
+                        return;
+                      }
+                      const list = listRef.current;
+                      const item = event.target.closest<HTMLElement>(
+                        ".board-search__result",
+                      );
+                      if (list === null || item === null || !list.contains(item)) {
+                        return;
+                      }
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setOpen(false);
+                        searchEdit.stopEditing();
+                        inputRef.current?.focus({ preventScroll: true });
+                        return;
+                      }
+                      if (
+                        event.key === "ArrowLeft" ||
+                        event.key === "ArrowRight"
+                      ) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        return;
+                      }
+                      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        const items = Array.from(
+                          list.querySelectorAll<HTMLElement>(
+                            ".board-search__result",
+                          ),
+                        );
+                        const idx = items.indexOf(item);
+                        if (idx === -1) return;
+                        if (event.key === "ArrowUp" && idx === 0) {
+                          searchEdit.stopEditing();
+                          inputRef.current?.focus({ preventScroll: true });
+                          return;
+                        }
+                        const next =
+                          items[event.key === "ArrowDown" ? idx + 1 : idx - 1];
+                        if (next !== undefined) {
+                          next.focus({ preventScroll: true });
+                          revealInScrollContainer(list, next);
+                        }
+                        return;
+                      }
+                      if (
+                        (event.key === "Enter" || event.key === " ") &&
+                        !event.repeat
+                      ) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        const items = Array.from(
+                          list.querySelectorAll<HTMLElement>(
+                            ".board-search__result",
+                          ),
+                        );
+                        const idx = items.indexOf(item);
+                        const choice = idx >= 0 ? choices[idx] : undefined;
+                        if (choice !== undefined) {
+                          choose(choice);
+                        }
+                      }
+                    }}
+                  >
                     {choices.map((choice, index) =>
                       choice._tag === "retry" ? (
                         <Autocomplete.Item
@@ -319,6 +432,7 @@ export function BoardSearch({
                           key="retry"
                           index={index}
                           value={choice}
+                          tabIndex={television ? -1 : undefined}
                           onClick={() => choose(choice)}
                         >
                           <span className="board-search__number">
@@ -335,6 +449,7 @@ export function BoardSearch({
                           key="desk"
                           index={index}
                           value={choice}
+                          tabIndex={television ? -1 : undefined}
                           onClick={() => choose(choice)}
                         >
                           <span className="board-search__number">
@@ -351,6 +466,7 @@ export function BoardSearch({
                           key={choiceKey(choice, index)}
                           index={index}
                           value={choice}
+                          tabIndex={television ? -1 : undefined}
                           onMouseEnter={prepareChoice}
                           onFocus={prepareChoice}
                           onClick={() => choose(choice)}

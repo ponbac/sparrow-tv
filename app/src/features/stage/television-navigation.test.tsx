@@ -1470,6 +1470,97 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
       expect(screen.queryByRole("dialog")).toBeNull();
       await waitFor(() => expect(trigger).toHaveFocus());
 
+      // Uncached TV open lands on Close while loading, then hands off to first pick once results arrive.
+      cleanup();
+      let resolveUncached:
+        | ((result: { readonly ok: true; readonly value: typeof page1 }) => void)
+        | undefined;
+      const uncachedClient = {
+        searchChannels: vi.fn(
+          () =>
+            new Promise<{ readonly ok: true; readonly value: typeof page1 }>(
+              (resolve) => {
+                resolveUncached = resolve;
+              },
+            ),
+        ),
+      };
+      render(
+        <QueryClientProvider client={createSparrowQueryClient("installed")}>
+          <BoardSearchDesk
+            television
+            client={uncachedClient}
+            generation={generation}
+            term="sports"
+            excludedGroups={new Set()}
+            open
+            onOpenChange={() => undefined}
+            onTermChange={() => undefined}
+            onGenerationMismatch={() => undefined}
+            onPreparePlayback={() => undefined}
+            onTune={() => undefined}
+          />
+        </QueryClientProvider>,
+      );
+      const closeButton = screen.getByRole("button", {
+        name: "Close channel search",
+      });
+      await waitFor(() => expect(closeButton).toHaveFocus());
+      await act(async () => {
+        resolveUncached?.({ ok: true, value: page1 });
+      });
+      const asyncFirstPick = await screen.findByRole("button", {
+        name: "Tune Sports 1",
+      });
+      await waitFor(() => expect(asyncFirstPick).toHaveFocus());
+
+      // Moving focus away from Close before async results arrive prevents stealing focus.
+      cleanup();
+      let resolveSecondUncached:
+        | ((result: { readonly ok: true; readonly value: typeof page1 }) => void)
+        | undefined;
+      const secondUncachedClient = {
+        searchChannels: vi.fn(
+          () =>
+            new Promise<{ readonly ok: true; readonly value: typeof page1 }>(
+              (resolve) => {
+                resolveSecondUncached = resolve;
+              },
+            ),
+        ),
+      };
+      render(
+        <QueryClientProvider client={createSparrowQueryClient("installed")}>
+          <BoardSearchDesk
+            television
+            client={secondUncachedClient}
+            generation={generation}
+            term="sports"
+            excludedGroups={new Set()}
+            open
+            onOpenChange={() => undefined}
+            onTermChange={() => undefined}
+            onGenerationMismatch={() => undefined}
+            onPreparePlayback={() => undefined}
+            onTune={() => undefined}
+          />
+        </QueryClientProvider>,
+      );
+      const secondClose = screen.getByRole("button", {
+        name: "Close channel search",
+      });
+      await waitFor(() => expect(secondClose).toHaveFocus());
+      const secondInput = screen.getByRole("searchbox", {
+        name: "Search channels",
+      });
+      act(() => secondInput.focus());
+      expect(secondInput).toHaveFocus();
+      await act(async () => {
+        resolveSecondUncached?.({ ok: true, value: page1 });
+      });
+      await screen.findByRole("button", { name: "Tune Sports 1" });
+      expect(secondInput).toHaveFocus();
+
       // Non-TV desktop/phone dialog does NOT intercept Shift+ArrowDown in the search field.
       cleanup();
       render(<DeskHarness television={false} />);
@@ -1513,6 +1604,7 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
       })),
     };
 
+    const onTune = vi.fn();
     render(
       <QueryClientProvider client={createSparrowQueryClient("installed")}>
         <BoardSearch
@@ -1522,7 +1614,7 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
           excludedGroups={new Set()}
           onGenerationMismatch={() => undefined}
           onPreparePlayback={() => undefined}
-          onTune={() => undefined}
+          onTune={onTune}
         />
       </QueryClientProvider>,
     );
@@ -1537,18 +1629,9 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     await waitFor(() =>
       expect(input.getAttribute("aria-activedescendant")).toBeTruthy(),
     );
-    const firstActive = input.getAttribute("aria-activedescendant");
-    // Advance once to ensure Base UI's list index is actively tracking suggestions
-    // (proving a subsequent composing ArrowDown would advance without our guard).
-    fireEvent.keyDown(input, { key: "ArrowDown", which: 40 });
-    if (input.getAttribute("aria-activedescendant") === firstActive) {
-      fireEvent.keyDown(input, { key: "ArrowDown", which: 40 });
-    }
     const activeBeforeComposition = input.getAttribute("aria-activedescendant");
-    expect(activeBeforeComposition).toBeTruthy();
-    expect(activeBeforeComposition).not.toBe(firstActive);
 
-    // Composing ArrowDown must not advance Base UI's highlighted suggestion.
+    // Composing ArrowDown must stay on input and preserve Base UI's highlighted suggestion.
     fireEvent.compositionStart(input);
     fireEvent.keyDown(input, { key: "ArrowDown", isComposing: true, which: 40 });
     expect(input).toHaveFocus();
@@ -1566,12 +1649,64 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     );
     fireEvent.compositionEnd(input);
 
-    // Non-composing ArrowDown advances the active suggestion again after composition ends.
+    // On TV, non-composing ArrowDown moves real DOM focus into the option list (setting
+    // input readOnly) so Android TV KEYCODE_DPAD_CENTER activates suggestions instead of
+    // re-opening the soft keyboard.
     fireEvent.keyDown(input, { key: "ArrowDown", which: 40 });
+    const options = screen.getAllByRole("option");
+    expect(options[0]).toHaveFocus();
+    expect(input).toHaveAttribute("readonly");
+
+    // ArrowUp from the top option returns to the read-only input cleanly.
+    fireEvent.keyDown(options[0], { key: "ArrowUp" });
+    expect(input).toHaveFocus();
+    expect(input).toHaveAttribute("readonly");
+
+    // ArrowDown into options, step to Sports 1, and press Enter -> tunes Sports 1 directly.
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(options[0]).toHaveFocus();
+    fireEvent.keyDown(options[0], { key: "ArrowDown" });
+    expect(options[1]).toHaveFocus();
+    fireEvent.keyDown(options[1], { key: "Enter" });
+    expect(onTune).toHaveBeenCalledWith(ch1);
+
+    // Non-TV composition guard still prevents Base UI's virtual activeDescendant from advancing.
+    cleanup();
+    document.documentElement.removeAttribute("data-television");
+    render(
+      <QueryClientProvider client={createSparrowQueryClient("installed")}>
+        <BoardSearch
+          television={false}
+          client={client}
+          generation={generation}
+          excludedGroups={new Set()}
+          onGenerationMismatch={() => undefined}
+          onPreparePlayback={() => undefined}
+          onTune={() => undefined}
+        />
+      </QueryClientProvider>,
+    );
+    const desktopInput = screen.getByRole("combobox", { name: "Search channels and programmes" });
+    act(() => desktopInput.focus());
+    fireEvent.change(desktopInput, { target: { value: "Sports" } });
+    await screen.findByText("Sports 1");
     await waitFor(() =>
-      expect(input.getAttribute("aria-activedescendant")).not.toBe(
-        activeBeforeComposition,
-      ),
+      expect(desktopInput.getAttribute("aria-activedescendant")).toBeTruthy(),
+    );
+    const firstDesktopActive = desktopInput.getAttribute("aria-activedescendant");
+    fireEvent.keyDown(desktopInput, { key: "ArrowDown", which: 40 });
+    if (desktopInput.getAttribute("aria-activedescendant") === firstDesktopActive) {
+      fireEvent.keyDown(desktopInput, { key: "ArrowDown", which: 40 });
+    }
+    const trackedActive = desktopInput.getAttribute("aria-activedescendant");
+    expect(trackedActive).not.toBe(firstDesktopActive);
+    fireEvent.compositionStart(desktopInput);
+    fireEvent.keyDown(desktopInput, { key: "ArrowDown", isComposing: true, which: 40 });
+    expect(desktopInput.getAttribute("aria-activedescendant")).toBe(trackedActive);
+    fireEvent.compositionEnd(desktopInput);
+    fireEvent.keyDown(desktopInput, { key: "ArrowDown", which: 40 });
+    await waitFor(() =>
+      expect(desktopInput.getAttribute("aria-activedescendant")).not.toBe(trackedActive),
     );
   });
 
@@ -1736,7 +1871,8 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     fireEvent.keyDown(newsPick, { key: "Escape" });
     await waitFor(() => expect(chooseGroups).toHaveFocus());
 
-    // Sources dialog: TV noValidate, composing Enter stays on M3U, real Enter advances M3U -> EPG and reveals EPG.
+    // Sources dialog: TV noValidate, inputs start readOnly so D-pad browsing doesn't open IME,
+    // first Enter enters edit mode, composing Enter stays on M3U, next Enter advances to EPG (editing) and reveals it.
     const sourcesTrigger = screen.getByRole("button", { name: "Sources" });
     fireEvent.click(sourcesTrigger);
     const m3u = await screen.findByLabelText("Channel source (required)");
@@ -1747,12 +1883,18 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     giveBox(feedsScroller, new DOMRect(0, 80, 500, 160));
     giveBox(epg, new DOMRect(0, 420, 420, 40));
     expect(m3u.closest("form")).toHaveAttribute("novalidate");
+    expect(m3u).toHaveAttribute("readonly");
+    expect(epg).toHaveAttribute("readonly");
     act(() => m3u.focus());
+    fireEvent.keyDown(m3u, { key: "Enter" });
+    expect(m3u).not.toHaveAttribute("readonly");
+    expect(m3u).toHaveFocus();
     fireEvent.keyDown(m3u, { key: "Enter", isComposing: true });
     expect(m3u).toHaveFocus();
     expect(feedsScroller.scrollTop).toBe(0);
     fireEvent.keyDown(m3u, { key: "Enter" });
     expect(epg).toHaveFocus();
+    expect(epg).not.toHaveAttribute("readonly");
     expect(feedsScroller.scrollTop).toBeGreaterThan(0);
 
     const refresh = screen.getByRole("button", { name: "Refresh in progress" });

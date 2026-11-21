@@ -10,6 +10,7 @@ import type {
   ClientError,
   InstalledSparrowClient,
 } from "../../client/contracts";
+import { useTelevisionInputEdit } from "../guide/dialog-navigation";
 import { revealInScrollContainer } from "../stage/stage-dom";
 import "./installed-source-settings.css";
 
@@ -40,6 +41,8 @@ export function InstalledSourceSettings({
 }: InstalledSourceSettingsProps) {
   const m3uRef = useRef<HTMLInputElement>(null);
   const epgRef = useRef<HTMLInputElement>(null);
+  const m3uEdit = useTelevisionInputEdit(television);
+  const epgEdit = useTelevisionInputEdit(television);
   const activeControllerRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(false);
   const [saveState, setSaveState] = useState<SaveState>({ _tag: "idle" });
@@ -171,17 +174,22 @@ export function InstalledSourceSettings({
             spellCheck={false}
             maxLength={16_384}
             required
+            readOnly={m3uEdit.readOnly}
             placeholder="https://…/channels.m3u"
+            onClick={m3uEdit.startEditing}
+            onBlur={m3uEdit.stopEditing}
             onKeyDown={(event) => {
-              if (
-                television &&
-                event.key === "Enter" &&
-                !event.repeat &&
-                !event.nativeEvent.isComposing
-              ) {
+              if (event.nativeEvent.isComposing) {
+                return;
+              }
+              if (m3uEdit.handleKeyDown(event)) {
+                return;
+              }
+              if (television && event.key === "Enter" && !event.repeat) {
                 event.preventDefault();
                 const epg = epgRef.current;
                 if (epg !== null) {
+                  epgEdit.startEditing();
                   epg.focus({ preventScroll: true });
                   revealInScrollContainer(
                     epg.closest<HTMLElement>(".feeds-dialog__content"),
@@ -204,7 +212,13 @@ export function InstalledSourceSettings({
             autoCapitalize="none"
             spellCheck={false}
             maxLength={16_384}
+            readOnly={epgEdit.readOnly}
             placeholder="https://…/guide.xml"
+            onClick={epgEdit.startEditing}
+            onBlur={epgEdit.stopEditing}
+            onKeyDown={(event) => {
+              epgEdit.handleKeyDown(event);
+            }}
             onInput={resetFeedback}
           />
         </label>
