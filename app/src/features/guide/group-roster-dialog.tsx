@@ -1,12 +1,20 @@
 import { Dialog } from "@base-ui/react/dialog";
 import { ListFilter, Search, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { ChannelGroup } from "../../client/contracts";
 import { groupDisplayName } from "./board-group-roster";
+import {
+  handleLinearDialogArrows,
+  isVisibleDialogControl,
+  revealInScrollContainer,
+  useTelevisionInputEdit,
+} from "./dialog-navigation";
 import "./group-roster-dialog.css";
 
 /** Inputs for the Channel Group list where groups are picked or hidden. */
 export interface GroupRosterDialogProps {
+  /** Focuses the active group row on open and keeps search press-to-edit on TV. */
+  readonly television?: boolean;
   readonly groups: readonly ChannelGroup[];
   readonly activeGroup: string | null;
   readonly excluded: ReadonlySet<string>;
@@ -21,6 +29,7 @@ export interface GroupRosterDialogProps {
  * jump to a group or hide it from the guide.
  */
 export function GroupRosterDialog({
+  television = false,
   groups,
   activeGroup,
   excluded,
@@ -30,6 +39,9 @@ export function GroupRosterDialog({
   onRestoreAll,
 }: GroupRosterDialogProps) {
   const [query, setQuery] = useState("");
+  const popupRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const searchEdit = useTelevisionInputEdit(television);
   const matches = useMemo(
     () => groups.filter((group) => groupMatches(group, query)),
     [groups, query],
@@ -37,11 +49,123 @@ export function GroupRosterDialog({
   const excludedCount = excluded.size;
   const visibleCount = Math.max(0, groups.length - excludedCount);
 
+  const handlePopupKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const popup = popupRef.current;
+    const list = listRef.current;
+    if (
+      !television ||
+      popup === null ||
+      event.defaultPrevented ||
+      event.shiftKey ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.nativeEvent.isComposing ||
+      !(event.target instanceof HTMLElement)
+    ) {
+      return;
+    }
+    const { key, target } = event;
+    if (
+      key !== "ArrowUp" &&
+      key !== "ArrowDown" &&
+      key !== "ArrowLeft" &&
+      key !== "ArrowRight"
+    ) {
+      return;
+    }
+    const row = target.closest<HTMLElement>(".group-roster__row");
+    if (row !== null && list !== null && list.contains(row)) {
+      const isExclude = target.classList.contains("group-roster__exclude");
+      if (key === "ArrowRight") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!isExclude) {
+          const sibling = row.querySelector<HTMLElement>(".group-roster__exclude");
+          if (sibling !== null && isVisibleDialogControl(sibling)) {
+            sibling.focus({ preventScroll: true });
+            revealInScrollContainer(list, sibling);
+          }
+        }
+        return;
+      }
+      if (key === "ArrowLeft") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (isExclude) {
+          const sibling = row.querySelector<HTMLElement>(".group-roster__pick");
+          if (sibling !== null && isVisibleDialogControl(sibling)) {
+            sibling.focus({ preventScroll: true });
+            revealInScrollContainer(list, sibling);
+          }
+        }
+        return;
+      }
+      const rows = Array.from(
+        list.querySelectorAll<HTMLElement>(".group-roster__row"),
+      );
+      const rowIndex = rows.indexOf(row);
+      if (rowIndex === -1) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const nextRowIndex = key === "ArrowDown" ? rowIndex + 1 : rowIndex - 1;
+      if (key === "ArrowUp" && isExclude) {
+        const prevExclude =
+          nextRowIndex >= 0
+            ? (rows[nextRowIndex]?.querySelector<HTMLElement>(
+                ".group-roster__exclude",
+              ) ?? null)
+            : null;
+        if (prevExclude !== null && isVisibleDialogControl(prevExclude)) {
+          prevExclude.focus({ preventScroll: true });
+          revealInScrollContainer(list, prevExclude);
+        } else {
+          const restore = popup.querySelector<HTMLElement>(
+            ".group-roster__restore",
+          );
+          const toolbarTarget =
+            (restore !== null && isVisibleDialogControl(restore)
+              ? restore
+              : null) ??
+            popup.querySelector<HTMLElement>("#group-roster-search") ??
+            popup.querySelector<HTMLElement>(".group-roster__close");
+          toolbarTarget?.focus({ preventScroll: true });
+        }
+        return;
+      }
+      if (nextRowIndex < 0) {
+        const toolbarTarget =
+          popup.querySelector<HTMLElement>("#group-roster-search") ??
+          popup.querySelector<HTMLElement>(".group-roster__close");
+        toolbarTarget?.focus({ preventScroll: true });
+        return;
+      }
+      const nextRow = rows[nextRowIndex];
+      if (nextRow === undefined) return;
+      const nextControl =
+        (isExclude
+          ? nextRow.querySelector<HTMLElement>(".group-roster__exclude")
+          : null) ?? nextRow.querySelector<HTMLElement>(".group-roster__pick");
+      if (nextControl !== null && isVisibleDialogControl(nextControl)) {
+        nextControl.focus({ preventScroll: true });
+        revealInScrollContainer(list, nextControl);
+      }
+      return;
+    }
+    handleLinearDialogArrows(event, {
+      television,
+      popup,
+      scroller: list,
+      horizontalGroups: [".group-roster__toolbar"],
+    });
+  };
+
   return (
     <Dialog.Root
       onOpenChange={(open) => {
         if (!open) {
           setQuery("");
+          searchEdit.stopEditing();
         }
       }}
     >
@@ -52,7 +176,28 @@ export function GroupRosterDialog({
       </Dialog.Trigger>
       <Dialog.Portal>
         <Dialog.Backdrop className="group-roster__backdrop" />
-        <Dialog.Popup className="group-roster__popup">
+        <Dialog.Popup
+          ref={popupRef}
+          className="group-roster__popup"
+          initialFocus={
+            television
+              ? () => {
+                  const target =
+                    popupRef.current?.querySelector<HTMLElement>(
+                      '.group-roster__row[data-active="true"] .group-roster__pick',
+                    ) ??
+                    popupRef.current?.querySelector<HTMLElement>(".group-roster__pick") ??
+                    popupRef.current?.querySelector<HTMLElement>(".group-roster__close") ??
+                    null;
+                  if (target !== null) {
+                    revealInScrollContainer(listRef.current, target);
+                  }
+                  return target ?? true;
+                }
+              : undefined
+          }
+          onKeyDown={handlePopupKeyDown}
+        >
           <header className="group-roster__header">
             <div>
               <Dialog.Title>Channel groups</Dialog.Title>
@@ -80,7 +225,13 @@ export function GroupRosterDialog({
                 autoComplete="off"
                 autoCapitalize="none"
                 spellCheck={false}
+                readOnly={searchEdit.readOnly}
                 aria-label="Search channel groups"
+                onClick={searchEdit.startEditing}
+                onBlur={searchEdit.stopEditing}
+                onKeyDown={(event) => {
+                  searchEdit.handleKeyDown(event);
+                }}
                 onChange={(event) => setQuery(event.target.value)}
               />
             </label>
@@ -96,14 +247,25 @@ export function GroupRosterDialog({
               <button
                 className="group-roster__restore"
                 type="button"
-                onClick={onRestoreAll}
+                onClick={() => {
+                  const fallback =
+                    popupRef.current?.querySelector<HTMLElement>(
+                      '.group-roster__row[data-active="true"] .group-roster__pick',
+                    ) ??
+                    popupRef.current?.querySelector<HTMLElement>(".group-roster__pick");
+                  if (fallback != null) {
+                    fallback.focus({ preventScroll: true });
+                    revealInScrollContainer(listRef.current, fallback);
+                  }
+                  onRestoreAll();
+                }}
               >
                 Show all
               </button>
             ) : null}
           </div>
 
-          <div className="group-roster__list" role="list">
+          <div className="group-roster__list" ref={listRef} role="list">
             <RosterAllRow
               active={activeGroup === null}
               onSelect={() => onSelectGroup(null)}

@@ -48,7 +48,8 @@
   animation: source-desk-dial-turn 900ms linear infinite;
 }
 
-:where(.source-desk) .source-desk__refresh:disabled {
+:where(.source-desk) .source-desk__refresh:disabled,
+:where(.source-desk) .source-desk__refresh[aria-disabled="true"] {
   opacity: 0.55;
 }
 

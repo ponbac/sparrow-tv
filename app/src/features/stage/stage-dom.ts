@@ -89,3 +89,132 @@ export function focusStageMonitor(): void {
     .querySelector<HTMLElement>(".stage__monitor")
     ?.focus({ preventScroll: true });
 }
+
+/** Options for checking whether an element is visible and focusable. */
+export interface VisibleControlOptions {
+  /** Allows roving-tabindex widgets (`role="radio"`, etc.) with `tabindex="-1"`. */
+  readonly allowNegativeTabIndex?: boolean;
+  /** Skips elements inside a closed `<details>` body outside its `<summary>`. */
+  readonly checkDetails?: boolean;
+  /** Always requires non-empty client rects even when the document has no layout. */
+  readonly requireLayoutBox?: boolean;
+}
+
+/**
+ * Reports whether an element is visible and focusable, walking ancestors so
+ * controls inside a `display: none` or `visibility: hidden` wrapper are skipped
+ * while keeping `aria-disabled="true"` controls reachable.
+ */
+export function isVisibleControl(
+  element: HTMLElement,
+  options: VisibleControlOptions = {},
+): boolean {
+  if (
+    element.hidden ||
+    element.matches(":disabled, [data-disabled]") ||
+    element.closest('[inert], [hidden], [aria-hidden="true"]') !== null
+  ) {
+    return false;
+  }
+  if (!options.allowNegativeTabIndex && element.getAttribute("tabindex") === "-1") {
+    return false;
+  }
+  if (options.checkDetails) {
+    const details = element.closest("details");
+    if (details !== null && !details.open && element.closest("summary") === null) {
+      return false;
+    }
+  }
+  for (
+    let node: HTMLElement | null = element;
+    node !== null && node !== document.documentElement;
+    node = node.parentElement
+  ) {
+    const style = window.getComputedStyle(node);
+    if (style.display === "none" || style.visibility === "hidden") {
+      return false;
+    }
+  }
+  const hasDocumentLayout =
+    options.requireLayoutBox === true ||
+    document.body.getBoundingClientRect().width > 0;
+  if (hasDocumentLayout && element.getClientRects().length === 0) {
+    return false;
+  }
+  return true;
+}
+
+/** Returns visible, focusable controls matching `selector` inside `root`. */
+export function visibleStageControls(
+  root: HTMLElement | null,
+  selector = "button, select",
+): HTMLElement[] {
+  if (root === null) return [];
+  return Array.from(root.querySelectorAll<HTMLElement>(selector)).filter((el) =>
+    isVisibleControl(el),
+  );
+}
+
+const DEFAULT_SCROLL_MARGIN_PX = 12;
+
+/**
+ * Scrolls a container vertically to reveal `target` without invoking
+ * `scrollIntoView`, which can scroll clipped ancestors holding native video.
+ */
+export function revealInScrollContainer(
+  container: HTMLElement | null,
+  target: HTMLElement,
+  options: { readonly marginPx?: number; readonly bottomMarginPx?: number } = {},
+): void {
+  if (
+    container === null ||
+    container.clientHeight === 0 ||
+    !container.contains(target)
+  ) {
+    return;
+  }
+  const topMargin = options.marginPx ?? DEFAULT_SCROLL_MARGIN_PX;
+  const bottomMargin = options.bottomMarginPx ?? topMargin;
+  const containerRect = container.getBoundingClientRect();
+  const targetRect = target.getBoundingClientRect();
+  const top = targetRect.top - containerRect.top + container.scrollTop;
+  const bottom = top + targetRect.height;
+  const viewTop = container.scrollTop;
+  const viewBottom = viewTop + container.clientHeight;
+  if (top < viewTop + topMargin) {
+    container.scrollTop = Math.max(0, top - topMargin);
+  } else if (bottom > viewBottom - bottomMargin) {
+    container.scrollTop = bottom - container.clientHeight + bottomMargin;
+  }
+}
+
+/**
+ * Returns the scaled horizontal scroll padding (at least 8 px, ~2 rem) so
+ * focused chips keep clear of edge fade masks on large TV canvases.
+ */
+export function horizontalRevealMarginPx(): number {
+  const rootFontSize = Number.parseFloat(
+    window.getComputedStyle(document.documentElement).fontSize || "16",
+  );
+  return Math.max(
+    8,
+    Math.round((Number.isFinite(rootFontSize) ? rootFontSize : 16) * 2),
+  );
+}
+
+/** Scrolls a horizontal strip directly so `target` stays clear of edge fades. */
+export function revealInHorizontalScroller(
+  scroller: HTMLElement | null,
+  target: HTMLElement,
+): void {
+  if (scroller === null) return;
+  const scrollerRect = scroller.getBoundingClientRect();
+  if (scrollerRect.width === 0) return;
+  const targetRect = target.getBoundingClientRect();
+  const margin = horizontalRevealMarginPx();
+  if (targetRect.left < scrollerRect.left) {
+    scroller.scrollLeft -= scrollerRect.left - targetRect.left + margin;
+  } else if (targetRect.right > scrollerRect.right) {
+    scroller.scrollLeft += targetRect.right - scrollerRect.right + margin;
+  }
+}

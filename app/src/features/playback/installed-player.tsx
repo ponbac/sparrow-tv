@@ -40,6 +40,7 @@ import {
   installedPlaybackEngine,
   type InstalledPlaybackEngine,
 } from "./installed-playback-engine";
+import { useStageChrome } from "../stage/stage-chrome";
 import {
   PlaybackSurface,
   type PlaybackSecondaryAction,
@@ -47,6 +48,8 @@ import {
 
 export interface InstalledPlayerProps {
   readonly channel: InstalledPlaybackChannel;
+  /** Immediate Channel heading shown during a pending zap. */
+  readonly displayName?: string;
   readonly onInitialStall?: (channel: ChannelId) => void;
   readonly client: Pick<
     InstalledSparrowClient,
@@ -62,6 +65,7 @@ export interface InstalledPlayerProps {
 /** Plays one Channel through an owned, recoverable, opaque native session. */
 export function InstalledPlayer({
   channel,
+  displayName,
   onInitialStall,
   client,
   onStop,
@@ -69,6 +73,7 @@ export function InstalledPlayer({
   lifecycleEvents = tauriInstalledLifecycleEvents,
   androidPlayer = androidPlayerBridge,
 }: InstalledPlayerProps) {
+  const { television = false } = useStageChrome();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
   const [canOpenMpv, setCanOpenMpv] = useState(false);
@@ -243,6 +248,10 @@ export function InstalledPlayer({
   const canSelectAudio =
     state.audio.tracks.length > 1 &&
     (phase._tag === "playing" || phase._tag === "autoplay-blocked");
+  const audioBusyOnTv =
+    television &&
+    phase._tag === "replacing-audio" &&
+    state.audio.tracks.length > 1;
   // mpv reads the Playback Source itself: no Audio Tracks are listed for it,
   // and that says nothing about its sound.
   const silence = usesMpv ? null : audioSilence(state.audio);
@@ -285,12 +294,16 @@ export function InstalledPlayer({
           },
         ]
       : []),
-    {
-      key: "copy-diagnostics",
-      label: "Copy diagnostics",
-      icon: <ScrollText aria-hidden="true" />,
-      onSelect: copyDiagnostics,
-    },
+    ...(television
+      ? []
+      : [
+          {
+            key: "copy-diagnostics",
+            label: "Copy diagnostics",
+            icon: <ScrollText aria-hidden="true" />,
+            onSelect: copyDiagnostics,
+          },
+        ]),
   ];
   const switchPlayer = () => {
     const switchTo = async () => {
@@ -303,6 +316,7 @@ export function InstalledPlayer({
   return (
     <PlaybackSurface
       channel={channel}
+      {...(displayName === undefined ? {} : { displayName })}
       state={installedPlayerState(state)}
       videoKey={channel.id}
       videoRef={videoRef}
@@ -313,7 +327,14 @@ export function InstalledPlayer({
       }
       onPlaying={() => undefined}
       {...(recoveryAction === undefined ? {} : { recoveryAction })}
-      {...(canPause ? { pause: { onPause: () => void runner.pause() } } : {})}
+      {...(canPause || phase._tag === "suspending"
+        ? {
+            pause: {
+              onPause: () => void runner.pause(),
+              pending: phase._tag === "suspending",
+            },
+          }
+        : {})}
       {...(state.audio.tracks.length === 0
         ? {}
         : {
@@ -324,8 +345,28 @@ export function InstalledPlayer({
                 <select
                   aria-label="Audio track"
                   value={selectedAudioTrack?.id ?? ""}
-                  disabled={!canSelectAudio}
+                  disabled={!canSelectAudio && !audioBusyOnTv}
+                  aria-disabled={audioBusyOnTv || undefined}
+                  aria-busy={audioBusyOnTv || undefined}
+                  onMouseDown={(event) => {
+                    if (audioBusyOnTv) event.preventDefault();
+                  }}
+                  onPointerDown={(event) => {
+                    if (audioBusyOnTv) event.preventDefault();
+                  }}
+                  onKeyDown={(event) => {
+                    if (
+                      audioBusyOnTv &&
+                      (event.key === "Enter" ||
+                        event.key === " " ||
+                        event.key === "F4")
+                    ) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                    }
+                  }}
                   onChange={(event) => {
+                    if (!canSelectAudio) return;
                     const parsed = clientSchemas.audioTrackId.safeParse(
                       event.currentTarget.value,
                     );
@@ -344,6 +385,7 @@ export function InstalledPlayer({
             ),
           })}
       {...(androidPlayer !== null &&
+      !television &&
       playerWindow.pictureInPictureSupported &&
       windowPlayback !== "none"
         ? {

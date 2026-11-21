@@ -212,7 +212,9 @@
   background: var(--cell-hover);
 }
 
-.hosted-player__controls button:disabled {
+.hosted-player__controls button:disabled,
+.hosted-player__controls button[aria-disabled="true"],
+.hosted-player__audio-track select[aria-disabled="true"] {
   opacity: 0.45;
   cursor: wait;
 }

@@ -109,7 +109,13 @@ function handleStageKey(
       return;
     case "arrowup":
     case "arrowdown":
-      if (mode !== "watch" || target?.closest(OWNS_ARROWS) != null) {
+      if (
+        mode !== "watch" ||
+        target?.closest(OWNS_ARROWS) != null ||
+        (!active &&
+          television === true &&
+          target?.closest(".hosted-player__controls, button, a[href], [role='button']") != null)
+      ) {
         return;
       }
       event.preventDefault();

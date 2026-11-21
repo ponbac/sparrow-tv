@@ -101,7 +101,8 @@
   white-space: nowrap;
 }
 
-.installed-settings__form button:disabled {
+.installed-settings__form button:disabled,
+.installed-settings__form button[aria-disabled="true"] {
   cursor: progress;
   opacity: 0.62;
 }

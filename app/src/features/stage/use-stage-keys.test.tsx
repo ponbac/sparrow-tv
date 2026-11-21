@@ -173,6 +173,8 @@ describe("useStageKeys", () => {
     try {
       fireEvent.keyDown(screen.getByLabelText("Audio track"), { key: "ArrowDown" });
       expect(keys.onZap).not.toHaveBeenCalled();
+      fireEvent.keyDown(screen.getByRole("button", { name: "Mute" }), { key: "ArrowDown" });
+      expect(keys.onZap).not.toHaveBeenCalled();
 
       expect(fireEvent.keyDown(document.body, { key: "ArrowDown" })).toBe(false);
       expect(keys.onZap.mock.calls).toEqual([[1]]);

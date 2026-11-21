@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
+import { findGuideFallback, scrollBoardToReveal } from "../guide/guide-navigation";
 import { androidPlayerBridge, type AndroidPlayerBridge } from "../playback/android-player-bridge";
+import { isVisibleControl } from "./stage-dom";
 
 interface TelevisionControls {
   readonly enabled: boolean;
@@ -8,16 +10,17 @@ interface TelevisionControls {
   readonly onZap: (direction: -1 | 1) => void;
 }
 
-const GUIDE_ROW = ".programme-guide__row .programme-guide__channel";
-const SOURCES = ".programme-guide .feeds-trigger";
-const GROUPS = ".programme-guide__groups";
-const SELECTED_GROUP = `${GROUPS} [role="radio"][aria-checked="true"]`;
 const ACTION =
-  "button, input, select, textarea, a[href], [role=radio], [role=menuitem]";
+  'button, input, select, textarea, a[href], summary, [tabindex="0"], [role="radio"], [role="menuitem"], [role="checkbox"], [role="switch"], [role="option"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="tab"]';
+const OVERLAY =
+  '[role="dialog"][data-open], [role="alertdialog"][data-open], [role="menu"][data-open]';
+const ZAP_BLOCKING_POPUP =
+  '[role="listbox"][data-open], .board-search input[aria-expanded="true"]';
 
 /**
- * Gives the Android TV remote a usable focus target and routes native Back and
- * Channel keys. WebView moves focus spatially between ordinary controls.
+ * Gives the Android TV remote a usable focus target, keeps open overlays
+ * contained, and routes Escape, native Back, and Channel keys. Guide 2D
+ * movement is owned by `guide-navigation.ts`.
  */
 export function useTelevisionControls(
   controls: TelevisionControls,
@@ -33,12 +36,18 @@ export function useTelevisionControls(
     if (!enabled || bridge === null) return;
     const releaseEvents = bridge.subscribeEvents((event) => {
       if (event._tag === "television-channel") {
+        if (
+          openOverlay() !== null ||
+          document.querySelector(ZAP_BLOCKING_POPUP) !== null
+        ) {
+          return;
+        }
         latest.current.onZap(event.direction);
       }
     });
     const releaseBack = bridge.subscribeTelevisionBack(() => {
-      // Escape is Base UI's shared dismiss event for dialogs, menus and search.
-      // A widget that handled it cancels the event.
+      // Escape is Base UI's shared dismiss event for dialogs, menus, search,
+      // visible fullscreen controls, and Watch/fullscreen exit below.
       const target = document.activeElement ?? document.body;
       const unhandled = target.dispatchEvent(
         new KeyboardEvent("keydown", {
@@ -47,15 +56,7 @@ export function useTelevisionControls(
           cancelable: true,
         }),
       );
-      if (!unhandled) return;
-      if (document.fullscreenElement != null) {
-        void document.exitFullscreen().then(
-          () => latest.current.onShowGuide(),
-          () => undefined,
-        );
-      } else if (latest.current.mode === "watch") {
-        latest.current.onShowGuide();
-      } else {
+      if (unhandled) {
         bridge.defaultTelevisionBack();
       }
     });
@@ -68,12 +69,27 @@ export function useTelevisionControls(
   useEffect(() => {
     if (!enabled) return;
     let frame: number | null = null;
+    const settledOverlays = new WeakSet<HTMLElement>();
     const scheduleFocus = () => {
       if (frame !== null) return;
       frame = requestAnimationFrame(() => {
         frame = null;
-        if (!usable(document.activeElement)) {
-          fallbackFocus(latest.current.mode)?.focus();
+        if (usable(document.activeElement)) return;
+        // Let a newly opened Base UI dialog run its own initialFocus rAF before
+        // applying generic overlay fallback focus.
+        const overlay = openOverlay();
+        if (overlay !== null && !settledOverlays.has(overlay)) {
+          settledOverlays.add(overlay);
+          scheduleFocus();
+          return;
+        }
+        const target = fallbackFocus(latest.current.mode);
+        if (target !== undefined) {
+          target.focus({ preventScroll: true });
+          const board = target.closest<HTMLElement>(".programme-guide__board");
+          if (board !== null) {
+            scrollBoardToReveal(board, target);
+          }
         }
       });
     };
@@ -82,41 +98,96 @@ export function useTelevisionControls(
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ["disabled", "data-mode"],
+      attributeFilter: [
+        "disabled",
+        "data-disabled",
+        "data-mode",
+        "data-state",
+        "aria-busy",
+        "hidden",
+        "data-controls-visible",
+      ],
     });
     document.addEventListener("focusout", restoreAfterBlur);
     document.addEventListener("fullscreenchange", scheduleFocus);
-    document.addEventListener("focusin", keepDialogFocus);
-    document.addEventListener("keydown", moveInGuide, true);
+    document.addEventListener("focusin", keepOverlayFocus);
+    document.addEventListener("keydown", clampMenuHorizontalArrows, true);
+    document.addEventListener("keydown", handleUnhandledEscape);
     scheduleFocus();
     return () => {
       observer.disconnect();
       if (frame !== null) cancelAnimationFrame(frame);
       document.removeEventListener("focusout", restoreAfterBlur);
       document.removeEventListener("fullscreenchange", scheduleFocus);
-      document.removeEventListener("focusin", keepDialogFocus);
-      document.removeEventListener("keydown", moveInGuide, true);
+      document.removeEventListener("focusin", keepOverlayFocus);
+      document.removeEventListener("keydown", clampMenuHorizontalArrows, true);
+      document.removeEventListener("keydown", handleUnhandledEscape);
     };
 
     function restoreAfterBlur(event: FocusEvent) {
       if (event.relatedTarget === null) scheduleFocus();
     }
+
+    function handleUnhandledEscape(event: KeyboardEvent) {
+      if (event.defaultPrevented || event.isComposing || event.key !== "Escape") {
+        return;
+      }
+      if (openOverlay() !== null) return;
+      if (document.fullscreenElement != null) {
+        event.preventDefault();
+        void document.exitFullscreen().then(
+          () => latest.current.onShowGuide(),
+          () => undefined,
+        );
+      } else if (latest.current.mode === "watch") {
+        event.preventDefault();
+        latest.current.onShowGuide();
+      }
+    }
   }, [enabled]);
 }
 
-function openDialog(): HTMLElement | null {
-  const dialogs = document.querySelectorAll<HTMLElement>('[role="dialog"][data-open]');
-  return dialogs[dialogs.length - 1] ?? null;
+function openOverlay(): HTMLElement | null {
+  const overlays = document.querySelectorAll<HTMLElement>(OVERLAY);
+  return overlays[overlays.length - 1] ?? null;
+}
+
+function fullscreenFailureAction(surface: HTMLElement): HTMLElement | undefined {
+  if (surface.querySelector('.hosted-player__state[data-state="failed"]') === null) {
+    return undefined;
+  }
+  return (
+    firstControl(surface, ".hosted-player__recovery") ??
+    firstControl(surface, ".hosted-player__stop")
+  );
 }
 
 function usable(element: EventTarget | null): element is HTMLElement {
-  return (
-    element instanceof HTMLElement &&
-    (element.matches(ACTION) || element === document.fullscreenElement) &&
-    !element.matches(":disabled, [data-disabled]") &&
-    (document.fullscreenElement?.contains(element) ?? true) &&
-    element.getClientRects().length > 0
-  );
+  if (!(element instanceof HTMLElement)) {
+    return false;
+  }
+  const isFullscreenSurface = element === document.fullscreenElement;
+  if (isFullscreenSurface) {
+    if (fullscreenFailureAction(element) !== undefined) {
+      return false;
+    }
+    return isVisibleControl(element, {
+      allowNegativeTabIndex: true,
+      requireLayoutBox: true,
+    });
+  }
+  if (!element.matches(ACTION)) {
+    return false;
+  }
+  if (!(document.fullscreenElement?.contains(element) ?? true)) {
+    return false;
+  }
+  return isVisibleControl(element, {
+    allowNegativeTabIndex: element.matches(
+      '[role="radio"], [role="menuitem"], [role="option"]',
+    ),
+    requireLayoutBox: true,
+  });
 }
 
 function firstControl(scope: ParentNode, selector: string): HTMLElement | undefined {
@@ -124,97 +195,62 @@ function firstControl(scope: ParentNode, selector: string): HTMLElement | undefi
 }
 
 function fallbackFocus(mode: TelevisionControls["mode"]): HTMLElement | undefined {
-  const dialog = openDialog();
-  if (dialog !== null) return firstControl(dialog, ACTION);
-  if (document.fullscreenElement instanceof HTMLElement) return document.fullscreenElement;
-  if (mode === "watch") return firstControl(document, ".channel-bar__guide");
+  const overlay = openOverlay();
+  if (overlay !== null) return firstControl(overlay, ACTION);
+  if (document.fullscreenElement instanceof HTMLElement) {
+    return (
+      fullscreenFailureAction(document.fullscreenElement) ??
+      document.fullscreenElement
+    );
+  }
+  if (mode === "watch") {
+    return (
+      firstControl(document, ".playback-load-notice button") ??
+      firstControl(document, ".hosted-player__recovery") ??
+      firstControl(document, ".channel-bar__guide") ??
+      firstControl(document, ".channel-bar button") ??
+      firstControl(document, ".now-playing__controls button")
+    );
+  }
   return (
-    firstControl(document, '.programme-guide__row[data-playing="true"] .programme-guide__channel') ??
-    firstControl(document, GUIDE_ROW) ??
-    (document.querySelector('.programme-guide__board[aria-busy="true"]') === null
-      ? firstControl(document, SOURCES)
-      : undefined)
+    findGuideFallback(document.querySelector(".programme-guide"), {
+      includeNotice: true,
+      respectBusyBoard: true,
+      requireLayoutBox: true,
+    }) ?? undefined
   );
 }
 
-function keepDialogFocus(event: FocusEvent): void {
-  const dialog = openDialog();
-  if (dialog === null || !(event.target instanceof Node) || dialog.contains(event.target)) {
+function keepOverlayFocus(event: FocusEvent): void {
+  const overlay = openOverlay();
+  if (overlay === null || !(event.target instanceof Node) || overlay.contains(event.target)) {
+    return;
+  }
+  if (
+    event.target instanceof Element &&
+    event.target.closest('[role="listbox"][data-open], [role="menu"][data-open]') !== null
+  ) {
     return;
   }
   const previous = event.relatedTarget;
-  if (usable(previous) && dialog.contains(previous)) previous.focus();
-  else firstControl(dialog, ACTION)?.focus();
+  if (usable(previous) && overlay.contains(previous)) {
+    previous.focus({ preventScroll: true });
+  } else {
+    firstControl(overlay, ACTION)?.focus({ preventScroll: true });
+  }
 }
 
-function moveInGuide(event: KeyboardEvent): void {
+function clampMenuHorizontalArrows(event: KeyboardEvent): void {
   if (
     event.defaultPrevented ||
-    event.altKey ||
-    event.ctrlKey ||
-    event.metaKey ||
     event.isComposing ||
-    !(event.target instanceof HTMLElement) ||
-    !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)
-  ) return;
-  const target = event.target;
-  const guide = target.closest(".programme-guide");
-  if (guide === null) return;
-  if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-    // Base UI wraps the group radios. From either edge, the remote can
-    // continue horizontally to the time or group chooser button.
-    const radios = target.closest(GROUPS)?.querySelectorAll('[role="radio"]');
-    const left = event.key === "ArrowLeft";
-    const edge = left ? radios?.item(0) : radios?.item(radios.length - 1);
-    const control = target === edge
-      ? firstControl(guide, left ? ".programme-guide__when" : ".group-roster-trigger")
-      : undefined;
-    if (control !== undefined) {
-      event.preventDefault();
-      event.stopPropagation();
-      control.focus();
-    }
-    return;
-  }
-  const down = event.key === "ArrowDown";
-  const row = target.closest('.programme-guide__row[data-body="list"]');
-  if (row !== null && row.parentElement !== null) {
-    // WebView can move vertically onto a quality chip within the same Channel.
-    // Advance one grid row in the current column and leave the chips to Left/Right.
-    const grid = row.parentElement;
-    const columns = getComputedStyle(grid).gridTemplateColumns.split(" ").length;
-    const index = Array.from(grid.children).indexOf(row);
-    const adjacentStart = (Math.floor(index / columns) + (down ? 1 : -1)) * columns;
-    const control =
-      adjacentStart < 0
-        ? firstControl(guide, SELECTED_GROUP)
-        : adjacentStart >= grid.children.length
-          ? firstControl(guide, ".programme-guide__retained button, .programme-guide__more")
-          : grid.children
-              .item(Math.min(adjacentStart + index % columns, grid.children.length - 1))
-              ?.querySelector<HTMLButtonElement>(".programme-guide__channel");
-    if (control != null) {
-      event.preventDefault();
-      control.focus();
-    }
-    return;
-  }
-  // The search field and group lane need explicit vertical exits. On TV,
-  // WebView may keep focus there even when there are Channel rows below.
-  let destination: string;
-  if (target.closest(`${GROUPS}, .group-roster-trigger`) !== null) {
-    destination = down ? GUIDE_ROW : SOURCES;
-  } else if (
-    down &&
-    target.matches('.board-search input[aria-expanded="false"]')
+    (event.key !== "ArrowLeft" && event.key !== "ArrowRight") ||
+    !(event.target instanceof Element)
   ) {
-    destination = SELECTED_GROUP;
-  } else {
     return;
   }
-  const control = firstControl(guide, destination);
-  if (control === undefined) return;
-  event.preventDefault();
-  event.stopPropagation();
-  control.focus();
+  if (event.target.closest('[role="menu"][data-open]') !== null) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
 }

@@ -9,6 +9,8 @@ import { InstalledSourceSettings } from "../configuration/installed-source-setti
 import { SourceStatusDesk } from "../status/source-status-desk";
 
 export type FeedsDialogContentProps = {
+  /** Keeps busy buttons focusable and tailors copy for Android TV remotes. */
+  readonly television?: boolean;
   readonly status: CatalogStatus | null;
   readonly refreshing: boolean;
   readonly refreshResult: ClientResult<RefreshReport> | null;
@@ -33,12 +35,14 @@ export function FeedsDialogContent(props: FeedsDialogContentProps) {
     <>
       {props.runtime === "installed" ? (
         <InstalledSourceSettings
+          television={props.television ?? false}
           client={props.client}
           status={props.status}
           onApplied={props.onApplied}
         />
       ) : null}
       <SourceStatusDesk
+        television={props.television ?? false}
         status={props.status}
         refreshing={props.refreshing}
         refreshResult={props.refreshResult}

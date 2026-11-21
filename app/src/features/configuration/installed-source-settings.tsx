@@ -10,10 +10,13 @@ import type {
   ClientError,
   InstalledSparrowClient,
 } from "../../client/contracts";
+import { revealInScrollContainer } from "../stage/stage-dom";
 import "./installed-source-settings.css";
 
 /** Inputs for the private, on-device source configuration form. */
 export interface InstalledSourceSettingsProps {
+  /** Keeps Save focusable while saving and uses in-page validation copy on Android TV. */
+  readonly television?: boolean;
   readonly client: Pick<InstalledSparrowClient, "replaceSourceConfiguration">;
   readonly status: CatalogStatus | null;
   readonly onApplied: (status: CatalogStatus) => void;
@@ -30,6 +33,7 @@ type SaveState =
  * directly to IPC. Values never enter React state, query caches, URLs, or logs.
  */
 export function InstalledSourceSettings({
+  television = false,
   client,
   status,
   onApplied,
@@ -68,7 +72,13 @@ export function InstalledSourceSettings({
           reason: "required",
         },
       });
-      m3uRef.current?.focus();
+      if (m3uRef.current !== null) {
+        m3uRef.current.focus({ preventScroll: true });
+        revealInScrollContainer(
+          m3uRef.current.closest<HTMLElement>(".feeds-dialog__content"),
+          m3uRef.current,
+        );
+      }
       return;
     }
 
@@ -144,6 +154,7 @@ export function InstalledSourceSettings({
       <form
         className="installed-settings__form"
         autoComplete="off"
+        noValidate={television}
         aria-busy={saveState._tag === "saving"}
         onSubmit={submit}
       >
@@ -154,12 +165,31 @@ export function InstalledSourceSettings({
             id="installed-m3u-source"
             type="url"
             inputMode="url"
+            enterKeyHint="next"
             autoComplete="off"
             autoCapitalize="none"
             spellCheck={false}
             maxLength={16_384}
             required
             placeholder="https://…/channels.m3u"
+            onKeyDown={(event) => {
+              if (
+                television &&
+                event.key === "Enter" &&
+                !event.repeat &&
+                !event.nativeEvent.isComposing
+              ) {
+                event.preventDefault();
+                const epg = epgRef.current;
+                if (epg !== null) {
+                  epg.focus({ preventScroll: true });
+                  revealInScrollContainer(
+                    epg.closest<HTMLElement>(".feeds-dialog__content"),
+                    epg,
+                  );
+                }
+              }
+            }}
             onInput={resetFeedback}
           />
         </label>
@@ -178,7 +208,13 @@ export function InstalledSourceSettings({
             onInput={resetFeedback}
           />
         </label>
-        <button type="submit" disabled={saveState._tag === "saving"}>
+        <button
+          type="submit"
+          disabled={!television && saveState._tag === "saving"}
+          aria-disabled={
+            television && saveState._tag === "saving" ? true : undefined
+          }
+        >
           {saveState._tag === "saving" ? (
             <HardDriveDownload aria-hidden="true" />
           ) : saveState._tag === "saved" ? (

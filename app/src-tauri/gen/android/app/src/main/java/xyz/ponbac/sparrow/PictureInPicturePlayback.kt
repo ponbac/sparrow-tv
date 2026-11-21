@@ -24,11 +24,13 @@ import androidx.core.content.ContextCompat
 internal class PictureInPicturePlayback(
   private val activity: MainActivity,
   private val nativePlayback: NativePlaybackController,
+  television: Boolean = false,
   private val onCommand: (String) -> Unit,
 ) {
-  /** Android 8+ on a device that offers picture-in-picture at all. */
+  /** Android 8+ on a non-TV device that offers picture-in-picture at all. */
   val supported: Boolean =
-    Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+    !television &&
+      Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
       activity.packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
 
   private var playback = AndroidPlayerPlayback.NONE

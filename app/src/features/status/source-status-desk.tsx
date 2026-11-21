@@ -15,6 +15,8 @@ import "./source-status-desk.css";
 
 /** Inputs for independent source status and an optional manual refresh control. */
 export interface SourceStatusDeskProps {
+  /** Keeps Refresh focusable while busy and adapts clipboard failure copy for TV. */
+  readonly television?: boolean;
   readonly status: CatalogStatus | null;
   readonly refreshing: boolean;
   readonly refreshResult: ClientResult<RefreshReport> | null;
@@ -29,6 +31,7 @@ export interface SourceStatusDeskProps {
 
 /** Renders independent M3U/EPG state, manual refresh feedback, and safe diagnostics. */
 export function SourceStatusDesk({
+  television = false,
   status,
   refreshing,
   refreshResult,
@@ -48,8 +51,9 @@ export function SourceStatusDesk({
   const currentDiagnosticsRef = useRef(diagnostics);
   currentDiagnosticsRef.current = diagnostics;
   useEffect(() => setCopyState("idle"), [diagnostics]);
-  const refreshDisabled =
-    refreshing || status === null || !status.configuration.configured;
+  const refreshUnavailable =
+    status === null || !status.configuration.configured;
+  const refreshDisabled = refreshing || refreshUnavailable;
 
   const copyDiagnostics = () => {
     const clipboard = navigator.clipboard;
@@ -84,9 +88,13 @@ export function SourceStatusDesk({
           <button
             className="source-desk__refresh"
             type="button"
-            disabled={refreshDisabled}
+            disabled={refreshUnavailable || (!television && refreshing)}
+            aria-disabled={television && refreshing ? true : undefined}
             aria-busy={refreshing}
-            onClick={onRefresh}
+            onClick={() => {
+              if (refreshDisabled) return;
+              onRefresh();
+            }}
           >
             <RefreshCw aria-hidden="true" />
             {refreshing ? "Refresh in progress" : "Refresh sources"}
@@ -133,7 +141,9 @@ export function SourceStatusDesk({
             {copyState === "copied"
               ? "Copied"
               : copyState === "failed"
-                ? "Select text to copy"
+                ? television
+                  ? "Clipboard unavailable"
+                  : "Select text to copy"
                 : "Copy diagnostics"}
           </button>
         </div>

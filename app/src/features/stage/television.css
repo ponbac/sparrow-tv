@@ -69,6 +69,12 @@ html[data-television] .shell[data-inline-masthead][data-mode="watch"] .shell__ma
   html[data-television] .shell[data-mode="guide"][data-dock="true"][data-playing="true"] .programme-guide__status {
     display: none;
   }
+
+  /* Keep the inline search dropdown clear of the docked live preview. */
+  html[data-television]:has(.shell[data-mode="guide"][data-dock="true"][data-playing="true"])
+    .board-search__positioner {
+    width: min(35rem, calc(100vw - (100vw / var(--tv-guide-columns, 3)) - 1.25rem));
+  }
 }
 
 @media (min-width: 210rem) {
@@ -141,7 +147,23 @@ html[data-television] .shell[data-mode="watch"] .now-playing__later {
 }
 
 /* An inset amber and dark ring stays visible on either fill and inside clipped rows. */
-html[data-television] :is(button, a, input, select, [role="radio"], [role="menuitem"]):focus {
+html[data-television]
+  :is(
+    button,
+    a,
+    input,
+    select,
+    textarea,
+    summary,
+    [tabindex="0"],
+    [role="radio"],
+    [role="menuitem"],
+    [role="checkbox"],
+    [role="switch"],
+    [role="option"],
+    [role="tab"]
+  ):focus,
+html[data-television] .board-search__result[data-highlighted] {
   outline: 0.1875rem solid var(--amber);
   outline-offset: -0.1875rem;
   box-shadow: inset 0 0 0 0.375rem var(--on-amber);
@@ -149,6 +171,69 @@ html[data-television] :is(button, a, input, select, [role="radio"], [role="menui
 
 html[data-television] :is(.stage__monitor, .hosted-player):focus {
   outline: none;
+}
+
+/* Watch mode already offers Guide via ChannelBar and Back; keep the masthead search out of D-pad order. */
+html[data-television] .shell[data-mode="watch"] .shell__find {
+  display: none;
+}
+
+/* Keep the way back to Watch reachable even when a paused or failed picture stays undocked. */
+html[data-television]
+  .shell[data-layout="pocket"][data-mode="guide"][data-playing="true"][data-dock="false"]:not([data-external="true"])
+  .stage__undock {
+  z-index: 1;
+  display: inline-flex;
+  grid-area: 2 / 1;
+  align-items: center;
+  justify-self: start;
+  height: 2.5rem;
+  margin: 0.375rem 0 0.375rem 0.625rem;
+  padding: 0 0.75rem;
+  color: var(--paper);
+  border: 1px solid var(--faint);
+  background: var(--cell);
+}
+
+/* Show only the row's current Quality Variant as a passive badge on TV so
+   Channel names keep their width; Watch mode carries the interactive switch. */
+html[data-television]
+  .shell[data-layout="pocket"]
+  .programme-guide__row:has(.programme-guide__variants)
+  .programme-guide__channel {
+  grid-template-columns: minmax(0, 1fr) auto 2.5rem;
+}
+
+html[data-television] .shell[data-layout="pocket"] .programme-guide__variants {
+  pointer-events: none;
+}
+
+html[data-television]
+  .shell[data-layout="pocket"]
+  .programme-guide__variants
+  button:not([data-current="true"]) {
+  display: none;
+}
+
+html[data-television]
+  .shell[data-layout="pocket"]
+  .programme-guide__variants
+  button[data-current="true"] {
+  width: auto;
+  height: auto;
+  padding: 0.4375rem 0.25rem 0;
+  color: var(--dim);
+  font-size: 0.75rem;
+  line-height: 1rem;
+  text-decoration: none;
+}
+
+html[data-television]
+  .shell[data-layout="pocket"]
+  .programme-guide__row[data-playing="true"]
+  .programme-guide__variants
+  button[data-current="true"] {
+  color: var(--amber);
 }
 
 html[data-television] .shell[data-layout="pocket"] .group-roster-trigger {
@@ -165,8 +250,35 @@ html[data-television] .shell[data-layout="pocket"] .group-roster-trigger span {
 }
 
 /* The remote operates TV volume. Left and right are kept for navigation. */
+html[data-television] .hosted-player__volume,
 html[data-television] .shell .hosted-player__controls[data-variant] > .hosted-player__volume {
   display: none;
+}
+
+/* Element fullscreen reverts Android WebView to 1x scale (960x540 on 1080p);
+   keep full TV labels, button order, and Audio Track visible clear of phone rules. */
+html[data-television] .hosted-player:fullscreen .hosted-player__controls {
+  flex-wrap: nowrap;
+  gap: 0.5rem;
+  overflow-x: auto;
+}
+
+html[data-television] .hosted-player:fullscreen .hosted-player__primary-control {
+  order: 0;
+  min-width: auto;
+}
+
+html[data-television] .hosted-player:fullscreen .hosted-player__primary-control > span {
+  position: static;
+  width: auto;
+  height: auto;
+  overflow: visible;
+  clip-path: none;
+  white-space: nowrap;
+}
+
+html[data-television] .hosted-player:fullscreen .hosted-player__audio-track {
+  display: inline-flex;
 }
 
 html[data-television] .hosted-player:fullscreen[data-native-video="true"]

@@ -1,5 +1,9 @@
-import type { KeyboardEvent } from "react";
 import type { StageLayout } from "../stage/use-stage-layout";
+import {
+  isVisibleControl,
+  revealInHorizontalScroller,
+  revealInScrollContainer,
+} from "../stage/stage-dom";
 
 const IGNORE_NAVIGATION_SELECTOR =
   'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="combobox"], [role="dialog"], [role="listbox"], [role="menu"]';
@@ -7,32 +11,63 @@ const IGNORE_NAVIGATION_SELECTOR =
 const ROW_TOP_TOLERANCE_PX = 4;
 const BOARD_FOCUS_MARGIN_PX = 12;
 
+type ArrowKeyEvent = {
+  readonly key: string;
+  readonly defaultPrevented: boolean;
+  readonly ctrlKey: boolean;
+  readonly metaKey: boolean;
+  readonly altKey: boolean;
+  readonly isComposing?: boolean;
+  readonly nativeEvent?: { readonly isComposing?: boolean };
+  readonly target: EventTarget | null;
+  readonly preventDefault: () => void;
+  readonly stopPropagation: () => void;
+};
+
+function isComposingEvent(event: ArrowKeyEvent): boolean {
+  return event.isComposing === true || event.nativeEvent?.isComposing === true;
+}
+
+/** Context required to route 2D arrow and TV D-pad movement inside the Guide. */
 export interface GuideArrowNavigation {
   readonly section: HTMLElement;
+  readonly workspace?: HTMLElement | null;
   readonly board: HTMLElement | null;
   readonly layout: StageLayout;
   readonly mode: "watch" | "guide";
+  readonly television?: boolean;
   readonly hasMore: boolean;
   readonly onRequestMore: () => void;
 }
 
 /**
  * Provides deterministic 2D arrow / TV D-pad navigation across the guide's
- * horizontal bands (toolbar -> Channel Group lane -> optional times -> Channel
- * rows -> More button). Runs in capture phase so vertical arrows leave the
- * horizontal RadioGroup instead of stepping sideways through Channel Groups,
- * and channel movement steps directly from Channel to Channel without stopping
- * on inline quality chips.
+ * horizontal bands (docked preview <-> toolbar -> Channel Group lane ->
+ * optional times -> Channel rows -> retained error recovery -> More button).
+ * Runs in capture phase so vertical arrows leave the horizontal RadioGroup
+ * instead of stepping sideways through Channel Groups, TV D-pad arrows browse
+ * groups without committing until Enter/Space, and channel movement steps
+ * directly from Channel to Channel without stopping on inline quality chips.
  */
 export function handleGuideArrowKey(
-  event: KeyboardEvent<HTMLElement>,
-  { section, board, layout, mode, hasMore, onRequestMore }: GuideArrowNavigation,
+  event: ArrowKeyEvent,
+  {
+    section,
+    workspace = null,
+    board,
+    layout,
+    mode,
+    television = false,
+    hasMore,
+    onRequestMore,
+  }: GuideArrowNavigation,
 ): void {
   if (
     event.defaultPrevented ||
     event.ctrlKey ||
     event.metaKey ||
     event.altKey ||
+    isComposingEvent(event) ||
     mode !== "guide"
   ) {
     return;
@@ -55,25 +90,57 @@ export function handleGuideArrowKey(
   );
   const lane = section.querySelector<HTMLElement>(".programme-guide__lane");
   const times = section.querySelector<HTMLElement>(".programme-guide__times");
+  const dockControl = visibleDockControl(workspace);
+  const sideBySideDock =
+    dockControl !== null && isSideBySideDock(dockControl, workspace);
 
-  // Allow pressing Down to leave an empty, closed toolbar search box back to
-  // the Channel Group lane instead of trapping TV D-pad focus in the input.
+  if (dockControl !== null && target === dockControl) {
+    handleDockArrow(
+      event,
+      dockControl,
+      toolbar,
+      lane,
+      times,
+      board,
+      sideBySideDock,
+    );
+    return;
+  }
+
+  // Handle arrows on the toolbar search input when its dropdown is closed:
+  // non-editing (readOnly) TV pills participate in all 4 directions; editing
+  // empty search boxes still let ArrowDown exit cleanly to the lane.
   if (
-    key === "ArrowDown" &&
     target instanceof HTMLInputElement &&
     toolbar !== null &&
     toolbar.contains(target) &&
-    target.value === "" &&
     target.getAttribute("aria-expanded") !== "true"
   ) {
-    const next =
-      preferredLaneTarget(lane, target) ??
-      preferredTimesTarget(times) ??
-      firstVisibleBoardTarget(board, target);
-    if (next !== null) {
-      consumeAndFocus(event, next, board);
+    if (target.readOnly) {
+      handleToolbarArrow(
+        event,
+        target,
+        toolbar,
+        lane,
+        times,
+        board,
+        dockControl,
+        sideBySideDock,
+      );
+      return;
     }
-    return;
+    if (key === "ArrowDown" && target.value === "") {
+      const next =
+        preferredLaneTarget(lane, target) ??
+        preferredTimesTarget(times) ??
+        firstVisibleBoardTarget(board, target);
+      if (next !== null) {
+        consumeAndFocus(event, next, board);
+      } else {
+        clampArrow(event);
+      }
+      return;
+    }
   }
 
   if (target.closest(IGNORE_NAVIGATION_SELECTOR) !== null) {
@@ -81,15 +148,40 @@ export function handleGuideArrowKey(
   }
 
   if (toolbar !== null && toolbar.contains(target)) {
-    handleToolbarArrow(event, target, toolbar, lane, times, board);
+    handleToolbarArrow(
+      event,
+      target,
+      toolbar,
+      lane,
+      times,
+      board,
+      dockControl,
+      sideBySideDock,
+    );
     return;
   }
   if (lane !== null && lane.contains(target)) {
-    handleLaneArrow(event, target, toolbar, lane, times, board);
+    handleLaneArrow(
+      event,
+      target,
+      toolbar,
+      lane,
+      times,
+      board,
+      sideBySideDock ? dockControl : null,
+      television,
+    );
     return;
   }
   if (times !== null && times.contains(target)) {
-    handleTimesArrow(event, target, lane, times, board);
+    handleTimesArrow(
+      event,
+      target,
+      lane,
+      times,
+      board,
+      sideBySideDock ? dockControl : null,
+    );
     return;
   }
   if (board !== null && board.contains(target)) {
@@ -100,20 +192,220 @@ export function handleGuideArrowKey(
       lane,
       times,
       board,
+      sideBySideDock ? dockControl : null,
       hasMore,
       onRequestMore,
     );
   }
 }
 
+/**
+ * Routes arrow keys from Stage's `.stage__undock` preview button into the
+ * sibling ProgrammeGuide while staying inside React's synthetic event tree.
+ */
+export function handleGuideDockArrowKey(
+  event: ArrowKeyEvent,
+  stage: HTMLElement,
+): void {
+  if (
+    event.defaultPrevented ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.altKey ||
+    isComposingEvent(event) ||
+    !(event.target instanceof HTMLElement)
+  ) {
+    return;
+  }
+  if (
+    event.key !== "ArrowDown" &&
+    event.key !== "ArrowUp" &&
+    event.key !== "ArrowLeft" &&
+    event.key !== "ArrowRight"
+  ) {
+    return;
+  }
+  const shell = stage.closest<HTMLElement>(".shell");
+  if (shell !== null && shell.getAttribute("data-mode") !== "guide") {
+    return;
+  }
+  const workspace = stage.closest<HTMLElement>(".shell__workspace");
+  const section = workspace?.querySelector<HTMLElement>(".programme-guide") ?? null;
+  if (section === null) return;
+  const toolbar = section.querySelector<HTMLElement>(".programme-guide__toolbar");
+  const lane = section.querySelector<HTMLElement>(".programme-guide__lane");
+  const times = section.querySelector<HTMLElement>(".programme-guide__times");
+  const board = section.querySelector<HTMLElement>(".programme-guide__board");
+  const sideBySide = isSideBySideDock(event.target, workspace);
+  handleDockArrow(
+    event,
+    event.target,
+    toolbar,
+    lane,
+    times,
+    board,
+    sideBySide,
+  );
+}
+
+/** Options for resolving the preferred fallback focus target inside a Guide. */
+export interface GuideFallbackOptions {
+  /** Also check error/empty notice buttons (e.g. "Try again") inside the board. */
+  readonly includeNotice?: boolean;
+  /** Fall back to the checked Channel Group when no Channel rows are rendered. */
+  readonly includeActiveGroup?: boolean;
+  /** Skip active-group and Sources fallbacks while the board is `aria-busy="true"`. */
+  readonly respectBusyBoard?: boolean;
+  /** Require non-empty layout boxes when filtering candidate controls. */
+  readonly requireLayoutBox?: boolean;
+}
+
+/** Finds the preferred visible Guide focus target in priority order. */
+export function findGuideFallback(
+  scope: ParentNode | null,
+  options: GuideFallbackOptions = {},
+): HTMLElement | null {
+  if (scope === null) return null;
+  const requireLayoutBox = options.requireLayoutBox === true;
+  const boardBusy =
+    options.respectBusyBoard === true &&
+    scope.querySelector('.programme-guide__board[aria-busy="true"]') !== null;
+  return (
+    firstVisibleIn(
+      scope,
+      '.programme-guide__row[data-playing="true"] .programme-guide__channel',
+      { requireLayoutBox },
+    ) ??
+    firstVisibleIn(
+      scope,
+      '.programme-guide__row[data-last-played="true"] .programme-guide__channel',
+      { requireLayoutBox },
+    ) ??
+    firstVisibleIn(scope, ".programme-guide__row .programme-guide__channel", {
+      requireLayoutBox,
+    }) ??
+    (options.includeNotice === true
+      ? firstVisibleIn(scope, ".programme-guide__notice button", {
+          requireLayoutBox,
+        })
+      : null) ??
+    (!boardBusy && options.includeActiveGroup !== false
+      ? firstVisibleIn(scope, ".programme-guide__group[data-checked]", {
+          allowNegativeTabIndex: true,
+          requireLayoutBox,
+        })
+      : null) ??
+    (!boardBusy
+      ? firstVisibleIn(scope, ".feeds-trigger", { requireLayoutBox })
+      : null)
+  );
+}
+
+/**
+ * Restores focus to the preferred visible Guide control (playing row,
+ * last-played row, first row, optional notice/group, or Sources) and scrolls
+ * the board to reveal the destination.
+ */
+export function focusGuideFallback(
+  guide: ParentNode | null,
+  options?: GuideFallbackOptions,
+): boolean {
+  const destination = findGuideFallback(guide, options);
+  if (destination === null) return false;
+  destination.focus({ preventScroll: true });
+  const board = destination.closest<HTMLElement>(".programme-guide__board");
+  if (board !== null) {
+    scrollBoardToReveal(board, destination);
+  }
+  return true;
+}
+
+function firstVisibleIn(
+  root: ParentNode,
+  selector: string,
+  options: {
+    readonly allowNegativeTabIndex?: boolean;
+    readonly requireLayoutBox?: boolean;
+  } = {},
+): HTMLElement | null {
+  for (const el of root.querySelectorAll<HTMLElement>(selector)) {
+    if (isVisibleControl(el, options)) {
+      return el;
+    }
+  }
+  return null;
+}
+
+function handleDockArrow(
+  event: ArrowKeyEvent,
+  dockControl: HTMLElement,
+  toolbar: HTMLElement | null,
+  lane: HTMLElement | null,
+  times: HTMLElement | null,
+  board: HTMLElement | null,
+  sideBySide: boolean,
+): void {
+  if (!sideBySide) {
+    if (event.key === "ArrowDown") {
+      const next =
+        nearestToolbarTarget(toolbar, dockControl) ??
+        preferredLaneTarget(lane, dockControl) ??
+        preferredTimesTarget(times) ??
+        firstVisibleBoardTarget(board, dockControl);
+      if (next !== null) {
+        consumeAndFocus(event, next, board);
+      } else {
+        clampArrow(event);
+      }
+      return;
+    }
+    clampArrow(event);
+    return;
+  }
+  if (event.key === "ArrowRight") {
+    const whenButton = lane?.querySelector<HTMLElement>(".programme-guide__when") ?? null;
+    const next =
+      (whenButton !== null && isVisibleFocusable(whenButton) ? whenButton : null) ??
+      checkedGroupInLane(lane) ??
+      nearestToolbarTarget(toolbar, dockControl);
+    if (next !== null) {
+      consumeAndFocus(event, next, board);
+    } else {
+      clampArrow(event);
+    }
+    return;
+  }
+  if (event.key === "ArrowDown") {
+    const next =
+      preferredTimesTarget(times) ?? firstVisibleBoardTarget(board, dockControl);
+    if (next !== null) {
+      consumeAndFocus(event, next, board);
+    } else {
+      clampArrow(event);
+    }
+    return;
+  }
+  clampArrow(event);
+}
+
 function handleToolbarArrow(
-  event: KeyboardEvent<HTMLElement>,
+  event: ArrowKeyEvent,
   target: HTMLElement,
   toolbar: HTMLElement,
   lane: HTMLElement | null,
   times: HTMLElement | null,
   board: HTMLElement | null,
+  dockControl: HTMLElement | null,
+  sideBySideDock: boolean,
 ): void {
+  if (event.key === "ArrowUp") {
+    if (dockControl !== null && !sideBySideDock) {
+      consumeAndFocus(event, dockControl, board);
+    } else {
+      clampArrow(event);
+    }
+    return;
+  }
   if (event.key === "ArrowDown") {
     const next =
       preferredLaneTarget(lane, target) ??
@@ -121,6 +413,8 @@ function handleToolbarArrow(
       firstVisibleBoardTarget(board, target);
     if (next !== null) {
       consumeAndFocus(event, next, board);
+    } else {
+      clampArrow(event);
     }
     return;
   }
@@ -133,27 +427,41 @@ function handleToolbarArrow(
     if (index === -1) {
       return;
     }
+    if (event.key === "ArrowLeft" && index === 0) {
+      if (dockControl !== null && sideBySideDock) {
+        consumeAndFocus(event, dockControl, board);
+      } else {
+        clampArrow(event);
+      }
+      return;
+    }
     const nextIndex = event.key === "ArrowRight" ? index + 1 : index - 1;
     const next = controls[nextIndex] ?? null;
     if (next !== null) {
       consumeAndFocus(event, next, board);
+    } else {
+      clampArrow(event);
     }
   }
 }
 
 function handleLaneArrow(
-  event: KeyboardEvent<HTMLElement>,
+  event: ArrowKeyEvent,
   target: HTMLElement,
   toolbar: HTMLElement | null,
   lane: HTMLElement,
   times: HTMLElement | null,
   board: HTMLElement | null,
+  dockControl: HTMLElement | null,
+  television: boolean,
 ): void {
   if (event.key === "ArrowDown") {
     const next =
       preferredTimesTarget(times) ?? firstVisibleBoardTarget(board, target);
     if (next !== null) {
       consumeAndFocus(event, next, board);
+    } else {
+      clampArrow(event);
     }
     return;
   }
@@ -161,6 +469,8 @@ function handleLaneArrow(
     const next = nearestToolbarTarget(toolbar, target);
     if (next !== null) {
       consumeAndFocus(event, next, board);
+    } else {
+      clampArrow(event);
     }
     return;
   }
@@ -173,19 +483,41 @@ function handleLaneArrow(
     groups[0] ??
     null;
 
-  if (target === whenButton && event.key === "ArrowRight") {
-    const next = activeGroup ?? rosterButton;
-    if (next !== null) {
-      consumeAndFocus(event, next, board);
+  if (target === whenButton) {
+    if (event.key === "ArrowLeft") {
+      if (dockControl !== null) {
+        consumeAndFocus(event, dockControl, board);
+      } else {
+        clampArrow(event);
+      }
+      return;
     }
-    return;
+    if (event.key === "ArrowRight") {
+      const next = (television ? groups[0] ?? null : activeGroup) ?? rosterButton;
+      if (next !== null && isVisibleFocusable(next)) {
+        consumeAndFocus(event, next, board);
+      } else {
+        clampArrow(event);
+      }
+      return;
+    }
   }
-  if (target === rosterButton && event.key === "ArrowLeft") {
-    const next = activeGroup ?? whenButton;
-    if (next !== null) {
-      consumeAndFocus(event, next, board);
+  if (target === rosterButton) {
+    if (event.key === "ArrowRight") {
+      clampArrow(event);
+      return;
     }
-    return;
+    if (event.key === "ArrowLeft") {
+      const next =
+        (television ? groups[groups.length - 1] ?? null : activeGroup) ??
+        whenButton;
+      if (next !== null && isVisibleFocusable(next)) {
+        consumeAndFocus(event, next, board);
+      } else {
+        clampArrow(event);
+      }
+      return;
+    }
   }
 
   const groupIndex = groups.indexOf(target);
@@ -194,45 +526,67 @@ function handleLaneArrow(
   }
   // At the outer edges of the Channel Group RadioGroup, move cleanly to the
   // adjacent lane controls instead of wrapping across all groups.
-  if (
-    event.key === "ArrowLeft" &&
-    groupIndex === 0 &&
-    whenButton !== null &&
-    isVisibleFocusable(whenButton)
-  ) {
-    consumeAndFocus(event, whenButton, board);
+  if (event.key === "ArrowLeft") {
+    if (groupIndex === 0) {
+      const edge =
+        whenButton !== null && isVisibleFocusable(whenButton)
+          ? whenButton
+          : dockControl;
+      if (edge !== null) {
+        consumeAndFocus(event, edge, board);
+      } else {
+        clampArrow(event);
+      }
+      return;
+    }
+    if (television) {
+      consumeAndFocus(event, groups[groupIndex - 1], board);
+    }
     return;
   }
-  if (
-    event.key === "ArrowRight" &&
-    groupIndex === groups.length - 1 &&
-    rosterButton !== null &&
-    isVisibleFocusable(rosterButton)
-  ) {
-    consumeAndFocus(event, rosterButton, board);
+  if (event.key === "ArrowRight") {
+    if (groupIndex === groups.length - 1) {
+      if (rosterButton !== null && isVisibleFocusable(rosterButton)) {
+        consumeAndFocus(event, rosterButton, board);
+      } else {
+        clampArrow(event);
+      }
+      return;
+    }
+    if (television) {
+      consumeAndFocus(event, groups[groupIndex + 1], board);
+    }
   }
 }
 
 function handleTimesArrow(
-  event: KeyboardEvent<HTMLElement>,
+  event: ArrowKeyEvent,
   target: HTMLElement,
   lane: HTMLElement | null,
   times: HTMLElement,
   board: HTMLElement | null,
+  dockControl: HTMLElement | null,
 ): void {
   if (event.key === "ArrowDown") {
     const next = firstVisibleBoardTarget(board, target);
     if (next !== null) {
       consumeAndFocus(event, next, board);
+    } else {
+      clampArrow(event);
     }
     return;
   }
   if (event.key === "ArrowUp") {
     const next =
+      (dockControl !== null && overlapsDockBand(dockControl, target)
+        ? dockControl
+        : null) ??
       lane?.querySelector<HTMLElement>(".programme-guide__when") ??
       preferredLaneTarget(lane, target);
     if (next !== null && isVisibleFocusable(next)) {
       consumeAndFocus(event, next, board);
+    } else {
+      clampArrow(event);
     }
     return;
   }
@@ -246,37 +600,42 @@ function handleTimesArrow(
       buttons[event.key === "ArrowRight" ? index + 1 : index - 1] ?? null;
     if (next !== null) {
       consumeAndFocus(event, next, board);
+    } else {
+      clampArrow(event);
     }
   }
 }
 
 function handleBoardArrow(
-  event: KeyboardEvent<HTMLElement>,
+  event: ArrowKeyEvent,
   target: HTMLElement,
   layout: StageLayout,
   lane: HTMLElement | null,
   times: HTMLElement | null,
   board: HTMLElement,
+  dockControl: HTMLElement | null,
   hasMore: boolean,
   onRequestMore: () => void,
 ): void {
-  const moreButton = board.querySelector<HTMLElement>(".programme-guide__more");
-  const channels = visibleFocusables(
-    board,
-    ".programme-guide__row .programme-guide__channel",
+  const channels = Array.from(
+    board.querySelectorAll<HTMLElement>(
+      ".programme-guide__row .programme-guide__channel",
+    ),
   );
 
-  if (target === moreButton) {
-    if (event.key === "ArrowUp") {
-      const last = channels[channels.length - 1] ?? null;
-      const next =
-        last ??
-        preferredTimesTarget(times) ??
-        preferredLaneTarget(lane, target);
-      if (next !== null) {
-        consumeAndFocus(event, next, board);
-      }
-    }
+  if (target.classList.contains("programme-guide__channel")) {
+    handleChannelGridArrow(
+      event,
+      target,
+      channels,
+      layout,
+      lane,
+      times,
+      board,
+      dockControl,
+      hasMore,
+      onRequestMore,
+    );
     return;
   }
 
@@ -311,7 +670,7 @@ function handleBoardArrow(
         lane,
         times,
         board,
-        moreButton,
+        dockControl,
         hasMore,
         onRequestMore,
       );
@@ -319,19 +678,48 @@ function handleBoardArrow(
     return;
   }
 
-  if (target.classList.contains("programme-guide__channel")) {
-    handleChannelGridArrow(
-      event,
-      target,
-      channels,
-      layout,
-      lane,
-      times,
-      board,
-      moreButton,
-      hasMore,
-      onRequestMore,
-    );
+  const retainedButton = visibleBoardFooterButton(
+    board,
+    ".programme-guide__retained button",
+  );
+  const moreButton = visibleBoardFooterButton(board, ".programme-guide__more");
+
+  if (target === retainedButton) {
+    if (event.key === "ArrowUp") {
+      const next =
+        findVisibleChannelInRange(channels, channels.length - 1, 0, -1) ??
+        preferredTimesTarget(times) ??
+        preferredLaneTarget(lane, target);
+      if (next !== null) {
+        consumeAndFocus(event, next, board);
+      } else {
+        clampArrow(event);
+      }
+      return;
+    }
+    if (event.key === "ArrowDown" && moreButton !== null) {
+      consumeAndFocus(event, moreButton, board);
+      return;
+    }
+    clampArrow(event);
+    return;
+  }
+
+  if (target === moreButton) {
+    if (event.key === "ArrowUp") {
+      const next =
+        retainedButton ??
+        findVisibleChannelInRange(channels, channels.length - 1, 0, -1) ??
+        preferredTimesTarget(times) ??
+        preferredLaneTarget(lane, target);
+      if (next !== null) {
+        consumeAndFocus(event, next, board);
+      } else {
+        clampArrow(event);
+      }
+      return;
+    }
+    clampArrow(event);
     return;
   }
 
@@ -341,19 +729,57 @@ function handleBoardArrow(
       preferredTimesTarget(times) ?? preferredLaneTarget(lane, target);
     if (next !== null) {
       consumeAndFocus(event, next, board);
+    } else {
+      clampArrow(event);
+    }
+    return;
+  }
+  clampArrow(event);
+}
+
+function visibleBoardFooterButton(
+  board: HTMLElement,
+  selector: string,
+): HTMLElement | null {
+  const candidate = board.querySelector<HTMLElement>(selector);
+  return candidate !== null && isVisibleFocusable(candidate) ? candidate : null;
+}
+
+function findVisibleChannelInRange(
+  channels: readonly HTMLElement[],
+  startIndex: number,
+  endInclusive: number,
+  step: number,
+): HTMLElement | null {
+  if (step > 0) {
+    for (
+      let i = startIndex;
+      i <= endInclusive && i < channels.length;
+      i += step
+    ) {
+      if (isVisibleFocusable(channels[i])) {
+        return channels[i];
+      }
+    }
+  } else if (step < 0) {
+    for (let i = startIndex; i >= endInclusive && i >= 0; i += step) {
+      if (isVisibleFocusable(channels[i])) {
+        return channels[i];
+      }
     }
   }
+  return null;
 }
 
 function handleChannelGridArrow(
-  event: KeyboardEvent<HTMLElement>,
+  event: ArrowKeyEvent,
   current: HTMLElement,
   channels: readonly HTMLElement[],
   layout: StageLayout,
   lane: HTMLElement | null,
   times: HTMLElement | null,
   board: HTMLElement,
-  moreButton: HTMLElement | null,
+  dockControl: HTMLElement | null,
   hasMore: boolean,
   onRequestMore: () => void,
 ): void {
@@ -361,7 +787,7 @@ function handleChannelGridArrow(
   if (index === -1) {
     return;
   }
-  const columns = gridColumnCount(channels);
+  const columns = gridColumnCount(channels, current);
 
   if (event.key === "ArrowRight") {
     if (columns === 1 && layout === "theater") {
@@ -374,65 +800,150 @@ function handleChannelGridArrow(
       return;
     }
     const col = index % columns;
-    if (col + 1 < columns && index + 1 < channels.length) {
-      consumeAndFocus(event, channels[index + 1], board);
+    const rowEnd = Math.min(channels.length - 1, index - col + columns - 1);
+    const next =
+      col + 1 < columns
+        ? findVisibleChannelInRange(channels, index + 1, rowEnd, 1)
+        : null;
+    if (next !== null) {
+      consumeAndFocus(event, next, board);
     } else {
-      // Prevent spatial navigation from escaping onto non-channel controls.
-      event.preventDefault();
-      event.stopPropagation();
+      clampArrow(event);
     }
     return;
   }
 
   if (event.key === "ArrowLeft") {
     const col = index % columns;
-    if (col > 0) {
-      consumeAndFocus(event, channels[index - 1], board);
+    const rowStart = index - col;
+    const next =
+      col > 0
+        ? findVisibleChannelInRange(channels, index - 1, rowStart, -1)
+        : null;
+    if (next !== null) {
+      consumeAndFocus(event, next, board);
     } else {
-      event.preventDefault();
-      event.stopPropagation();
+      clampArrow(event);
     }
     return;
   }
 
   if (event.key === "ArrowDown") {
-    const nextIndex = index + columns;
-    if (nextIndex < channels.length) {
-      consumeAndFocus(event, channels[nextIndex], board);
+    const next = findVisibleChannelInRange(
+      channels,
+      index + columns,
+      channels.length - 1,
+      columns,
+    );
+    if (next !== null) {
+      consumeAndFocus(event, next, board);
       return;
     }
     const currentRow = Math.floor(index / columns);
     const lastRow = Math.floor((channels.length - 1) / columns);
     if (currentRow < lastRow) {
-      consumeAndFocus(event, channels[channels.length - 1], board);
+      const lastVisible = findVisibleChannelInRange(
+        channels,
+        channels.length - 1,
+        lastRow * columns,
+        -1,
+      );
+      if (lastVisible !== null) {
+        consumeAndFocus(event, lastVisible, board);
+        return;
+      }
+    }
+    const retainedButton = visibleBoardFooterButton(
+      board,
+      ".programme-guide__retained button",
+    );
+    if (retainedButton !== null) {
+      consumeAndFocus(event, retainedButton, board);
       return;
     }
     if (hasMore) {
       onRequestMore();
-      if (moreButton !== null && isVisibleFocusable(moreButton)) {
+      const moreButton = visibleBoardFooterButton(
+        board,
+        ".programme-guide__more",
+      );
+      if (moreButton !== null) {
         consumeAndFocus(event, moreButton, board);
         return;
       }
     }
-    event.preventDefault();
-    event.stopPropagation();
+    clampArrow(event);
     return;
   }
 
   if (event.key === "ArrowUp") {
-    const prevIndex = index - columns;
-    if (prevIndex >= 0) {
-      consumeAndFocus(event, channels[prevIndex], board);
+    const prev = findVisibleChannelInRange(
+      channels,
+      index - columns,
+      0,
+      -columns,
+    );
+    if (prev !== null) {
+      consumeAndFocus(event, prev, board);
       return;
     }
     const next =
       preferredTimesTarget(times) ??
-      checkedGroupInLane(lane) ??
+      (dockControl !== null && overlapsDockBand(dockControl, current)
+        ? dockControl
+        : null) ??
       preferredLaneTarget(lane, current);
     if (next !== null) {
       consumeAndFocus(event, next, board);
+    } else {
+      clampArrow(event);
     }
   }
+}
+
+function visibleDockControl(workspace: HTMLElement | null): HTMLElement | null {
+  const dock = workspace?.querySelector<HTMLElement>(".stage__undock") ?? null;
+  if (dock === null || !isVisibleFocusable(dock)) {
+    return null;
+  }
+  const rect = dock.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0 ? dock : null;
+}
+
+function isSideBySideDock(
+  dockControl: HTMLElement,
+  workspace: HTMLElement | null,
+): boolean {
+  const shell = dockControl.closest<HTMLElement>(".shell");
+  if (shell?.getAttribute("data-dock") === "false") {
+    return false;
+  }
+  const stage = dockControl.closest<HTMLElement>(".stage");
+  if (stage !== null && workspace !== null) {
+    const stageWidth = stage.getBoundingClientRect().width;
+    const workspaceWidth = workspace.getBoundingClientRect().width;
+    if (stageWidth > 0 && workspaceWidth > 0 && stageWidth >= workspaceWidth - 4) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function overlapsDockBand(dockControl: HTMLElement, origin: HTMLElement): boolean {
+  // Check the whole docked preview band (picture + metadata + undock icon) so
+  // controls directly under the preview picture still step up to the preview.
+  const band = dockControl.closest<HTMLElement>(".stage");
+  const bandRect = band?.getBoundingClientRect();
+  const candidateRect =
+    bandRect !== undefined && bandRect.width > 0
+      ? bandRect
+      : dockControl.getBoundingClientRect();
+  const originRect = origin.getBoundingClientRect();
+  if (candidateRect.width === 0 || originRect.width === 0) {
+    return false;
+  }
+  const originCenter = originRect.left + originRect.width / 2;
+  return originCenter >= candidateRect.left && originCenter <= candidateRect.right;
 }
 
 function checkedGroupInLane(lane: HTMLElement | null): HTMLElement | null {
@@ -504,9 +1015,10 @@ function firstVisibleBoardTarget(
   if (board === null) {
     return null;
   }
-  const channels = visibleFocusables(
-    board,
-    ".programme-guide__row .programme-guide__channel",
+  const channels = Array.from(
+    board.querySelectorAll<HTMLElement>(
+      ".programme-guide__row .programme-guide__channel",
+    ),
   );
   if (channels.length === 0) {
     return visibleFocusables(board, "button")[0] ?? null;
@@ -514,7 +1026,7 @@ function firstVisibleBoardTarget(
   const columns = gridColumnCount(channels);
   const boardRect = board.getBoundingClientRect();
   if (boardRect.height === 0) {
-    return channels[0];
+    return findVisibleChannelInRange(channels, 0, channels.length - 1, 1);
   }
   let topRowIndex = 0;
   for (let i = 0; i < channels.length; i += 1) {
@@ -524,35 +1036,82 @@ function firstVisibleBoardTarget(
       break;
     }
   }
-  const firstTop = channels[topRowIndex].getBoundingClientRect().top;
-  const topBand: HTMLElement[] = [];
+  let firstVisible: HTMLElement | null = null;
+  let firstTop = 0;
+  for (let i = topRowIndex; i < channels.length; i += 1) {
+    if (isVisibleFocusable(channels[i])) {
+      firstVisible = channels[i];
+      firstTop = channels[i].getBoundingClientRect().top;
+      topRowIndex = i;
+      break;
+    }
+  }
+  if (firstVisible === null) {
+    return visibleFocusables(board, "button")[0] ?? null;
+  }
+  const topBand: HTMLElement[] = [firstVisible];
   for (
-    let i = topRowIndex;
+    let i = topRowIndex + 1;
     i < Math.min(channels.length, topRowIndex + columns);
     i += 1
   ) {
-    const rect = channels[i].getBoundingClientRect();
+    const candidate = channels[i];
+    const rect = candidate.getBoundingClientRect();
     if (Math.abs(rect.top - firstTop) <= ROW_TOP_TOLERANCE_PX) {
-      topBand.push(channels[i]);
+      if (isVisibleFocusable(candidate)) {
+        topBand.push(candidate);
+      }
     } else {
       break;
     }
   }
-  return nearestByHorizontalCenter(topBand, origin) ?? channels[topRowIndex];
+  return nearestByHorizontalCenter(topBand, origin) ?? firstVisible;
 }
 
-function gridColumnCount(channels: readonly HTMLElement[]): number {
+function gridColumnCount(
+  channels: readonly HTMLElement[],
+  current?: HTMLElement,
+): number {
+  const rowsContainer =
+    (current ?? channels[0])?.closest<HTMLElement>(".programme-guide__rows") ??
+    null;
+  if (rowsContainer !== null) {
+    const style = window.getComputedStyle(rowsContainer);
+    if (
+      style.display === "grid" &&
+      style.gridTemplateColumns.length > 0 &&
+      !/[(]/u.test(style.gridTemplateColumns)
+    ) {
+      const tracks = style.gridTemplateColumns
+        .trim()
+        .split(/\s+/u)
+        .filter((track) => track.length > 0 && track !== "none");
+      if (tracks.length > 0) {
+        return tracks.length;
+      }
+    }
+  }
   if (channels.length < 2) {
     return 1;
   }
-  const first = channels[0].getBoundingClientRect();
-  if (first.width === 0 && first.height === 0) {
+  const anchorIndex =
+    current === undefined ? 0 : Math.max(0, channels.indexOf(current));
+  const anchor = channels[anchorIndex].getBoundingClientRect();
+  if (anchor.width === 0 && anchor.height === 0) {
     return 1;
   }
   let columns = 1;
-  for (let i = 1; i < channels.length; i += 1) {
+  for (let i = anchorIndex - 1; i >= 0; i -= 1) {
     const rect = channels[i].getBoundingClientRect();
-    if (Math.abs(rect.top - first.top) <= ROW_TOP_TOLERANCE_PX) {
+    if (Math.abs(rect.top - anchor.top) <= ROW_TOP_TOLERANCE_PX) {
+      columns += 1;
+    } else {
+      break;
+    }
+  }
+  for (let i = anchorIndex + 1; i < channels.length; i += 1) {
+    const rect = channels[i].getBoundingClientRect();
+    if (Math.abs(rect.top - anchor.top) <= ROW_TOP_TOLERANCE_PX) {
       columns += 1;
     } else {
       break;
@@ -600,66 +1159,45 @@ function visibleFocusables(
 }
 
 function isVisibleFocusable(element: HTMLElement): boolean {
-  if (element.hidden || element.hasAttribute("disabled")) {
-    return false;
-  }
-  if (
-    element.getAttribute("tabindex") === "-1" &&
-    !element.classList.contains("programme-guide__group")
-  ) {
-    return false;
-  }
-  const style = window.getComputedStyle(element);
-  return style.display !== "none" && style.visibility !== "hidden";
+  return isVisibleControl(element, {
+    allowNegativeTabIndex: element.classList.contains("programme-guide__group"),
+  });
+}
+
+function clampArrow(event: ArrowKeyEvent): void {
+  event.preventDefault();
+  event.stopPropagation();
 }
 
 function consumeAndFocus(
-  event: KeyboardEvent<HTMLElement>,
+  event: ArrowKeyEvent,
   next: HTMLElement,
   board: HTMLElement | null,
 ): void {
   event.preventDefault();
   event.stopPropagation();
   next.focus({ preventScroll: true });
-  scrollHorizontalParentToReveal(next);
+  // Group radios already reveal themselves inside ChannelGroupLane's onFocus;
+  // only time-row chips need horizontal reveal here.
+  if (!next.classList.contains("programme-guide__group")) {
+    const times = next.closest<HTMLElement>(".programme-guide__times");
+    if (times !== null) {
+      revealInHorizontalScroller(times, next);
+    }
+  }
   if (board !== null && board.contains(next)) {
     scrollBoardToReveal(board, next);
   }
 }
 
-function scrollHorizontalParentToReveal(element: HTMLElement): void {
-  const scroller = element.closest<HTMLElement>(
-    ".programme-guide__groups-scroller, .programme-guide__times",
-  );
-  if (scroller === null) {
-    return;
-  }
-  const scrollerRect = scroller.getBoundingClientRect();
-  const childRect = element.getBoundingClientRect();
-  if (scrollerRect.width === 0) {
-    return;
-  }
-  if (childRect.left < scrollerRect.left) {
-    scroller.scrollLeft -= scrollerRect.left - childRect.left + 8;
-  } else if (childRect.right > scrollerRect.right) {
-    scroller.scrollLeft += childRect.right - scrollerRect.right + 8;
-  }
-}
-
-function scrollBoardToReveal(board: HTMLElement, target: HTMLElement): void {
-  if (board.clientHeight === 0) {
-    return;
-  }
+/** Scrolls the guide board directly to keep `target` clear of sticky footers. */
+export function scrollBoardToReveal(board: HTMLElement, target: HTMLElement): void {
   const row = target.closest<HTMLElement>(".programme-guide__row") ?? target;
-  const boardRect = board.getBoundingClientRect();
-  const rowRect = row.getBoundingClientRect();
-  const rowTop = rowRect.top - boardRect.top + board.scrollTop;
-  const rowBottom = rowTop + rowRect.height;
-  const viewTop = board.scrollTop;
-  const viewBottom = viewTop + board.clientHeight;
-  if (rowTop < viewTop + BOARD_FOCUS_MARGIN_PX) {
-    board.scrollTop = Math.max(0, rowTop - BOARD_FOCUS_MARGIN_PX);
-  } else if (rowBottom > viewBottom - BOARD_FOCUS_MARGIN_PX) {
-    board.scrollTop = rowBottom - board.clientHeight + BOARD_FOCUS_MARGIN_PX;
-  }
+  const retained = board.querySelector<HTMLElement>(".programme-guide__retained");
+  const retainedHeight =
+    retained !== null && !retained.contains(target) ? retained.offsetHeight : 0;
+  revealInScrollContainer(board, row, {
+    marginPx: BOARD_FOCUS_MARGIN_PX,
+    bottomMarginPx: BOARD_FOCUS_MARGIN_PX + retainedHeight,
+  });
 }

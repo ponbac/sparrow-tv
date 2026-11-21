@@ -19,6 +19,7 @@ import { PlaybackLoadBoundary } from "../playback/playback-load-boundary";
 import {
   clientSchemas,
   type CatalogStatus,
+  type ChannelId,
   type ChannelSummary,
   type ClientResult,
   type InstalledSparrowClient,
@@ -142,6 +143,12 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   const [playingChannel, setPlayingChannel] = useState<PlayingChannel | null>(
     null,
   );
+  const [lastPlayedChannel, setLastPlayedChannel] = useState<ChannelId | null>(
+    null,
+  );
+  if (playingChannel !== null && lastPlayedChannel !== playingChannel.id) {
+    setLastPlayedChannel(playingChannel.id);
+  }
   const [fullscreenTune, setFullscreenTune] =
     useState<TelevisionFullscreenTune | null>(null);
   // The Channel an arrow press has moved to. The info block shows it at once;
@@ -227,7 +234,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   // The window can change size as well as the mode: a picture that cannot
   // follow keeps the very box it has, in pixels.
   const { pictureInPicture } = useAndroidPlayerWindow();
-  usePicturePin(follows, pictureInPicture, television);
+  usePicturePin(follows, pictureInPicture, television, effectiveMode);
   const watching = layout === "theater" && effectiveMode === "watch";
   const chromeVisibility = useIdleChrome(
     watching && picture?.state === "playing",
@@ -333,6 +340,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   const applyInstalledConfiguration = useCallback(
     (nextStatus: CatalogStatus) => {
       setActiveGroup(null);
+      setLastPlayedChannel(null);
       setPlaying(null);
       queryClient.removeQueries({
         predicate: ({ queryKey }) =>
@@ -390,7 +398,9 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
       setPendingZap(null);
       setFullscreenTune(null);
       // A queued zap never starts a Playback Session after Stop.
-      setPlayingChannel((current) => (current === null ? current : pendingZap.channel));
+      setPlayingChannel((current) =>
+        current === null ? current : pendingZap.channel,
+      );
     }, ZAP_COMMIT_MS);
     zapTimer.current = timer;
     return () => {
@@ -515,6 +525,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     () =>
       props.runtime === "installed" ? (
         <FeedsDialog
+          television={television}
           runtime="installed"
           client={props.sourceConfiguration ?? props.client}
           status={status}
@@ -526,6 +537,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
         />
       ) : (
         <FeedsDialog
+          television={television}
           runtime="hosted"
           status={status}
           refreshing={synchronization.refreshing}
@@ -542,6 +554,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
       synchronization.refreshResult,
       synchronization.refreshing,
       synchronization.requestRefresh,
+      television,
     ],
   );
 
@@ -550,6 +563,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   const search = useMemo(
     () => (
       <BoardSearch
+        television={television}
         client={client}
         generation={authoritativeGeneration}
         excludedGroups={groupExclusions.excluded}
@@ -564,6 +578,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
       groupExclusions.excluded,
       preparePlayback,
       synchronization.retryStatus,
+      television,
       tuneVariantFromGuide,
     ],
   );
@@ -584,6 +599,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   const player = renderPlayer({
     props,
     playingChannel,
+    ...(shownChannel === null ? {} : { displayName: shownChannel.name }),
     onStop: stop,
     ...(television ? { onInitialStall: fallBack } : {}),
   });
@@ -655,7 +671,22 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
           Showing the saved catalog. A fresh source check is pending.
         </aside>
       ) : null}
-      <main className="shell__workspace">
+      <main
+        className="shell__workspace"
+        onKeyDown={(event) => {
+          if (
+            layout === "pocket" &&
+            timeRow === "open" &&
+            effectiveMode === "guide" &&
+            !event.defaultPrevented &&
+            !event.nativeEvent.isComposing &&
+            event.key === "Escape"
+          ) {
+            event.preventDefault();
+            toggleTimeRow();
+          }
+        }}
+      >
         <StageChromeProvider value={chrome}>
           <Stage
             television={television}
@@ -701,10 +732,11 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
           masthead={mastheadInGuide ? identity : undefined}
           rows={rows}
           groups={groups}
-          activeGroup={activeGroup}
+          activeGroup={boardGroup}
           window={guideClock.window}
           now={guideNow}
           playingChannel={playingChannel?.id ?? null}
+          lastPlayedChannel={lastPlayedChannel}
           variantPreferences={variantPreferences}
           layout={layout}
           mode={effectiveMode}
@@ -737,11 +769,13 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
 function renderPlayer({
   props,
   playingChannel,
+  displayName,
   onInitialStall,
   onStop,
 }: {
   readonly props: CatalogBrowserProps;
   readonly playingChannel: PlayingChannel | null;
+  readonly displayName?: string;
   readonly onInitialStall?: (channel: ChannelSummary["id"]) => void;
   readonly onStop: () => void;
 }): ReactNode {
@@ -757,6 +791,7 @@ function renderPlayer({
       <Suspense fallback={<PlayerLoading />}>
         {props.runtime === "installed" ? (
           <InstalledPlayer
+            {...(displayName === undefined ? {} : { displayName })}
             {...(onInitialStall ? { onInitialStall } : {})}
             channel={playingChannel}
             client={props.client}

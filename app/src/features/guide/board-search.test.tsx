@@ -186,7 +186,7 @@ describe("BoardSearch", () => {
       }),
       "news",
     );
-    await user.click(await screen.findByRole("button", { name: "Search again" }));
+    await user.click(await screen.findByRole("option", { name: /Search again/ }));
 
     expect(onGenerationMismatch).toHaveBeenCalledTimes(1);
     expect(search).toHaveBeenCalledTimes(1);
