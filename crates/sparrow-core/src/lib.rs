@@ -19,8 +19,8 @@ pub use domain::{
     SourceConfigurationInput, SourceKind, SourceReadError, SourceState, StoreError,
 };
 pub use ports::{
-    Clock, CoreAdapters, PrivateSourceValidators, PrivateValidatorError, SnapshotCandidate,
-    SnapshotCandidates, SnapshotMetadata, SnapshotRevalidation, SnapshotScan, SnapshotSource,
-    SnapshotStage, SnapshotStageRequest, SnapshotStore, SourceAccess, SourceByteStream, SourceKey,
-    SourceRequest, SourceResponse, SystemClock, ValidatedStage,
+    CatalogCacheMapping, Clock, CoreAdapters, PrivateSourceValidators, PrivateValidatorError,
+    SnapshotCandidate, SnapshotCandidates, SnapshotMetadata, SnapshotRevalidation, SnapshotScan,
+    SnapshotSource, SnapshotStage, SnapshotStageRequest, SnapshotStore, SourceAccess,
+    SourceByteStream, SourceKey, SourceRequest, SourceResponse, SystemClock, ValidatedStage,
 };

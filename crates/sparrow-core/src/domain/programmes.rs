@@ -2,14 +2,16 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 
-use super::{ChannelId, ChannelQuery, ChannelSummary, CoreError, InputField, InputReason};
+use super::{
+    ChannelId, ChannelQuery, ChannelSummary, CoreError, InputField, InputReason, SharedText,
+};
 
 /// One source-derived Programme associated with a Channel in this catalog generation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProgrammeSummary {
     channel_id: ChannelId,
-    title: Arc<str>,
-    description: Option<Arc<str>>,
+    title: SharedText,
+    description: Option<SharedText>,
     starts_at: DateTime<Utc>,
     ends_at: DateTime<Utc>,
 }
@@ -17,8 +19,8 @@ pub struct ProgrammeSummary {
 impl ProgrammeSummary {
     pub(crate) fn new(
         channel_id: ChannelId,
-        title: Arc<str>,
-        description: Option<Arc<str>>,
+        title: SharedText,
+        description: Option<SharedText>,
         starts_at: DateTime<Utc>,
         ends_at: DateTime<Utc>,
     ) -> Self {
@@ -38,12 +40,12 @@ impl ProgrammeSummary {
 
     /// Returns the normalized Programme title supplied by the EPG Source.
     pub fn title(&self) -> &str {
-        &self.title
+        self.title.as_str()
     }
 
     /// Returns the optional normalized Programme description.
     pub fn description(&self) -> Option<&str> {
-        self.description.as_deref()
+        self.description.as_ref().map(SharedText::as_str)
     }
 
     /// Returns the Programme start instant normalized to UTC.
@@ -66,7 +68,7 @@ const MAX_COMPACT_PROGRAMME_TITLE_BYTES: usize = 256;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProgrammeSearchHit {
     channel: ChannelSummary,
-    title: Arc<str>,
+    title: SharedText,
     title_truncated: bool,
     starts_at: DateTime<Utc>,
     ends_at: DateTime<Utc>,
@@ -76,13 +78,14 @@ impl ProgrammeSearchHit {
     /// The largest normalized Programme title included in a search response.
     pub const MAX_TITLE_BYTES: usize = MAX_COMPACT_PROGRAMME_TITLE_BYTES;
 
-    pub(crate) fn new(
+    pub(crate) fn from_bounded(
         channel: ChannelSummary,
-        title: Arc<str>,
+        title: SharedText,
+        title_truncated: bool,
         starts_at: DateTime<Utc>,
         ends_at: DateTime<Utc>,
     ) -> Self {
-        let (title, title_truncated) = bounded_programme_title(title);
+        debug_assert!(title.as_str().len() <= MAX_COMPACT_PROGRAMME_TITLE_BYTES);
         Self {
             channel,
             title,
@@ -99,7 +102,7 @@ impl ProgrammeSearchHit {
 
     /// Returns the bounded normalized Programme title supplied by the EPG Source.
     pub fn title(&self) -> &str {
-        &self.title
+        self.title.as_str()
     }
 
     /// Reports whether the source title exceeded the search projection bound.
@@ -121,7 +124,7 @@ impl ProgrammeSearchHit {
 /// Bounded Programme metadata projected specifically for one guide row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GuideProgramme {
-    title: Arc<str>,
+    title: SharedText,
     title_truncated: bool,
     starts_at: DateTime<Utc>,
     ends_at: DateTime<Utc>,
@@ -131,8 +134,13 @@ impl GuideProgramme {
     /// The largest normalized Programme title included in a guide response.
     pub const MAX_TITLE_BYTES: usize = MAX_COMPACT_PROGRAMME_TITLE_BYTES;
 
-    pub(crate) fn new(title: Arc<str>, starts_at: DateTime<Utc>, ends_at: DateTime<Utc>) -> Self {
-        let (title, title_truncated) = bounded_programme_title(title);
+    pub(crate) fn from_bounded(
+        title: SharedText,
+        title_truncated: bool,
+        starts_at: DateTime<Utc>,
+        ends_at: DateTime<Utc>,
+    ) -> Self {
+        debug_assert!(title.as_str().len() <= MAX_COMPACT_PROGRAMME_TITLE_BYTES);
         Self {
             title,
             title_truncated,
@@ -143,7 +151,7 @@ impl GuideProgramme {
 
     /// Returns the bounded normalized title supplied by the EPG Source.
     pub fn title(&self) -> &str {
-        &self.title
+        self.title.as_str()
     }
 
     /// Reports whether the source title exceeded the guide projection bound.
@@ -160,17 +168,6 @@ impl GuideProgramme {
     pub const fn ends_at(&self) -> DateTime<Utc> {
         self.ends_at
     }
-}
-
-fn bounded_programme_title(title: Arc<str>) -> (Arc<str>, bool) {
-    if title.len() <= MAX_COMPACT_PROGRAMME_TITLE_BYTES {
-        return (title, false);
-    }
-    let mut end = MAX_COMPACT_PROGRAMME_TITLE_BYTES;
-    while !title.is_char_boundary(end) {
-        end -= 1;
-    }
-    (Arc::from(&title[..end]), true)
 }
 
 /// One Channel and its Programmes overlapping a bounded guide window.

@@ -19,6 +19,7 @@ thiserror = "2"
 unicode-normalization = "0.1"
 url = { version = "2", features = ["serde"] }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+zerocopy = { version = "0.8", features = ["derive"] }
 
 [dev-dependencies]
 proptest = "1"

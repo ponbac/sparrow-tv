@@ -10,15 +10,16 @@ use std::{
 use blake3::Hasher;
 use chrono::{DateTime, Utc};
 use thiserror::Error;
-use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
 mod programmes;
+mod text;
 
 use programmes::parse_instant;
 pub use programmes::{
     GuideProgramme, GuideWindowChannel, GuideWindowQuery, ProgrammeSearchHit, ProgrammeSummary,
 };
+pub(crate) use text::{FrozenPageTextArena, PageTextArena, SharedText, TextSlot};
 
 const MAX_SOURCE_LOCATION_BYTES: usize = 16 * 1024;
 const PAGE_CURSOR_PREFIX: &str = "pc1";
@@ -407,10 +408,6 @@ impl CursorQueryHash {
         Self(value)
     }
 
-    fn encode(self) -> String {
-        blake3::Hash::from_bytes(self.0).to_hex().to_string()
-    }
-
     fn parse(value: &str) -> Option<Self> {
         blake3::Hash::from_hex(value)
             .ok()
@@ -493,12 +490,18 @@ impl PageCursor {
     }
 
     fn encode(generation: CatalogGeneration, offset: usize, query: CursorQueryHash) -> String {
-        format!(
+        use std::fmt::Write as _;
+
+        let hex = blake3::Hash::from_bytes(query.0).to_hex();
+        let mut encoded = String::with_capacity(PAGE_CURSOR_PREFIX.len() + 3 + 20 + 20 + hex.len());
+        let _ = write!(
+            encoded,
             "{PAGE_CURSOR_PREFIX}.{}.{}.{}",
             generation.get(),
             offset,
-            query.encode()
-        )
+            hex.as_str()
+        );
+        encoded
     }
 }
 
@@ -550,12 +553,18 @@ impl PageRequest {
 }
 
 #[derive(Clone, Eq, Hash, PartialEq)]
-pub struct ChannelId(Arc<str>);
+pub struct ChannelId(SharedText);
 
 impl ChannelId {
+    #[cfg(test)]
     pub(crate) fn generated(value: String) -> Self {
         debug_assert!(is_canonical_channel_id(&value));
-        Self(Arc::from(value))
+        Self(SharedText::from_owned(value))
+    }
+
+    pub(crate) fn from_shared(value: SharedText) -> Self {
+        debug_assert!(is_canonical_channel_id(value.as_str()));
+        Self(value)
     }
 
     /// Parses an untrusted transport value into a canonical opaque identifier.
@@ -567,23 +576,20 @@ impl ChannelId {
                 reason: InputReason::InvalidFormat,
             });
         }
-        Ok(Self(Arc::from(value)))
+        Ok(Self(SharedText::from_owned(value)))
     }
 
-    /// Parses a borrowed canonical identifier without an intermediate `String` allocation.
-    pub(crate) fn parse_str(value: &str) -> Result<Self, CoreError> {
-        if !is_canonical_channel_id(value) {
-            return Err(CoreError::InvalidInput {
-                field: InputField::ChannelId,
-                reason: InputReason::InvalidFormat,
-            });
-        }
-        Ok(Self(Arc::from(value)))
+    /// Returns the raw 32-byte digest decoded from this canonical identifier.
+    pub(crate) fn digest(&self) -> [u8; 32] {
+        let hex = &self.0.as_str()[CHANNEL_ID_PREFIX.len()..];
+        *blake3::Hash::from_hex(hex)
+            .expect("canonical ChannelId always holds a valid 64-byte hex digest")
+            .as_bytes()
     }
 
     /// Returns the opaque value for an explicit transport projection.
     pub fn as_str(&self) -> &str {
-        &self.0
+        self.0.as_str()
     }
 }
 
@@ -691,45 +697,18 @@ impl ChannelGroupFilter {
 }
 
 pub(crate) fn normalize_search_text(value: &str) -> String {
-    if value.is_ascii() {
-        let mut normalized = String::with_capacity(value.len());
-        let mut whitespace_pending = false;
-        for byte in value.bytes() {
-            if matches!(byte, b' ' | b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r') {
-                whitespace_pending = !normalized.is_empty();
-            } else {
-                if whitespace_pending {
-                    normalized.push(' ');
-                    whitespace_pending = false;
-                }
-                normalized.push(byte.to_ascii_lowercase() as char);
-            }
-        }
-        return normalized;
-    }
-
-    let compatibility_normalized = value.nfkc().collect::<String>();
-    let mut normalized = String::with_capacity(compatibility_normalized.len());
-
-    for (index, word) in compatibility_normalized.split_whitespace().enumerate() {
-        if index != 0 {
-            normalized.push(' ');
-        }
-        normalized.extend(word.chars().flat_map(char::to_lowercase));
-    }
-
-    normalized
+    crate::identity::normalize_identity_field(value)
 }
 
 /// One source-derived Channel Group and the number of Channels it contains.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChannelGroupView {
-    name: Arc<str>,
+    name: SharedText,
     channel_count: u32,
 }
 
 impl ChannelGroupView {
-    pub(crate) fn new(name: Arc<str>, channel_count: u32) -> Self {
+    pub(crate) fn new(name: SharedText, channel_count: u32) -> Self {
         Self {
             name,
             channel_count,
@@ -738,7 +717,7 @@ impl ChannelGroupView {
 
     /// Returns the normalized presentation name from the M3U Source.
     pub fn name(&self) -> &str {
-        &self.name
+        self.name.as_str()
     }
 
     /// Returns the number of Channels in this group for the page generation.
@@ -761,11 +740,11 @@ pub enum ChannelQuality {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChannelVariant {
     quality: ChannelQuality,
-    base_name: Arc<str>,
+    base_name: SharedText,
 }
 
 impl ChannelVariant {
-    pub(crate) fn new(quality: ChannelQuality, base_name: Arc<str>) -> Self {
+    pub(crate) fn new(quality: ChannelQuality, base_name: SharedText) -> Self {
         Self { quality, base_name }
     }
 
@@ -775,15 +754,15 @@ impl ChannelVariant {
 
     /// Returns the Channel name without its picture-quality token.
     pub fn base_name(&self) -> &str {
-        &self.base_name
+        self.base_name.as_str()
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChannelSummary {
     id: ChannelId,
-    name: Arc<str>,
-    group: Arc<str>,
+    name: SharedText,
+    group: SharedText,
     number: u32,
     variant: Option<ChannelVariant>,
 }
@@ -791,8 +770,8 @@ pub struct ChannelSummary {
 impl ChannelSummary {
     pub(crate) fn new(
         id: ChannelId,
-        name: Arc<str>,
-        group: Arc<str>,
+        name: SharedText,
+        group: SharedText,
         number: u32,
         variant: Option<ChannelVariant>,
     ) -> Self {
@@ -810,11 +789,11 @@ impl ChannelSummary {
     }
 
     pub fn name(&self) -> &str {
-        &self.name
+        self.name.as_str()
     }
 
     pub fn group(&self) -> &str {
-        &self.group
+        self.group.as_str()
     }
 
     /// Returns the Channel Number: the 1-based position of this Channel's guide
@@ -832,8 +811,8 @@ impl ChannelSummary {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChannelDetails {
     id: ChannelId,
-    name: Arc<str>,
-    group: Arc<str>,
+    name: SharedText,
+    group: SharedText,
     number: u32,
     variant: Option<ChannelVariant>,
 }
@@ -841,8 +820,8 @@ pub struct ChannelDetails {
 impl ChannelDetails {
     pub(crate) fn new(
         id: ChannelId,
-        name: Arc<str>,
-        group: Arc<str>,
+        name: SharedText,
+        group: SharedText,
         number: u32,
         variant: Option<ChannelVariant>,
     ) -> Self {
@@ -860,11 +839,11 @@ impl ChannelDetails {
     }
 
     pub fn name(&self) -> &str {
-        &self.name
+        self.name.as_str()
     }
 
     pub fn group(&self) -> &str {
-        &self.group
+        self.group.as_str()
     }
 
     /// Returns the Channel Number shared by this Channel's Quality Variants.
@@ -1066,57 +1045,29 @@ impl SelectionPrefix {
     }
 
     #[cfg(test)]
-    pub(crate) fn indices(&self) -> &[usize] {
-        &self.indices
-    }
-
-    #[cfg(test)]
     pub(crate) const fn total_len(&self) -> usize {
         self.total_len
     }
 }
 
 impl<T> Page<T> {
-    /// Projects only the requested bounded window from an immutable collection.
-    pub(crate) fn from_request(
+    /// Projects only the requested bounded range window using a batch projector
+    /// (allowing the caller to pack all strings for the window into one arena).
+    pub(crate) fn from_range_window(
         generation: CatalogGeneration,
-        items: Arc<[T]>,
         collection: Range<usize>,
         request: &PageRequest,
         query: CursorQueryHash,
-    ) -> Result<Self, CoreError>
-    where
-        T: Clone,
-    {
-        Self::from_projection(
-            generation,
-            items.as_ref(),
-            collection,
-            request,
-            query,
-            Clone::clone,
-        )
-    }
-
-    /// Projects only the requested bounded window from an internal source model.
-    pub(crate) fn from_projection<U>(
-        generation: CatalogGeneration,
-        source: &[U],
-        collection: Range<usize>,
-        request: &PageRequest,
-        query: CursorQueryHash,
-        project: impl FnMut(&U) -> T,
+        project_window: impl FnOnce(Range<usize>) -> Arc<[T]>,
     ) -> Result<Self, CoreError> {
         debug_assert!(collection.start <= collection.end);
-        debug_assert!(collection.end <= source.len());
-
         let window = page_window(generation, collection.len(), request, query)?;
         let range = (collection.start + window.range.start)..(collection.start + window.range.end);
-        let items = source[range].iter().map(project).collect::<Vec<_>>();
+        let items = project_window(range);
 
         Ok(Self {
             generation,
-            items: Arc::from(items),
+            items,
             next: window.next,
         })
     }
@@ -1125,51 +1076,48 @@ impl<T> Page<T> {
     ///
     /// The continuation is the ordinary cursor for `query` at the following
     /// position, so later pages need nothing from the request that chose it.
-    pub(crate) fn from_position_projection<U>(
+    pub(crate) fn from_position_window(
         generation: CatalogGeneration,
-        source: &[U],
+        collection_len: usize,
         position: usize,
         limit: PageLimit,
         query: CursorQueryHash,
-        project: impl FnMut(&U) -> T,
+        project_window: impl FnOnce(Range<usize>) -> Arc<[T]>,
     ) -> Self {
-        debug_assert!(position <= source.len());
-
-        let window = window_at(generation, source.len(), position, limit, query);
-        let items = source[window.range].iter().map(project).collect::<Vec<_>>();
+        debug_assert!(position <= collection_len);
+        let window = window_at(generation, collection_len, position, limit, query);
+        let items = project_window(window.range);
 
         Self {
             generation,
-            items: Arc::from(items),
+            items,
             next: window.next,
         }
     }
 
-    /// Selects only the prefix needed for this page, then projects its bounded window.
-    pub(crate) fn from_bounded_selection_projection<U>(
+    /// Selects only the prefix needed for this page, then projects its bounded
+    /// index slice in one batch.
+    pub(crate) fn from_bounded_selection_window(
         generation: CatalogGeneration,
-        source: &[U],
+        source_len: usize,
         request: &PageRequest,
         query: CursorQueryHash,
         select: impl FnOnce(usize) -> Result<SelectionPrefix, CoreError>,
-        mut project: impl FnMut(&U) -> T,
+        project_indices: impl FnOnce(&[usize]) -> Arc<[T]>,
     ) -> Result<Self, CoreError> {
-        let required_prefix_len = request.required_selection_prefix_len().min(source.len());
+        let required_prefix_len = request.required_selection_prefix_len().min(source_len);
         let selection = select(required_prefix_len)?;
-        debug_assert!(selection.indices.iter().all(|index| *index < source.len()));
+        debug_assert!(selection.indices.iter().all(|index| *index < source_len));
         debug_assert_eq!(
             selection.indices.len(),
             selection.total_len.min(required_prefix_len)
         );
         let window = page_window(generation, selection.total_len, request, query)?;
-        let items = selection.indices[window.range]
-            .iter()
-            .map(|index| project(&source[*index]))
-            .collect::<Vec<_>>();
+        let items = project_indices(&selection.indices[window.range]);
 
         Ok(Self {
             generation,
-            items: Arc::from(items),
+            items,
             next: window.next,
         })
     }

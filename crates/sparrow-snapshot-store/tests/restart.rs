@@ -8,12 +8,12 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use futures_util::stream;
 use sparrow_core::{
-    ChannelQuery, Clock, CoreAdapters, PageLimit, PageRequest, PrivateSourceValidators,
-    RefreshOutcome, RefreshTrigger, ScheduleQuery, SnapshotCandidate, SnapshotRevalidation,
-    SnapshotScan, SnapshotSource, SnapshotStage, SnapshotStageRequest, SnapshotStore, SourceAccess,
-    SourceAccessError, SourceAccessFailure, SourceByteStream, SourceConfiguration,
-    SourceConfigurationInput, SourceKind, SourceRequest, SourceResponse, SourceState, SparrowCore,
-    StoreError, ValidatedStage,
+    CatalogCacheMapping, ChannelQuery, Clock, CoreAdapters, PageLimit, PageRequest,
+    PrivateSourceValidators, RefreshOutcome, RefreshTrigger, ScheduleQuery, SnapshotCandidate,
+    SnapshotRevalidation, SnapshotScan, SnapshotSource, SnapshotStage, SnapshotStageRequest,
+    SnapshotStore, SourceAccess, SourceAccessError, SourceAccessFailure, SourceByteStream,
+    SourceConfiguration, SourceConfigurationInput, SourceKind, SourceRequest, SourceResponse,
+    SourceState, SparrowCore, StoreError, ValidatedStage,
 };
 use sparrow_snapshot_store::AtomicFileSnapshotStore;
 use tempfile::TempDir;
@@ -276,6 +276,8 @@ struct CapturingSnapshotStore {
     revalidations: Arc<AtomicUsize>,
     candidate_opens: Arc<AtomicUsize>,
     cache_writes: Arc<AtomicUsize>,
+    cancelled_cache_writes: Arc<AtomicUsize>,
+    fail_next_cache_writes: Arc<AtomicUsize>,
     cache_gate: Option<Arc<CacheWriteGate>>,
 }
 
@@ -288,6 +290,8 @@ impl CapturingSnapshotStore {
             revalidations: Arc::new(AtomicUsize::new(0)),
             candidate_opens: Arc::new(AtomicUsize::new(0)),
             cache_writes: Arc::new(AtomicUsize::new(0)),
+            cancelled_cache_writes: Arc::new(AtomicUsize::new(0)),
+            fail_next_cache_writes: Arc::new(AtomicUsize::new(0)),
             cache_gate: None,
         }
     }
@@ -321,17 +325,53 @@ impl SnapshotStore for CapturingSnapshotStore {
     fn catalog_cache_enabled(&self) -> bool {
         true
     }
-    fn read_catalog_cache(&self, key: &[u8; 32]) -> Option<Vec<u8>> {
-        self.inner.read_catalog_cache(key)
+    fn open_mapped_catalog_cache(
+        &self,
+        key: &[u8; 32],
+        candidates: &[&SnapshotCandidate],
+        validate: &mut dyn FnMut(&[u8]) -> bool,
+    ) -> Option<CatalogCacheMapping> {
+        self.inner
+            .open_mapped_catalog_cache(key, candidates, validate)
     }
-    fn write_catalog_cache(&self, key: &[u8; 32], bytes: &[u8]) {
+    fn write_mapped_catalog_cache(
+        &self,
+        key: &[u8; 32],
+        candidates: &[&SnapshotCandidate],
+        bytes: &[u8],
+        is_cancelled: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Option<CatalogCacheMapping> {
         if let Some(gate) = &self.cache_gate {
             gate.started.notify_one();
             let ready = gate.ready.lock().unwrap();
             drop(gate.changed.wait_while(ready, |ready| !*ready).unwrap());
         }
-        self.inner.write_catalog_cache(key, bytes);
-        self.cache_writes.fetch_add(1, Ordering::SeqCst);
+        let remaining_failures = self.fail_next_cache_writes.load(Ordering::SeqCst);
+        let mapping = if remaining_failures > 0
+            && self
+                .fail_next_cache_writes
+                .compare_exchange(
+                    remaining_failures,
+                    remaining_failures - 1,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                )
+                .is_ok()
+        {
+            None
+        } else {
+            self.inner
+                .write_mapped_catalog_cache(key, candidates, bytes, is_cancelled)
+        };
+        if mapping.is_some() {
+            self.cache_writes.fetch_add(1, Ordering::SeqCst);
+        } else if is_cancelled() {
+            self.cancelled_cache_writes.fetch_add(1, Ordering::SeqCst);
+        }
+        if let Some(gate) = &self.cache_gate {
+            gate.finished.notify_one();
+        }
+        mapping
     }
 
     async fn scan_candidates(&self, source: SnapshotSource) -> Result<SnapshotScan, StoreError> {
@@ -792,8 +832,15 @@ async fn processed_catalog_reopens_without_reading_source_payloads_and_recovers_
     let mut malformed = cache[..32].to_vec();
     malformed.extend_from_slice(blake3::hash(b"{}").as_bytes());
     malformed.extend_from_slice(b"{}");
-    for invalid in [wrong_key, damaged, cache[..40].to_vec(), malformed] {
-        std::fs::write(&cache_path, invalid).unwrap();
+    for (index, invalid) in [wrong_key, damaged, cache[..40].to_vec(), malformed]
+        .into_iter()
+        .enumerate()
+    {
+        // Replace atomically rather than truncating in place so no background
+        // worker holding a mapping to the prior inode can observe truncation.
+        let staging = directory.path().join(format!("test-damage-{index}.tmp"));
+        std::fs::write(&staging, invalid).unwrap();
+        std::fs::rename(&staging, &cache_path).unwrap();
         store.candidate_opens.store(0, Ordering::SeqCst);
         let writes = store.cache_writes.load(Ordering::SeqCst);
         let recovered = snapshot_restart(Arc::clone(&store), false).await;
@@ -907,6 +954,7 @@ async fn changed_source_bytes_replace_the_processed_catalog_and_survive_restart(
 #[derive(Default)]
 struct CacheWriteGate {
     started: tokio::sync::Notify,
+    finished: tokio::sync::Notify,
     ready: Mutex<bool>,
     changed: std::sync::Condvar,
 }
@@ -1045,4 +1093,1192 @@ async fn installed_startup_respects_the_six_hour_freshness_window() {
     })
     .await
     .expect("stale installed snapshot refreshes in background");
+}
+
+#[tokio::test]
+async fn same_length_active_payload_corruption_falls_back_to_previous_slot_even_with_warm_cache() {
+    let directory = TempDir::new().unwrap();
+    let disk = Arc::new(AtomicFileSnapshotStore::open(directory.path()).unwrap());
+    let store = Arc::new(CapturingSnapshotStore::new(Arc::clone(&disk)));
+    // Seed slot-a with Alpha + EPG, then refresh to slot-b with Beta so slot-a
+    // stays intact as the fallback snapshot.
+    drop(
+        bootstrap(
+            configuration(M3U_URL, EPG_URL),
+            FixtureSource::online(),
+            Arc::clone(&store),
+        )
+        .await,
+    );
+    let beta_source = FixtureSource {
+        channel_name: "Beta",
+        ..FixtureSource::online()
+    };
+    let core = SparrowCore::bootstrap_from_snapshots(
+        Some(configuration(M3U_URL, EPG_URL)),
+        CoreAdapters::new(
+            Arc::new(beta_source),
+            store.clone(),
+            Arc::new(FixedClock(parse_time("2026-08-29T12:00:00Z"))),
+        ),
+    )
+    .await
+    .unwrap();
+    wait_for_cache_write(&store, 0).await;
+    let writes = store.cache_writes.load(Ordering::SeqCst);
+    let _ = core.refresh(RefreshTrigger::Manual).await;
+    assert_eq!(channel_names(&core), ["Beta"]);
+    wait_for_cache_write(&store, writes).await;
+    drop(core);
+
+    // Confirm warm cache hits before corruption.
+    store.candidate_opens.store(0, Ordering::SeqCst);
+    let warm = snapshot_restart(Arc::clone(&store), true).await;
+    assert_eq!(channel_names(&warm), ["Beta"]);
+    assert_eq!(programme_titles(&warm), ["Persisted Programme"]);
+    assert_eq!(store.candidate_opens.load(Ordering::SeqCst), 0);
+    drop(warm);
+
+    // Back up active slot-b payload and pointer (like android-catalog-acceptance.ts),
+    // then flip 1 byte in-place inside active m3u/slot-b.payload with NO sleep so
+    // even same-tick coarse-clock mutations must be caught deterministically.
+    let active_payload = directory.path().join("m3u/slot-b.payload");
+    let active_pointer = directory.path().join("m3u/active.json");
+    let payload_backup = std::fs::read(&active_payload).unwrap();
+    let pointer_backup = std::fs::read(&active_pointer).unwrap();
+    let mut corrupted = payload_backup.clone();
+    assert!(!corrupted.is_empty());
+    corrupted[0] ^= 0xFF;
+    std::fs::write(&active_payload, &corrupted).unwrap();
+
+    // Offline restart must detect the corrupted active payload, bypass the warm
+    // processed cache, adopt fallback slot-a, and persist a fresh cache for slot-a.
+    store.candidate_opens.store(0, Ordering::SeqCst);
+    let writes = store.cache_writes.load(Ordering::SeqCst);
+    let recovered = snapshot_restart(Arc::clone(&store), false).await;
+    assert_eq!(channel_names(&recovered), ["Alpha"]);
+    assert_eq!(programme_titles(&recovered), ["Persisted Programme"]);
+    assert!(store.candidate_opens.load(Ordering::SeqCst) > 0);
+    let pointer = std::fs::read_to_string(&active_pointer).unwrap();
+    assert!(
+        pointer.contains("\"a\"") || pointer.contains("\"slot\":\"a\""),
+        "fallback slot-a should be adopted: {pointer}"
+    );
+    wait_for_cache_write(&store, writes).await;
+    drop(recovered);
+
+    // Simulate android-catalog-acceptance.ts byte-identical restore: copy the
+    // original payload and pointer back, leaving slot-b.manifest.json older than
+    // slot-b.payload. Two subsequent offline restarts must recover Beta and then
+    // hit the warm cache cleanly (warm startup is never permanently disabled).
+    let active_manifest = directory.path().join("m3u/slot-b.manifest.json");
+    wait_for_fs_tick_after(directory.path(), &[&active_manifest]);
+    std::fs::write(&active_payload, &payload_backup).unwrap();
+    std::fs::write(&active_pointer, &pointer_backup).unwrap();
+
+    // Offline restart 1 after restore: verifies restored slot-b and refreshes cache.
+    let writes = store.cache_writes.load(Ordering::SeqCst);
+    let after_restore_1 = snapshot_restart(Arc::clone(&store), false).await;
+    assert_eq!(channel_names(&after_restore_1), ["Beta"]);
+    assert_eq!(programme_titles(&after_restore_1), ["Persisted Programme"]);
+    wait_for_cache_write(&store, writes).await;
+    drop(after_restore_1);
+
+    // Offline restart 2 after restore: warm cache hit with zero raw candidate opens.
+    store.candidate_opens.store(0, Ordering::SeqCst);
+    let after_restore_2 = snapshot_restart(Arc::clone(&store), true).await;
+    assert_eq!(channel_names(&after_restore_2), ["Beta"]);
+    assert_eq!(programme_titles(&after_restore_2), ["Persisted Programme"]);
+    assert_eq!(store.candidate_opens.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn unused_corrupt_epg_snapshot_does_not_veto_m3u_only_warm_cache() {
+    let directory = TempDir::new().unwrap();
+    let disk = Arc::new(AtomicFileSnapshotStore::open(directory.path()).unwrap());
+    let store = Arc::new(CapturingSnapshotStore::new(Arc::clone(&disk)));
+    // Seed both M3U and EPG snapshots first.
+    drop(
+        bootstrap(
+            configuration(M3U_URL, EPG_URL),
+            FixtureSource::online(),
+            Arc::clone(&store),
+        )
+        .await,
+    );
+    // Switch to an M3U-only Source Configuration and persist its warm cache.
+    let m3u_only = SparrowCore::parse_source_configuration(SourceConfigurationInput::new(
+        M3U_URL,
+        None::<String>,
+    ))
+    .unwrap();
+    let writes = store.cache_writes.load(Ordering::SeqCst);
+    let seeded_m3u_only = SparrowCore::bootstrap_from_snapshots(
+        Some(m3u_only),
+        CoreAdapters::new(
+            Arc::new(FixtureSource::rejecting()),
+            store.clone(),
+            Arc::new(FixedClock(parse_time("2026-08-29T12:00:00Z"))),
+        ),
+    )
+    .await
+    .unwrap();
+    wait_for_cache_write(&store, writes).await;
+    drop(seeded_m3u_only);
+
+    // Damage the abandoned EPG directory completely.
+    std::fs::write(directory.path().join("epg/active.json"), b"{corrupt").unwrap();
+    std::fs::remove_file(directory.path().join("epg/slot-a.payload")).unwrap();
+
+    // Reopening the M3U-only configuration must still hit the warm cache.
+    let m3u_only = SparrowCore::parse_source_configuration(SourceConfigurationInput::new(
+        M3U_URL,
+        None::<String>,
+    ))
+    .unwrap();
+    store.candidate_opens.store(0, Ordering::SeqCst);
+    let warm = SparrowCore::bootstrap_installed(
+        Some(m3u_only),
+        CoreAdapters::new(
+            Arc::new(FixtureSource::rejecting()),
+            store.clone(),
+            Arc::new(FixedClock(parse_time("2026-08-29T12:00:00Z"))),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(channel_names(&warm), ["Alpha"]);
+    assert_eq!(store.candidate_opens.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn deferred_epg_recovery_and_concurrent_m3u_refresh_do_not_deadlock_one_blocking_worker() {
+    use std::fmt::Write as _;
+
+    struct LargeM3uSource {
+        m3u_payload: Bytes,
+        epg_payload: Option<Bytes>,
+    }
+
+    #[async_trait]
+    impl SourceAccess for LargeM3uSource {
+        async fn open(
+            &self,
+            request: SourceRequest,
+        ) -> Result<SourceResponse, SourceAccessFailure> {
+            let payload = match request.kind() {
+                SourceKind::M3u => self.m3u_payload.clone(),
+                SourceKind::Epg => self
+                    .epg_payload
+                    .clone()
+                    .ok_or_else(|| SourceAccessFailure::from(SourceAccessError::Unavailable))?,
+            };
+            let len = payload.len() as u64;
+            Ok(SourceResponse::new(
+                Some(len),
+                Box::pin(stream::iter([Ok(payload)])),
+            ))
+        }
+    }
+
+    let make_m3u = |prefix: &str| {
+        let mut m3u = String::from("#EXTM3U\n");
+        // Exceed BLOCKING_OFFLOAD_CHANNELS so publish_m3u offloads onto the
+        // Tokio blocking pool while holding `catalog_build`.
+        for i in 0..600 {
+            writeln!(
+                m3u,
+                "#EXTINF:-1 tvg-id=\"alpha.id\" group-title=\"News\",{prefix} {i:04}\nhttps://media.fixture.invalid/ch/{i}"
+            )
+            .unwrap();
+        }
+        Bytes::from(m3u)
+    };
+
+    let make_large_epg = || {
+        // Exceed both BLOCKING_OFFLOAD_CHANNELS (64) and BLOCKING_OFFLOAD_BYTES
+        // (32 KiB) so deferred EPG recovery MUST offload both `xmltv::parse` and
+        // `with_updated_guide` onto the Tokio blocking pool; a `spawn_blocking` +
+        // `block_on` wrapper would deterministically self-deadlock on 1 worker.
+        let mut xml = String::from(
+            "<tv><channel id=\"alpha.id\"><display-name>Alpha</display-name></channel>\n",
+        );
+        let padding = "x".repeat(512);
+        for i in 0..80 {
+            let start_min = i * 5;
+            let end_min = start_min + 5;
+            let sh = 12 + start_min / 60;
+            let sm = start_min % 60;
+            let eh = 12 + end_min / 60;
+            let em = end_min % 60;
+            writeln!(
+                xml,
+                "<programme start=\"20260829{sh:02}{sm:02}00 +0000\" stop=\"20260829{eh:02}{em:02}00 +0000\" channel=\"alpha.id\"><title>Persisted Programme {i:04}</title><desc>{padding}</desc></programme>"
+            )
+            .unwrap();
+        }
+        xml.push_str("</tv>\n");
+        Bytes::from(xml)
+    };
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let outcome: Result<(), String> = rt.block_on(async {
+        let directory = TempDir::new().unwrap();
+        let disk = Arc::new(AtomicFileSnapshotStore::open(directory.path()).unwrap());
+        let store = Arc::new(CapturingSnapshotStore::new(Arc::clone(&disk)));
+        let seed_source = Arc::new(LargeM3uSource {
+            m3u_payload: make_m3u("Alpha"),
+            epg_payload: Some(make_large_epg()),
+        });
+        let seeded = SparrowCore::bootstrap(
+            Some(configuration(M3U_URL, EPG_URL)),
+            CoreAdapters::new(
+                seed_source,
+                store.clone(),
+                Arc::new(FixedClock(parse_time("2026-08-29T12:00:00Z"))),
+            ),
+        )
+        .await
+        .unwrap();
+        drop(seeded);
+        let _ = std::fs::remove_file(directory.path().join("catalog-cache-v1"));
+
+        // Progressive installed restart defers EPG recovery until activate_automation().
+        // Network EPG is disabled so restored programmes can come ONLY from the
+        // deferred saved-snapshot recovery path.
+        let refresh_source = Arc::new(LargeM3uSource {
+            m3u_payload: make_m3u("Beta"),
+            epg_payload: None,
+        });
+        let core = SparrowCore::bootstrap_installed(
+            Some(configuration(M3U_URL, EPG_URL)),
+            CoreAdapters::new(
+                refresh_source,
+                store.clone(),
+                Arc::new(FixedClock(parse_time("2026-08-29T12:00:00Z"))),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(programme_titles(&core).is_empty());
+
+        // Start deferred EPG recovery and a blocking-offloaded M3U refresh at the
+        // same time on a 1-worker blocking pool; both must complete without deadlock.
+        core.activate_automation();
+        let report = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            core.refresh(RefreshTrigger::Manual),
+        )
+        .await
+        {
+            Ok(report) => report,
+            Err(_) => {
+                return Err(
+                    "1-worker blocking pool deadlocked between deferred EPG and M3U refresh"
+                        .to_owned(),
+                );
+            }
+        };
+        if !matches!(report.m3u(), RefreshOutcome::Updated { .. }) {
+            return Err(format!(
+                "expected updated M3U outcome, got {:?}",
+                report.m3u()
+            ));
+        }
+        if channel_names(&core).first().map(String::as_str) != Some("Beta 0000") {
+            return Err(format!(
+                "unexpected first channel: {:?}",
+                channel_names(&core).first()
+            ));
+        }
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while programme_titles(&core).is_empty() {
+            if tokio::time::Instant::now() >= deadline {
+                return Err(
+                    "deferred saved EPG failed to finish restoring on a 1-worker blocking pool"
+                        .to_owned(),
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        if programme_titles(&core).first().map(String::as_str) != Some("Persisted Programme 0000") {
+            return Err(format!(
+                "unexpected first programme: {:?}",
+                programme_titles(&core).first()
+            ));
+        }
+        Ok(())
+    });
+    // Bound teardown so a deadlocked blocking worker cannot hang `cargo test`.
+    rt.shutdown_timeout(std::time::Duration::from_secs(1));
+    if let Err(message) = outcome {
+        panic!("{message}");
+    }
+}
+
+struct OrderedConcurrentSource {
+    m3u_name: Mutex<&'static str>,
+    m3u_gate: Option<Arc<tokio::sync::Semaphore>>,
+    epg_gate: Option<Arc<tokio::sync::Semaphore>>,
+    m3u_entered: Arc<tokio::sync::Notify>,
+    epg_entered: Arc<tokio::sync::Notify>,
+    epg_returns_not_modified: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[async_trait]
+impl SourceAccess for OrderedConcurrentSource {
+    async fn open(&self, request: SourceRequest) -> Result<SourceResponse, SourceAccessFailure> {
+        match request.kind() {
+            SourceKind::M3u => {
+                self.m3u_entered.notify_one();
+                if let Some(gate) = &self.m3u_gate {
+                    let _ = gate.acquire().await;
+                }
+                let name = *self.m3u_name.lock().unwrap();
+                let payload = Bytes::from(String::from_utf8_lossy(M3U).replace("Alpha", name));
+                let len = payload.len() as u64;
+                Ok(SourceResponse::with_validators(
+                    Some(len),
+                    Box::pin(stream::iter([Ok(payload)])),
+                    PrivateSourceValidators::parse(Some(format!("m3u-{name}")), None).unwrap(),
+                ))
+            }
+            SourceKind::Epg => {
+                self.epg_entered.notify_one();
+                if let Some(gate) = &self.epg_gate {
+                    let _ = gate.acquire().await;
+                }
+                if self.epg_returns_not_modified.load(Ordering::SeqCst) {
+                    return Ok(SourceResponse::not_modified(
+                        PrivateSourceValidators::parse(
+                            Some("epg-304-revalidated".to_owned()),
+                            None,
+                        )
+                        .unwrap(),
+                    ));
+                }
+                let payload = Bytes::from_static(EPG);
+                let len = payload.len() as u64;
+                Ok(SourceResponse::with_validators(
+                    Some(len),
+                    Box::pin(stream::iter([Ok(payload)])),
+                    PrivateSourceValidators::parse(Some("epg-initial".to_owned()), None).unwrap(),
+                ))
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn concurrent_m3u_update_and_epg_not_modified_preserve_guide_in_both_orders() {
+    for epg_finishes_first in [true, false] {
+        let directory = TempDir::new().unwrap();
+        let disk = Arc::new(AtomicFileSnapshotStore::open(directory.path()).unwrap());
+        let store = Arc::new(CapturingSnapshotStore::new(Arc::clone(&disk)));
+        let clock = ControlledClock::at("2026-08-29T12:00:00Z");
+
+        let m3u_gate = Arc::new(tokio::sync::Semaphore::new(1));
+        let epg_gate = Arc::new(tokio::sync::Semaphore::new(1));
+        let m3u_entered = Arc::new(tokio::sync::Notify::new());
+        let epg_entered = Arc::new(tokio::sync::Notify::new());
+        let epg_not_modified = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let source = Arc::new(OrderedConcurrentSource {
+            m3u_name: Mutex::new("Alpha"),
+            m3u_gate: Some(Arc::clone(&m3u_gate)),
+            epg_gate: Some(Arc::clone(&epg_gate)),
+            m3u_entered: Arc::clone(&m3u_entered),
+            epg_entered: Arc::clone(&epg_entered),
+            epg_returns_not_modified: Arc::clone(&epg_not_modified),
+        });
+
+        // Seed Alpha + EPG snapshots and persist the warm mmap cache first so
+        // the concurrent refresh below exercises rematching cold EPG tables
+        // directly from a mapped catalog in both publication orderings.
+        drop(
+            SparrowCore::bootstrap(
+                Some(configuration(M3U_URL, EPG_URL)),
+                CoreAdapters::new(
+                    Arc::clone(&source) as _,
+                    store.clone(),
+                    Arc::new(clock.clone()),
+                ),
+            )
+            .await
+            .unwrap(),
+        );
+        let builder = SparrowCore::bootstrap_from_snapshots(
+            Some(configuration(M3U_URL, EPG_URL)),
+            CoreAdapters::new(
+                Arc::clone(&source) as _,
+                store.clone(),
+                Arc::new(clock.clone()),
+            ),
+        )
+        .await
+        .unwrap();
+        wait_for_cache_write(&store, 0).await;
+        drop(builder);
+
+        store.candidate_opens.store(0, Ordering::SeqCst);
+        let core = SparrowCore::bootstrap_installed(
+            Some(configuration(M3U_URL, EPG_URL)),
+            CoreAdapters::new(
+                Arc::clone(&source) as _,
+                store.clone(),
+                Arc::new(clock.clone()),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(store.candidate_opens.load(Ordering::SeqCst), 0);
+        assert_eq!(channel_names(&core), ["Alpha"]);
+        assert_eq!(programme_titles(&core), ["Persisted Programme"]);
+
+        // Now change M3U to Beta and make EPG return 304 Not Modified, gating
+        // the two concurrent refreshes to exercise both publication orderings.
+        *source.m3u_name.lock().unwrap() = "Beta";
+        epg_not_modified.store(true, Ordering::SeqCst);
+        clock.set("2026-08-29T13:00:00Z");
+        let _m3u_hold = m3u_gate.acquire().await.unwrap();
+        let _epg_hold = epg_gate.acquire().await.unwrap();
+
+        let refresh_task = tokio::spawn({
+            let core = core.clone();
+            async move { core.refresh(RefreshTrigger::Manual).await }
+        });
+        m3u_entered.notified().await;
+        epg_entered.notified().await;
+
+        let writes = store.cache_writes.load(Ordering::SeqCst);
+        if epg_finishes_first {
+            drop(_epg_hold);
+            // Wait until EPG revalidation writes the new manifest on disk.
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while store.revalidation_count() == 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("EPG revalidates before M3U publishes");
+            drop(_m3u_hold);
+        } else {
+            drop(_m3u_hold);
+            // Wait until M3U publishes Beta while EPG 304 is still in flight.
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while channel_names(&core) != ["Beta"] {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("M3U publishes before EPG 304 finishes");
+            drop(_epg_hold);
+        }
+
+        let report = refresh_task.await.expect("refresh must not panic");
+        assert!(matches!(report.m3u(), RefreshOutcome::Updated { .. }));
+        assert!(matches!(
+            report.epg(),
+            Some(RefreshOutcome::NotModified { .. })
+        ));
+        assert_eq!(channel_names(&core), ["Beta"]);
+        assert_eq!(
+            programme_titles(&core),
+            ["Persisted Programme"],
+            "EPG must remain attached (epg_finishes_first={epg_finishes_first})"
+        );
+        assert!(matches!(
+            core.status().epg(),
+            Some(SourceState::Fresh { .. })
+        ));
+
+        wait_for_cache_write(&store, writes).await;
+        drop(core);
+
+        store.candidate_opens.store(0, Ordering::SeqCst);
+        let reopened = snapshot_restart(Arc::clone(&store), true).await;
+        assert_eq!(channel_names(&reopened), ["Beta"]);
+        assert_eq!(programme_titles(&reopened), ["Persisted Programme"]);
+        assert_eq!(store.candidate_opens.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn configuration_replacement_queues_recovered_catalog_cache_even_when_refresh_fails() {
+    let directory = TempDir::new().unwrap();
+    let disk = Arc::new(AtomicFileSnapshotStore::open(directory.path()).unwrap());
+    let store = Arc::new(CapturingSnapshotStore::new(Arc::clone(&disk)));
+    drop(
+        bootstrap(
+            configuration(M3U_URL, EPG_URL),
+            FixtureSource::online(),
+            Arc::clone(&store),
+        )
+        .await,
+    );
+    let _ = std::fs::remove_file(directory.path().join("catalog-cache-v1"));
+
+    let core = SparrowCore::bootstrap(
+        None,
+        CoreAdapters::new(
+            Arc::new(FixtureSource::rejecting()),
+            store.clone(),
+            Arc::new(FixedClock(parse_time("2026-08-29T12:00:00Z"))),
+        ),
+    )
+    .await
+    .unwrap();
+    let writes = store.cache_writes.load(Ordering::SeqCst);
+    let status = core
+        .replace_source_configuration(Some(configuration(M3U_URL, EPG_URL)))
+        .await;
+    assert!(status.generation().is_some());
+    assert_eq!(channel_names(&core), ["Alpha"]);
+    assert_eq!(programme_titles(&core), ["Persisted Programme"]);
+    wait_for_cache_write(&store, writes).await;
+    drop(core);
+
+    store.candidate_opens.store(0, Ordering::SeqCst);
+    let reopened = snapshot_restart(Arc::clone(&store), true).await;
+    assert_eq!(channel_names(&reopened), ["Alpha"]);
+    assert_eq!(programme_titles(&reopened), ["Persisted Programme"]);
+    assert_eq!(store.candidate_opens.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn blocked_cache_writer_cancels_superseded_generation_and_persists_latest_across_two_updates()
+{
+    struct MutableNameSource(Mutex<&'static str>);
+
+    #[async_trait]
+    impl SourceAccess for MutableNameSource {
+        async fn open(
+            &self,
+            request: SourceRequest,
+        ) -> Result<SourceResponse, SourceAccessFailure> {
+            let payload = match request.kind() {
+                SourceKind::M3u => {
+                    let name = *self.0.lock().unwrap();
+                    Bytes::from(String::from_utf8_lossy(M3U).replace("Alpha", name))
+                }
+                SourceKind::Epg => Bytes::from_static(EPG),
+            };
+            let len = payload.len() as u64;
+            Ok(SourceResponse::new(
+                Some(len),
+                Box::pin(stream::iter([Ok(payload)])),
+            ))
+        }
+    }
+
+    let directory = TempDir::new().unwrap();
+    let disk = Arc::new(AtomicFileSnapshotStore::open(directory.path()).unwrap());
+    drop(
+        bootstrap(
+            configuration(M3U_URL, EPG_URL),
+            FixtureSource::online(),
+            Arc::clone(&disk),
+        )
+        .await,
+    );
+    let gate = Arc::new(CacheWriteGate::default());
+    let release = ReleaseCacheWrite(Arc::clone(&gate));
+    let store = Arc::new(CapturingSnapshotStore {
+        cache_gate: Some(Arc::clone(&gate)),
+        ..CapturingSnapshotStore::new(disk)
+    });
+    let source = Arc::new(MutableNameSource(Mutex::new("Beta")));
+    let core = SparrowCore::bootstrap_installed(
+        Some(configuration(M3U_URL, EPG_URL)),
+        CoreAdapters::new(
+            Arc::clone(&source) as _,
+            store.clone(),
+            Arc::new(FixedClock(parse_time("2026-08-29T12:00:00Z"))),
+        ),
+    )
+    .await
+    .unwrap();
+    // Wait until the background writer enters write_catalog_cache for Alpha.
+    core.activate_automation();
+    tokio::time::timeout(std::time::Duration::from_secs(2), gate.started.notified())
+        .await
+        .unwrap();
+
+    // Publish two content-changing generations (Beta, then Gamma) while write A
+    // is blocked inside write_catalog_cache. Neither refresh may stall.
+    let beta_report = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        core.refresh(RefreshTrigger::Manual),
+    )
+    .await
+    .expect("first update completes while cache writer is blocked");
+    assert!(matches!(beta_report.m3u(), RefreshOutcome::Updated { .. }));
+    assert_eq!(channel_names(&core), ["Beta"]);
+
+    *source.0.lock().unwrap() = "Gamma";
+    let gamma_report = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        core.refresh(RefreshTrigger::Manual),
+    )
+    .await
+    .expect("second update completes while cache writer is blocked");
+    assert!(matches!(gamma_report.m3u(), RefreshOutcome::Updated { .. }));
+    assert_eq!(channel_names(&core), ["Gamma"]);
+
+    // Release the gate: the superseded write should cancel and the worker must
+    // immediately persist the final generation (Gamma).
+    drop(release);
+    wait_for_cache_write(&store, 0).await;
+    assert!(
+        store.cancelled_cache_writes.load(Ordering::SeqCst) >= 1,
+        "superseded blocked write must observe cancellation"
+    );
+    drop(core);
+
+    store.candidate_opens.store(0, Ordering::SeqCst);
+    let reopened = snapshot_restart(Arc::clone(&store), true).await;
+    assert_eq!(channel_names(&reopened), ["Gamma"]);
+    assert_eq!(programme_titles(&reopened), ["Persisted Programme"]);
+    assert_eq!(store.candidate_opens.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn delayed_cache_write_does_not_certify_corrupted_raw_snapshot() {
+    let directory = TempDir::new().unwrap();
+    let disk = Arc::new(AtomicFileSnapshotStore::open(directory.path()).unwrap());
+    let m3u_only = SparrowCore::parse_source_configuration(SourceConfigurationInput::new(
+        M3U_URL,
+        None::<String>,
+    ))
+    .unwrap();
+    drop(bootstrap(m3u_only, FixtureSource::online(), Arc::clone(&disk)).await);
+    let _ = std::fs::remove_file(directory.path().join("catalog-cache-v1"));
+    let _ = std::fs::remove_file(directory.path().join("catalog-cache-v1.stamp"));
+    // Advance past the payload's filesystem tick before reopening so the
+    // subsequent check cannot rely on tied timestamps to catch the corruption.
+    let active_payload = directory.path().join("m3u/slot-a.payload");
+    wait_for_fs_tick_after(directory.path(), &[&active_payload]);
+
+    // Pause the background cache writer right after recovery and before
+    // `AtomicFileSnapshotStore::write_mapped_catalog_cache` runs.
+    let gate = Arc::new(CacheWriteGate::default());
+    let release = ReleaseCacheWrite(Arc::clone(&gate));
+    let store = Arc::new(CapturingSnapshotStore {
+        cache_gate: Some(Arc::clone(&gate)),
+        ..CapturingSnapshotStore::new(Arc::clone(&disk))
+    });
+    let m3u_only = SparrowCore::parse_source_configuration(SourceConfigurationInput::new(
+        M3U_URL,
+        None::<String>,
+    ))
+    .unwrap();
+    let core = SparrowCore::bootstrap_installed(
+        Some(m3u_only),
+        CoreAdapters::new(
+            Arc::new(FixtureSource::rejecting()),
+            store.clone(),
+            Arc::new(FixedClock(parse_time("2026-08-29T12:00:00Z"))),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(channel_names(&core), ["Alpha"]);
+    core.activate_automation();
+    tokio::time::timeout(std::time::Duration::from_secs(2), gate.started.notified())
+        .await
+        .unwrap();
+
+    // Corrupt 1 byte in-place inside the sole M3U payload without changing its
+    // length, then release the delayed cache writer and wait for the live,
+    // uncancelled write attempt to finish BEFORE dropping `core`.
+    let active_payload = directory.path().join("m3u/slot-a.payload");
+    let mut corrupted = std::fs::read(&active_payload).unwrap();
+    corrupted[0] ^= 0xFF;
+    std::fs::write(&active_payload, &corrupted).unwrap();
+    let finished = gate.finished.notified();
+    drop(release);
+    tokio::time::timeout(std::time::Duration::from_secs(2), finished)
+        .await
+        .expect("delayed cache write must finish while core is alive");
+
+    assert_eq!(
+        store.cancelled_cache_writes.load(Ordering::SeqCst),
+        0,
+        "write must complete live rather than being cancelled by drop"
+    );
+    assert_eq!(
+        store.cache_writes.load(Ordering::SeqCst),
+        0,
+        "corrupted payload must cause write_mapped_catalog_cache to return None"
+    );
+    assert!(
+        !directory.path().join("catalog-cache-v1").exists(),
+        "rejected write must leave catalog-cache-v1 absent"
+    );
+    drop(core);
+
+    // Offline launch must reject the sole corrupted M3U snapshot instead of
+    // serving cached Alpha.
+    let m3u_only = SparrowCore::parse_source_configuration(SourceConfigurationInput::new(
+        M3U_URL,
+        None::<String>,
+    ))
+    .unwrap();
+    let offline = SparrowCore::bootstrap_installed(
+        Some(m3u_only),
+        CoreAdapters::new(
+            Arc::new(FixtureSource::rejecting()),
+            Arc::new(CapturingSnapshotStore::new(disk)),
+            Arc::new(FixedClock(parse_time("2026-08-29T12:00:00Z"))),
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(
+        offline.status().generation().is_none(),
+        "corrupted sole snapshot must not be masked by a delayed cache write"
+    );
+}
+
+#[tokio::test]
+async fn configured_unavailable_epg_still_persists_and_promotes_m3u_cache() {
+    struct M3uOnlyOnlineSource;
+
+    #[async_trait]
+    impl SourceAccess for M3uOnlyOnlineSource {
+        async fn open(
+            &self,
+            request: SourceRequest,
+        ) -> Result<SourceResponse, SourceAccessFailure> {
+            match request.kind() {
+                SourceKind::M3u => Ok(SourceResponse::new(
+                    Some(M3U.len() as u64),
+                    Box::pin(stream::iter([Ok(Bytes::from_static(M3U))])),
+                )),
+                SourceKind::Epg => Err(SourceAccessError::Unavailable.into()),
+            }
+        }
+    }
+
+    let directory = TempDir::new().unwrap();
+    let disk = Arc::new(AtomicFileSnapshotStore::open(directory.path()).unwrap());
+    let store = Arc::new(CapturingSnapshotStore::new(Arc::clone(&disk)));
+
+    // Seed a valid M3U snapshot with a configured EPG that has no saved snapshot.
+    drop(
+        SparrowCore::bootstrap(
+            Some(configuration(M3U_URL, EPG_URL)),
+            CoreAdapters::new(
+                Arc::new(M3uOnlyOnlineSource),
+                store.clone(),
+                Arc::new(FixedClock(parse_time("2026-08-29T12:00:00Z"))),
+            ),
+        )
+        .await
+        .unwrap(),
+    );
+    let _ = std::fs::remove_file(directory.path().join("catalog-cache-v1"));
+    let _ = std::fs::remove_file(directory.path().join("catalog-cache-v1.stamp"));
+
+    // Progressive installed restart defers cache persistence until deferred EPG
+    // recovery finishes. When no saved EPG exists, the owned M3U catalog must
+    // still be persisted and promoted after deferred recovery completes.
+    let writes = store.cache_writes.load(Ordering::SeqCst);
+    let core = snapshot_restart(Arc::clone(&store), true).await;
+    assert_eq!(channel_names(&core), ["Alpha"]);
+    core.activate_automation();
+    wait_for_cache_write(&store, writes).await;
+    drop(core);
+
+    // Subsequent offline restart must hit the warm M3U-only cache with zero raw
+    // candidate opens.
+    store.candidate_opens.store(0, Ordering::SeqCst);
+    let warm = snapshot_restart(Arc::clone(&store), true).await;
+    assert_eq!(channel_names(&warm), ["Alpha"]);
+    assert!(programme_titles(&warm).is_empty());
+    assert_eq!(store.candidate_opens.load(Ordering::SeqCst), 0);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn same_key_byte_identical_restore_keeps_cache_inode_and_refreshes_stamp_sidecar() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let directory = TempDir::new().unwrap();
+    let disk = Arc::new(AtomicFileSnapshotStore::open(directory.path()).unwrap());
+    let store = Arc::new(CapturingSnapshotStore::new(Arc::clone(&disk)));
+    drop(
+        bootstrap(
+            configuration(M3U_URL, EPG_URL),
+            FixtureSource::online(),
+            Arc::clone(&store),
+        )
+        .await,
+    );
+    let seed = snapshot_restart(Arc::clone(&store), false).await;
+    wait_for_cache_write(&store, 0).await;
+    drop(seed);
+
+    let cache_path = directory.path().join("catalog-cache-v1");
+    let stamp_path = directory.path().join("catalog-cache-v1.stamp");
+    let cache_inode = std::fs::metadata(&cache_path).unwrap().ino();
+    let initial_stamp_bytes = std::fs::read(&stamp_path).unwrap();
+
+    // Byte-identical external restore keeping the exact same cache key (slot-a)
+    // and preserving private 0o600 permissions so scan does not touch ctime.
+    let payload_path = directory.path().join("m3u/slot-a.payload");
+    let payload_bytes = std::fs::read(&payload_path).unwrap();
+    let restored_tmp = directory.path().join("m3u/restore-same-key.tmp");
+    std::fs::write(&restored_tmp, &payload_bytes).unwrap();
+    std::fs::set_permissions(&restored_tmp, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::rename(&restored_tmp, &payload_path).unwrap();
+    let epg_payload = directory.path().join("epg/slot-a.payload");
+    wait_for_fs_tick_after(directory.path(), &[&payload_path, &epg_payload]);
+
+    // Offline restart 1: verifies raw payload, serves mapped cache with zero
+    // raw candidate opens, preserves catalog-cache-v1 inode, and refreshes
+    // catalog-cache-v1.stamp atomically.
+    store.candidate_opens.store(0, Ordering::SeqCst);
+    let after_restore_1 = snapshot_restart(Arc::clone(&store), true).await;
+    assert_eq!(channel_names(&after_restore_1), ["Alpha"]);
+    assert_eq!(programme_titles(&after_restore_1), ["Persisted Programme"]);
+    assert_eq!(store.candidate_opens.load(Ordering::SeqCst), 0);
+    assert_eq!(std::fs::metadata(&cache_path).unwrap().ino(), cache_inode);
+    let refreshed_stamp_bytes = std::fs::read(&stamp_path).unwrap();
+    let refreshed_stamp_inode = std::fs::metadata(&stamp_path).unwrap().ino();
+    assert_ne!(refreshed_stamp_bytes, initial_stamp_bytes);
+    drop(after_restore_1);
+
+    // Offline restart 2: fast path hits without rewriting either file.
+    store.candidate_opens.store(0, Ordering::SeqCst);
+    let after_restore_2 = snapshot_restart(Arc::clone(&store), true).await;
+    assert_eq!(channel_names(&after_restore_2), ["Alpha"]);
+    assert_eq!(programme_titles(&after_restore_2), ["Persisted Programme"]);
+    assert_eq!(store.candidate_opens.load(Ordering::SeqCst), 0);
+    assert_eq!(std::fs::metadata(&cache_path).unwrap().ino(), cache_inode);
+    assert_eq!(
+        std::fs::metadata(&stamp_path).unwrap().ino(),
+        refreshed_stamp_inode
+    );
+}
+
+#[tokio::test]
+async fn transient_cache_write_failure_retries_promotion_on_subsequent_not_modified_refresh() {
+    let directory = TempDir::new().unwrap();
+    let disk = Arc::new(AtomicFileSnapshotStore::open(directory.path()).unwrap());
+    let online = ConditionalFixtureSource::new();
+    let seed_store = Arc::new(CapturingSnapshotStore::new(Arc::clone(&disk)));
+    drop(
+        SparrowCore::bootstrap(
+            Some(configuration(M3U_URL, EPG_URL)),
+            CoreAdapters::new(
+                Arc::new(online.clone()),
+                seed_store.clone(),
+                Arc::new(FixedClock(parse_time("2026-08-29T12:00:00Z"))),
+            ),
+        )
+        .await
+        .unwrap(),
+    );
+    let _ = std::fs::remove_file(directory.path().join("catalog-cache-v1"));
+    let _ = std::fs::remove_file(directory.path().join("catalog-cache-v1.stamp"));
+
+    // Fail the initial background cache write transiently (e.g., disk full),
+    // leaving the published catalog Owned.
+    let gate = Arc::new(CacheWriteGate::default());
+    let release = ReleaseCacheWrite(Arc::clone(&gate));
+    let store = Arc::new(CapturingSnapshotStore {
+        fail_next_cache_writes: Arc::new(AtomicUsize::new(1)),
+        cache_gate: Some(Arc::clone(&gate)),
+        ..CapturingSnapshotStore::new(Arc::clone(&disk))
+    });
+    let core = SparrowCore::bootstrap_from_snapshots(
+        Some(configuration(M3U_URL, EPG_URL)),
+        CoreAdapters::new(
+            Arc::new(online.clone()),
+            store.clone(),
+            Arc::new(FixedClock(parse_time("2026-08-29T12:00:00Z"))),
+        ),
+    )
+    .await
+    .unwrap();
+    let first_attempt_done = gate.finished.notified();
+    drop(release);
+    tokio::time::timeout(std::time::Duration::from_secs(2), first_attempt_done)
+        .await
+        .expect("initial failed cache write attempt finishes");
+    assert_eq!(store.cache_writes.load(Ordering::SeqCst), 0);
+
+    // Space becomes available; a 304 NotModified refresh must queue a retry for
+    // the still-Owned catalog and persist/promote it.
+    let report = core.refresh(RefreshTrigger::Manual).await;
+    assert!(matches!(report.m3u(), RefreshOutcome::NotModified { .. }));
+    assert!(matches!(
+        report.epg(),
+        Some(RefreshOutcome::NotModified { .. })
+    ));
+    wait_for_cache_write(&store, 0).await;
+    drop(core);
+
+    // Next offline restart hits the persisted warm cache cleanly.
+    store.candidate_opens.store(0, Ordering::SeqCst);
+    let warm = snapshot_restart(Arc::clone(&store), true).await;
+    assert_eq!(channel_names(&warm), ["Alpha"]);
+    assert_eq!(programme_titles(&warm), ["Persisted Programme"]);
+    assert_eq!(store.candidate_opens.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn deferred_epg_adoption_does_not_roll_back_concurrent_epg_refresh_on_disk() {
+    struct AdoptGatedStore {
+        inner: Arc<AtomicFileSnapshotStore>,
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        finished: Arc<tokio::sync::Notify>,
+        gate_epg_adopt: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait]
+    impl SnapshotStore for AdoptGatedStore {
+        fn catalog_cache_enabled(&self) -> bool {
+            self.inner.catalog_cache_enabled()
+        }
+
+        fn open_mapped_catalog_cache(
+            &self,
+            key: &[u8; 32],
+            candidates: &[&SnapshotCandidate],
+            validate: &mut dyn FnMut(&[u8]) -> bool,
+        ) -> Option<CatalogCacheMapping> {
+            self.inner
+                .open_mapped_catalog_cache(key, candidates, validate)
+        }
+
+        fn write_mapped_catalog_cache(
+            &self,
+            key: &[u8; 32],
+            candidates: &[&SnapshotCandidate],
+            bytes: &[u8],
+            is_cancelled: &(dyn Fn() -> bool + Send + Sync),
+        ) -> Option<CatalogCacheMapping> {
+            self.inner
+                .write_mapped_catalog_cache(key, candidates, bytes, is_cancelled)
+        }
+
+        async fn scan_candidates(
+            &self,
+            source: SnapshotSource,
+        ) -> Result<SnapshotScan, StoreError> {
+            self.inner.scan_candidates(source).await
+        }
+
+        async fn open_candidate(
+            &self,
+            candidate: &SnapshotCandidate,
+        ) -> Result<Box<dyn std::io::BufRead + Send>, StoreError> {
+            self.inner.open_candidate(candidate).await
+        }
+
+        async fn adopt_candidate(
+            &self,
+            candidate: &SnapshotCandidate,
+        ) -> Result<SnapshotCandidate, StoreError> {
+            let gated = candidate.metadata().source().kind() == SourceKind::Epg
+                && self
+                    .gate_epg_adopt
+                    .swap(false, std::sync::atomic::Ordering::AcqRel);
+            if gated {
+                self.entered.notify_one();
+                self.release.notified().await;
+            }
+            let result = self.inner.adopt_candidate(candidate).await;
+            if gated {
+                self.finished.notify_one();
+            }
+            result
+        }
+
+        async fn revalidate_candidate(
+            &self,
+            candidate: &SnapshotCandidate,
+            revalidation: &SnapshotRevalidation,
+        ) -> Result<SnapshotCandidate, StoreError> {
+            self.inner
+                .revalidate_candidate(candidate, revalidation)
+                .await
+        }
+
+        fn begin_stage(&self, request: SnapshotStageRequest) -> Result<SnapshotStage, StoreError> {
+            self.inner.begin_stage(request)
+        }
+
+        async fn append(&self, stage: &SnapshotStage, chunk: Bytes) -> Result<(), StoreError> {
+            self.inner.append(stage, chunk).await
+        }
+
+        async fn open_staged(
+            &self,
+            stage: &SnapshotStage,
+        ) -> Result<Box<dyn std::io::BufRead + Send>, StoreError> {
+            self.inner.open_staged(stage).await
+        }
+
+        async fn prepare_activation(&self, validated: &ValidatedStage) -> Result<(), StoreError> {
+            self.inner.prepare_activation(validated).await
+        }
+
+        fn activate(&self, validated: &ValidatedStage) -> Result<SnapshotCandidate, StoreError> {
+            self.inner.activate(validated)
+        }
+
+        fn discard(&self, stage: SnapshotStage) -> Result<(), StoreError> {
+            self.inner.discard(stage)
+        }
+    }
+
+    struct RefreshedEpgSource;
+
+    #[async_trait]
+    impl SourceAccess for RefreshedEpgSource {
+        async fn open(
+            &self,
+            request: SourceRequest,
+        ) -> Result<SourceResponse, SourceAccessFailure> {
+            let payload = match request.kind() {
+                SourceKind::M3u => Bytes::from_static(M3U),
+                SourceKind::Epg => Bytes::from(
+                    String::from_utf8_lossy(EPG)
+                        .replace("Persisted Programme", "Refreshed Programme"),
+                ),
+            };
+            let len = payload.len() as u64;
+            Ok(SourceResponse::new(
+                Some(len),
+                Box::pin(stream::iter([Ok(payload)])),
+            ))
+        }
+    }
+
+    let directory = TempDir::new().unwrap();
+    let disk = Arc::new(AtomicFileSnapshotStore::open(directory.path()).unwrap());
+    drop(
+        bootstrap(
+            configuration(M3U_URL, EPG_URL),
+            FixtureSource::online(),
+            Arc::clone(&disk),
+        )
+        .await,
+    );
+    // Remove cache and active EPG pointer so deferred EPG recovery must adopt
+    // the fallback slot-a candidate.
+    let _ = std::fs::remove_file(directory.path().join("catalog-cache-v1"));
+    let _ = std::fs::remove_file(directory.path().join("catalog-cache-v1.stamp"));
+    std::fs::remove_file(directory.path().join("epg/active.json")).unwrap();
+
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let finished = Arc::new(tokio::sync::Notify::new());
+    let gated_store = Arc::new(AdoptGatedStore {
+        inner: Arc::clone(&disk),
+        entered: Arc::clone(&entered),
+        release: Arc::clone(&release),
+        finished: Arc::clone(&finished),
+        gate_epg_adopt: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    });
+
+    let core = SparrowCore::bootstrap_installed(
+        Some(configuration(M3U_URL, EPG_URL)),
+        CoreAdapters::new(
+            Arc::new(RefreshedEpgSource),
+            gated_store,
+            Arc::new(FixedClock(parse_time("2026-08-29T13:00:00Z"))),
+        ),
+    )
+    .await
+    .unwrap();
+    core.activate_automation();
+
+    // Wait until deferred EPG recovery pauses immediately before adopting slot-a.
+    tokio::time::timeout(std::time::Duration::from_secs(2), entered.notified())
+        .await
+        .expect("deferred EPG recovery reaches adopt_candidate");
+
+    // Manual refresh activates slot-b with "Refreshed Programme" while adoption
+    // of slot-a is paused.
+    let report = core.refresh(RefreshTrigger::Manual).await;
+    assert!(matches!(report.epg(), Some(RefreshOutcome::Updated { .. })));
+    assert_eq!(programme_titles(&core), ["Refreshed Programme"]);
+
+    // Resume deferred EPG adoption and wait for it to finish.
+    let adopt_done = finished.notified();
+    release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(2), adopt_done)
+        .await
+        .expect("paused adopt_candidate completes");
+    assert_eq!(programme_titles(&core), ["Refreshed Programme"]);
+    drop(core);
+
+    // Next offline restart MUST restore "Refreshed Programme" from slot-b,
+    // never rolling back to "Persisted Programme" in slot-a.
+    let reopened = SparrowCore::bootstrap_from_snapshots(
+        Some(configuration(M3U_URL, EPG_URL)),
+        CoreAdapters::new(
+            Arc::new(FixtureSource::rejecting()),
+            Arc::new(AtomicFileSnapshotStore::open(directory.path()).unwrap()),
+            Arc::new(FixedClock(parse_time("2026-08-29T13:00:00Z"))),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(programme_titles(&reopened), ["Refreshed Programme"]);
+}
+
+fn wait_for_fs_tick_after(root: &std::path::Path, paths: &[&std::path::Path]) {
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+
+    let freshness = |meta: &std::fs::Metadata| -> (i64, i64) {
+        #[cfg(unix)]
+        {
+            (meta.mtime(), meta.mtime_nsec()).max((meta.ctime(), meta.ctime_nsec()))
+        }
+        #[cfg(not(unix))]
+        {
+            let d = meta
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap();
+            (d.as_secs() as i64, i64::from(d.subsec_nanos()))
+        }
+    };
+    let target = paths
+        .iter()
+        .map(|p| freshness(&std::fs::symlink_metadata(p).expect("target file exists")))
+        .max()
+        .expect("at least one path");
+    let probe = root.join(".test-fs-tick-probe.tmp");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        std::fs::write(&probe, b"").expect("probe writes");
+        let meta = std::fs::symlink_metadata(&probe).expect("probe stats");
+        let _ = std::fs::remove_file(&probe);
+        #[cfg(unix)]
+        let probe_mtime = (meta.mtime(), meta.mtime_nsec());
+        #[cfg(not(unix))]
+        let probe_mtime = freshness(&meta);
+        if probe_mtime > target {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "filesystem timestamp did not advance past {target:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
 }

@@ -443,3 +443,69 @@ fn first_channels() -> ChannelQuery {
         PageLimit::new(10).expect("fixture page limit is valid"),
     ))
 }
+
+#[test]
+fn legacy_catalog_cache_store_trait_methods_remain_source_compatible() {
+    struct LegacyForwardingStore {
+        inner: MemorySnapshotStore,
+    }
+
+    #[async_trait]
+    impl SnapshotStore for LegacyForwardingStore {
+        fn catalog_cache_enabled(&self) -> bool {
+            self.inner.catalog_cache_enabled()
+        }
+
+        fn read_catalog_cache(&self, key: &[u8; 32]) -> Option<Vec<u8>> {
+            self.inner.read_catalog_cache(key)
+        }
+
+        fn write_catalog_cache(&self, key: &[u8; 32], bytes: &[u8]) {
+            self.inner.write_catalog_cache(key, bytes);
+        }
+
+        fn begin_stage(&self, request: SnapshotStageRequest) -> Result<SnapshotStage, StoreError> {
+            self.inner.begin_stage(request)
+        }
+
+        async fn append(&self, stage: &SnapshotStage, chunk: Bytes) -> Result<(), StoreError> {
+            self.inner.append(stage, chunk).await
+        }
+
+        async fn open_staged(
+            &self,
+            stage: &SnapshotStage,
+        ) -> Result<Box<dyn BufRead + Send>, StoreError> {
+            self.inner.open_staged(stage).await
+        }
+
+        async fn prepare_activation(&self, validated: &ValidatedStage) -> Result<(), StoreError> {
+            self.inner.prepare_activation(validated).await
+        }
+
+        fn activate(&self, validated: &ValidatedStage) -> Result<SnapshotCandidate, StoreError> {
+            self.inner.activate(validated)
+        }
+
+        fn discard(&self, stage: SnapshotStage) -> Result<(), StoreError> {
+            self.inner.discard(stage)
+        }
+    }
+
+    let store = LegacyForwardingStore {
+        inner: MemorySnapshotStore::default(),
+    };
+    assert!(!store.catalog_cache_enabled());
+    assert!(store.read_catalog_cache(&[0; 32]).is_none());
+    store.write_catalog_cache(&[0; 32], b"legacy");
+    assert!(
+        store
+            .open_mapped_catalog_cache(&[0; 32], &[], &mut |_| true)
+            .is_none()
+    );
+    assert!(
+        store
+            .write_mapped_catalog_cache(&[0; 32], &[], b"mapped", &|| false)
+            .is_none()
+    );
+}
