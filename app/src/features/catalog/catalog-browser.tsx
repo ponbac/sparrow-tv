@@ -5,11 +5,13 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type ReactNode,
 } from "react";
+import type { InstalledPlaybackChannel } from "../playback/installed-playback-state";
 import type { HostedPlaybackEngine } from "../playback/mpegts-engine";
 import type { InstalledPlaybackEngine } from "../playback/installed-playback-engine";
 import { useAndroidPlayerWindow } from "../playback/android-player-bridge";
@@ -31,7 +33,7 @@ import {
   visibleGuideRows,
 } from "../guide/board-group-roster";
 import { FeedsDialog } from "../guide/feeds-dialog";
-import { familyProgrammes } from "../guide/guide-families";
+import { familyProgrammes, lowerQualityVariant } from "../guide/guide-families";
 import {
   clockLabel,
   clockWindow,
@@ -52,6 +54,7 @@ import {
   StageChromeProvider,
   type StageChrome,
   type StagePicture,
+  type TelevisionFullscreenTune,
 } from "../stage/stage-chrome";
 import { focusPictureReturn, guideSearchInput } from "../stage/stage-dom";
 import { useIdleChrome } from "../stage/use-idle-chrome";
@@ -60,10 +63,12 @@ import { usePicturePin } from "../stage/use-picture-pin";
 import { useStageKeys } from "../stage/use-stage-keys";
 import {
   usePictureOverlay,
+  useSplitPocket,
   useStageFullscreenTarget,
   useStageLayout,
 } from "../stage/use-stage-layout";
 import { useTurnFullscreen } from "../stage/use-turn-fullscreen";
+import { useTelevisionControls } from "../stage/use-television-controls";
 import { useZapStops } from "../stage/use-zap-stops";
 import {
   neighbouringZapStop,
@@ -78,6 +83,7 @@ import { useGuideCatalog } from "./use-guide-catalog";
 import "../stage/shell.css";
 import "../stage/pocket.css";
 import "../stage/theater.css";
+import "../stage/television.css";
 
 const loadHostedPlayer = () => import("../playback/hosted-player");
 const loadInstalledPlayer = () => import("../playback/installed-player");
@@ -116,9 +122,14 @@ type CatalogBrowserProps =
       readonly playbackEngine?: InstalledPlaybackEngine;
     };
 
+type PlayingChannel = ChannelSummary & Pick<InstalledPlaybackChannel, "qualityFallback">;
+
 /** Owns the shell's catalog reads, the playing Channel, and source controls. */
 export function CatalogBrowser(props: CatalogBrowserProps) {
   const runtime = props.runtime ?? "hosted";
+  // Android injects this marker before the installed document starts.
+  const television =
+    runtime === "installed" && document.documentElement.hasAttribute("data-television");
   const client = props.client;
   const now = useGuideClock();
   const queryClient = useQueryClient();
@@ -128,12 +139,14 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   const boardGroup = resolvedActiveGroup(activeGroup, groupExclusions.excluded);
   const { preferences: variantPreferences, prefer: preferVariant } =
     useVariantPreferences();
-  const [playingChannel, setPlayingChannel] = useState<ChannelSummary | null>(
+  const [playingChannel, setPlayingChannel] = useState<PlayingChannel | null>(
     null,
   );
+  const [fullscreenTune, setFullscreenTune] =
+    useState<TelevisionFullscreenTune | null>(null);
   // The Channel an arrow press has moved to. The info block shows it at once;
   // it is tuned when no further press follows.
-  const [pendingZap, setPendingZap] = useState<ChannelSummary | null>(null);
+  const [pendingZap, setPendingZap] = useState<{ readonly channel: ChannelSummary } | null>(null);
   const zapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancelZap = useCallback(() => {
     if (zapTimer.current !== null) {
@@ -147,20 +160,14 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   const setPlaying = useCallback(
     (next: ChannelSummary | null) => {
       cancelZap();
+      setFullscreenTune(null);
       setPlayingChannel(next);
     },
     [cancelZap],
   );
-  useEffect(
-    () => () => {
-      if (zapTimer.current !== null) {
-        clearTimeout(zapTimer.current);
-      }
-    },
-    [],
-  );
   const pictureOverlay = usePictureOverlay(runtime, client);
   const layout = useStageLayout(pictureOverlay);
+  const splitPocket = useSplitPocket(television);
   const fullscreenTarget = useStageFullscreenTarget(layout);
   // Pocket's row of times. Until the viewer first opens it the guide reads
   // what the timeline shows; from then on one longer read covers every time
@@ -195,6 +202,8 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
       // Both layouts keep the controls in the info block, clear of the picture.
       // A fullscreen player section draws its own bar (controlPresentation).
       controlsSlot,
+      television,
+      fullscreenTune,
       controls: "compact",
       // Only roomy Theater enters root fullscreen, which outlives Stop and a
       // change of Channel; pocket takes the player section alone.
@@ -203,7 +212,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
       menuSide: layout === "theater" ? "top" : "bottom",
       reportPicture,
     }),
-    [controlsSlot, fullscreenTarget, layout, reportPicture],
+    [controlsSlot, fullscreenTarget, fullscreenTune, layout, reportPicture, television],
   );
   const guideForced = playingChannel === null || picture?.external === true;
   const effectiveMode = guideForced ? "guide" : mode;
@@ -218,7 +227,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   // The window can change size as well as the mode: a picture that cannot
   // follow keeps the very box it has, in pixels.
   const { pictureInPicture } = useAndroidPlayerWindow();
-  usePicturePin(follows, pictureInPicture);
+  usePicturePin(follows, pictureInPicture, television);
   const watching = layout === "theater" && effectiveMode === "watch";
   const chromeVisibility = useIdleChrome(
     watching && picture?.state === "playing",
@@ -226,7 +235,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   // A phone turned on its side while its picture plays wants the picture.
   useTurnFullscreen({
     watching:
-      layout === "pocket" &&
+      !television && layout === "pocket" &&
       effectiveMode === "watch" &&
       picture?.state === "playing" &&
       !picture.external,
@@ -293,6 +302,31 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     },
     [preferVariant, tune],
   );
+  const tuneFromGuide = useCallback(
+    (channel: ChannelSummary) => {
+      tune(channel);
+      if (!television || navigator.userActivation?.isActive !== true) return;
+      let pending = true;
+      const request: TelevisionFullscreenTune = {
+        channel: channel.id,
+        take: () => {
+          if (!pending) return false;
+          pending = false;
+          setFullscreenTune((current) => (current === request ? null : current));
+          return true;
+        },
+      };
+      setFullscreenTune(request);
+    },
+    [television, tune],
+  );
+  const tuneVariantFromGuide = useCallback(
+    (channel: ChannelSummary) => {
+      preferVariant(channel);
+      tuneFromGuide(channel);
+    },
+    [preferVariant, tuneFromGuide],
+  );
   const stop = useCallback(() => {
     setPlaying(null);
   }, [setPlaying]);
@@ -330,7 +364,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     runtime === "installed" ? loadInstalledPlayer : loadHostedPlayer;
 
   // The info block and the rail follow a zap at once, ahead of the player.
-  const shownChannel = pendingZap ?? playingChannel;
+  const shownChannel = pendingZap?.channel ?? playingChannel;
   const stops = useZapStops({
     neighbourhood: nowPlaying.neighbourhood,
     playing: playingChannel?.id ?? null,
@@ -343,24 +377,27 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     if (playingChannel === null) {
       return;
     }
-    const next = neighbouringZapStop(
-      stops,
-      (pendingZap ?? playingChannel).id,
-      direction,
-    );
-    if (next === null) {
-      return;
-    }
-    cancelZap();
-    const target = next.target.channel;
-    setPendingZap(target);
-    zapTimer.current = setTimeout(() => {
+    setPendingZap((pending) => {
+      const from = pending?.channel ?? playingChannel;
+      const next = neighbouringZapStop(stops, from.id, direction);
+      return next === null ? pending : { channel: next.target.channel };
+    });
+  };
+  useLayoutEffect(() => {
+    if (pendingZap === null) return;
+    const timer = setTimeout(() => {
       zapTimer.current = null;
       setPendingZap(null);
-      // Changes the Channel and nothing else, and never starts one after a Stop.
-      setPlayingChannel((current) => (current === null ? current : target));
+      setFullscreenTune(null);
+      // A queued zap never starts a Playback Session after Stop.
+      setPlayingChannel((current) => (current === null ? current : pendingZap.channel));
     }, ZAP_COMMIT_MS);
-  };
+    zapTimer.current = timer;
+    return () => {
+      clearTimeout(timer);
+      if (zapTimer.current === timer) zapTimer.current = null;
+    };
+  }, [pendingZap]);
   const toggleGuide = useCallback(() => {
     setMode((current) => (current === "guide" ? "watch" : "guide"));
   }, []);
@@ -368,14 +405,15 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     setMode("watch");
   }, []);
   const showGuide = useCallback(() => {
+    setFullscreenTune(null);
     setMode("guide");
   }, []);
   const showGuideFromBar = useCallback(() => {
     showGuide();
     // The bar leaves the layout with the watch screen. Focus moves to the
     // way back once the band is laid out, so a keyboard keeps its place.
-    requestAnimationFrame(focusPictureReturn);
-  }, [showGuide]);
+    if (!television) requestAnimationFrame(focusPictureReturn);
+  }, [showGuide, television]);
   const findInGuide = useCallback(() => {
     showGuide();
     // The field can take focus once the guide is back in the layout. The
@@ -386,10 +424,17 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   }, [showGuide]);
   useStageKeys({
     active: layout === "theater",
+    television,
     mode: effectiveMode,
     guideForced,
     onToggleGuide: toggleGuide,
     onWatch: showPicture,
+    onZap: zap,
+  });
+  useTelevisionControls({
+    enabled: television,
+    mode: effectiveMode,
+    onShowGuide: showGuide,
     onZap: zap,
   });
   const { loadMore } = guideCatalog;
@@ -421,11 +466,32 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     loadMore,
     rows.length,
   ]);
+  const fallBack = useCallback(
+    (failedId: ChannelSummary["id"]) => {
+      if (playingChannel?.id !== failedId || !playingChannel.variant ||
+          playingChannel.qualityFallback || pendingZap !== null) return;
+
+      const lower =
+        lowerQualityVariant(nowPlaying.family?.variants ?? [], playingChannel) ??
+        lowerQualityVariant(guideCatalog.rows, playingChannel);
+      if (!lower?.variant) return;
+      const qualityFallback = { from: playingChannel.variant.quality, to: lower.variant.quality };
+      setPlayingChannel((current) =>
+        current === playingChannel ? { ...lower, qualityFallback } : current,
+      );
+    },
+    [guideCatalog.rows, nowPlaying.family, pendingZap, playingChannel],
+  );
   if (synchronization.statusPending) {
     return <CatalogLoading />;
   }
 
-  const player = renderPlayer({ props, playingChannel, onStop: stop });
+  const player = renderPlayer({
+    props,
+    playingChannel,
+    onStop: stop,
+    ...(television ? { onInitialStall: fallBack } : {}),
+  });
   const subject: NowPlayingSubject | null =
     playingChannel === null
       ? null
@@ -443,7 +509,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
             programmes: nowPlaying.programmes,
             reading: nowPlaying.reading,
           }
-        : zapSubject(pendingZap, zapStopOf(stops, pendingZap.id));
+        : zapSubject(pendingZap.channel, zapStopOf(stops, pendingZap.channel.id));
   const feeds =
     props.runtime === "installed" ? (
       <FeedsDialog
@@ -476,35 +542,50 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
       excludedGroups={groupExclusions.excluded}
       onGenerationMismatch={synchronization.retryStatus}
       onPreparePlayback={preparePlayback}
-      onTune={tuneVariant}
+      onTune={tuneVariantFromGuide}
     />
   );
 
+  // Keep a held native picture at the same origin when the viewer changes mode.
+  const inlineMasthead = television && layout === "pocket" && (playingChannel === null || dock);
+  const mastheadInGuide = inlineMasthead && effectiveMode === "guide";
+  const identity = {
+    wordmark: <strong className="shell__wordmark">Sparrow</strong>,
+    clock: (
+      <time className="shell__clock" dateTime={now.toISOString()}>
+        {clockLabel(now)}
+      </time>
+    ),
+  };
   return (
     <div
       className="shell"
       data-layout={layout}
+      data-pocket={layout === "pocket" ? (splitPocket ? "split" : "stacked") : undefined}
       data-mode={effectiveMode}
       data-chrome={chromeVisibility}
       data-playing={playingChannel !== null}
       data-dock={dock}
+      data-inline-masthead={inlineMasthead || undefined}
       data-external={picture?.external === true}
       data-acceptance-catalog-shell
     >
-      <ShellMasthead
-        now={now}
-        chrome={
-          layout === "theater"
-            ? {
-                layout,
-                search,
-                guideOpen: effectiveMode === "guide",
-                guideForced,
-                onToggleGuide: toggleGuide,
-              }
-            : { layout, onFind: findInGuide }
-        }
-      />
+      {mastheadInGuide ? null : (
+        <ShellMasthead
+          {...identity}
+          chrome={
+            layout === "theater"
+              ? {
+                  layout,
+                  search,
+                  guideOpen: effectiveMode === "guide",
+                  guideForced,
+                  onToggleGuide: toggleGuide,
+                }
+              : { layout, onFind: findInGuide }
+          }
+        />
+      )}
       {status !== null && isRetainedCatalog(status) ? (
         <aside
           className="shell__retained"
@@ -517,6 +598,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
       <main className="shell__workspace">
         <StageChromeProvider value={chrome}>
           <Stage
+            television={television}
             playingChannel={playingChannel?.id ?? null}
             player={player}
             info={
@@ -555,6 +637,8 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
           />
         </StageChromeProvider>
         <ProgrammeGuide
+          television={television}
+          masthead={mastheadInGuide ? identity : undefined}
           rows={rows}
           groups={groups}
           activeGroup={activeGroup}
@@ -591,8 +675,8 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
           onSetGroupExcluded={groupExclusions.setExcluded}
           onRestoreExcludedGroups={groupExclusions.restoreAll}
           onPreparePlayback={preparePlayback}
-          onTune={tune}
-          onTuneVariant={tuneVariant}
+          onTune={tuneFromGuide}
+          onTuneVariant={tuneVariantFromGuide}
           onRetry={retryGuide}
           onLoadMore={guideCatalog.loadMore}
           search={layout === "theater" ? null : search}
@@ -612,10 +696,12 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
 function renderPlayer({
   props,
   playingChannel,
+  onInitialStall,
   onStop,
 }: {
   readonly props: CatalogBrowserProps;
-  readonly playingChannel: ChannelSummary | null;
+  readonly playingChannel: PlayingChannel | null;
+  readonly onInitialStall?: (channel: ChannelSummary["id"]) => void;
   readonly onStop: () => void;
 }): ReactNode {
   if (playingChannel === null) {
@@ -630,6 +716,7 @@ function renderPlayer({
       <Suspense fallback={<PlayerLoading />}>
         {props.runtime === "installed" ? (
           <InstalledPlayer
+            {...(onInitialStall ? { onInitialStall } : {})}
             channel={playingChannel}
             client={props.client}
             onStop={onStop}
@@ -669,15 +756,17 @@ type MastheadChrome =
     };
 
 function ShellMasthead({
-  now,
+  wordmark,
+  clock,
   chrome,
 }: {
-  readonly now: Date;
+  readonly wordmark: ReactNode;
+  readonly clock: ReactNode;
   readonly chrome: MastheadChrome;
 }) {
   return (
     <header className="shell__masthead">
-      <strong className="shell__wordmark">Sparrow</strong>
+      {wordmark}
       {chrome.layout === "pocket" ? (
         <button
           className="shell__find"
@@ -703,9 +792,7 @@ function ShellMasthead({
           </button>
         </>
       )}
-      <time className="shell__clock" dateTime={now.toISOString()}>
-        {clockLabel(now)}
-      </time>
+      {clock}
     </header>
   );
 }

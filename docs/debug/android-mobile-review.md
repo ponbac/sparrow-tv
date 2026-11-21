@@ -14,6 +14,44 @@ background/resume on Android. Emulator frame timing is not a physical-device
 performance result; retain the [physical playback acceptance](../acceptance/android-playback-performance.md)
 for performance claims.
 
+## Android TV and NVIDIA Shield
+
+Install the same universal Android APK. Sparrow appears in the TV launcher.
+The Guide uses the full app surface. Its live preview sits beside search
+and Channel Groups on wide TVs, with the Channel grid below. An inset amber
+outline marks the focused control even at the edges. Use the D-pad to browse.
+Press center or gamepad **A** to tune a Channel in fullscreen. The controls
+hide when idle. **Back** or gamepad **B** dismisses the keyboard or a panel,
+and returns to the Guide from playback. From the Guide, Back returns you to
+Android TV.
+
+On the watch screen the channel bar offers the previous and next Channel.
+In fullscreen, **Up** goes to the previous Channel and **Down** goes to the
+next. **Left** or **Right** reveal the playback controls. Center on the
+picture pauses or resumes. A dedicated
+**Play/Pause** key works wherever the Channel is playing. Gamepad **L1/R1** and
+dedicated **Channel down/up** keys work in and out of fullscreen. Volume keys
+control the TV's volume.
+
+For an emulator run, use an Android TV image and select its serial before
+installing a debug APK. Start the launcher activity and drive the app with
+`adb shell input dpad keyevent KEYCODE_DPAD_DOWN`, `KEYCODE_DPAD_CENTER`,
+and `adb shell input keyevent KEYCODE_BACK`. Check the Sources sheet and
+keyboard, Guide and playback focus, channel changes, fullscreen, and Back.
+Use a generated catalog and live test feed. Capture native playback frames
+separately from the guide. On physical Shield, repeat the controls with the
+actual remote and controller, and check video pacing and decoder behavior
+with representative Channels at the display's resolution. A generated 4K
+HEVC feed with one-pixel bars can expose unwanted scaling. Compare the native
+video buffer, source crop and display frame in `adb shell dumpsys SurfaceFlinger`
+with the active HDMI mode. The Android TV interface can use a smaller buffer
+than its separate video surface. On a Shield with a 1920 × 1080 UI override
+and 4K HDMI output, expect a 1920 × 1080 Guide viewport. Check that the
+visual viewport matches its layout width before and after using the search
+keyboard or fullscreen. Pause in fullscreen and exit, then resume and dock
+the picture. The retired frame must clear the Watch controls. The live preview
+must align with the first Guide column and the listings must reach both edges.
+
 ## Local toolchain
 
 Point `ANDROID_HOME` at the installed SDK and `NDK_HOME` at its

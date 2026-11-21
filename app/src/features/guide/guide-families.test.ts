@@ -7,6 +7,7 @@ import {
 } from "../../client/contracts";
 import { channelFixture } from "../../test/channel-fixture";
 import {
+  lowerQualityVariant,
   familyKey,
   familyProgrammes,
   guideFamilies,
@@ -95,6 +96,13 @@ describe("guide families", () => {
       familyProgrammes(svt1Family([sd, hd, fhdWithGuide]), fhdWithGuide),
     ).toEqual([later]);
     expect(familyProgrammes(svt1Family([sd, fhd]), fhd)).toEqual([]);
+  });
+
+  it("steps to the nearest lower quality belonging to the selected family", () => {
+    const family = svt1Family([svt1("hd"), svt1("fhd"), svt1("sd")]);
+    expect(lowerQualityVariant(family.variants, svt1("fhd").channel)?.id).toBe("svt1-hd");
+    expect(lowerQualityVariant(family.variants, svt1("sd").channel)).toBeNull();
+    expect(lowerQualityVariant(family.variants, svt1("uhd").channel)).toBeNull();
   });
 
   it("keys a family by its Channel Group and title, ignoring letter case", () => {

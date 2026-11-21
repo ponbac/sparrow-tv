@@ -1,4 +1,5 @@
 import { createContext, useContext } from "react";
+import type { ChannelId } from "../../client/contracts";
 import type { PlayerState } from "../playback/playback-presentation";
 
 /** What the player tells the shell about the picture it is showing. */
@@ -15,6 +16,10 @@ export interface StagePicture {
 
 /** The shell's side of the player chrome: where controls go and how they look. */
 export interface StageChrome {
+  /** The native Android window is using its TV input and presentation profile. */
+  readonly television?: boolean;
+  /** A one-time fullscreen request from a TV Guide selection. */
+  readonly fullscreenTune?: TelevisionFullscreenTune | null;
   /** Element the player portals its controls group into; null → render controls inline. */
   readonly controlsSlot: HTMLElement | null;
   /** "compact": icon controls + "More" menu. "bar": every control inline with text. */
@@ -34,6 +39,12 @@ export interface StageChrome {
    * stable, because the player reports from an effect that depends on it.
    */
   readonly reportPicture: (picture: StagePicture | null) => void;
+}
+
+/** Consumes a TV viewer's request once, when that Channel's player is ready. */
+export interface TelevisionFullscreenTune {
+  readonly channel: ChannelId;
+  readonly take: () => boolean;
 }
 
 /** How the player presents its controls at one moment. */

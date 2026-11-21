@@ -216,6 +216,11 @@ internal class NativePlaybackController(
    */
   fun pictureBounds(): Rect? = if (pictureInPicture) null else host?.pictureBounds()
 
+  /** A paused surface cannot move with a TV entering or leaving fullscreen. */
+  fun revealRetiredPicture() {
+    host?.takeIf { it.identity == null }?.revealWebContent()
+  }
+
   /**
    * The picture-in-picture window shows the whole Activity, so the picture
    * fills it over an opaque cover for as long as it lasts: the page below
@@ -277,6 +282,7 @@ internal class NativePlaybackController(
         setKeepContentOnPlayerReset(true)
         isClickable = false
         isFocusable = false
+        descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
       }
       playerView = createdPlayerView
@@ -454,7 +460,9 @@ internal class NativePlaybackController(
       binding = null
       current.release()
       resetPlayer()
-      if (revealWebContent) {
+      // Fullscreen may have changed before the presentation finished retiring.
+      val fullscreen = activity.televisionFullscreen
+      if (revealWebContent || (fullscreen != null && fullscreen != placement?.fullscreen)) {
         revealWebContent()
       }
       return true

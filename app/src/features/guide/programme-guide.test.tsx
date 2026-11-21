@@ -66,6 +66,40 @@ describe("ProgrammeGuide channel names", () => {
   });
 });
 
+describe("ProgrammeGuide TV pagination", () => {
+  it("keeps More channels focused while loading, then focuses the first new row", async () => {
+    const user = userEvent.setup();
+    const loadMore = vi.fn();
+    const view = renderGuide({
+      television: true,
+      layout: "pocket",
+      hasMore: true,
+      loadMore,
+    });
+    const more = screen.getByRole("button", { name: "More channels" });
+    more.focus();
+    await user.keyboard("{Enter}");
+    expect(loadMore).toHaveBeenCalledTimes(1);
+    view.rerender({ loadingMore: true });
+    expect(more).toHaveFocus();
+    expect(more).toHaveAttribute("aria-disabled", "true");
+    await user.keyboard("{Enter}");
+    expect(loadMore).toHaveBeenCalledTimes(1);
+
+    view.rerender({
+      hasMore: false,
+      rows: [
+        LONG_CHANNEL_ROW,
+        {
+          ...LONG_CHANNEL_ROW,
+          channel: channelFixture({ id: "news", name: "News", group: "News", number: 2 }),
+        },
+      ],
+    });
+    expect(screen.getByRole("button", { name: "Tune News" })).toHaveFocus();
+  });
+});
+
 describe("ProgrammeGuide Quality Variants", () => {
   const SD = svt1("sd");
   const HD = svt1("hd");
@@ -598,6 +632,10 @@ describe("ProgrammeGuide Channel Groups", () => {
 });
 
 interface GuideOverrides {
+  readonly television?: boolean;
+  readonly hasMore?: boolean;
+  readonly loadingMore?: boolean;
+  readonly loadMore?: () => void;
   /** The timeline unless a test is about pocket's list. */
   readonly layout?: "theater" | "pocket";
   readonly mode?: "watch" | "guide";
@@ -630,6 +668,7 @@ function renderGuide(overrides: GuideOverrides = {}) {
 function guide(overrides: GuideOverrides) {
   return (
     <ProgrammeGuide
+      television={overrides.television ?? false}
       rows={overrides.rows ?? [LONG_CHANNEL_ROW]}
       groups={overrides.groups ?? []}
       activeGroup={overrides.activeGroup ?? null}
@@ -643,8 +682,8 @@ function guide(overrides: GuideOverrides) {
       loading={false}
       replacing={overrides.replacing ?? false}
       error={null}
-      hasMore={false}
-      loadingMore={false}
+      hasMore={overrides.hasMore ?? false}
+      loadingMore={overrides.loadingMore ?? false}
       onSelectGroup={overrides.onSelectGroup ?? vi.fn()}
       onPrefetchGroup={vi.fn()}
       excludedGroups={overrides.excludedGroups ?? new Set()}
@@ -654,7 +693,7 @@ function guide(overrides: GuideOverrides) {
       onTune={overrides.onTune ?? vi.fn()}
       onTuneVariant={overrides.onTuneVariant ?? vi.fn()}
       onRetry={vi.fn()}
-      onLoadMore={vi.fn()}
+      onLoadMore={overrides.loadMore ?? vi.fn()}
       search={<div />}
       feeds={<div />}
       status={null}

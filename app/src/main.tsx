@@ -12,6 +12,14 @@ const rootElement = requireApplicationRoot();
 startApplication().catch(renderStartupFailure);
 
 async function startApplication(): Promise<void> {
+  if (document.documentElement.hasAttribute("data-television")) {
+    const viewport = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+    if (viewport) {
+      // Lay out the Guide at the resolution of Android's app surface.
+      const scale = 1 / window.devicePixelRatio;
+      viewport.content = `width=device-width, initial-scale=${scale}`;
+    }
+  }
   const runtime = await createSparrowRuntime();
   const queryClient = createSparrowQueryClient(runtime._tag);
   createRoot(rootElement).render(

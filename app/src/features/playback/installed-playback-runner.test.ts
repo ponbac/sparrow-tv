@@ -419,6 +419,49 @@ describe("InstalledPlaybackRunner", () => {
     expect(engine.maximumActive).toBe(1);
   });
 
+  it.each([
+    { elapsed: null, failure: "stream-interrupted", eligible: true },
+    { elapsed: 1_000, failure: "stream-interrupted", eligible: true },
+    { elapsed: 60_000, failure: "stream-interrupted", eligible: false },
+    { elapsed: null, failure: "source-unavailable", eligible: false },
+  ] as const)("classifies $failure after $elapsed ms on the first transport", async ({
+    elapsed, failure, eligible,
+  }) => {
+    const time = new ControlledTime();
+    const session = sessionFixture(2, {
+      start: async () => success(androidDescriptor(2, 1)),
+      reopen: async () => success(androidDescriptor(2, 2)),
+    });
+    let interrupt = () => {};
+    const engine = recordingEngine([], request => {
+      interrupt = () => request.onFailure(failure, true);
+      return null;
+    });
+    const runner = createInstalledPlaybackRunner({
+      client: clientFixture(() => session.value),
+      engine: engine.value,
+      clock: time,
+      scheduler: time,
+    });
+    await runner.select(CHANNEL_A, document.createElement("video"));
+    if (elapsed !== null) {
+      engine.playing();
+      await time.advanceBy(elapsed, runner);
+    }
+    interrupt();
+    await runner.whenIdle();
+    const phase = runner.getSnapshot().phase;
+    expect(phase._tag).toBe("recovering");
+    expect(phase._tag === "recovering" && Boolean(phase.initialStall)).toBe(eligible);
+
+    await time.advanceBy(1_000, runner);
+    interrupt();
+    await runner.whenIdle();
+    expect(runner.getSnapshot().phase).toMatchObject({ _tag: "recovering", attempt: 2 });
+    expect(runner.getSnapshot().phase).not.toHaveProperty("initialStall");
+    await runner.stop();
+  });
+
   it("uses exactly 1s/5s/15s recovery and ends visibly after the finite budget", async () => {
     const time = new ControlledTime();
     const session = sessionFixture(2);

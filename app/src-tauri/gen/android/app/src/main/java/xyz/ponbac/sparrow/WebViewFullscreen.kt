@@ -28,8 +28,7 @@ internal class WebViewFullscreen(
       WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
     ) {
       // Only the bundled top-level app can change the window's immersive state.
-      val origins = setOf("http://tauri.localhost", "https://tauri.localhost")
-      WebViewCompat.addWebMessageListener(webView, "sparrowFullscreen", origins) {
+      WebViewCompat.addWebMessageListener(webView, "sparrowFullscreen", BUNDLED_WEBVIEW_ORIGINS) {
           _, message, _, isMainFrame, _ ->
         if (isMainFrame && message.type == WebMessageCompat.TYPE_STRING) {
           val fullscreen = when (message.data) {
@@ -54,7 +53,7 @@ internal class WebViewFullscreen(
             update();
           })();
         """.trimIndent(),
-        origins,
+        BUNDLED_WEBVIEW_ORIGINS,
       )
     }
   }

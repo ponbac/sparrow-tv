@@ -4,6 +4,7 @@ import { usePicturePin } from "./use-picture-pin";
 
 afterEach(() => {
   cleanup();
+  Reflect.deleteProperty(document, "fullscreenElement");
   document.body.replaceChildren();
   vi.restoreAllMocks();
 });
@@ -41,6 +42,21 @@ describe("usePicturePin", () => {
     monitor.size(360, 203);
     rerender({ follows: false, pictureInPicture: false });
     expect(pinnedWidth()).toBe("360px");
+  });
+
+  it("pins a paused TV picture in Guide coordinates after fullscreen exits", () => {
+    const monitor = monitorOfSize(960, 540);
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      value: document.createElement("section"),
+    });
+    renderHook(() => usePicturePin(false, false, true));
+    expect(pinnedWidth()).toBe("");
+
+    monitor.size(1920, 600);
+    Reflect.deleteProperty(document, "fullscreenElement");
+    document.dispatchEvent(new Event("fullscreenchange"));
+    expect(pinnedWidth()).toBe("1920px");
   });
 });
 

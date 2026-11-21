@@ -64,6 +64,11 @@ just agent tune Eurosport 1 FHD SE
 
 Agent Control uses the Channel's full name, quality token included. The guide shows Quality Variants as one row titled by the base name (`Eurosport 1 SE`) with a quality switch, so the name on screen can be shorter than the one you tune and read back in `channelName`.
 
+On Android TV, if a newly tuned Quality Variant stalls, Sparrow can tune the
+next lower quality once. The snapshot names the Channel actually playing and
+records the switch in `diagnostics.qualityFallback` (for example, FHD to HD).
+The next viewer tune still uses the saved quality preference.
+
 `stop` also cancels a pending tune before the player mounts. It reports `cleanup-failed` if release cannot be confirmed; it never acknowledges a successful stop while cleanup is blocked. Timed-out or disconnected requests cannot later commit a pending tune.
 
 Wait flags can be combined (AND). `--media-advancing` requires **two consecutive snapshots** for the same Channel with `phase: "playing"`, unpaused media, an unchanged recovery count, and increases in **both** `currentTimeMs` and `presentedFrames`. A single old observation or a low `msSinceTimeAdvance` is not proof of motion. The wait deadline includes socket requests and polling delays.

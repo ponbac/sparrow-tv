@@ -33,6 +33,10 @@ import "./programme-guide.css";
 
 /** Inputs for the guide: Theater's timetable or pocket's now-and-next list. */
 export interface ProgrammeGuideProps {
+  /** Keeps the More channels action reachable during a TV page load. */
+  readonly television?: boolean;
+  /** The TV Guide shares its toolbar with the shell's wordmark and clock. */
+  readonly masthead?: { readonly wordmark: ReactNode; readonly clock: ReactNode };
   readonly rows: readonly GuideWindowChannel[];
   readonly groups: readonly ChannelGroup[];
   readonly activeGroup: string | null;
@@ -86,6 +90,8 @@ export interface ProgrammeGuideProps {
  * Channel.
  */
 export function ProgrammeGuide({
+  television = false,
+  masthead,
   rows,
   groups,
   activeGroup,
@@ -121,6 +127,24 @@ export function ProgrammeGuide({
   const nowLeft = `calc(var(--guide-gutter) + (100% - var(--guide-gutter)) * ${nowFraction})`;
   const [channelNameTooltip] = useState(() => Tooltip.createHandle<string>());
   const boardRef = useListScroll({ layout, mode, playingChannel, activeGroup });
+  const paginationBusy = loadingMore || replacing;
+  const pageFocus = useRef<{
+    readonly button: HTMLButtonElement;
+    readonly existingRows: number;
+    readonly group: string | null;
+  } | null>(null);
+  useLayoutEffect(() => {
+    const request = pageFocus.current;
+    if (request === null || paginationBusy) return;
+    pageFocus.current = null;
+    if (mode !== "guide" || activeGroup !== request.group) return;
+    const focus = document.activeElement;
+    if (focus !== request.button && (request.button.isConnected || focus !== document.body)) return;
+    const channelButtons = boardRef.current?.querySelectorAll<HTMLButtonElement>(
+      ".programme-guide__row .programme-guide__channel",
+    );
+    channelButtons?.[request.existingRows]?.focus();
+  }, [activeGroup, boardRef, families.length, mode, paginationBusy]);
   const boardEmpty =
     emptyState === undefined &&
     groups.length > 0 &&
@@ -147,9 +171,11 @@ export function ProgrammeGuide({
       aria-label="Programme guide"
     >
       <header className="programme-guide__toolbar">
+        {masthead?.wordmark}
         {search}
         {feeds}
         <div className="programme-guide__status">{status}</div>
+        {masthead?.clock}
       </header>
 
       <div className="programme-guide__body">
@@ -248,8 +274,19 @@ export function ProgrammeGuide({
               <button
                 className="programme-guide__more"
                 type="button"
-                disabled={loadingMore || replacing}
-                onClick={onLoadMore}
+                disabled={!television && paginationBusy}
+                aria-disabled={television && paginationBusy ? true : undefined}
+                onClick={(event) => {
+                  if (paginationBusy) return;
+                  if (television && event.currentTarget === document.activeElement) {
+                    pageFocus.current = {
+                      button: event.currentTarget,
+                      existingRows: families.length,
+                      group: activeGroup,
+                    };
+                  }
+                  onLoadMore();
+                }}
               >
                 {replacing
                   ? "Updating the guide…"

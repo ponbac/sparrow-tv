@@ -5,6 +5,7 @@ import type {
   AudioTrack,
   AudioTrackId,
   ChannelId,
+  ChannelQuality,
 } from "../../client/contracts";
 import type { HostedPlaybackFailure } from "./mpegts-engine";
 import type { SystemPlayerFailure } from "./playback-failure";
@@ -14,6 +15,7 @@ import type { PlayerState } from "./playback-presentation";
 export interface InstalledPlaybackChannel {
   readonly id: ChannelId;
   readonly name: string;
+  readonly qualityFallback?: { readonly from: ChannelQuality; readonly to: ChannelQuality };
 }
 
 /** Browser-owned controls that survive every native transport recreation. */
@@ -87,6 +89,7 @@ export type InstalledPlaybackPhase =
       readonly _tag: "recovering";
       readonly attempt: number;
       readonly retryAt: number;
+      readonly initialStall?: true;
       readonly failure: InstalledPlaybackFailure;
     }
   | {
@@ -161,6 +164,7 @@ export type InstalledPlaybackEvent =
       readonly _tag: "recovering";
       readonly attempt: number;
       readonly retryAt: number;
+      readonly initialStall?: true;
       readonly failure: InstalledPlaybackFailure;
     }
   | {
@@ -296,6 +300,7 @@ export function reduceInstalledPlaybackState(
           _tag: "recovering",
           attempt: event.attempt,
           retryAt: event.retryAt,
+          ...(event.initialStall ? { initialStall: true } : {}),
           failure: event.failure,
         },
         recoveryCount: event.attempt,

@@ -59,6 +59,7 @@ afterEach(() => {
   localStorage.clear();
   Reflect.deleteProperty(document, "fullscreenElement");
   Reflect.deleteProperty(document, "exitFullscreen");
+  document.documentElement.removeAttribute("data-television");
 });
 
 const HOSTED_CAPABILITIES = clientSchemas.capabilities.parse({
@@ -959,6 +960,59 @@ describe("CatalogBrowser shell", () => {
       ["Tune World News", "false"],
       ["Tune Cinema One", "false"],
     ]);
+  });
+
+  it("steps down once on a TV source timeout using the open Guide, then honors a fresh tune", async () => {
+    document.documentElement.setAttribute("data-television", "");
+    const fhd = channelFixture({
+      ...SVT1_HD, id: "svt1-fhd", name: "SVT1 FHD",
+      variant: { quality: "fhd", baseName: "SVT1" },
+    });
+    const neighbourhood = deferred<void>();
+    const client = new FakeSparrowClient({
+      pictureOverlay: false,
+      transport: {
+        _tag: "tauri-native-stream", presentation: "android-media3",
+        streamHandle: clientSchemas.nativeStreamHandle.parse(`stream1_${"b".repeat(16)}`),
+        tracks: [], selection: { _tag: "none" },
+      },
+      guide: async (input) => {
+        if (input.around) await neighbourhood.promise;
+        return success(guidePage(input, {
+          rows: [SVT1_SD, SVT1_HD, fhd, WORLD_NEWS].map(channel =>
+            guideRow(channel, input, "Rapport")),
+        }));
+      },
+    });
+    const first = client.createPlaybackSession();
+    const sessions = vi.spyOn(client, "createPlaybackSession").mockReturnValueOnce({
+      ...first,
+      start: async () => failure({ _tag: "playback-failed", reason: "timed-out", retryable: true }),
+    });
+    let stall = () => {};
+    const engine: InstalledPlaybackEngine = { start: request => {
+      stall = () => request.onFailure("stream-interrupted", true);
+      request.onPlaying();
+      return { stop: () => undefined };
+    }};
+    renderBrowser(<CatalogBrowser client={client} runtime="installed" playbackEngine={engine} />, "installed");
+    const row = await screen.findByRole("button", { name: "Tune SVT1" });
+    fireEvent.click(row);
+    await screen.findByText("FHD stalled. Switched to HD.");
+    expect(sessions).toHaveBeenNthCalledWith(1, { id: fhd.id });
+    expect(sessions).toHaveBeenNthCalledWith(2, { id: SVT1_HD.id });
+    await act(async () => stall());
+    expect(sessions).toHaveBeenCalledTimes(2);
+    fireEvent.click(row);
+    await waitFor(() => expect(sessions).toHaveBeenNthCalledWith(3, { id: fhd.id }));
+
+    // A remote zap already in progress takes precedence over a second fallback.
+    await act(async () => neighbourhood.resolve());
+    const next = await screen.findByRole("button", { name: /Next channel, .*World News/u });
+    fireEvent.click(next);
+    await act(async () => stall());
+    await waitFor(() => expect(sessions).toHaveBeenNthCalledWith(4, { id: WORLD_NEWS.id }));
+    expect(sessions).toHaveBeenCalledTimes(4);
   });
 
   it("plays a row's best quality until the viewer picks another, and remembers the pick", async () => {
@@ -2111,6 +2165,23 @@ describe("CatalogBrowser Theater layout", () => {
     expect(shell).toHaveAttribute("data-mode", "watch");
   });
 
+  it("applies a burst of Channel presses before React commits a render", async () => {
+    const client = new FakeSparrowClient();
+    await watchWorldNews(renderHostedBrowser, client);
+    vi.useFakeTimers();
+
+    act(() => {
+      fireEvent.keyDown(document.body, { key: "ArrowDown" });
+      fireEvent.keyDown(document.body, { key: "ArrowUp" });
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(350);
+    });
+
+    expect(screen.getByLabelText("World News live video")).toBeInTheDocument();
+    expect(client.playbackInputs).toHaveLength(1);
+  });
+
   it("tunes nothing when the arrows end on the playing Channel or run past the list", async () => {
     const client = new FakeSparrowClient();
     const { heading } = await watchWorldNews(renderHostedBrowser, client);
@@ -2426,7 +2497,8 @@ describe("CatalogBrowser pocket layout", () => {
     }
   });
 
-  it("keeps the picture's box while native video cannot follow it", async () => {
+  it.each(["phone", "television"])("keeps the held picture and Watch search on %s", async (device) => {
+    document.documentElement.toggleAttribute("data-television", device === "television");
     const client = new FakeSparrowClient({ pictureOverlay: false });
     const user = userEvent.setup();
     renderInstalledBrowser(client);
@@ -2467,9 +2539,16 @@ describe("CatalogBrowser pocket layout", () => {
     // And the other way: paused in the band, it stays band-sized in watch mode.
     await user.click(screen.getByRole("button", { name: "Pause" }));
     await screen.findByRole("button", { name: "Resume" });
+    if (device === "television") {
+      const toolbar = shell.querySelector(".programme-guide__toolbar");
+      expect(toolbar).toContainElement(screen.getByText("Sparrow"));
+      expect(toolbar?.querySelector("time")).toBeInTheDocument();
+      expect(shell.querySelector(".shell__masthead")).toBeNull();
+    }
     await user.click(screen.getByRole("button", { name: "Back to the picture" }));
     expect(shell).toHaveAttribute("data-mode", "watch");
     expect(shell).toHaveAttribute("data-dock", "true");
+    expect(within(requireMasthead()).getByRole("button", { name: "Search" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Resume" }));
     await screen.findByRole("button", { name: "Pause" });
     expect(shell).toHaveAttribute("data-dock", "false");

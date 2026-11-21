@@ -31,6 +31,7 @@ import type { NativeLiveMediaObservation } from "./native-live-buffer";
 
 const DEFAULT_RECOVERY_DELAYS_MS = [1_000, 5_000, 15_000] as const;
 const DEFAULT_STABLE_RESET_MS = 60_000;
+const INITIAL_PLAYBACK_WINDOW_MS = 20_000;
 const MAX_RETAINED_TRANSITIONS = 20;
 
 /** Narrow installed client seam required by one Playback Session runner. */
@@ -90,6 +91,7 @@ export class InstalledPlaybackRunner {
   #queue: Promise<void> = Promise.resolve();
   #sessionEpoch = 0;
   #transportEpoch = 0;
+  #initialTransportEpoch = -1;
   #activityEpoch = 0;
   #cleanupBlocked = false;
   #documentVisible: boolean;
@@ -692,6 +694,7 @@ export class InstalledPlaybackRunner {
       return;
     }
     const transportEpoch = ++this.#transportEpoch;
+    if (initial) this.#initialTransportEpoch = transportEpoch;
     const controller = new AbortController();
     this.#openController = controller;
     this.#dispatch({ _tag: "starting", reason, transportEpoch });
@@ -893,6 +896,15 @@ export class InstalledPlaybackRunner {
     ) {
       return;
     }
+    const phase = this.#state.phase;
+    const initialSourceTimeout = phase._tag === "starting" &&
+      this.#state.presentation === null && failure === "source-timeout";
+    const earlyDecoderStall = this.#state.presentation === "android-media3" &&
+      failure === "stream-interrupted" &&
+      (phase._tag === "starting" ||
+        (phase._tag === "playing" && this.#clock.now() - phase.stableSince < INITIAL_PLAYBACK_WINDOW_MS));
+    const initialStall = failedTransportEpoch === this.#initialTransportEpoch &&
+      (initialSourceTimeout || earlyDecoderStall);
     const transportEpoch = ++this.#transportEpoch;
     this.#cancelLocalTransport();
     this.#dispatch({
@@ -940,6 +952,7 @@ export class InstalledPlaybackRunner {
       attempt,
       retryAt,
       failure,
+      ...(initialStall ? { initialStall: true } : {}),
     });
     this.#clearRetry();
     this.#cancelRetry = this.#scheduler.schedule(delayMs, () => {
