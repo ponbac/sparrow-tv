@@ -1,34 +1,56 @@
 use blake3::Hasher;
 use unicode_normalization::UnicodeNormalization;
 
-use crate::domain::{CHANNEL_ID_PREFIX, ChannelId, SourceConfigurationFingerprint};
+use crate::domain::SourceConfigurationFingerprint;
+#[cfg(test)]
+use crate::domain::{CHANNEL_ID_PREFIX, ChannelId};
 
 const SEED_DOMAIN: &[u8] = b"sparrow-channel-identity-seed-v1\0";
 const CHANNEL_ID_DOMAIN: &[u8] = b"sparrow-channel-identifier-v1\0";
 
-/// Builds the playback-independent identity shared by recognizable entries.
-pub(crate) fn seed(tvg_id: &str, name: &str, group: &str) -> [u8; 32] {
+/// Builds the playback-independent identity shared by recognizable entries
+/// alongside the normalized channel name so callers avoid normalizing twice.
+pub(crate) fn seed_and_normalized_name(
+    tvg_id: &str,
+    name: &str,
+    group: &str,
+) -> ([u8; 32], String) {
+    let normalized_name = normalize_identity_field(name);
     let mut hasher = Hasher::new();
     hasher.update(SEED_DOMAIN);
     hash_identity_field(&mut hasher, tvg_id);
-    hash_identity_field(&mut hasher, name);
+    hash_field(&mut hasher, normalized_name.as_bytes());
     hash_identity_field(&mut hasher, group);
-    *hasher.finalize().as_bytes()
+    (*hasher.finalize().as_bytes(), normalized_name)
 }
 
-/// Namespaces a duplicate-aware identity to one Source Configuration.
-pub(crate) fn channel_id(
+#[cfg(test)]
+pub(crate) fn seed(tvg_id: &str, name: &str, group: &str) -> [u8; 32] {
+    seed_and_normalized_name(tvg_id, name, group).0
+}
+
+/// Namespaces a duplicate-aware identity digest to one Source Configuration.
+pub(crate) fn channel_id_digest(
     fingerprint: &SourceConfigurationFingerprint,
     seed: &[u8; 32],
     occurrence: u32,
-) -> ChannelId {
+) -> [u8; 32] {
     let mut hasher = Hasher::new();
     hasher.update(CHANNEL_ID_DOMAIN);
     hash_field(&mut hasher, fingerprint.as_bytes());
     hash_field(&mut hasher, seed);
     hash_field(&mut hasher, &occurrence.to_le_bytes());
+    *hasher.finalize().as_bytes()
+}
 
-    let digest = hasher.finalize();
+/// Namespaces a duplicate-aware identity to one Source Configuration.
+#[cfg(test)]
+pub(crate) fn channel_id(
+    fingerprint: &SourceConfigurationFingerprint,
+    seed: &[u8; 32],
+    occurrence: u32,
+) -> ChannelId {
+    let digest = blake3::Hash::from_bytes(channel_id_digest(fingerprint, seed, occurrence));
     let mut encoded = String::with_capacity(CHANNEL_ID_PREFIX.len() + 64);
     encoded.push_str(CHANNEL_ID_PREFIX);
     encoded.push_str(digest.to_hex().as_str());

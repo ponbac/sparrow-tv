@@ -687,19 +687,77 @@ impl Debug for ValidatedStage {
     }
 }
 
+/// Read-only serving handle for a validated zero-copy processed catalog payload.
+///
+/// Backings expose only the catalog payload bytes after any store-owned envelope.
+pub struct CatalogCacheMapping {
+    backing: Box<dyn AsRef<[u8]> + Send + Sync>,
+}
+
+impl CatalogCacheMapping {
+    pub fn new(backing: impl AsRef<[u8]> + Send + Sync + 'static) -> Self {
+        Self {
+            backing: Box::new(backing),
+        }
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        (*self.backing).as_ref()
+    }
+}
+
+impl Debug for CatalogCacheMapping {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CatalogCacheMapping")
+            .field("len", &self.as_bytes().len())
+            .finish()
+    }
+}
+
 #[async_trait]
 pub trait SnapshotStore: Send + Sync {
     fn catalog_cache_enabled(&self) -> bool {
         false
     }
 
-    /// Optional private, disposable derived catalog. Implementations must bound
-    /// reads and atomically replace writes. Failure is always a cache miss.
+    /// Legacy heap-copied catalog cache read kept for adapter source
+    /// compatibility. Core now uses [`Self::open_mapped_catalog_cache`].
     fn read_catalog_cache(&self, _key: &[u8; 32]) -> Option<Vec<u8>> {
         None
     }
 
+    /// Legacy heap-copied catalog cache write kept for adapter source
+    /// compatibility. Core now uses [`Self::write_mapped_catalog_cache`].
     fn write_catalog_cache(&self, _key: &[u8; 32], _bytes: &[u8]) {}
+
+    /// Optional private, disposable derived catalog opened for validation and
+    /// zero-copy serving. Implementations must bound reads, verify integrity
+    /// against `candidates`, invoke `validate` on the payload bytes before
+    /// returning, and return a clean serving mapping. Failure is always a cache
+    /// miss.
+    fn open_mapped_catalog_cache(
+        &self,
+        _key: &[u8; 32],
+        _candidates: &[&SnapshotCandidate],
+        _validate: &mut dyn FnMut(&[u8]) -> bool,
+    ) -> Option<CatalogCacheMapping> {
+        None
+    }
+
+    /// Atomically persists a derived catalog payload bound to `candidates` and,
+    /// when available, returns a zero-copy serving mapping backed by the exact
+    /// bytes written. Implementations may abort early and return `None` when
+    /// `is_cancelled()` returns `true`.
+    fn write_mapped_catalog_cache(
+        &self,
+        _key: &[u8; 32],
+        _candidates: &[&SnapshotCandidate],
+        _bytes: &[u8],
+        _is_cancelled: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Option<CatalogCacheMapping> {
+        None
+    }
 
     /// Returns at most two candidates in adapter preference order.
     async fn scan_candidates(&self, _source: SnapshotSource) -> Result<SnapshotScan, StoreError> {

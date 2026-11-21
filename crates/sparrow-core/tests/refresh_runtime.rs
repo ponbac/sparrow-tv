@@ -1299,6 +1299,146 @@ async fn concurrent_replacements_are_serialized_through_the_public_transition() 
     assert_eq!(channel_names(&core), vec!["Beta"]);
 }
 
+#[tokio::test]
+async fn epg_published_before_first_m3u_survives_not_modified_and_attaches_to_first_catalog() {
+    let clock = ControlledClock::at("2026-08-29T12:00:00Z");
+    let source = RefreshSource::default();
+    let snapshots = MemorySnapshotStore::default();
+    let core = unconfigured(&source, &snapshots, &clock).await;
+
+    // Initial attempt: M3U fails while EPG succeeds. Catalog stays unavailable,
+    // so the provisional guide must be retained until the first M3U succeeds.
+    source.push(
+        SourceKind::M3u,
+        SourceAction::Failed(SourceAccessFailure::new(SourceAccessError::Unavailable)),
+    );
+    source.push_modified_with(
+        SourceKind::Epg,
+        INITIAL_EPG,
+        validators(Some("epg-v1"), None),
+        None,
+    );
+    let status = core
+        .replace_source_configuration(Some(configuration(
+            "https://provider.fixture.invalid/channels.m3u",
+            Some("https://provider.fixture.invalid/guide.xml"),
+        )))
+        .await;
+    assert!(status.generation().is_none());
+    assert!(matches!(status.epg(), Some(SourceState::Fresh { .. })));
+
+    // Retry: M3U succeeds and EPG returns 304 Not Modified (no replacement bytes).
+    clock.set("2026-08-29T12:05:00Z");
+    source.push_modified(SourceKind::M3u, INITIAL_M3U);
+    source.push(
+        SourceKind::Epg,
+        SourceAction::NotModified(validators(Some("epg-v1"), None)),
+    );
+    let report = core.refresh(RefreshTrigger::Manual).await;
+    assert!(matches!(report.m3u(), RefreshOutcome::Updated { .. }));
+    assert!(matches!(
+        report.epg(),
+        Some(RefreshOutcome::NotModified { .. })
+    ));
+    assert_eq!(channel_names(&core), vec!["Alpha"]);
+    assert_eq!(first_channel_programme_titles(&core), vec!["Old News"]);
+
+    // Subsequent M3U change with another EPG 304 must rematch from the catalog's
+    // embedded cold EPG tables after pending_epg was released.
+    clock.set("2026-08-29T12:10:00Z");
+    source.push_modified(SourceKind::M3u, EXPANDED_M3U);
+    source.push(
+        SourceKind::Epg,
+        SourceAction::NotModified(validators(Some("epg-v1"), None)),
+    );
+    let report = core.refresh(RefreshTrigger::Manual).await;
+    assert!(matches!(report.m3u(), RefreshOutcome::Updated { .. }));
+    assert!(matches!(
+        report.epg(),
+        Some(RefreshOutcome::NotModified { .. })
+    ));
+    assert_eq!(channel_names(&core), vec!["Alpha", "Beta"]);
+    assert_eq!(first_channel_programme_titles(&core), vec!["Old News"]);
+}
+
+#[tokio::test]
+async fn epg_only_recovery_retains_guide_until_first_m3u_refresh_succeeds() {
+    let clock = ControlledClock::at("2026-08-29T12:00:00Z");
+    let source = RefreshSource::default();
+    let snapshots = MemorySnapshotStore::default();
+    // Seed only an EPG snapshot in the store (M3U fails during initial setup).
+    let seeder = unconfigured(&source, &snapshots, &clock).await;
+    source.push(
+        SourceKind::M3u,
+        SourceAction::Failed(SourceAccessFailure::new(SourceAccessError::Unavailable)),
+    );
+    source.push_modified_with(
+        SourceKind::Epg,
+        INITIAL_EPG,
+        validators(Some("epg-recovered"), None),
+        None,
+    );
+    let _ = seeder
+        .replace_source_configuration(Some(configuration(
+            "https://provider.fixture.invalid/channels.m3u",
+            Some("https://provider.fixture.invalid/guide.xml"),
+        )))
+        .await;
+    drop(seeder);
+
+    // Restart from snapshots only: EPG recovers with no M3U yet.
+    let recovered = SparrowCore::bootstrap_from_snapshots(
+        Some(configuration(
+            "https://provider.fixture.invalid/channels.m3u",
+            Some("https://provider.fixture.invalid/guide.xml"),
+        )),
+        CoreAdapters::new(
+            Arc::new(source.clone()),
+            Arc::new(snapshots.clone()),
+            Arc::new(clock.clone()),
+        ),
+    )
+    .await
+    .expect("EPG-only snapshot recovery succeeds");
+    assert!(recovered.status().generation().is_none());
+    assert!(matches!(
+        recovered.status().epg(),
+        Some(SourceState::Stale { validated_at, .. }) if *validated_at == utc("2026-08-29T12:00:00Z")
+    ));
+
+    // When M3U finally arrives alongside an EPG 304, the recovered guide attaches.
+    clock.set("2026-08-29T12:15:00Z");
+    source.push_modified(SourceKind::M3u, INITIAL_M3U);
+    source.push(
+        SourceKind::Epg,
+        SourceAction::NotModified(validators(Some("epg-recovered"), None)),
+    );
+    let report = recovered.refresh(RefreshTrigger::Manual).await;
+    assert!(matches!(report.m3u(), RefreshOutcome::Updated { .. }));
+    assert!(matches!(
+        report.epg(),
+        Some(RefreshOutcome::NotModified { .. })
+    ));
+    assert_eq!(channel_names(&recovered), vec!["Alpha"]);
+    assert_eq!(first_channel_programme_titles(&recovered), vec!["Old News"]);
+}
+
+fn first_channel_programme_titles(core: &SparrowCore) -> Vec<String> {
+    let channels = core
+        .list_channels(ChannelQuery::all(PageRequest::first(limit())))
+        .expect("configured catalog is browsable");
+    let first = channels.items().first().expect("first channel exists");
+    core.schedule(ScheduleQuery::new(
+        first.id().clone(),
+        PageRequest::first(limit()),
+    ))
+    .expect("schedule is queryable")
+    .items()
+    .iter()
+    .map(|programme| programme.title().to_owned())
+    .collect()
+}
+
 async fn bootstrap(
     source: &RefreshSource,
     snapshots: &MemorySnapshotStore,

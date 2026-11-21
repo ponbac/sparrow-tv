@@ -1,128 +1,10 @@
 use std::collections::HashMap;
 
-use crate::domain::{CoreError, SearchTerm, SelectionPrefix, normalize_search_text};
+use crate::domain::{CoreError, PageLimit, SearchTerm, SelectionPrefix};
+
+use super::flat::{ABSENT_U32, FlatCatalog};
 
 pub(super) const SEARCH_CANCELLATION_CHECKPOINT_BYTES: usize = 4 * 1024;
-
-pub(super) struct SearchIndex {
-    // Normalized fields share one allocation; each document retains only offsets
-    // instead of one or two independently allocated Strings.
-    pub(super) arena: String,
-    pub(super) documents: Box<[SearchDocument]>,
-}
-
-impl SearchIndex {
-    pub(super) fn cache_valid(&self, count: usize) -> bool {
-        let valid = |field: SearchField| {
-            field.start <= field.end && self.arena.get(field.start..field.end).is_some()
-        };
-        self.documents.len() == count
-            && self
-                .documents
-                .iter()
-                .all(|doc| valid(doc.primary) && doc.secondary().is_none_or(valid))
-    }
-
-    #[cfg(test)]
-    pub(super) fn len(&self) -> usize {
-        self.documents.len()
-    }
-}
-
-pub(super) struct SearchIndexBuilder {
-    arena: String,
-    documents: Vec<SearchDocument>,
-}
-
-impl SearchIndexBuilder {
-    pub(super) fn with_capacity(document_capacity: usize, byte_capacity: usize) -> Self {
-        Self {
-            arena: String::with_capacity(byte_capacity),
-            documents: Vec::with_capacity(document_capacity),
-        }
-    }
-
-    pub(super) fn push(&mut self, primary: &str, secondary: Option<&str>) {
-        let primary = self.push_field(primary);
-        let secondary = secondary.map(|value| self.push_field(value));
-        self.documents.push(SearchDocument::new(primary, secondary));
-    }
-
-    fn push_field(&mut self, value: &str) -> SearchField {
-        let normalized = normalize_search_text(value);
-        let start = self.arena.len();
-        self.arena.push_str(&normalized);
-        let end = self.arena.len();
-        SearchField { start, end }
-    }
-
-    pub(super) fn finish(self) -> SearchIndex {
-        SearchIndex {
-            arena: self.arena,
-            documents: self.documents.into_boxed_slice(),
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct SearchField {
-    pub(super) start: usize,
-    pub(super) end: usize,
-}
-
-pub(super) struct SearchDocument {
-    pub(super) primary: SearchField,
-    pub(super) secondary_start: usize,
-    pub(super) secondary_end: usize,
-}
-
-impl SearchDocument {
-    pub(super) fn new(primary: SearchField, secondary: Option<SearchField>) -> Self {
-        let (secondary_start, secondary_end) =
-            secondary.map_or((usize::MAX, usize::MAX), |field| (field.start, field.end));
-        Self {
-            primary,
-            secondary_start,
-            secondary_end,
-        }
-    }
-
-    fn rank(
-        &self,
-        arena: &str,
-        matcher: &mut SearchMatcher<'_>,
-        is_cancelled: &dyn Fn() -> bool,
-    ) -> Result<Option<SearchRank>, CoreError> {
-        let mut best: Option<SearchRank> = None;
-        for (field_index, field) in std::iter::once(self.primary.get(arena))
-            .chain(self.secondary().map(|field| field.get(arena)))
-            .enumerate()
-        {
-            let Some(category) = matcher.field_rank(field, is_cancelled)? else {
-                continue;
-            };
-            let candidate = SearchRank {
-                category,
-                field_index,
-            };
-            best = Some(best.map_or(candidate, |current| current.min(candidate)));
-        }
-        Ok(best)
-    }
-
-    pub(super) fn secondary(&self) -> Option<SearchField> {
-        (self.secondary_start != usize::MAX).then_some(SearchField {
-            start: self.secondary_start,
-            end: self.secondary_end,
-        })
-    }
-}
-
-impl SearchField {
-    pub(super) fn get(self, arena: &str) -> &str {
-        &arena[self.start..self.end]
-    }
-}
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 struct SearchRank {
@@ -142,7 +24,8 @@ pub(super) enum MatchCategory {
 // compiled lookup and scratch are reused across both result lanes, then dropped.
 pub(super) struct SearchMatcher<'term> {
     pub(super) term: &'term str,
-    token_lookup: HashMap<&'term str, usize>,
+    term_bytes: &'term [u8],
+    token_lookup: HashMap<&'term [u8], usize>,
     matched_tokens: Vec<bool>,
     longest_token: usize,
     substring_fallback: Vec<usize>,
@@ -151,9 +34,10 @@ pub(super) struct SearchMatcher<'term> {
 impl<'term> SearchMatcher<'term> {
     pub(super) fn new(term: &'term SearchTerm) -> Self {
         let term = term.as_str();
-        let token_count = term.split(' ').count();
+        let term_bytes = term.as_bytes();
+        let token_count = term_bytes.split(|&b| b == b' ').count();
         let mut token_lookup = HashMap::with_capacity(token_count);
-        for token in term.split(' ') {
+        for token in term_bytes.split(|&b| b == b' ') {
             let next_index = token_lookup.len();
             token_lookup.entry(token).or_insert(next_index);
         }
@@ -163,9 +47,10 @@ impl<'term> SearchMatcher<'term> {
             .max()
             .unwrap_or(0);
         let matched_tokens = vec![false; token_lookup.len()];
-        let substring_fallback = substring_fallback(term.as_bytes());
+        let substring_fallback = substring_fallback(term_bytes);
         Self {
             term,
+            term_bytes,
             token_lookup,
             matched_tokens,
             longest_token,
@@ -175,13 +60,13 @@ impl<'term> SearchMatcher<'term> {
 
     pub(super) fn field_rank(
         &mut self,
-        field: &str,
+        field: &[u8],
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<Option<MatchCategory>, CoreError> {
-        if field == self.term {
+        if field == self.term_bytes {
             return Ok(Some(MatchCategory::Exact));
         }
-        if field.starts_with(self.term) {
+        if field.starts_with(self.term_bytes) {
             return Ok(Some(MatchCategory::Prefix));
         }
         if self.contains_all_tokens(field, is_cancelled)? {
@@ -194,7 +79,7 @@ impl<'term> SearchMatcher<'term> {
 
     fn contains_all_tokens(
         &mut self,
-        field: &str,
+        field: &[u8],
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<bool, CoreError> {
         if is_cancelled() {
@@ -205,7 +90,6 @@ impl<'term> SearchMatcher<'term> {
         let mut token_start = 0;
 
         for (chunk_index, chunk) in field
-            .as_bytes()
             .chunks(SEARCH_CANCELLATION_CHECKPOINT_BYTES)
             .enumerate()
         {
@@ -233,7 +117,7 @@ impl<'term> SearchMatcher<'term> {
         Ok(missing == 0)
     }
 
-    fn mark_token(&mut self, token: &str, missing: &mut usize) -> bool {
+    fn mark_token(&mut self, token: &[u8], missing: &mut usize) -> bool {
         let Some(&index) = self.token_lookup.get(token) else {
             return false;
         };
@@ -246,16 +130,15 @@ impl<'term> SearchMatcher<'term> {
 
     pub(super) fn contains_substring(
         &self,
-        field: &str,
+        field: &[u8],
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<bool, CoreError> {
         if is_cancelled() {
             return Err(CoreError::Cancelled);
         }
-        let needle = self.term.as_bytes();
+        let needle = self.term_bytes;
         let mut matched = 0;
         for (chunk_index, chunk) in field
-            .as_bytes()
             .chunks(SEARCH_CANCELLATION_CHECKPOINT_BYTES)
             .enumerate()
         {
@@ -284,33 +167,27 @@ struct RankBucket {
     total: usize,
 }
 
-pub(super) fn ranked_selection(
-    index: &SearchIndex,
-    matcher: &mut SearchMatcher<'_>,
-    requested_prefix_len: usize,
-    is_cancelled: &dyn Fn() -> bool,
-) -> Result<SelectionPrefix, CoreError> {
-    const SEARCH_FIELDS: usize = 2;
-    const RANK_BUCKETS: usize = 4 * SEARCH_FIELDS;
-    let prefix_len = requested_prefix_len.min(index.documents.len());
-
-    // SearchRank has a small finite range. Bucketing keeps the same total order
-    // as sorting `(SearchRank, catalog index)`. Each bucket retains only the
-    // prefix that could contribute to this page while still counting all matches.
-    let mut buckets: [RankBucket; RANK_BUCKETS] = std::array::from_fn(|_| RankBucket::default());
-    for (item_index, document) in index.documents.iter().enumerate() {
-        if is_cancelled() {
-            return Err(CoreError::Cancelled);
-        }
-        if let Some(rank) = document.rank(&index.arena, matcher, is_cancelled)? {
-            let bucket = &mut buckets[rank.bucket_index()];
-            bucket.total += 1;
-            if bucket.prefix.len() < prefix_len {
-                bucket.prefix.push(item_index);
+impl RankBucket {
+    fn record(&mut self, item_index: usize, prefix_len: usize) {
+        self.total += 1;
+        if self.prefix.len() < prefix_len {
+            if self.prefix.capacity() == 0 {
+                self.prefix
+                    .reserve_exact(prefix_len.min(usize::from(PageLimit::MAX)));
             }
+            self.prefix.push(item_index);
         }
     }
+}
 
+const SEARCH_FIELDS: usize = 2;
+const RANK_BUCKETS: usize = 4 * SEARCH_FIELDS;
+
+fn finalize_buckets(
+    buckets: [RankBucket; RANK_BUCKETS],
+    prefix_len: usize,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<SelectionPrefix, CoreError> {
     let match_count = buckets.iter().map(|bucket| bucket.total).sum();
     let mut ranked = Vec::with_capacity(prefix_len.min(match_count));
     for bucket in buckets {
@@ -327,6 +204,112 @@ pub(super) fn ranked_selection(
     }
     debug_assert_eq!(ranked.len(), prefix_len.min(match_count));
     Ok(SelectionPrefix::new(ranked, match_count))
+}
+
+/// Ranks Channels by scanning groups in catalog order. Each group's normalized
+/// name is ranked once instead of once per Channel, avoiding faulting
+/// `channels_hot` during Channel search.
+pub(super) fn ranked_channel_selection(
+    catalog: &FlatCatalog,
+    matcher: &mut SearchMatcher<'_>,
+    requested_prefix_len: usize,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<SelectionPrefix, CoreError> {
+    let spans = catalog.channel_search_spans();
+    let arena = catalog.channel_search_arena();
+    let prefix_len = requested_prefix_len.min(spans.len());
+    let mut buckets: [RankBucket; RANK_BUCKETS] = std::array::from_fn(|_| RankBucket::default());
+
+    for (group_index, group) in catalog.groups().iter().enumerate() {
+        let start = group.channel_start.get() as usize;
+        let end = group.channel_end.get() as usize;
+        if start == end {
+            continue;
+        }
+        if is_cancelled() {
+            return Err(CoreError::Cancelled);
+        }
+        let group_norm = catalog.group_search_name_bytes(group_index);
+        let secondary_rank = matcher
+            .field_rank(group_norm, is_cancelled)?
+            .map(|category| SearchRank {
+                category,
+                field_index: 1,
+            });
+        for (item_index, span) in spans[start..end].iter().enumerate() {
+            let item_index = start + item_index;
+            if is_cancelled() {
+                return Err(CoreError::Cancelled);
+            }
+            let off = span.off.get() as usize;
+            let len = span.len.get() as usize;
+            let primary_rank = matcher
+                .field_rank(&arena[off..off + len], is_cancelled)?
+                .map(|category| SearchRank {
+                    category,
+                    field_index: 0,
+                });
+            let best = match (primary_rank, secondary_rank) {
+                (Some(p), Some(s)) => Some(p.min(s)),
+                (Some(p), None) => Some(p),
+                (None, Some(s)) => Some(s),
+                (None, None) => None,
+            };
+            if let Some(rank) = best {
+                buckets[rank.bucket_index()].record(item_index, prefix_len);
+            }
+        }
+    }
+
+    finalize_buckets(buckets, prefix_len, is_cancelled)
+}
+
+/// Ranks Programmes in exact `schedule_entries` order (ChannelId order, then
+/// schedule order) so equal-ranked ties preserve the exact pagination contract.
+pub(super) fn ranked_programme_selection(
+    catalog: &FlatCatalog,
+    matcher: &mut SearchMatcher<'_>,
+    requested_prefix_len: usize,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<SelectionPrefix, CoreError> {
+    let entries = catalog.schedule_entries();
+    let spans = catalog.programme_search_spans();
+    let arena = catalog.programme_search_arena();
+    let prefix_len = requested_prefix_len.min(entries.len());
+    let mut buckets: [RankBucket; RANK_BUCKETS] = std::array::from_fn(|_| RankBucket::default());
+
+    for (item_index, entry) in entries.iter().enumerate() {
+        if is_cancelled() {
+            return Err(CoreError::Cancelled);
+        }
+        let doc = &spans[entry.matched_prog_index.get() as usize];
+        let p_off = doc.primary_off.get() as usize;
+        let p_len = doc.primary_len.get() as usize;
+        let mut best = matcher
+            .field_rank(&arena[p_off..p_off + p_len], is_cancelled)?
+            .map(|category| SearchRank {
+                category,
+                field_index: 0,
+            });
+        if doc.secondary_off.get() != ABSENT_U32 {
+            let s_off = doc.secondary_off.get() as usize;
+            let s_len = doc.secondary_len.get() as usize;
+            if let Some(category) =
+                matcher.field_rank(&arena[s_off..s_off + s_len], is_cancelled)?
+            {
+                let candidate = SearchRank {
+                    category,
+                    field_index: 1,
+                };
+                best = Some(best.map_or(candidate, |current| current.min(candidate)));
+            }
+        }
+        if let Some(rank) = best {
+            buckets[rank.bucket_index()].record(item_index, prefix_len);
+        }
+    }
+
+    finalize_buckets(buckets, prefix_len, is_cancelled)
 }
 
 impl SearchRank {

@@ -1,7 +1,7 @@
 use std::{
     cell::Cell,
-    collections::{BTreeMap, HashSet},
-    mem::size_of,
+    collections::{BTreeMap, HashSet, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
     sync::Arc,
 };
 
@@ -11,14 +11,15 @@ use static_assertions::assert_not_impl_any;
 
 use crate::{
     domain::{
-        CatalogGeneration, ChannelQuery, CoreError, PageCursor, PageLimit, PageRequest,
-        SearchRequest, SearchTerm, SourceConfiguration, SourceConfigurationInput,
+        CatalogGeneration, ChannelGroupFilter, ChannelId, ChannelQuery, CoreError, GuideProgramme,
+        GuideWindowQuery, PageCursor, PageLimit, PageRequest, ScheduleQuery, SearchRequest,
+        SearchTerm, SourceConfiguration, SourceConfigurationInput,
     },
     m3u::ParsedChannel,
-    xmltv::{ParsedGuide, ParsedProgramme},
+    xmltv::{ParsedGuide, ParsedGuideChannel, ParsedProgramme},
 };
 
-use super::{CatalogProgramme, ChannelCatalog, ScheduleOverlapIndex};
+use super::ChannelCatalog;
 
 assert_not_impl_any!(ChannelCatalog: Clone);
 
@@ -32,11 +33,7 @@ proptest! {
             unique_channels(channel_count, false),
             generation(1),
         );
-        let expected = catalog
-            .channels
-            .iter()
-            .map(|channel| channel.id.as_str().to_owned())
-            .collect::<Vec<_>>();
+        let expected = catalog.channel_ids_in_order();
         let mut request = PageRequest::first(PageLimit::new(limit).expect("generated limit is valid"));
         let mut observed = Vec::new();
 
@@ -86,11 +83,7 @@ proptest! {
             unique_channels(channel_count, false),
             generation(1),
         );
-        let expected = catalog
-            .channels
-            .iter()
-            .map(|channel| channel.id.as_str().to_owned())
-            .collect::<Vec<_>>();
+        let expected = catalog.channel_ids_in_order();
         let term = SearchTerm::parse("channel").expect("fixture term is valid");
         let programme_page = PageRequest::first(
             PageLimit::new(100).expect("fixture limit is valid"),
@@ -158,19 +151,57 @@ proptest! {
             duplicate_channels(duplicate_count, true),
             generation(2),
         );
-        let forward_ids = forward
-            .channels
-            .iter()
-            .map(|channel| channel.id.as_str().to_owned())
-            .collect::<HashSet<_>>();
-        let reversed_ids = reversed
-            .channels
-            .iter()
-            .map(|channel| channel.id.as_str().to_owned())
-            .collect::<HashSet<_>>();
+        let forward_ids = forward.channel_ids_in_order().into_iter().collect::<HashSet<_>>();
+        let reversed_ids = reversed.channel_ids_in_order().into_iter().collect::<HashSet<_>>();
 
         prop_assert_eq!(forward_ids.len(), duplicate_count);
         prop_assert_eq!(forward_ids, reversed_ids);
+    }
+
+    #[test]
+    fn mutated_flat_catalog_bytes_either_reject_or_query_without_panicking(
+        mutations in prop::collection::vec((0_usize..20_000, any::<u8>()), 1..8),
+        truncate_by in 0_usize..32,
+    ) {
+        let built = rich_catalog(generation(1));
+        let mut bytes = built.as_bytes().to_vec();
+        let len = bytes.len();
+        for (index, value) in mutations {
+            bytes[index % len] ^= value.max(1);
+        }
+        if truncate_by > 0 && truncate_by < bytes.len() {
+            bytes.truncate(bytes.len() - truncate_by);
+        }
+        if let Some(reopened) =
+            ChannelCatalog::from_cache_mapping(crate::ports::CatalogCacheMapping::new(bytes), generation(1))
+        {
+            let limit = PageLimit::new(10).unwrap();
+            let _ = reopened.groups_page(&PageRequest::first(limit));
+            if let Ok(page) = reopened.channels_page(&ChannelQuery::all(PageRequest::first(limit))) {
+                for ch in page.items() {
+                    let _ = reopened.channel(ch.id());
+                    let _ = reopened.resolve_playback(ch.id());
+                    let _ = reopened.schedule(&ScheduleQuery::new(
+                        ch.id().clone(),
+                        PageRequest::first(limit),
+                    ));
+                }
+            }
+            let term = SearchTerm::parse("news").unwrap();
+            let _ = reopened.search(&SearchRequest::new(
+                term.clone(),
+                PageRequest::first(limit),
+                PageRequest::first(limit),
+            ));
+            let _ = reopened.search_programmes(&term, &PageRequest::first(limit));
+            let window = GuideWindowQuery::new(
+                instant(0),
+                instant(7200),
+                ChannelQuery::all(PageRequest::first(limit)),
+            )
+            .unwrap();
+            let _ = reopened.guide_window(&window);
+        }
     }
 }
 
@@ -201,30 +232,22 @@ fn a_cursor_from_an_older_catalog_generation_returns_typed_invalidation() {
 }
 
 #[test]
-fn a_cached_catalog_keeps_channel_numbers_and_quality_variants() {
-    let built = catalog(
-        [
-            "World News",
-            "Arena SD",
-            "Arena HD",
-            "Arena FHD",
-            "Arena 4K",
-        ]
-        .into_iter()
-        .map(|name| parsed_channel(name, "Sport"))
-        .collect(),
+fn a_cached_catalog_keeps_channel_numbers_quality_variants_and_all_query_parity() {
+    let built = rich_catalog(generation(1));
+    let bytes = built.as_bytes().to_vec();
+    let reopened = ChannelCatalog::from_cache_mapping(
+        crate::ports::CatalogCacheMapping::new(bytes),
         generation(1),
-    );
-    let bytes = built.encode_cache().expect("a built catalog encodes");
-    let reopened =
-        ChannelCatalog::decode_cache(&bytes, generation(1)).expect("the encoded catalog decodes");
-    let query = ChannelQuery::all(PageRequest::first(
-        PageLimit::new(10).expect("fixture limit is valid"),
-    ));
+    )
+    .expect("the flat catalog bytes reopen cleanly");
+    let limit = PageLimit::new(20).expect("fixture limit is valid");
 
-    let expected = built
-        .channels_page(&query)
-        .expect("the built catalog is queryable");
+    let groups_built = built.groups_page(&PageRequest::first(limit)).unwrap();
+    let groups_reopened = reopened.groups_page(&PageRequest::first(limit)).unwrap();
+    assert_eq!(groups_reopened.items(), groups_built.items());
+
+    let query = ChannelQuery::all(PageRequest::first(limit));
+    let expected = built.channels_page(&query).unwrap();
     assert_eq!(
         expected
             .items()
@@ -233,12 +256,512 @@ fn a_cached_catalog_keeps_channel_numbers_and_quality_variants() {
             .collect::<Vec<_>>(),
         [1, 2, 2, 2, 2]
     );
+    let reopened_channels = reopened.channels_page(&query).unwrap();
+    assert_eq!(reopened_channels.items(), expected.items());
+
+    let group_query = ChannelQuery::in_group(
+        ChannelGroupFilter::parse("Sport").unwrap(),
+        PageRequest::first(limit),
+    );
+    assert_eq!(
+        reopened.channels_page(&group_query).unwrap().items(),
+        built.channels_page(&group_query).unwrap().items()
+    );
+
+    for ch in expected.items() {
+        assert_eq!(
+            reopened.channel(ch.id()).unwrap(),
+            built.channel(ch.id()).unwrap()
+        );
+        assert_eq!(
+            reopened
+                .resolve_playback(ch.id())
+                .unwrap()
+                .location_for_adapter(),
+            built
+                .resolve_playback(ch.id())
+                .unwrap()
+                .location_for_adapter()
+        );
+        let sched = ScheduleQuery::new(ch.id().clone(), PageRequest::first(limit));
+        assert_eq!(
+            reopened.schedule(&sched).unwrap().items(),
+            built.schedule(&sched).unwrap().items()
+        );
+        let sched_from = sched.with_from(instant(15));
+        assert_eq!(
+            reopened.schedule(&sched_from).unwrap().items(),
+            built.schedule(&sched_from).unwrap().items()
+        );
+    }
+
+    let window = GuideWindowQuery::new(instant(10), instant(60), query).unwrap();
+    assert_eq!(
+        reopened.guide_window(&window).unwrap().items(),
+        built.guide_window(&window).unwrap().items()
+    );
+
+    let term = SearchTerm::parse("arena").unwrap();
+    let search_req = SearchRequest::new(
+        term.clone(),
+        PageRequest::first(limit),
+        PageRequest::first(limit),
+    );
+    let built_search = built.search(&search_req).unwrap();
+    let reopened_search = reopened.search(&search_req).unwrap();
+    assert_eq!(
+        reopened_search.channels().items(),
+        built_search.channels().items()
+    );
+    assert_eq!(
+        reopened_search.programmes().items(),
+        built_search.programmes().items()
+    );
     assert_eq!(
         reopened
-            .channels_page(&query)
-            .expect("the reopened catalog is queryable")
+            .search_programmes(&term, &PageRequest::first(limit))
+            .unwrap()
             .items(),
-        expected.items()
+        built
+            .search_programmes(&term, &PageRequest::first(limit))
+            .unwrap()
+            .items()
+    );
+}
+
+#[test]
+fn incremental_epg_and_m3u_rebuilds_are_byte_identical_to_full_from_parsed() {
+    let config = configuration();
+    let initial_channels = vec![
+        parsed_channel_with_tvg("tvg.a", "Alpha HD", "News"),
+        parsed_channel_with_tvg("tvg.a", "Alpha FHD", "News"),
+        parsed_channel_with_tvg("", "World News", "News"),
+    ];
+    let updated_channels = vec![
+        parsed_channel_with_tvg("tvg.a", "Alpha HD", "News"),
+        parsed_channel_with_tvg("tvg.unmatched", "New Match", "Sports"),
+    ];
+    let guide = ParsedGuide {
+        channels: vec![
+            ParsedGuideChannel {
+                id: Arc::from("tvg.a"),
+                display_names: vec![Arc::from("Alpha")],
+            },
+            ParsedGuideChannel {
+                id: Arc::from("tvg.unmatched"),
+                display_names: vec![Arc::from("New Match")],
+            },
+        ],
+        programmes: vec![
+            ParsedProgramme {
+                guide_channel_id: Arc::from("tvg.unmatched"),
+                title: Arc::from("Unmatched Initially"),
+                description: Some(Arc::from("Later matched when M3U adds tvg.unmatched")),
+                starts_at: instant(100),
+                ends_at: instant(200),
+            },
+            ParsedProgramme {
+                guide_channel_id: Arc::from("tvg.a"),
+                title: Arc::from("Alpha Show"),
+                description: Some(Arc::from("Description A")),
+                starts_at: instant(50),
+                ends_at: instant(150),
+            },
+        ],
+    };
+
+    // 1. M3U-only -> with_updated_guide must be byte-for-byte identical to full from_parsed.
+    let m3u_only = ChannelCatalog::from_parsed(&config, &initial_channels, None, generation(1));
+    let updated_epg = m3u_only.with_updated_guide(&guide, generation(2));
+    let full_initial =
+        ChannelCatalog::from_parsed(&config, &initial_channels, Some(&guide), generation(2));
+    assert_eq!(updated_epg.as_bytes(), full_initial.as_bytes());
+
+    // 2. Existing catalog (containing unmatched EPG programmes in cold tables) + new M3U
+    // must match previously unmatched programmes and be byte-for-byte identical to full from_parsed.
+    let rematched = ChannelCatalog::from_parsed_with_existing_guide(
+        &config,
+        &updated_channels,
+        &updated_epg,
+        generation(3),
+    );
+    let full_updated =
+        ChannelCatalog::from_parsed(&config, &updated_channels, Some(&guide), generation(3));
+    assert_eq!(rematched.as_bytes(), full_updated.as_bytes());
+}
+
+#[test]
+fn equal_ranked_programme_search_hits_follow_channel_id_order_across_page_boundaries() {
+    // Build channels whose catalog order differs from ChannelId lexicographic order,
+    // all sharing the same EPG programme title so tie-breaking strictly exercises
+    // ChannelId traversal order across page boundaries.
+    let channels: Vec<ParsedChannel> = (0..12)
+        .map(|i| parsed_channel_with_tvg("shared.tvg", &format!("Station {i:02}"), "Live"))
+        .collect();
+    let guide = ParsedGuide {
+        channels: vec![ParsedGuideChannel {
+            id: Arc::from("shared.tvg"),
+            display_names: vec![Arc::from("Shared")],
+        }],
+        programmes: vec![ParsedProgramme {
+            guide_channel_id: Arc::from("shared.tvg"),
+            title: Arc::from("Evening News"),
+            description: Some(Arc::from("Shared bulletin")),
+            starts_at: instant(100),
+            ends_at: instant(200),
+        }],
+    };
+    let cat = ChannelCatalog::from_parsed(&configuration(), &channels, Some(&guide), generation(1));
+    let catalog_order_ids = cat.channel_ids_in_order();
+    let mut id_sorted = catalog_order_ids.clone();
+    id_sorted.sort();
+    assert_ne!(
+        catalog_order_ids, id_sorted,
+        "fixture must differ between catalog order and ChannelId order"
+    );
+
+    let term = SearchTerm::parse("evening news").unwrap();
+    let limit = PageLimit::new(5).unwrap();
+    let mut page_req = PageRequest::first(limit);
+    let mut observed_ids = Vec::new();
+    loop {
+        let page = cat.search_programmes(&term, &page_req).unwrap();
+        observed_ids.extend(
+            page.items()
+                .iter()
+                .map(|p| p.channel_id().as_str().to_owned()),
+        );
+        let Some(next) = page.next() else {
+            break;
+        };
+        page_req = PageRequest::after(next.clone(), limit);
+    }
+    assert_eq!(observed_ids, id_sorted);
+}
+
+#[test]
+fn standalone_programme_search_deduplicates_shared_long_descriptions_in_page_arena() {
+    let channels: Vec<ParsedChannel> = (0..60)
+        .map(|i| parsed_channel_with_tvg("shared.long", &format!("Mirror {i:02}"), "HD"))
+        .collect();
+    let long_description = format!("shared-needle {}", "x".repeat(32 * 1024));
+    let guide = ParsedGuide {
+        channels: vec![ParsedGuideChannel {
+            id: Arc::from("shared.long"),
+            display_names: vec![Arc::from("Mirror")],
+        }],
+        programmes: vec![ParsedProgramme {
+            guide_channel_id: Arc::from("shared.long"),
+            title: Arc::from("Shared Feature"),
+            description: Some(Arc::from(long_description.as_str())),
+            starts_at: instant(100),
+            ends_at: instant(200),
+        }],
+    };
+    let cat = ChannelCatalog::from_parsed(&configuration(), &channels, Some(&guide), generation(1));
+    let page = cat
+        .search_programmes(
+            &SearchTerm::parse("shared-needle").unwrap(),
+            &PageRequest::first(PageLimit::new(60).unwrap()),
+        )
+        .unwrap();
+    assert_eq!(page.items().len(), 60);
+    // All 60 ProgrammeSummary descriptions point to the exact same slice in the
+    // page-owned arena rather than allocating 60 separate 32 KiB copies.
+    let first_ptr = page.items()[0].description().unwrap().as_ptr();
+    for item in page.items() {
+        assert_eq!(item.description(), Some(long_description.as_str()));
+        assert_eq!(item.description().unwrap().as_ptr(), first_ptr);
+    }
+}
+
+#[test]
+fn compact_programme_projections_bound_ascii_and_multibyte_utf8_titles() {
+    let channels = vec![parsed_channel_with_tvg(
+        "titles.id",
+        "Title Channel",
+        "News",
+    )];
+    let exact_title = format!("exact-{}", "a".repeat(GuideProgramme::MAX_TITLE_BYTES - 6));
+    assert_eq!(exact_title.len(), GuideProgramme::MAX_TITLE_BYTES);
+    let long_ascii = format!("ascii-{}", "b".repeat(4_096));
+    // Place a 4-byte emoji starting at byte 254 so byte 256 splits the scalar.
+    let mut split_utf8 = format!("utf8-{}", "c".repeat(254 - 5));
+    assert_eq!(split_utf8.len(), 254);
+    split_utf8.push('🎉');
+    split_utf8.push_str(&"d".repeat(512));
+
+    let guide = ParsedGuide {
+        channels: vec![ParsedGuideChannel {
+            id: Arc::from("titles.id"),
+            display_names: vec![Arc::from("Title Channel")],
+        }],
+        programmes: vec![
+            ParsedProgramme {
+                guide_channel_id: Arc::from("titles.id"),
+                title: Arc::from("short-needle"),
+                description: None,
+                starts_at: instant(100),
+                ends_at: instant(200),
+            },
+            ParsedProgramme {
+                guide_channel_id: Arc::from("titles.id"),
+                title: Arc::from(exact_title.as_str()),
+                description: None,
+                starts_at: instant(200),
+                ends_at: instant(300),
+            },
+            ParsedProgramme {
+                guide_channel_id: Arc::from("titles.id"),
+                title: Arc::from(long_ascii.as_str()),
+                description: None,
+                starts_at: instant(300),
+                ends_at: instant(400),
+            },
+            ParsedProgramme {
+                guide_channel_id: Arc::from("titles.id"),
+                title: Arc::from(split_utf8.as_str()),
+                description: None,
+                starts_at: instant(400),
+                ends_at: instant(500),
+            },
+        ],
+    };
+    let cat = ChannelCatalog::from_parsed(&configuration(), &channels, Some(&guide), generation(1));
+
+    let window = cat
+        .guide_window(
+            &GuideWindowQuery::new(
+                instant(100),
+                instant(500),
+                ChannelQuery::all(PageRequest::first(PageLimit::new(10).unwrap())),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let progs = window.items()[0].programmes();
+    assert_eq!(progs.len(), 4);
+    assert_eq!(progs[0].title(), "short-needle");
+    assert!(!progs[0].title_truncated());
+    assert_eq!(progs[1].title(), exact_title);
+    assert!(!progs[1].title_truncated());
+    assert_eq!(
+        progs[2].title(),
+        &long_ascii[..GuideProgramme::MAX_TITLE_BYTES]
+    );
+    assert!(progs[2].title_truncated());
+    assert_eq!(progs[3].title().len(), 254);
+    assert_eq!(progs[3].title(), &split_utf8[..254]);
+    assert!(progs[3].title_truncated());
+
+    let search = cat
+        .search(&SearchRequest::new(
+            SearchTerm::parse("utf8").unwrap(),
+            PageRequest::first(PageLimit::new(10).unwrap()),
+            PageRequest::first(PageLimit::new(10).unwrap()),
+        ))
+        .unwrap();
+    assert_eq!(search.programmes().items().len(), 1);
+    let hit = &search.programmes().items()[0];
+    assert_eq!(hit.title(), &split_utf8[..254]);
+    assert!(hit.title_truncated());
+}
+
+#[test]
+fn parsed_channel_id_equals_and_hashes_identically_to_projections_from_different_pages() {
+    let cat = catalog(unique_channels(10, false), generation(1));
+    let page_one = cat
+        .channels_page(&ChannelQuery::all(PageRequest::first(
+            PageLimit::new(4).unwrap(),
+        )))
+        .unwrap();
+    let page_two = cat
+        .channels_page(&ChannelQuery::all(PageRequest::after(
+            page_one.next().unwrap().clone(),
+            PageLimit::new(4).unwrap(),
+        )))
+        .unwrap();
+    let target_from_page_two = page_two.items()[0].id().clone();
+    let target_parsed = ChannelId::parse(target_from_page_two.as_str()).unwrap();
+    let target_from_details = cat.channel(&target_parsed).unwrap().id().clone();
+
+    assert_eq!(target_parsed, target_from_page_two);
+    assert_eq!(target_parsed, target_from_details);
+    assert_eq!(target_from_page_two, target_from_details);
+    assert_eq!(hash_of(&target_parsed), hash_of(&target_from_page_two));
+    assert_eq!(hash_of(&target_parsed), hash_of(&target_from_details));
+    assert_eq!(format!("{target_from_page_two:?}"), "ChannelId(<redacted>)");
+}
+
+#[test]
+fn structural_validator_rejects_short_tables_flag_mismatch_bad_urls_and_corrupt_overlap() {
+    let built = rich_catalog(generation(1));
+    let base = built.as_bytes().to_vec();
+
+    // 1. Short parallel table with contiguous sections (remove 1 `Span` = 8 bytes
+    //    from ChannelSearchSpans section 18 and shift all remaining sections
+    //    through `SECTION_COUNT` so the file stays contiguous through EOF and
+    //    reaches the exact record-count check).
+    let mut short_table = base.clone();
+    let section_count = super::flat::SECTION_COUNT;
+    let sec18_off_pos = 60 + 18 * 16;
+    let sec18_off = u64::from_le_bytes(
+        short_table[sec18_off_pos..sec18_off_pos + 8]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    let sec18_len = u64::from_le_bytes(
+        short_table[sec18_off_pos + 8..sec18_off_pos + 16]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    assert!(sec18_len >= 8);
+    short_table.drain(sec18_off + sec18_len - 8..sec18_off + sec18_len);
+    short_table[sec18_off_pos + 8..sec18_off_pos + 16]
+        .copy_from_slice(&((sec18_len - 8) as u64).to_le_bytes());
+    for section_index in 19..section_count {
+        let pos = 60 + section_index * 16;
+        let off = u64::from_le_bytes(short_table[pos..pos + 8].try_into().unwrap());
+        short_table[pos..pos + 8].copy_from_slice(&(off - 8).to_le_bytes());
+    }
+    // Verify the mutated fixture passes section contiguity all the way to EOF
+    // so failure must come from the record-count check on section 18.
+    let mut expected_cursor = (60 + section_count * 16) as u64;
+    for section_index in 0..section_count {
+        let pos = 60 + section_index * 16;
+        let off = u64::from_le_bytes(short_table[pos..pos + 8].try_into().unwrap());
+        let len = u64::from_le_bytes(short_table[pos + 8..pos + 16].try_into().unwrap());
+        assert_eq!(
+            off, expected_cursor,
+            "section {section_index} must stay contiguous"
+        );
+        expected_cursor += len;
+    }
+    assert_eq!(expected_cursor as usize, short_table.len());
+    assert!(
+        ChannelCatalog::from_cache_mapping(
+            crate::ports::CatalogCacheMapping::new(short_table),
+            generation(1)
+        )
+        .is_none()
+    );
+
+    // 2. Unknown flag bit set in header.
+    let mut bad_flags = base.clone();
+    bad_flags[12..16].copy_from_slice(&0xFFFF_u32.to_le_bytes());
+    assert!(
+        ChannelCatalog::from_cache_mapping(
+            crate::ports::CatalogCacheMapping::new(bad_flags),
+            generation(1)
+        )
+        .is_none()
+    );
+
+    // 3. Clearing FLAG_HAS_EPG while EPG counts are non-zero.
+    let mut cleared_epg_flag = base.clone();
+    cleared_epg_flag[12..16].copy_from_slice(&0_u32.to_le_bytes());
+    assert!(
+        ChannelCatalog::from_cache_mapping(
+            crate::ports::CatalogCacheMapping::new(cleared_epg_flag),
+            generation(1)
+        )
+        .is_none()
+    );
+
+    // 4. Malformed playback URL with invalid port (would fail Url::parse at tune time).
+    let mut bad_url = base.clone();
+    let needle = b"https://media.fixture.invalid/channel";
+    let pos = bad_url
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .expect("playback URL exists in flat buffer");
+    bad_url[pos..pos + needle.len()].copy_from_slice(b"https://media.fixture.in:99999/channe");
+    assert!(
+        ChannelCatalog::from_cache_mapping(
+            crate::ports::CatalogCacheMapping::new(bad_url),
+            generation(1)
+        )
+        .is_none()
+    );
+
+    // 5. Duplicate index in channels_by_id (section 6).
+    let mut dup_by_id = base.clone();
+    let sec6_off =
+        u64::from_le_bytes(dup_by_id[60 + 6 * 16..60 + 6 * 16 + 8].try_into().unwrap()) as usize;
+    let first_idx = dup_by_id[sec6_off..sec6_off + 4].to_vec();
+    dup_by_id[sec6_off + 4..sec6_off + 8].copy_from_slice(&first_idx);
+    assert!(
+        ChannelCatalog::from_cache_mapping(
+            crate::ports::CatalogCacheMapping::new(dup_by_id),
+            generation(1)
+        )
+        .is_none()
+    );
+
+    // 6. Underestimated schedule_overlap (section 9) hiding an earlier long programme.
+    let mut bad_overlap = base.clone();
+    let sec9_off = u64::from_le_bytes(
+        bad_overlap[60 + 9 * 16..60 + 9 * 16 + 8]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    // rich_catalog has programme 0 [0..100] followed by programme 1 [10..20];
+    // setting overlap[1] = 1 instead of 0 underestimates the running max end.
+    bad_overlap[sec9_off + 4..sec9_off + 8].copy_from_slice(&1_u32.to_le_bytes());
+    assert!(
+        ChannelCatalog::from_cache_mapping(
+            crate::ports::CatalogCacheMapping::new(bad_overlap),
+            generation(1)
+        )
+        .is_none()
+    );
+
+    // 7. Overlapping/aliased PlaybackSpans (section 12): aliasing channel 1 to
+    // channel 0's playback span must be rejected to prevent parsing amplification.
+    let mut aliased_playback = base.clone();
+    let sec12_off = u64::from_le_bytes(
+        aliased_playback[60 + 12 * 16..60 + 12 * 16 + 8]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    let span0 = aliased_playback[sec12_off..sec12_off + 8].to_vec();
+    aliased_playback[sec12_off + 8..sec12_off + 16].copy_from_slice(&span0);
+    assert!(
+        ChannelCatalog::from_cache_mapping(
+            crate::ports::CatalogCacheMapping::new(aliased_playback),
+            generation(1)
+        )
+        .is_none()
+    );
+
+    // 8. Overlapping/aliased ChannelNames (section 4 -> ChannelHot.name_off/len):
+    // aliasing channel 1's name span to channel 0 must be rejected.
+    let mut aliased_name = base.clone();
+    let sec4_off = u64::from_le_bytes(
+        aliased_name[60 + 4 * 16..60 + 4 * 16 + 8]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    // ChannelHot stride = 52; name_off/name_len live at bytes 32..40.
+    let name0 = aliased_name[sec4_off + 32..sec4_off + 40].to_vec();
+    aliased_name[sec4_off + 52 + 32..sec4_off + 52 + 40].copy_from_slice(&name0);
+    assert!(
+        ChannelCatalog::from_cache_mapping(
+            crate::ports::CatalogCacheMapping::new(aliased_name),
+            generation(1)
+        )
+        .is_none()
+    );
+
+    // 9. Trailing unreferenced bytes after final section must be rejected.
+    let mut trailing = base.clone();
+    trailing.push(0);
+    assert!(
+        ChannelCatalog::from_cache_mapping(
+            crate::ports::CatalogCacheMapping::new(trailing),
+            generation(1)
+        )
+        .is_none()
     );
 }
 
@@ -278,9 +801,9 @@ fn search_ranking_is_exact_then_prefix_then_token_then_substring() {
 
     let term = SearchTerm::parse("news").expect("fixture term is valid");
     let mut matcher = super::SearchMatcher::new(&term);
-    let mut rank = |field| {
+    let mut rank = |field: &str| {
         matcher
-            .field_rank(field, &super::never_cancelled)
+            .field_rank(field.as_bytes(), &super::never_cancelled)
             .expect("an uncancelled rank succeeds")
     };
 
@@ -293,55 +816,49 @@ fn search_ranking_is_exact_then_prefix_then_token_then_substring() {
 }
 
 #[test]
-fn search_fields_share_one_arena_instead_of_retaining_per_document_strings() {
-    let index = search_index(&[("Alpha", Some("One")), ("Beta", None)]);
-
-    assert_eq!(index.arena, "alphaonebeta");
-    assert_eq!(index.documents.len(), 2);
-    assert_eq!(size_of::<super::SearchDocument>(), size_of::<usize>() * 4);
-    assert_eq!(index.documents[0].primary.get(&index.arena), "alpha");
-    assert_eq!(
-        index.documents[0]
-            .secondary()
-            .map(|field| field.get(&index.arena)),
-        Some("one")
-    );
-    assert!(index.documents[1].secondary().is_none());
-}
-
-#[test]
 fn search_observes_cancellation_while_emitting_ranked_matches() {
-    let documents = search_index(&[("News", None), ("News", None), ("News", None)]);
+    let cat = catalog(
+        vec![
+            parsed_channel("News", "G"),
+            parsed_channel("News", "G"),
+            parsed_channel("News", "G"),
+        ],
+        generation(1),
+    );
     let term = SearchTerm::parse("news").expect("fixture term is valid");
-    let mut matcher = super::SearchMatcher::new(&term);
     let checkpoints = Cell::new(0_usize);
 
-    let result = super::ranked_selection(&documents, &mut matcher, usize::MAX, &|| {
-        let next = checkpoints.get() + 1;
-        checkpoints.set(next);
-        next > documents.len()
-    });
+    let result = cat.search_channels_with_cancellation(
+        &term,
+        &PageRequest::first(PageLimit::new(10).unwrap()),
+        &|| {
+            let next = checkpoints.get() + 1;
+            checkpoints.set(next);
+            next > 8
+        },
+    );
 
     assert!(matches!(result, Err(CoreError::Cancelled)));
-    assert_eq!(checkpoints.get(), documents.len() + 1);
 }
 
 #[test]
 fn search_observes_cancellation_inside_one_pathological_field() {
     let oversized_field = "x".repeat(super::SEARCH_CANCELLATION_CHECKPOINT_BYTES * 3);
-    let documents = search_index(&[(&oversized_field, None)]);
+    let cat = catalog(vec![parsed_channel(&oversized_field, "G")], generation(1));
     let term = SearchTerm::parse("needle").expect("fixture term is valid");
-    let mut matcher = super::SearchMatcher::new(&term);
     let checkpoints = Cell::new(0_u8);
 
-    let result = super::ranked_selection(&documents, &mut matcher, usize::MAX, &|| {
-        let next = checkpoints.get() + 1;
-        checkpoints.set(next);
-        next >= 3
-    });
+    let result = cat.search_channels_with_cancellation(
+        &term,
+        &PageRequest::first(PageLimit::new(10).unwrap()),
+        &|| {
+            let next = checkpoints.get() + 1;
+            checkpoints.set(next);
+            next >= 6
+        },
+    );
 
     assert!(matches!(result, Err(CoreError::Cancelled)));
-    assert_eq!(checkpoints.get(), 3);
 }
 
 #[test]
@@ -351,7 +868,7 @@ fn substring_matching_observes_cancellation_inside_one_pathological_field() {
     let matcher = super::SearchMatcher::new(&term);
     let checkpoints = Cell::new(0_u8);
 
-    let result = matcher.contains_substring(&oversized_field, &|| {
+    let result = matcher.contains_substring(oversized_field.as_bytes(), &|| {
         let next = checkpoints.get() + 1;
         checkpoints.set(next);
         next >= 2
@@ -370,19 +887,19 @@ fn compiled_search_matcher_clears_token_scratch_between_fields() {
 
     assert_eq!(
         matcher
-            .field_rank("alpha only", &super::never_cancelled)
+            .field_rank(b"alpha only", &super::never_cancelled)
             .expect("an uncancelled rank succeeds"),
         None
     );
     assert_eq!(
         matcher
-            .field_rank("beta only", &super::never_cancelled)
+            .field_rank(b"beta only", &super::never_cancelled)
             .expect("an uncancelled rank succeeds"),
         None
     );
     assert_eq!(
         matcher
-            .field_rank("beta then alpha", &super::never_cancelled)
+            .field_rank(b"beta then alpha", &super::never_cancelled)
             .expect("an uncancelled rank succeeds"),
         Some(Token)
     );
@@ -391,7 +908,7 @@ fn compiled_search_matcher_clears_token_scratch_between_fields() {
     let mut duplicate_matcher = super::SearchMatcher::new(&duplicate_term);
     assert_eq!(
         duplicate_matcher
-            .field_rank("one alpha token", &super::never_cancelled)
+            .field_rank(b"one alpha token", &super::never_cancelled)
             .expect("an uncancelled rank succeeds"),
         Some(Token),
         "duplicate query tokens retain set semantics"
@@ -400,134 +917,220 @@ fn compiled_search_matcher_clears_token_scratch_between_fields() {
 
 #[test]
 fn ranked_selection_keeps_only_the_requested_prefix_and_counts_every_match() {
-    let documents = search_index(&[
-        ("News", None),
-        ("Other", Some("News")),
-        ("Newsroom", None),
-        ("Other", Some("Newsroom")),
-        ("Daily News", None),
-        ("Other", Some("Daily News")),
-        ("Goodnews", None),
-        ("Other", Some("Goodnews")),
-        ("News", None),
-    ]);
+    let cat = catalog(
+        vec![
+            parsed_channel("News", "Other"),
+            parsed_channel("Other", "News"),
+            parsed_channel("Newsroom", "Other"),
+            parsed_channel("Other", "Newsroom"),
+            parsed_channel("Daily News", "Other"),
+            parsed_channel("Other", "Daily News"),
+            parsed_channel("Goodnews", "Other"),
+            parsed_channel("Other", "Goodnews"),
+            parsed_channel("News", "Other"),
+        ],
+        generation(1),
+    );
     let term = SearchTerm::parse("news").expect("fixture term is valid");
     let mut matcher = super::SearchMatcher::new(&term);
 
-    let selection = super::ranked_selection(&documents, &mut matcher, 5, &super::never_cancelled)
-        .expect("an uncancelled ranking succeeds");
+    let selection =
+        super::ranked_channel_selection(&cat.flat, &mut matcher, 5, &super::never_cancelled)
+            .expect("an uncancelled ranking succeeds");
 
-    assert_eq!(selection.total_len(), documents.documents.len());
-    assert_eq!(selection.indices(), [0, 8, 1, 2, 3]);
+    assert_eq!(selection.total_len(), 9);
+    // Notice channels are clustered by first-seen group ("Other", "News", "Newsroom",
+    // "Daily News", "Goodnews"), so check ranked order via channel names & groups.
+    let first_five = cat
+        .search_channels(&term, &PageRequest::first(PageLimit::new(5).unwrap()))
+        .unwrap();
+    let pairs: Vec<(&str, &str)> = first_five
+        .items()
+        .iter()
+        .map(|c| (c.name(), c.group()))
+        .collect();
+    assert_eq!(
+        pairs,
+        vec![
+            ("News", "Other"),
+            ("News", "Other"),
+            ("Other", "News"),
+            ("Newsroom", "Other"),
+            ("Other", "Newsroom"),
+        ]
+    );
 }
 
 #[test]
 fn schedule_overlap_index_preserves_long_running_programmes_and_resets_per_channel() {
+    let channels = vec![
+        parsed_channel_with_tvg("ch.a", "Channel A", "News"),
+        parsed_channel_with_tvg("ch.b", "Channel B", "News"),
+    ];
     let guide = ParsedGuide {
-        channels: Vec::new(),
+        channels: vec![
+            ParsedGuideChannel {
+                id: Arc::from("ch.a"),
+                display_names: vec![],
+            },
+            ParsedGuideChannel {
+                id: Arc::from("ch.b"),
+                display_names: vec![],
+            },
+        ],
         programmes: vec![
-            parsed_programme(0, 100),
-            parsed_programme(10, 20),
-            parsed_programme(20, 30),
-            parsed_programme(0, 5),
-            parsed_programme(10, 40),
+            parsed_programme_for("ch.a", 0, 100),
+            parsed_programme_for("ch.a", 10, 20),
+            parsed_programme_for("ch.a", 20, 30),
+            parsed_programme_for("ch.b", 0, 5),
+            parsed_programme_for("ch.b", 10, 40),
         ],
     };
-    let programmes = vec![
-        CatalogProgramme {
-            channel_index: 0,
-            source_index: 0,
-        },
-        CatalogProgramme {
-            channel_index: 0,
-            source_index: 1,
-        },
-        CatalogProgramme {
-            channel_index: 0,
-            source_index: 2,
-        },
-        CatalogProgramme {
-            channel_index: 1,
-            source_index: 3,
-        },
-        CatalogProgramme {
-            channel_index: 1,
-            source_index: 4,
-        },
-    ];
+    let cat = ChannelCatalog::from_parsed(&configuration(), &channels, Some(&guide), generation(1));
+    let ids = cat
+        .channels_page(&ChannelQuery::all(PageRequest::first(
+            PageLimit::new(10).unwrap(),
+        )))
+        .unwrap();
+    let ch_a = ids.items()[0].id().clone();
+    let ch_b = ids.items()[1].id().clone();
 
-    let index = ScheduleOverlapIndex::build(&programmes, Some(&guide));
+    let a_from_50 = cat
+        .schedule(
+            &ScheduleQuery::new(ch_a, PageRequest::first(PageLimit::new(10).unwrap()))
+                .with_from(instant(50)),
+        )
+        .unwrap();
+    assert_eq!(a_from_50.items().len(), 1);
+    assert_eq!(a_from_50.items()[0].ends_at(), instant(100));
 
-    assert_eq!(&*index.prefix_max_end_sources, &[0, 0, 0, 3, 4]);
-    let window_start = instant(50);
-    assert_eq!(
-        index.first_possible_overlap(&(0..3), |source_index| {
-            guide.programmes[source_index].ends_at <= window_start
-        }),
-        0,
-        "the earlier long-running Programme remains a possible overlap"
-    );
-    assert_eq!(
-        index.first_possible_overlap(&(3..5), |source_index| {
-            guide.programmes[source_index].ends_at <= window_start
-        }),
-        5,
-        "prefix maxima reset at each Channel schedule boundary"
-    );
+    let b_from_50 = cat
+        .schedule(
+            &ScheduleQuery::new(ch_b, PageRequest::first(PageLimit::new(10).unwrap()))
+                .with_from(instant(50)),
+        )
+        .unwrap();
+    assert!(b_from_50.items().is_empty());
 }
 
 #[test]
 fn schedule_overlap_index_locates_deep_history_in_logarithmic_probes() {
-    const PADDING: usize = 7;
     const SCHEDULE_LENGTH: usize = 4_096;
     const FIRST_POSSIBLE: usize = 4_000;
-    let sources = std::iter::repeat_n(u32::MAX, PADDING)
-        .chain(0..SCHEDULE_LENGTH as u32)
-        .collect::<Vec<_>>();
-    let index = ScheduleOverlapIndex {
-        prefix_max_end_sources: sources.into_boxed_slice(),
+
+    let channels = vec![
+        parsed_channel_with_tvg("deep.a", "Deep History A", "News"),
+        parsed_channel_with_tvg("deep.b", "Deep History B", "News"),
+    ];
+    let mut programmes = Vec::with_capacity(SCHEDULE_LENGTH * 2);
+    for ch in ["deep.a", "deep.b"] {
+        for i in 0..SCHEDULE_LENGTH {
+            programmes.push(parsed_programme_for(
+                ch,
+                (i as i64) * 10,
+                (i as i64 + 1) * 10,
+            ));
+        }
+    }
+    let guide = ParsedGuide {
+        channels: vec![
+            ParsedGuideChannel {
+                id: Arc::from("deep.a"),
+                display_names: vec![],
+            },
+            ParsedGuideChannel {
+                id: Arc::from("deep.b"),
+                display_names: vec![],
+            },
+        ],
+        programmes,
     };
-    let probes = Cell::new(0_usize);
+    let cat = ChannelCatalog::from_parsed(&configuration(), &channels, Some(&guide), generation(1));
+    let mut schedules = [
+        cat.flat.channel_schedule_range(0),
+        cat.flat.channel_schedule_range(1),
+    ];
+    schedules.sort_by_key(|range| range.start);
+    assert_eq!(schedules[0], 0..SCHEDULE_LENGTH);
+    assert_eq!(schedules[1], SCHEDULE_LENGTH..SCHEDULE_LENGTH * 2);
 
-    let offset =
-        index.first_possible_overlap(&(PADDING..PADDING + SCHEDULE_LENGTH), |source_index| {
-            probes.set(probes.get() + 1);
-            source_index < FIRST_POSSIBLE
-        });
-
-    assert_eq!(offset, PADDING + FIRST_POSSIBLE);
-    assert!(
-        probes.get() <= 14,
-        "4,096 historical entries should require logarithmic probes, observed {}",
-        probes.get()
-    );
+    // Query right at the end of entry `FIRST_POSSIBLE - 1` on both the
+    // zero-offset schedule and the nonzero-offset schedule.
+    let target_instant = instant((FIRST_POSSIBLE as i64) * 10);
+    for schedule in &schedules {
+        let probes = Cell::new(0_usize);
+        let offset = cat
+            .flat
+            .first_possible_overlap_with_probe(schedule, target_instant, || {
+                probes.set(probes.get() + 1);
+            });
+        assert_eq!(offset, schedule.start + FIRST_POSSIBLE);
+        assert!(
+            probes.get() <= 14,
+            "4,096 historical entries at offset {} should require logarithmic probes, observed {}",
+            schedule.start,
+            probes.get()
+        );
+    }
 }
 
 fn catalog(parsed: Vec<ParsedChannel>, generation: CatalogGeneration) -> ChannelCatalog {
-    ChannelCatalog::from_parsed(&configuration(), Arc::new(parsed), None, generation)
+    ChannelCatalog::from_parsed(&configuration(), &parsed, None, generation)
 }
 
-fn search_index(fields: &[(&str, Option<&str>)]) -> super::SearchIndex {
-    let mut index = super::SearchIndexBuilder::with_capacity(
-        fields.len(),
-        fields
-            .iter()
-            .map(|(primary, secondary)| primary.len() + secondary.map_or(0, |value| value.len()))
-            .sum(),
-    );
-    for (primary, secondary) in fields {
-        index.push(primary, *secondary);
-    }
-    index.finish()
+fn rich_catalog(generation: CatalogGeneration) -> ChannelCatalog {
+    let channels = vec![
+        parsed_channel_with_tvg("news.world", "World News", "Sport"),
+        parsed_channel_with_tvg("arena.tv", "Arena SD", "Sport"),
+        parsed_channel_with_tvg("arena.tv", "Arena HD", "Sport"),
+        parsed_channel_with_tvg("arena.tv", "Arena FHD", "Sport"),
+        parsed_channel_with_tvg("arena.tv", "Arena 4K", "Sport"),
+    ];
+    let guide = ParsedGuide {
+        channels: vec![
+            ParsedGuideChannel {
+                id: Arc::from("arena.tv"),
+                display_names: vec![Arc::from("Arena")],
+            },
+            ParsedGuideChannel {
+                id: Arc::from("unused.tv"),
+                display_names: vec![Arc::from("Unused")],
+            },
+        ],
+        programmes: vec![
+            ParsedProgramme {
+                guide_channel_id: Arc::from("arena.tv"),
+                title: Arc::from("Arena Marathon"),
+                description: Some(Arc::from("Long running broadcast")),
+                starts_at: instant(0),
+                ends_at: instant(100),
+            },
+            ParsedProgramme {
+                guide_channel_id: Arc::from("arena.tv"),
+                title: Arc::from("Arena Short"),
+                description: None,
+                starts_at: instant(10),
+                ends_at: instant(20),
+            },
+            ParsedProgramme {
+                guide_channel_id: Arc::from("unused.tv"),
+                title: Arc::from("Unused Programme"),
+                description: Some(Arc::from("Unmatched")),
+                starts_at: instant(30),
+                ends_at: instant(40),
+            },
+        ],
+    };
+    ChannelCatalog::from_parsed(&configuration(), &channels, Some(&guide), generation)
 }
 
 fn generation(discriminator: u8) -> CatalogGeneration {
     configuration().catalog_generation(&[discriminator; 32], None)
 }
 
-fn parsed_programme(starts_at: i64, ends_at: i64) -> ParsedProgramme {
+fn parsed_programme_for(channel: &str, starts_at: i64, ends_at: i64) -> ParsedProgramme {
     ParsedProgramme {
-        guide_channel_id: Arc::from("fixture"),
+        guide_channel_id: Arc::from(channel),
         title: Arc::from("Fixture"),
         description: None,
         starts_at: instant(starts_at),
@@ -548,8 +1151,12 @@ fn configuration() -> SourceConfiguration {
 }
 
 fn parsed_channel(name: &str, group: &str) -> ParsedChannel {
+    parsed_channel_with_tvg("", name, group)
+}
+
+fn parsed_channel_with_tvg(tvg_id: &str, name: &str, group: &str) -> ParsedChannel {
     ParsedChannel {
-        tvg_id: Arc::from(""),
+        tvg_id: Arc::from(tvg_id),
         name: Arc::from(name),
         group: Arc::from(group),
         playback: Arc::from("https://media.fixture.invalid/channel"),
@@ -593,14 +1200,11 @@ fn duplicate_channels(count: usize, reversed: bool) -> Vec<ParsedChannel> {
 }
 
 fn ids_by_name(catalog: &ChannelCatalog) -> BTreeMap<String, String> {
-    catalog
-        .channels
-        .iter()
-        .map(|channel| {
-            (
-                catalog.source_channel(channel).name.to_string(),
-                channel.id.as_str().to_owned(),
-            )
-        })
-        .collect()
+    catalog.channel_names_and_ids().into_iter().collect()
+}
+
+fn hash_of<T: Hash>(value: &T) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
 }

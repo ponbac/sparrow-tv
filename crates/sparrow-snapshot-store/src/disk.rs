@@ -9,6 +9,9 @@ use std::{
     },
 };
 
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
+
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
@@ -41,6 +44,7 @@ pub(crate) struct DiskCandidate {
     pub(crate) slot: Slot,
     pub(crate) metadata: DiskMetadata,
     pub(crate) requires_adoption: bool,
+    pub(crate) observed_pointer_epoch: u64,
 }
 
 pub(crate) struct DiskScan {
@@ -88,9 +92,12 @@ impl FaultInjector for NoFaults {
 pub(crate) struct DiskStore {
     layout: Layout,
     next_token: AtomicU64,
+    pointer_epochs: [AtomicU64; 2],
     registry: Mutex<HashMap<u64, StageRecord>>,
     stage_writers: Mutex<HashMap<u64, BufWriter<File>>>,
     faults: Arc<dyn FaultInjector>,
+    #[cfg(test)]
+    verify_payload_reads: AtomicUsize,
 }
 
 #[derive(Clone)]
@@ -143,9 +150,12 @@ impl DiskStore {
         Ok(Self {
             layout,
             next_token: AtomicU64::new(FIRST_TRANSIENT_TOKEN),
+            pointer_epochs: [AtomicU64::new(0), AtomicU64::new(0)],
             registry: Mutex::new(HashMap::new()),
             stage_writers: Mutex::new(HashMap::new()),
             faults,
+            #[cfg(test)]
+            verify_payload_reads: AtomicUsize::new(0),
         })
     }
 
@@ -265,20 +275,44 @@ impl DiskStore {
         }
 
         let result = self.prepare_inner(token, metadata);
-        match result {
+        let outcome = match result {
             Ok(slot) => {
                 let mut registry = self.registry();
-                let record = registry.get_mut(&token).ok_or(DiskError::Corrupt)?;
-                record.phase = StagePhase::Prepared {
-                    slot,
-                    checksum: metadata.checksum,
-                };
-                Ok(())
+                match registry.get_mut(&token) {
+                    Some(record)
+                        if record.source == metadata.source
+                            && matches!(
+                                record.phase,
+                                StagePhase::Installing {
+                                    slot: installed_slot,
+                                    checksum,
+                                    payload_installed: true,
+                                } if installed_slot == slot && checksum == metadata.checksum
+                            ) =>
+                    {
+                        record.phase = StagePhase::Prepared {
+                            slot,
+                            checksum: metadata.checksum,
+                        };
+                        Ok(())
+                    }
+                    _ => Err(DiskError::Corrupt),
+                }
             }
             // Keep the record until `discard` so it can make an inactive pair
             // installed before the failure immediately ineligible.
             Err(error) => Err(error),
+        };
+        if outcome.is_err() {
+            // If `discard` already finished and removed the registry entry while
+            // this worker was still creating manifest/pointer temps, the worker
+            // now owns cleanup of those temps so cancelled runs never leak files.
+            let discarded = !self.registry().contains_key(&token);
+            if discarded {
+                let _ = self.remove_stage_transients(token, metadata.source.kind);
+            }
         }
+        outcome
     }
 
     fn prepare_inner(&self, token: u64, metadata: &DiskMetadata) -> Result<Slot, DiskError> {
@@ -351,7 +385,25 @@ impl DiskStore {
         self.faults
             .check(FileOperation::InstallManifest)
             .map_err(map_io)?;
-        fs::rename(&manifest_temp, self.layout.manifest(kind, target)).map_err(map_io)?;
+        {
+            // Keep discard from removing the slot manifest and racing with a
+            // cancelled preparation worker renaming `manifest_temp` into place.
+            let registry = self.registry();
+            let record = registry.get(&token).ok_or(DiskError::Corrupt)?;
+            if record.source != metadata.source
+                || !matches!(
+                    record.phase,
+                    StagePhase::Installing {
+                        slot,
+                        checksum,
+                        payload_installed: true,
+                    } if slot == target && checksum == metadata.checksum
+                )
+            {
+                return Err(DiskError::Corrupt);
+            }
+            fs::rename(&manifest_temp, self.layout.manifest(kind, target)).map_err(map_io)?;
+        }
         self.faults
             .check(FileOperation::SyncPreparedDirectory)
             .map_err(map_io)?;
@@ -374,7 +426,7 @@ impl DiskStore {
         token: u64,
         metadata: &DiskMetadata,
     ) -> Result<DiskCandidate, DiskError> {
-        let slot = {
+        let (slot, pointer_epoch) = {
             // Keep activation and discard serialized through the pointer
             // rename. Once discard observes a prepared record, activation
             // must no longer be able to make that slot active.
@@ -398,8 +450,9 @@ impl DiskStore {
                 .check(FileOperation::ActivatePointer)
                 .map_err(map_io)?;
             fs::rename(&pointer_temp, self.layout.pointer(metadata.source.kind)).map_err(map_io)?;
+            let pointer_epoch = self.bump_pointer_epoch(metadata.source.kind);
             registry.remove(&token);
-            slot
+            (slot, pointer_epoch)
         };
 
         // The pointer rename is the in-process linearization point. Returning
@@ -416,6 +469,7 @@ impl DiskStore {
             slot,
             metadata: metadata.clone(),
             requires_adoption: false,
+            observed_pointer_epoch: pointer_epoch,
         })
     }
 
@@ -608,7 +662,28 @@ impl DiskStore {
 
     pub(crate) fn scan(&self, source: DiskSource) -> Result<DiskScan, DiskError> {
         let kind = source.kind;
-        let discarding_slot = self.discarding_slot(kind);
+        // Sample `observed_pointer_epoch` under `registry` BEFORE inspecting
+        // `active.json` or slots so any concurrent or subsequent `activate` or
+        // `adopt` advances the epoch past what this scan observed.
+        let (discarding_slot, observed_pointer_epoch) = {
+            let registry = self.registry();
+            let discarding_slot = registry.values().find_map(|record| {
+                if record.source.kind != kind {
+                    return None;
+                }
+                match record.phase {
+                    StagePhase::Discarding {
+                        target: Some(target),
+                    } => Some(target.slot),
+                    StagePhase::Staged
+                    | StagePhase::Preparing
+                    | StagePhase::Installing { .. }
+                    | StagePhase::Prepared { .. }
+                    | StagePhase::Discarding { target: None } => None,
+                }
+            });
+            (discarding_slot, self.pointer_epoch(kind))
+        };
         let (pointer, pointer_corrupt) = match self.read_pointer(kind) {
             Ok(pointer) => (pointer, false),
             Err(DiskError::Corrupt | DiskError::UnsafeLayout) => (None, true),
@@ -648,6 +723,7 @@ impl DiskStore {
                     slot,
                     metadata,
                     requires_adoption: !pointer_matches,
+                    observed_pointer_epoch,
                 });
             }
         }
@@ -681,22 +757,137 @@ impl DiskStore {
         })
     }
 
-    fn discarding_slot(&self, kind: DiskKind) -> Option<Slot> {
-        self.registry().values().find_map(|record| {
-            if record.source.kind != kind {
+    fn pointer_epoch_index(kind: DiskKind) -> usize {
+        match kind {
+            DiskKind::M3u => 0,
+            DiskKind::Epg => 1,
+        }
+    }
+
+    fn pointer_epoch(&self, kind: DiskKind) -> u64 {
+        self.pointer_epochs[Self::pointer_epoch_index(kind)].load(Ordering::Acquire)
+    }
+
+    fn bump_pointer_epoch(&self, kind: DiskKind) -> u64 {
+        self.pointer_epochs[Self::pointer_epoch_index(kind)]
+            .fetch_add(1, Ordering::AcqRel)
+            .checked_add(1)
+            .expect("pointer epoch overflowed")
+    }
+
+    /// Computes a stable stat stamp over ONLY the participating snapshot
+    /// candidates' raw payload files, plus the newest payload freshness timestamp
+    /// (`max(mtime, ctime)` on Unix) among them (used to verify strict
+    /// precedence against the pre-verification boundary stored in the sidecar).
+    pub(crate) fn candidates_payload_stamp(
+        &self,
+        candidates: &[DiskCandidate],
+    ) -> Option<([u8; 32], Option<FileTimestamp>)> {
+        if candidates.is_empty() {
+            return None;
+        }
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(PAYLOAD_STAMP_DOMAIN);
+        let mut max_freshness: Option<FileTimestamp> = None;
+        for candidate in candidates {
+            let kind = candidate.metadata.source.kind;
+            let payload_path = self.layout.payload(kind, candidate.slot);
+            let metadata = fs::symlink_metadata(&payload_path).ok()?;
+            if !metadata.file_type().is_file() || metadata.len() != candidate.metadata.decoded_bytes
+            {
                 return None;
             }
-            match record.phase {
-                StagePhase::Discarding {
-                    target: Some(target),
-                } => Some(target.slot),
-                StagePhase::Staged
-                | StagePhase::Preparing
-                | StagePhase::Installing { .. }
-                | StagePhase::Prepared { .. }
-                | StagePhase::Discarding { target: None } => None,
+            hash_candidate_stat(&mut hasher, candidate, &metadata);
+            if let Some(freshness) = file_freshness_key(&metadata) {
+                max_freshness = Some(max_freshness.map_or(freshness, |prev| prev.max(freshness)));
             }
+        }
+        Some((*hasher.finalize().as_bytes(), max_freshness))
+    }
+
+    /// Re-verifies every participating candidate's raw payload checksum on disk
+    /// between matching pre- and post-read stat samples, sampling a
+    /// same-filesystem timestamp BEFORE hashing so future fast-path opens only
+    /// reuse the cache when every participating payload's `mtime` and `ctime`
+    /// strictly precede the start of verification.
+    pub(crate) fn verified_candidates_payload_stamp(
+        &self,
+        candidates: &[DiskCandidate],
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Option<VerifiedPayloadStamp> {
+        if candidates.is_empty() || is_cancelled() {
+            return None;
+        }
+        let verified_before = sample_fs_timestamp(self.layout.root())?;
+        let mut stamp_hasher = blake3::Hasher::new();
+        stamp_hasher.update(PAYLOAD_STAMP_DOMAIN);
+        let mut buffer = vec![0_u8; HASH_BUFFER_BYTES];
+        for candidate in candidates {
+            if is_cancelled() {
+                return None;
+            }
+            let payload_path = self
+                .layout
+                .payload(candidate.metadata.source.kind, candidate.slot);
+            // Open (and normalize private 0o600 mode if externally restored)
+            // before taking the pre-read stat snapshot so our own `chmod`
+            // never invalidates the pre/post identity comparison.
+            let mut file = open_private_regular(&payload_path).ok()?;
+            let path_before = fs::symlink_metadata(&payload_path).ok()?;
+            if !path_before.file_type().is_file()
+                || path_before.len() != candidate.metadata.decoded_bytes
+            {
+                return None;
+            }
+            let fd_before = file.metadata().ok()?;
+            let before_id = stat_identity(&fd_before);
+            if before_id != stat_identity(&path_before) {
+                return None;
+            }
+            #[cfg(test)]
+            self.verify_payload_reads.fetch_add(1, Ordering::Relaxed);
+            let mut file_hasher = blake3::Hasher::new();
+            let mut total_read = 0_u64;
+            loop {
+                if is_cancelled() {
+                    return None;
+                }
+                let read = file.read(&mut buffer).ok()?;
+                if read == 0 {
+                    break;
+                }
+                total_read = total_read.checked_add(read as u64)?;
+                if total_read > candidate.metadata.decoded_bytes {
+                    return None;
+                }
+                file_hasher.update(&buffer[..read]);
+            }
+            if total_read != candidate.metadata.decoded_bytes
+                || file_hasher.finalize().as_bytes() != &candidate.metadata.checksum
+            {
+                return None;
+            }
+            let fd_after = file.metadata().ok()?;
+            let path_after = fs::symlink_metadata(&payload_path).ok()?;
+            if stat_identity(&fd_after) != before_id || stat_identity(&path_after) != before_id {
+                return None;
+            }
+            hash_candidate_stat(&mut stamp_hasher, candidate, &path_after);
+        }
+        Some(VerifiedPayloadStamp {
+            stamp: *stamp_hasher.finalize().as_bytes(),
+            verified_before,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn verify_payload_reads(&self) -> usize {
+        self.verify_payload_reads.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_verify_payload_reads(&self) {
+        self.verify_payload_reads.store(0, Ordering::Relaxed);
     }
 
     pub(crate) fn open_candidate(
@@ -730,7 +921,18 @@ impl DiskStore {
             self.faults
                 .check(FileOperation::AdoptPointer)
                 .map_err(map_io)?;
-            fs::rename(&temp, self.layout.pointer(kind)).map_err(map_io)?;
+            {
+                // Serialize fallback adoption against `activate` (and other
+                // adoptions) so delayed recovery can never roll back a pointer
+                // that was already updated after recovery scanned the slots.
+                let _registry = self.registry();
+                if self.pointer_epoch(kind) != candidate.observed_pointer_epoch {
+                    return Err(DiskError::Busy);
+                }
+                self.verify_candidate(candidate.slot, &candidate.metadata)?;
+                fs::rename(&temp, self.layout.pointer(kind)).map_err(map_io)?;
+                let _ = self.bump_pointer_epoch(kind);
+            }
             self.faults
                 .check(FileOperation::SyncAdoptedDirectory)
                 .map_err(map_io)?;
@@ -742,6 +944,7 @@ impl DiskStore {
             slot: candidate.slot,
             metadata: candidate.metadata.clone(),
             requires_adoption: false,
+            observed_pointer_epoch: candidate.observed_pointer_epoch,
         })
     }
 
@@ -795,6 +998,7 @@ impl DiskStore {
             slot: candidate.slot,
             metadata,
             requires_adoption: candidate.requires_adoption,
+            observed_pointer_epoch: candidate.observed_pointer_epoch,
         })
     }
 
@@ -945,6 +1149,158 @@ fn push_diagnostic(diagnostics: &mut Vec<SnapshotRecoveryReason>, reason: Snapsh
     if diagnostics.len() < 4 && !diagnostics.contains(&reason) {
         diagnostics.push(reason);
     }
+}
+
+const PAYLOAD_STAMP_DOMAIN: &[u8] = b"sparrow-candidates-payload-stamp-v1\0";
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct StatIdentity {
+    len: u64,
+    dev: u64,
+    ino: u64,
+    mtime: i64,
+    mtime_nsec: i64,
+    ctime: i64,
+    ctime_nsec: i64,
+}
+
+#[cfg(not(unix))]
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct StatIdentity {
+    len: u64,
+    modified_secs: Option<u64>,
+    modified_nanos: Option<u32>,
+}
+
+#[cfg(unix)]
+fn stat_identity(metadata: &fs::Metadata) -> StatIdentity {
+    use std::os::unix::fs::MetadataExt;
+    StatIdentity {
+        len: metadata.len(),
+        dev: metadata.dev(),
+        ino: metadata.ino(),
+        mtime: metadata.mtime(),
+        mtime_nsec: metadata.mtime_nsec(),
+        ctime: metadata.ctime(),
+        ctime_nsec: metadata.ctime_nsec(),
+    }
+}
+
+#[cfg(not(unix))]
+fn stat_identity(metadata: &fs::Metadata) -> StatIdentity {
+    let since_epoch = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok());
+    StatIdentity {
+        len: metadata.len(),
+        modified_secs: since_epoch.map(|d| d.as_secs()),
+        modified_nanos: since_epoch.map(|d| d.subsec_nanos()),
+    }
+}
+
+fn hash_candidate_stat(
+    hasher: &mut blake3::Hasher,
+    candidate: &DiskCandidate,
+    metadata: &fs::Metadata,
+) {
+    hasher.update(&[match candidate.metadata.source.kind {
+        DiskKind::M3u => 0,
+        DiskKind::Epg => 1,
+    }]);
+    hasher.update(&[match candidate.slot {
+        Slot::A => 0,
+        Slot::B => 1,
+    }]);
+    hasher.update(&candidate.metadata.decoded_bytes.to_le_bytes());
+    hasher.update(&candidate.metadata.checksum);
+    let id = stat_identity(metadata);
+    #[cfg(unix)]
+    {
+        hasher.update(&id.dev.to_le_bytes());
+        hasher.update(&id.ino.to_le_bytes());
+        hasher.update(&id.mtime.to_le_bytes());
+        hasher.update(&id.mtime_nsec.to_le_bytes());
+        hasher.update(&id.ctime.to_le_bytes());
+        hasher.update(&id.ctime_nsec.to_le_bytes());
+    }
+    #[cfg(not(unix))]
+    if let (Some(secs), Some(nanos)) = (id.modified_secs, id.modified_nanos) {
+        hasher.update(&secs.to_le_bytes());
+        hasher.update(&nanos.to_le_bytes());
+    }
+}
+
+/// Platform-uniform filesystem timestamp `(secs, nanos)` relative to Unix epoch.
+pub(crate) type FileTimestamp = (i64, i64);
+
+/// Verified participating payload stat stamp paired with a same-filesystem
+/// timestamp sampled strictly BEFORE hashing began.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct VerifiedPayloadStamp {
+    pub(crate) stamp: [u8; 32],
+    pub(crate) verified_before: FileTimestamp,
+}
+
+static NEXT_TS_PROBE_SEQ: AtomicU64 = AtomicU64::new(1);
+
+fn sample_fs_timestamp(root: &Path) -> Option<FileTimestamp> {
+    let pid = std::process::id();
+    for _ in 0..64 {
+        let seq = NEXT_TS_PROBE_SEQ.fetch_add(1, Ordering::Relaxed);
+        // Matches `catalog_cache::TEMP_PREFIX` + `TEMP_SUFFIX` so any crashed
+        // probe is automatically removed on restart.
+        let probe = root.join(format!("catalog-cache-v1.ts.{pid}.{seq}.tmp"));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            options.mode(0o600);
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        match options.open(&probe) {
+            Ok(file) => {
+                let ts = file.metadata().ok().and_then(|meta| file_mtime_key(&meta));
+                drop(file);
+                let _ = fs::remove_file(&probe);
+                return ts;
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+#[cfg(unix)]
+fn file_mtime_key(metadata: &fs::Metadata) -> Option<FileTimestamp> {
+    use std::os::unix::fs::MetadataExt;
+    Some((metadata.mtime(), metadata.mtime_nsec()))
+}
+
+#[cfg(not(unix))]
+fn file_mtime_key(metadata: &fs::Metadata) -> Option<FileTimestamp> {
+    let since_epoch = metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    Some((
+        i64::try_from(since_epoch.as_secs()).ok()?,
+        i64::from(since_epoch.subsec_nanos()),
+    ))
+}
+
+#[cfg(unix)]
+fn file_freshness_key(metadata: &fs::Metadata) -> Option<FileTimestamp> {
+    use std::os::unix::fs::MetadataExt;
+    Some((metadata.mtime(), metadata.mtime_nsec()).max((metadata.ctime(), metadata.ctime_nsec())))
+}
+
+#[cfg(not(unix))]
+fn file_freshness_key(metadata: &fs::Metadata) -> Option<FileTimestamp> {
+    file_mtime_key(metadata)
 }
 
 fn read_manifest(path: &Path) -> Result<DiskMetadata, DiskError> {
@@ -2029,6 +2385,189 @@ mod tests {
             scan.diagnostics
                 .contains(&SnapshotRecoveryReason::CorruptActivePointer)
         );
+    }
+
+    #[test]
+    fn discarding_stage_paused_at_manifest_install_prevents_recovery() {
+        use std::sync::{
+            Condvar, Mutex as StdMutex,
+            atomic::{AtomicBool, Ordering as AtomicOrdering},
+        };
+
+        struct PauseAtInstallManifest {
+            entered: StdMutex<bool>,
+            entered_cv: Condvar,
+            release: StdMutex<bool>,
+            release_cv: Condvar,
+            fail_discard_pointer: AtomicBool,
+        }
+
+        impl FaultInjector for PauseAtInstallManifest {
+            fn check(&self, operation: FileOperation) -> io::Result<()> {
+                if operation == FileOperation::InstallManifest {
+                    *self.entered.lock().unwrap() = true;
+                    self.entered_cv.notify_all();
+                    let guard = self.release.lock().unwrap();
+                    let _guard = self
+                        .release_cv
+                        .wait_while(guard, |released| !*released)
+                        .unwrap();
+                } else if operation == FileOperation::ReadDiscardPointer
+                    && self
+                        .fail_discard_pointer
+                        .swap(false, AtomicOrdering::AcqRel)
+                {
+                    return Err(io::Error::other("injected pending discard fault"));
+                }
+                Ok(())
+            }
+        }
+
+        let directory = TempDir::new().expect("temporary directory");
+        let source = source(DiskKind::M3u, 77);
+        let initial = DiskStore::open(directory.path()).expect("store opens");
+        activate_payload(&initial, source, b"retained", instant(1));
+        drop(initial);
+
+        let gate = Arc::new(PauseAtInstallManifest {
+            entered: StdMutex::new(false),
+            entered_cv: Condvar::new(),
+            release: StdMutex::new(false),
+            release_cv: Condvar::new(),
+            fail_discard_pointer: AtomicBool::new(true),
+        });
+        let store = Arc::new(
+            DiskStore::open_with_faults(directory.path(), Arc::clone(&gate) as _)
+                .expect("faulted store opens"),
+        );
+        let token = stage_payload(&store, source, b"cancelled");
+        let meta = metadata(source, b"cancelled", instant(2));
+
+        let prepare_handle = {
+            let store = Arc::clone(&store);
+            let meta = meta.clone();
+            std::thread::spawn(move || store.prepare(token, &meta))
+        };
+
+        // Wait until `prepare` has installed the payload and is paused right
+        // before installing the manifest.
+        {
+            let guard = gate.entered.lock().unwrap();
+            let _guard = gate
+                .entered_cv
+                .wait_while(guard, |entered| !*entered)
+                .unwrap();
+        }
+
+        // First discard transitions the record to `Discarding` and fails on
+        // `ReadDiscardPointer`, deliberately leaving `manifest_temp` on disk
+        // when `prepare` resumes.
+        assert!(store.discard(token, source).is_err());
+        assert!(store.layout().manifest_temp(source.kind, token).exists());
+
+        // Release the paused preparation worker; the registry phase guard MUST
+        // reject the cancelled stage even though `manifest_temp` still exists.
+        *gate.release.lock().unwrap() = true;
+        gate.release_cv.notify_all();
+        assert_eq!(
+            prepare_handle.join().expect("prepare thread joins"),
+            Err(DiskError::Corrupt)
+        );
+        // Complete the pending discard and reopen: only `"retained"` exists.
+        store
+            .discard(token, source)
+            .expect("discard retry succeeds");
+        drop(store);
+
+        let reopened = DiskStore::open(directory.path()).expect("store reopens");
+        let scan = reopened.scan(source).expect("scan succeeds");
+        assert_eq!(scan.candidates.len(), 1);
+        assert_eq!(read_candidate(&reopened, &scan.candidates[0]), b"retained");
+    }
+
+    #[test]
+    fn cancelled_prepare_cleans_up_recreated_temps_after_discard_completes() {
+        use std::sync::{Condvar, Mutex as StdMutex};
+
+        struct PauseAtOp {
+            target: FileOperation,
+            entered: StdMutex<bool>,
+            entered_cv: Condvar,
+            release: StdMutex<bool>,
+            release_cv: Condvar,
+        }
+
+        impl FaultInjector for PauseAtOp {
+            fn check(&self, operation: FileOperation) -> io::Result<()> {
+                if operation == self.target {
+                    *self.entered.lock().unwrap() = true;
+                    self.entered_cv.notify_all();
+                    let guard = self.release.lock().unwrap();
+                    let _guard = self
+                        .release_cv
+                        .wait_while(guard, |released| !*released)
+                        .unwrap();
+                }
+                Ok(())
+            }
+        }
+
+        for pause_op in [FileOperation::WriteManifest, FileOperation::WritePointer] {
+            let directory = TempDir::new().expect("temporary directory");
+            let source = source(DiskKind::M3u, 88);
+            let initial = DiskStore::open(directory.path()).expect("store opens");
+            activate_payload(&initial, source, b"retained", instant(1));
+            drop(initial);
+
+            let gate = Arc::new(PauseAtOp {
+                target: pause_op,
+                entered: StdMutex::new(false),
+                entered_cv: Condvar::new(),
+                release: StdMutex::new(false),
+                release_cv: Condvar::new(),
+            });
+            let store = Arc::new(
+                DiskStore::open_with_faults(directory.path(), Arc::clone(&gate) as _)
+                    .expect("faulted store opens"),
+            );
+            let token = stage_payload(&store, source, b"cancelled");
+            let meta = metadata(source, b"cancelled", instant(2));
+
+            let prepare_handle = {
+                let store = Arc::clone(&store);
+                let meta = meta.clone();
+                std::thread::spawn(move || store.prepare(token, &meta))
+            };
+            {
+                let guard = gate.entered.lock().unwrap();
+                let _guard = gate
+                    .entered_cv
+                    .wait_while(guard, |entered| !*entered)
+                    .unwrap();
+            }
+
+            // Discard finishes completely and removes the registry entry BEFORE
+            // `prepare` creates its temp file.
+            store.discard(token, source).expect("discard succeeds");
+
+            *gate.release.lock().unwrap() = true;
+            gate.release_cv.notify_all();
+            assert_eq!(
+                prepare_handle.join().expect("prepare thread joins"),
+                Err(DiskError::Corrupt)
+            );
+
+            // Worker must clean up the manifest/pointer temporary it recreated.
+            let remaining_transients: Vec<_> = fs::read_dir(store.layout().source_dir(source.kind))
+                .expect("source dir reads")
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_str().is_some_and(is_transient_name))
+                .collect();
+            assert!(
+                remaining_transients.is_empty(),
+                "pause_op={pause_op:?} leaked transients: {remaining_transients:?}"
+            );
+        }
     }
 
     fn activate_payload(

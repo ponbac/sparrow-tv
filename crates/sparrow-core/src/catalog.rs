@@ -1,30 +1,34 @@
-use std::{cmp::Ordering, collections::HashMap, ops::Range, sync::Arc};
+use std::{ops::Range, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use url::Url;
 
 use crate::{
     domain::{
-        CatalogGeneration, ChannelDetails, ChannelGroupView, ChannelId, ChannelQuality,
-        ChannelQuery, ChannelSummary, ChannelVariant, CoreError, CursorQueryHash, GuideProgramme,
-        GuideWindowChannel, GuideWindowQuery, Page, PageRequest, ProgrammeSearchHit,
-        ProgrammeSummary, ResolvedPlaybackSource, ScheduleQuery, SearchRequest, SearchResults,
-        SearchTerm, SecretPlaybackLocation, SelectionPrefix, SourceConfiguration,
+        CHANNEL_ID_PREFIX, CatalogGeneration, ChannelDetails, ChannelGroupView, ChannelId,
+        ChannelQuality, ChannelQuery, ChannelSummary, ChannelVariant, CoreError, CursorQueryHash,
+        GuideProgramme, GuideWindowChannel, GuideWindowQuery, Page, PageLimit, PageRequest,
+        PageTextArena, ProgrammeSearchHit, ProgrammeSummary, ResolvedPlaybackSource, ScheduleQuery,
+        SearchRequest, SearchResults, SearchTerm, SecretPlaybackLocation, SelectionPrefix,
+        SourceConfiguration, TextSlot,
     },
-    identity,
     m3u::ParsedChannel,
-    xmltv::{ParsedGuide, ParsedProgramme},
+    ports::{CatalogCacheMapping, SnapshotCandidate, SnapshotStore},
+    xmltv::ParsedGuide,
 };
 
-pub(crate) mod cache;
+mod flat;
 mod schedule;
 mod search;
 mod variants;
 
-use schedule::{CatalogProgramme, ScheduleOverlapIndex, build_programmes};
+pub(crate) use flat::cache_key;
+use flat::{FlatCatalog, decode_quality};
 #[cfg(test)]
-use search::{MatchCategory, SEARCH_CANCELLATION_CHECKPOINT_BYTES, SearchDocument};
-use search::{SearchIndex, SearchIndexBuilder, SearchMatcher, never_cancelled, ranked_selection};
+use search::{MatchCategory, SEARCH_CANCELLATION_CHECKPOINT_BYTES};
+use search::{
+    SearchMatcher, never_cancelled, ranked_channel_selection, ranked_programme_selection,
+};
 
 const CURSOR_QUERY_DOMAIN: &[u8] = b"sparrow-page-query-v1\0";
 const GROUPS_QUERY_TAG: u8 = 0;
@@ -34,169 +38,94 @@ const SCHEDULE_QUERY_TAG: u8 = 3;
 const CHANNEL_SEARCH_QUERY_TAG: u8 = 4;
 const PROGRAMME_SEARCH_QUERY_TAG: u8 = 5;
 const GUIDE_WINDOW_QUERY_TAG: u8 = 6;
+const MAX_PAGE_ITEMS: usize = PageLimit::MAX as usize;
+const CHANNEL_ID_HEX_LEN: usize = CHANNEL_ID_PREFIX.len() + 64;
 
 pub(crate) struct ChannelCatalog {
-    generation: CatalogGeneration,
-    source_channels: Arc<Vec<ParsedChannel>>,
-    source_guide: Option<Arc<ParsedGuide>>,
-    groups: Arc<[ChannelGroupView]>,
-    channels: Box<[CatalogChannel]>,
-    programmes: Box<[CatalogProgramme]>,
-    channel_search: SearchIndex,
-    programme_search: SearchIndex,
-    group_ranges: HashMap<Arc<str>, Range<usize>>,
-    schedule_overlap_index: ScheduleOverlapIndex,
-    by_id: HashMap<ChannelId, usize>,
+    flat: FlatCatalog,
 }
-
-const PARALLEL_CHANNEL_THRESHOLD: usize = 1_024;
-const PARALLEL_SEARCH_THRESHOLD: usize = 512;
 
 impl ChannelCatalog {
     pub(crate) fn from_parsed(
         configuration: &SourceConfiguration,
-        parsed: Arc<Vec<ParsedChannel>>,
-        guide: Option<Arc<ParsedGuide>>,
+        parsed: &[ParsedChannel],
+        guide: Option<&ParsedGuide>,
         generation: CatalogGeneration,
     ) -> Self {
-        let seeds_and_names = compute_channel_identities(&parsed);
-        let mut occurrences = HashMap::<[u8; 32], u32>::with_capacity(parsed.len());
-        let mut group_first_seen = HashMap::<Arc<str>, usize>::new();
-        let mut pending = Vec::with_capacity(parsed.len());
-
-        for ((source_index, channel), (seed, name_order)) in
-            parsed.iter().enumerate().zip(seeds_and_names)
-        {
-            let occurrence = occurrences.entry(seed).or_default();
-            let id = identity::channel_id(&configuration.fingerprint, &seed, *occurrence);
-            *occurrence = occurrence.saturating_add(1);
-            let group_order = *group_first_seen
-                .entry(Arc::clone(&channel.group))
-                .or_insert(source_index);
-
-            pending.push(PendingChannel {
-                source_index,
-                group_order,
-                name_order,
-                tvg_id: Arc::clone(&channel.tvg_id),
-                id,
-            });
-        }
-
-        // Cluster by first-seen Channel Group so group pages stay contiguous
-        // ranges, then keep each group's M3U source order.
-        pending.sort_unstable_by(compare_channels);
-
-        let ((programmes, schedule_ranges, schedule_overlap_index), placements) = if pending.len()
-            >= PARALLEL_CHANNEL_THRESHOLD
-            && guide.is_some()
-        {
-            let pending_ref = &pending;
-            let parsed_ref = parsed.as_ref();
-            let guide_ref = guide.as_deref();
-            std::thread::scope(|scope| {
-                let placements_handle = scope.spawn(move || {
-                    variants::placements(pending_ref.iter().map(|channel| {
-                        let source = &parsed_ref[channel.source_index];
-                        (&*source.name, &*source.group)
-                    }))
-                });
-                let (programmes, schedule_ranges) = build_programmes(pending_ref, guide_ref);
-                let schedule_overlap_index = ScheduleOverlapIndex::build(&programmes, guide_ref);
-                let placements = placements_handle
-                    .join()
-                    .expect("variant placement thread did not panic");
-                (
-                    (programmes, schedule_ranges, schedule_overlap_index),
-                    placements,
-                )
-            })
-        } else {
-            let (programmes, schedule_ranges) = build_programmes(&pending, guide.as_deref());
-            let schedule_overlap_index = ScheduleOverlapIndex::build(&programmes, guide.as_deref());
-            let placements = variants::placements(pending.iter().map(|channel| {
-                let source = &parsed[channel.source_index];
-                (&*source.name, &*source.group)
-            }));
-            (
-                (programmes, schedule_ranges, schedule_overlap_index),
-                placements,
-            )
-        };
-
-        let mut channels = Vec::with_capacity(pending.len());
-        let mut by_id = HashMap::with_capacity(pending.len());
-        for ((channel, placement), (schedule_start, schedule_end)) in
-            pending.iter().zip(placements).zip(schedule_ranges)
-        {
-            let index = channels.len();
-            let previous = by_id.insert(channel.id.clone(), index);
-            debug_assert!(previous.is_none());
-            channels.push(CatalogChannel {
-                id: channel.id.clone(),
-                source_index: channel.source_index,
-                number: placement.number,
-                quality: placement.quality,
-                schedule_start,
-                schedule_end,
-            });
-        }
-
-        let mut groups = Vec::new();
-        let mut group_ranges = HashMap::new();
-        let mut group_start = 0;
-        while group_start < channels.len() {
-            let group_name = Arc::clone(&parsed[channels[group_start].source_index].group);
-            let mut group_end = group_start + 1;
-            while group_end < channels.len()
-                && parsed[channels[group_end].source_index].group == group_name
-            {
-                group_end += 1;
-            }
-            let channel_count = u32::try_from(group_end - group_start)
-                .expect("the bounded M3U payload cannot contain more than u32::MAX Channels");
-            groups.push(ChannelGroupView::new(
-                Arc::clone(&group_name),
-                channel_count,
-            ));
-            let previous = group_ranges.insert(group_name, group_start..group_end);
-            debug_assert!(previous.is_none());
-            group_start = group_end;
-        }
-
-        let (channel_search, programme_search) =
-            build_search_indexes(&channels, &parsed, &programmes, guide.as_deref());
-
         Self {
-            generation,
-            source_channels: parsed,
-            source_guide: guide,
-            groups: Arc::from(groups),
-            channels: channels.into_boxed_slice(),
-            programmes: programmes.into_boxed_slice(),
-            channel_search,
-            programme_search,
-            group_ranges,
-            schedule_overlap_index,
-            by_id,
+            flat: FlatCatalog::from_parsed(configuration, parsed, guide, generation),
         }
+    }
+
+    pub(crate) fn from_parsed_with_existing_guide(
+        configuration: &SourceConfiguration,
+        parsed: &[ParsedChannel],
+        existing: &ChannelCatalog,
+        generation: CatalogGeneration,
+    ) -> Self {
+        Self {
+            flat: FlatCatalog::from_parsed_with_existing_guide(
+                configuration,
+                parsed,
+                &existing.flat,
+                generation,
+            ),
+        }
+    }
+
+    pub(crate) fn with_updated_guide(
+        &self,
+        guide: &ParsedGuide,
+        generation: CatalogGeneration,
+    ) -> Self {
+        Self {
+            flat: self.flat.with_updated_guide(guide, generation),
+        }
+    }
+
+    pub(crate) fn open_from_cache(
+        store: &dyn SnapshotStore,
+        key: &[u8; 32],
+        candidates: &[&SnapshotCandidate],
+        generation: CatalogGeneration,
+    ) -> Option<Self> {
+        FlatCatalog::open_with_store(store, key, candidates, generation).map(|flat| Self { flat })
+    }
+
+    pub(crate) fn promote_to_mapping(&self, mapping: CatalogCacheMapping) -> Option<Self> {
+        self.flat
+            .promote_to_mapping(mapping)
+            .map(|flat| Self { flat })
+    }
+
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        self.flat.as_bytes()
+    }
+
+    pub(crate) const fn is_mapped(&self) -> bool {
+        self.flat.is_mapped()
+    }
+
+    pub(crate) const fn has_epg(&self) -> bool {
+        self.flat.has_epg()
+    }
+
+    pub(crate) const fn generation(&self) -> CatalogGeneration {
+        self.flat.generation()
     }
 
     pub(crate) fn groups_page(
         &self,
         request: &PageRequest,
     ) -> Result<Page<ChannelGroupView>, CoreError> {
-        Page::from_request(
-            self.generation,
-            Arc::clone(&self.groups),
-            0..self.groups.len(),
+        let group_count = self.flat.groups().len();
+        Page::from_range_window(
+            self.generation(),
+            0..group_count,
             request,
             query_hash(GROUPS_QUERY_TAG, None),
+            |range| self.project_groups_window(range),
         )
-    }
-
-    pub(crate) const fn generation(&self) -> CatalogGeneration {
-        self.generation
     }
 
     pub(crate) fn channels_page(
@@ -207,32 +136,31 @@ impl ChannelCatalog {
             None => query_hash(ALL_CHANNELS_QUERY_TAG, None),
             Some(group) => query_hash(GROUP_CHANNELS_QUERY_TAG, Some(group)),
         };
-        Page::from_projection(
-            self.generation,
-            &self.channels,
+        Page::from_range_window(
+            self.generation(),
             self.channel_range(query.group()),
             query.page(),
             query_hash,
-            |channel| self.channel_summary(channel),
+            |range| self.project_channels_range(range),
         )
     }
 
     pub(crate) fn channel(&self, id: &ChannelId) -> Result<ChannelDetails, CoreError> {
-        self.by_id
-            .get(id)
-            .map(|index| self.channel_details(&self.channels[*index]))
-            .ok_or_else(|| CoreError::ChannelNotFound { id: id.clone() })
+        let index = self
+            .flat
+            .channel_index_by_digest(&id.digest())
+            .ok_or_else(|| CoreError::ChannelNotFound { id: id.clone() })?;
+        Ok(self.project_channel_details(index))
     }
 
     pub(crate) fn resolve_playback(
         &self,
         id: &ChannelId,
     ) -> Result<ResolvedPlaybackSource, CoreError> {
-        self.by_id
-            .get(id)
+        self.flat
+            .channel_index_by_digest(&id.digest())
             .and_then(|index| {
-                let source = self.source_channel(&self.channels[*index]);
-                let url = Url::parse(&source.playback).ok()?;
+                let url = Url::parse(self.flat.channel_playback(index)).ok()?;
                 Some(ResolvedPlaybackSource::new(SecretPlaybackLocation::new(
                     Arc::new(url),
                 )))
@@ -244,30 +172,31 @@ impl ChannelCatalog {
         &self,
         query: &ScheduleQuery,
     ) -> Result<Page<ProgrammeSummary>, CoreError> {
-        let Some(&channel_index) = self.by_id.get(query.channel_id()) else {
+        let Some(channel_index) = self
+            .flat
+            .channel_index_by_digest(&query.channel_id().digest())
+        else {
             return Err(CoreError::ChannelNotFound {
                 id: query.channel_id().clone(),
             });
         };
-        let channel = &self.channels[channel_index];
-        let collection = channel.schedule_start as usize..channel.schedule_end as usize;
+        let collection = self.flat.channel_schedule_range(channel_index);
         let Some(from) = query.from() else {
-            return Page::from_projection(
-                self.generation,
-                &self.programmes,
+            return Page::from_range_window(
+                self.generation(),
                 collection,
                 query.page(),
                 schedule_query_hash(query),
-                |programme| self.programme_summary(programme),
+                |range| self.project_programme_summaries_range(range),
             );
         };
-        Page::from_bounded_selection_projection(
-            self.generation,
-            &self.programmes,
+        Page::from_bounded_selection_window(
+            self.generation(),
+            self.flat.schedule_entries().len(),
             query.page(),
             schedule_query_hash(query),
             |prefix_len| Ok(self.programmes_ending_after(&collection, from, prefix_len)),
-            |programme| self.programme_summary(programme),
+            |indices| self.project_programme_summaries_indices(indices),
         )
     }
 
@@ -281,11 +210,17 @@ impl ChannelCatalog {
         from: DateTime<Utc>,
         prefix_len: usize,
     ) -> SelectionPrefix {
-        let first_possible = self.first_possible_overlap(schedule, from);
+        let first_possible = self.flat.first_possible_overlap(schedule, from);
+        let entries = self.flat.schedule_entries();
         let mut indices = Vec::with_capacity(prefix_len.min(schedule.end - first_possible));
         let mut total_len = 0;
-        for index in first_possible..schedule.end {
-            if self.source_programme(&self.programmes[index]).ends_at > from {
+        for (offset, entry) in entries[first_possible..schedule.end].iter().enumerate() {
+            let index = first_possible + offset;
+            if self
+                .flat
+                .matched_programme_ends_at(entry.matched_prog_index.get() as usize)
+                > from
+            {
                 total_len += 1;
                 if indices.len() < prefix_len {
                     indices.push(index);
@@ -301,27 +236,26 @@ impl ChannelCatalog {
     ) -> Result<Page<GuideWindowChannel>, CoreError> {
         let channels = query.channels();
         let Some(around) = query.around_channel() else {
-            return Page::from_projection(
-                self.generation,
-                &self.channels,
+            return Page::from_range_window(
+                self.generation(),
                 self.channel_range(channels.group()),
                 channels.page(),
                 guide_window_query_hash(query),
-                |channel| self.guide_window_channel(channel, query),
+                |range| self.project_guide_window_range(range, query),
             );
         };
-        let position = *self
-            .by_id
-            .get(around)
+        let position = self
+            .flat
+            .channel_index_by_digest(&around.digest())
             .ok_or_else(|| CoreError::ChannelNotFound { id: around.clone() })?;
         let limit = channels.page().limit();
-        Ok(Page::from_position_projection(
-            self.generation,
-            &self.channels,
+        Ok(Page::from_position_window(
+            self.generation(),
+            self.flat.channels_hot().len(),
             position.saturating_sub(usize::from(limit.get()) / 2),
             limit,
             guide_window_query_hash(query),
-            |channel| self.guide_window_channel(channel, query),
+            |range| self.project_guide_window_range(range, query),
         ))
     }
 
@@ -337,11 +271,15 @@ impl ChannelCatalog {
         let mut matcher = SearchMatcher::new(request.term());
         let channel_page =
             self.search_channels_with_matcher(request.channels(), &mut matcher, is_cancelled)?;
-        let programme_page = self.search_programmes_with_matcher(
+        let programme_page = Page::from_bounded_selection_window(
+            self.generation(),
+            self.flat.schedule_entries().len(),
             request.programmes(),
-            &mut matcher,
-            is_cancelled,
-            |catalog, programme| catalog.programme_search_hit(programme),
+            query_hash(PROGRAMME_SEARCH_QUERY_TAG, Some(matcher.term)),
+            |prefix_len| {
+                ranked_programme_selection(&self.flat, &mut matcher, prefix_len, is_cancelled)
+            },
+            |indices| self.project_programme_search_hits(indices),
         )?;
 
         Ok(SearchResults::new(channel_page, programme_page))
@@ -371,13 +309,13 @@ impl ChannelCatalog {
         matcher: &mut SearchMatcher<'_>,
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<Page<ChannelSummary>, CoreError> {
-        Page::from_bounded_selection_projection(
-            self.generation,
-            &self.channels,
+        Page::from_bounded_selection_window(
+            self.generation(),
+            self.flat.channels_hot().len(),
             page,
             query_hash(CHANNEL_SEARCH_QUERY_TAG, Some(matcher.term)),
-            |prefix_len| ranked_selection(&self.channel_search, matcher, prefix_len, is_cancelled),
-            |channel| self.channel_summary(channel),
+            |prefix_len| ranked_channel_selection(&self.flat, matcher, prefix_len, is_cancelled),
+            |indices| self.project_channels_indices(indices),
         )
     }
 
@@ -396,269 +334,478 @@ impl ChannelCatalog {
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<Page<ProgrammeSummary>, CoreError> {
         let mut matcher = SearchMatcher::new(term);
-        self.search_programmes_with_matcher(
-            page,
-            &mut matcher,
-            is_cancelled,
-            |catalog, programme| catalog.programme_summary(programme),
-        )
-    }
-
-    fn search_programmes_with_matcher<T>(
-        &self,
-        page: &PageRequest,
-        matcher: &mut SearchMatcher<'_>,
-        is_cancelled: &dyn Fn() -> bool,
-        project: impl Fn(&Self, &CatalogProgramme) -> T,
-    ) -> Result<Page<T>, CoreError> {
-        Page::from_bounded_selection_projection(
-            self.generation,
-            &self.programmes,
+        Page::from_bounded_selection_window(
+            self.generation(),
+            self.flat.schedule_entries().len(),
             page,
             query_hash(PROGRAMME_SEARCH_QUERY_TAG, Some(matcher.term)),
             |prefix_len| {
-                ranked_selection(&self.programme_search, matcher, prefix_len, is_cancelled)
+                ranked_programme_selection(&self.flat, &mut matcher, prefix_len, is_cancelled)
             },
-            |programme| project(self, programme),
+            |indices| self.project_programme_summaries_indices(indices),
         )
-    }
-
-    fn source_channel(&self, channel: &CatalogChannel) -> &ParsedChannel {
-        &self.source_channels[channel.source_index]
     }
 
     fn channel_range(&self, group: Option<&str>) -> Range<usize> {
         match group {
-            None => 0..self.channels.len(),
-            Some(group) => self.group_ranges.get(group).cloned().unwrap_or(0..0),
+            None => 0..self.flat.channels_hot().len(),
+            Some(group) => self.flat.group_channel_range(group),
         }
     }
 
-    fn channel_summary(&self, channel: &CatalogChannel) -> ChannelSummary {
-        let source = self.source_channel(channel);
-        ChannelSummary::new(
-            channel.id.clone(),
-            Arc::clone(&source.name),
-            Arc::clone(&source.group),
-            channel.number,
-            self.channel_variant(channel),
-        )
-    }
-
-    fn channel_details(&self, channel: &CatalogChannel) -> ChannelDetails {
-        let source = self.source_channel(channel);
-        ChannelDetails::new(
-            channel.id.clone(),
-            Arc::clone(&source.name),
-            Arc::clone(&source.group),
-            channel.number,
-            self.channel_variant(channel),
-        )
-    }
-
-    /// Derives the base name only for a Quality Variant, so projecting any
-    /// other Channel allocates nothing.
-    fn channel_variant(&self, channel: &CatalogChannel) -> Option<ChannelVariant> {
-        let quality = channel.quality?;
-        let (_, base_name) = variants::split(&self.source_channel(channel).name)?;
-        Some(ChannelVariant::new(quality, Arc::from(base_name)))
-    }
-
-    fn programme_summary(&self, programme: &CatalogProgramme) -> ProgrammeSummary {
-        let source = self.source_programme(programme);
-        ProgrammeSummary::new(
-            self.channels[programme.channel_index as usize].id.clone(),
-            Arc::clone(&source.title),
-            source.description.as_ref().map(Arc::clone),
-            source.starts_at,
-            source.ends_at,
-        )
-    }
-
-    fn programme_search_hit(&self, programme: &CatalogProgramme) -> ProgrammeSearchHit {
-        let source = self.source_programme(programme);
-        ProgrammeSearchHit::new(
-            self.channel_summary(&self.channels[programme.channel_index as usize]),
-            Arc::clone(&source.title),
-            source.starts_at,
-            source.ends_at,
-        )
-    }
-
-    fn guide_programme(&self, programme: &CatalogProgramme) -> GuideProgramme {
-        let source = self.source_programme(programme);
-        GuideProgramme::new(Arc::clone(&source.title), source.starts_at, source.ends_at)
-    }
-
-    fn source_programme(&self, programme: &CatalogProgramme) -> &ParsedProgramme {
-        &self
-            .source_guide
-            .as_ref()
-            .expect("catalogued Programmes have a parsed EPG Source")
-            .programmes[programme.source_index as usize]
-    }
-
-    /// Finds the first Programme of one schedule that can still end after
-    /// `instant`; every Programme before it has already ended by then.
-    fn first_possible_overlap(&self, schedule: &Range<usize>, instant: DateTime<Utc>) -> usize {
-        self.schedule_overlap_index
-            .first_possible_overlap(schedule, |source_index| {
-                self.source_guide
-                    .as_ref()
-                    .expect("catalogued Programmes have a parsed EPG Source")
-                    .programmes[source_index]
-                    .ends_at
-                    <= instant
-            })
-    }
-
-    fn guide_window_channel(
-        &self,
-        channel: &CatalogChannel,
-        query: &GuideWindowQuery,
-    ) -> GuideWindowChannel {
-        let starts_at = query.starts_at();
-        let ends_at = query.ends_at();
-        let schedule = channel.schedule_start as usize..channel.schedule_end as usize;
-        let first_possible_overlap = self.first_possible_overlap(&schedule, starts_at);
-        let programmes = self.programmes[first_possible_overlap..schedule.end]
-            .iter()
-            .take_while(|programme| self.source_programme(programme).starts_at < ends_at)
-            .filter(|programme| self.source_programme(programme).ends_at > starts_at)
-            .map(|programme| self.guide_programme(programme))
-            .take(GuideWindowChannel::MAX_PROGRAMMES + 1)
-            .collect::<Vec<_>>();
-        GuideWindowChannel::new(self.channel_summary(channel), programmes)
-    }
-}
-
-struct PendingChannel {
-    source_index: usize,
-    group_order: usize,
-    name_order: String,
-    tvg_id: Arc<str>,
-    id: ChannelId,
-}
-
-struct CatalogChannel {
-    id: ChannelId,
-    source_index: usize,
-    number: u32,
-    quality: Option<ChannelQuality>,
-    schedule_start: u32,
-    schedule_end: u32,
-}
-
-fn compute_channel_identities(parsed: &[ParsedChannel]) -> Vec<([u8; 32], String)> {
-    let worker_count = std::thread::available_parallelism()
-        .map(std::num::NonZeroUsize::get)
-        .unwrap_or(1)
-        .min(8);
-    if parsed.len() < PARALLEL_CHANNEL_THRESHOLD || worker_count <= 1 {
-        return parsed
-            .iter()
-            .map(|channel| {
-                (
-                    identity::seed(&channel.tvg_id, &channel.name, &channel.group),
-                    identity::normalize_identity_field(&channel.name),
+    fn project_groups_window(&self, range: Range<usize>) -> Arc<[ChannelGroupView]> {
+        if range.is_empty() {
+            return Arc::from([]);
+        }
+        let groups = self.flat.groups();
+        let total_bytes: usize = range
+            .clone()
+            .map(|idx| self.flat.group_name(idx).len())
+            .sum();
+        let mut arena = PageTextArena::with_capacity(total_bytes);
+        let mut slots = [TextSlot::empty(); MAX_PAGE_ITEMS];
+        let count = range.len();
+        debug_assert!(count <= MAX_PAGE_ITEMS);
+        for (slot, idx) in slots[..count].iter_mut().zip(range.clone()) {
+            *slot = arena.push_str(self.flat.group_name(idx));
+        }
+        let frozen = arena.finish();
+        range
+            .enumerate()
+            .map(|(offset, idx)| {
+                let g = &groups[idx];
+                ChannelGroupView::new(
+                    frozen.resolve(slots[offset]),
+                    g.channel_end.get() - g.channel_start.get(),
                 )
             })
-            .collect();
+            .collect()
     }
-    let chunk_size = parsed.len().div_ceil(worker_count);
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = parsed
-            .chunks(chunk_size)
-            .map(|chunk| {
-                scope.spawn(move || {
-                    chunk
-                        .iter()
-                        .map(|channel| {
-                            (
-                                identity::seed(&channel.tvg_id, &channel.name, &channel.group),
-                                identity::normalize_identity_field(&channel.name),
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                })
-            })
-            .collect();
-        let mut combined = Vec::with_capacity(parsed.len());
-        for handle in handles {
-            combined.extend(
-                handle
-                    .join()
-                    .expect("channel identity worker did not panic"),
+
+    fn project_channels_range(&self, range: Range<usize>) -> Arc<[ChannelSummary]> {
+        if range.is_empty() {
+            return Arc::from([]);
+        }
+        let mut indices = [0_usize; MAX_PAGE_ITEMS];
+        let count = range.len();
+        debug_assert!(count <= MAX_PAGE_ITEMS);
+        for (dst, idx) in indices[..count].iter_mut().zip(range) {
+            *dst = idx;
+        }
+        self.project_channels_indices(&indices[..count])
+    }
+
+    fn project_channels_indices(&self, indices: &[usize]) -> Arc<[ChannelSummary]> {
+        if indices.is_empty() {
+            return Arc::from([]);
+        }
+        debug_assert!(indices.len() <= MAX_PAGE_ITEMS);
+        let mut arena = PageTextArena::with_capacity(indices.len().saturating_mul(96));
+        let mut group_slots = [(0_u32, empty_slot()); MAX_PAGE_ITEMS];
+        let mut group_slot_count = 0_usize;
+        let mut pending = [ChannelSlots::empty(); MAX_PAGE_ITEMS];
+
+        for (out, &ch_idx) in pending[..indices.len()].iter_mut().zip(indices) {
+            *out = self.intern_channel_slots(
+                ch_idx,
+                &mut arena,
+                &mut group_slots,
+                &mut group_slot_count,
             );
         }
-        combined
-    })
-}
 
-fn build_search_indexes(
-    channels: &[CatalogChannel],
-    parsed: &[ParsedChannel],
-    programmes: &[CatalogProgramme],
-    guide: Option<&ParsedGuide>,
-) -> (SearchIndex, SearchIndex) {
-    let build_channels = || {
-        let mut channel_search = SearchIndexBuilder::with_capacity(
-            channels.len(),
-            channels.iter().fold(0, |bytes, channel| {
-                let source = &parsed[channel.source_index];
-                bytes.saturating_add(source.name.len() + source.group.len())
-            }),
+        let frozen = arena.finish();
+        pending[..indices.len()]
+            .iter()
+            .map(|item| resolve_channel_summary(item, &frozen))
+            .collect()
+    }
+
+    fn intern_channel_slots(
+        &self,
+        ch_idx: usize,
+        arena: &mut PageTextArena,
+        group_slots: &mut [(u32, TextSlot); MAX_PAGE_ITEMS],
+        group_slot_count: &mut usize,
+    ) -> ChannelSlots {
+        let ch = &self.flat.channels_hot()[ch_idx];
+        let name = self.flat.channel_name(ch_idx);
+        let id = arena.push_channel_id_digest(&ch.id_digest);
+        let name_slot = arena.push_str(name);
+        let group_slot = intern_stack_slot(
+            group_slots,
+            group_slot_count,
+            ch.group_index.get(),
+            |g_idx| arena.push_str(self.flat.group_name(g_idx as usize)),
         );
-        for channel in channels {
-            let source = &parsed[channel.source_index];
-            channel_search.push(&source.name, Some(&source.group));
+        let quality = decode_quality(ch.quality).expect("validated channel quality");
+        let variant = quality.and_then(|q| {
+            let (_, base_name) = variants::split(name)?;
+            Some((q, arena.push_str(&base_name)))
+        });
+        ChannelSlots {
+            id,
+            name: name_slot,
+            group: group_slot,
+            number: ch.number.get(),
+            variant,
         }
-        channel_search.finish()
-    };
-    let build_programmes = || {
-        let mut programme_search = SearchIndexBuilder::with_capacity(
-            programmes.len(),
-            programmes.iter().fold(0, |bytes, programme| {
-                let source = &guide
-                    .expect("catalogued Programmes have a parsed EPG Source")
-                    .programmes[programme.source_index as usize];
-                bytes.saturating_add(
-                    source.title.len()
-                        + source
-                            .description
-                            .as_ref()
-                            .map_or(0, |description| description.len()),
+    }
+
+    fn project_channel_details(&self, ch_idx: usize) -> ChannelDetails {
+        let ch = &self.flat.channels_hot()[ch_idx];
+        let name = self.flat.channel_name(ch_idx);
+        let group = self.flat.group_name(ch.group_index.get() as usize);
+        let quality = decode_quality(ch.quality).expect("validated channel quality");
+        let base_name = quality.and_then(|q| variants::split(name).map(|(_, base)| (q, base)));
+        let total_bytes = CHANNEL_ID_HEX_LEN
+            + name.len()
+            + group.len()
+            + base_name.as_ref().map_or(0, |(_, b)| b.len());
+        let mut arena = PageTextArena::with_capacity(total_bytes);
+        let id_slot = arena.push_channel_id_digest(&ch.id_digest);
+        let name_slot = arena.push_str(name);
+        let group_slot = arena.push_str(group);
+        let variant_slot = base_name.map(|(q, base)| (q, arena.push_str(&base)));
+        let frozen = arena.finish();
+        ChannelDetails::new(
+            ChannelId::from_shared(frozen.resolve(id_slot)),
+            frozen.resolve(name_slot),
+            frozen.resolve(group_slot),
+            ch.number.get(),
+            variant_slot.map(|(q, slot)| ChannelVariant::new(q, frozen.resolve(slot))),
+        )
+    }
+
+    fn project_programme_summaries_range(&self, range: Range<usize>) -> Arc<[ProgrammeSummary]> {
+        if range.is_empty() {
+            return Arc::from([]);
+        }
+        let mut indices = [0_usize; MAX_PAGE_ITEMS];
+        let count = range.len();
+        debug_assert!(count <= MAX_PAGE_ITEMS);
+        for (dst, idx) in indices[..count].iter_mut().zip(range) {
+            *dst = idx;
+        }
+        self.project_programme_summaries_indices(&indices[..count])
+    }
+
+    fn project_programme_summaries_indices(&self, indices: &[usize]) -> Arc<[ProgrammeSummary]> {
+        if indices.is_empty() {
+            return Arc::from([]);
+        }
+        debug_assert!(indices.len() <= MAX_PAGE_ITEMS);
+        let entries = self.flat.schedule_entries();
+        let channels_hot = self.flat.channels_hot();
+
+        // Deduplicate channels AND matched programmes so shared descriptions
+        // across multiple channels on a page are copied into the arena once.
+        let mut arena =
+            PageTextArena::with_capacity(CHANNEL_ID_HEX_LEN + indices.len().saturating_mul(96));
+        let mut channel_id_slots = [(0_u32, empty_slot()); MAX_PAGE_ITEMS];
+        let mut channel_id_count = 0_usize;
+        let mut prog_slots = [(0_u32, (empty_slot(), None)); MAX_PAGE_ITEMS];
+        let mut prog_slot_count = 0_usize;
+
+        #[derive(Clone, Copy)]
+        struct PendingProg {
+            ch_id: TextSlot,
+            title: TextSlot,
+            description: Option<TextSlot>,
+            starts_at: DateTime<Utc>,
+            ends_at: DateTime<Utc>,
+        }
+        let mut pending = [PendingProg {
+            ch_id: empty_slot(),
+            title: empty_slot(),
+            description: None,
+            starts_at: DateTime::<Utc>::UNIX_EPOCH,
+            ends_at: DateTime::<Utc>::UNIX_EPOCH,
+        }; MAX_PAGE_ITEMS];
+
+        for (out, &entry_idx) in pending[..indices.len()].iter_mut().zip(indices) {
+            let entry = &entries[entry_idx];
+            let ch_idx = entry.channel_index.get();
+            let prog_idx = entry.matched_prog_index.get();
+            let ch_id =
+                intern_stack_slot(&mut channel_id_slots, &mut channel_id_count, ch_idx, |c| {
+                    arena.push_channel_id_digest(&channels_hot[c as usize].id_digest)
+                });
+            let (title, description) =
+                intern_stack_slot(&mut prog_slots, &mut prog_slot_count, prog_idx, |p| {
+                    let title = arena.push_str(self.flat.matched_programme_title(p as usize));
+                    let desc = self
+                        .flat
+                        .matched_programme_description(p as usize)
+                        .map(|d| arena.push_str(d));
+                    (title, desc)
+                });
+            *out = PendingProg {
+                ch_id,
+                title,
+                description,
+                starts_at: self.flat.matched_programme_starts_at(prog_idx as usize),
+                ends_at: self.flat.matched_programme_ends_at(prog_idx as usize),
+            };
+        }
+
+        let frozen = arena.finish();
+        pending[..indices.len()]
+            .iter()
+            .map(|item| {
+                ProgrammeSummary::new(
+                    ChannelId::from_shared(frozen.resolve(item.ch_id)),
+                    frozen.resolve(item.title),
+                    item.description.map(|slot| frozen.resolve(slot)),
+                    item.starts_at,
+                    item.ends_at,
                 )
-            }),
-        );
-        for programme in programmes {
-            let source = &guide
-                .expect("catalogued Programmes have a parsed EPG Source")
-                .programmes[programme.source_index as usize];
-            programme_search.push(&source.title, source.description.as_deref());
-        }
-        programme_search.finish()
-    };
+            })
+            .collect()
+    }
 
-    if channels.len() >= PARALLEL_SEARCH_THRESHOLD && programmes.len() >= PARALLEL_SEARCH_THRESHOLD
-    {
-        std::thread::scope(|scope| {
-            let programmes_handle = scope.spawn(build_programmes);
-            let channel_search = build_channels();
-            let programme_search = programmes_handle
-                .join()
-                .expect("programme search index thread did not panic");
-            (channel_search, programme_search)
-        })
-    } else {
-        (build_channels(), build_programmes())
+    fn project_programme_search_hits(&self, indices: &[usize]) -> Arc<[ProgrammeSearchHit]> {
+        if indices.is_empty() {
+            return Arc::from([]);
+        }
+        debug_assert!(indices.len() <= MAX_PAGE_ITEMS);
+        let entries = self.flat.schedule_entries();
+
+        // Deduplicate groups, channels, and bounded programme titles into one page arena.
+        let mut arena =
+            PageTextArena::with_capacity(CHANNEL_ID_HEX_LEN + indices.len().saturating_mul(56));
+        let mut group_slots = [(0_u32, empty_slot()); MAX_PAGE_ITEMS];
+        let mut group_slot_count = 0_usize;
+        let mut channel_slots = [(0_u32, ChannelSlots::empty()); MAX_PAGE_ITEMS];
+        let mut channel_slot_count = 0_usize;
+        let mut prog_title_slots = [(0_u32, (empty_slot(), false)); MAX_PAGE_ITEMS];
+        let mut prog_title_count = 0_usize;
+
+        #[derive(Clone, Copy)]
+        struct PendingHit {
+            ch: ChannelSlots,
+            title: TextSlot,
+            title_truncated: bool,
+            starts_at: DateTime<Utc>,
+            ends_at: DateTime<Utc>,
+        }
+        let mut pending = [PendingHit {
+            ch: ChannelSlots::empty(),
+            title: empty_slot(),
+            title_truncated: false,
+            starts_at: DateTime::<Utc>::UNIX_EPOCH,
+            ends_at: DateTime::<Utc>::UNIX_EPOCH,
+        }; MAX_PAGE_ITEMS];
+
+        for (out, &entry_idx) in pending[..indices.len()].iter_mut().zip(indices) {
+            let entry = &entries[entry_idx];
+            let ch_idx = entry.channel_index.get();
+            let prog_idx = entry.matched_prog_index.get();
+            let ch = intern_stack_slot(&mut channel_slots, &mut channel_slot_count, ch_idx, |c| {
+                self.intern_channel_slots(
+                    c as usize,
+                    &mut arena,
+                    &mut group_slots,
+                    &mut group_slot_count,
+                )
+            });
+            let (title, title_truncated) = intern_stack_slot(
+                &mut prog_title_slots,
+                &mut prog_title_count,
+                prog_idx,
+                |p| {
+                    let (bounded, truncated) = self.flat.matched_programme_title_bounded(
+                        p as usize,
+                        ProgrammeSearchHit::MAX_TITLE_BYTES,
+                    );
+                    (arena.push_str(bounded), truncated)
+                },
+            );
+            *out = PendingHit {
+                ch,
+                title,
+                title_truncated,
+                starts_at: self.flat.matched_programme_starts_at(prog_idx as usize),
+                ends_at: self.flat.matched_programme_ends_at(prog_idx as usize),
+            };
+        }
+
+        let frozen = arena.finish();
+        pending[..indices.len()]
+            .iter()
+            .map(|item| {
+                let channel = resolve_channel_summary(&item.ch, &frozen);
+                ProgrammeSearchHit::from_bounded(
+                    channel,
+                    frozen.resolve(item.title),
+                    item.title_truncated,
+                    item.starts_at,
+                    item.ends_at,
+                )
+            })
+            .collect()
+    }
+
+    fn project_guide_window_range(
+        &self,
+        range: Range<usize>,
+        query: &GuideWindowQuery,
+    ) -> Arc<[GuideWindowChannel]> {
+        if range.is_empty() {
+            return Arc::from([]);
+        }
+        let starts_at = query.starts_at();
+        let ends_at = query.ends_at();
+        let entries = self.flat.schedule_entries();
+        let channel_summaries = self.project_channels_range(range.clone());
+
+        // Collect overlapping matched programme indices per channel in one pass,
+        // deduplicating bounded titles into a single page-owned text arena.
+        let mut per_channel_progs: Vec<Vec<u32>> = Vec::with_capacity(range.len());
+        let mut title_map: std::collections::HashMap<u32, (TextSlot, bool)> =
+            std::collections::HashMap::new();
+        let mut arena = PageTextArena::with_capacity(range.len().saturating_mul(128));
+
+        for ch_idx in range {
+            let schedule = self.flat.channel_schedule_range(ch_idx);
+            let first_possible = self.flat.first_possible_overlap(&schedule, starts_at);
+            let mut matched_indices = Vec::new();
+            for entry in &entries[first_possible..schedule.end] {
+                let prog_idx = entry.matched_prog_index.get();
+                if self.flat.matched_programme_starts_at(prog_idx as usize) >= ends_at {
+                    break;
+                }
+                if self.flat.matched_programme_ends_at(prog_idx as usize) > starts_at {
+                    title_map.entry(prog_idx).or_insert_with(|| {
+                        let (bounded, truncated) = self.flat.matched_programme_title_bounded(
+                            prog_idx as usize,
+                            GuideProgramme::MAX_TITLE_BYTES,
+                        );
+                        (arena.push_str(bounded), truncated)
+                    });
+                    matched_indices.push(prog_idx);
+                    if matched_indices.len() == GuideWindowChannel::MAX_PROGRAMMES + 1 {
+                        break;
+                    }
+                }
+            }
+            per_channel_progs.push(matched_indices);
+        }
+
+        let frozen = arena.finish();
+        channel_summaries
+            .iter()
+            .cloned()
+            .zip(per_channel_progs)
+            .map(|(summary, prog_indices)| {
+                let programmes = prog_indices
+                    .into_iter()
+                    .map(|prog_idx| {
+                        let (slot, truncated) = title_map[&prog_idx];
+                        GuideProgramme::from_bounded(
+                            frozen.resolve(slot),
+                            truncated,
+                            self.flat.matched_programme_starts_at(prog_idx as usize),
+                            self.flat.matched_programme_ends_at(prog_idx as usize),
+                        )
+                    })
+                    .collect();
+                GuideWindowChannel::new(summary, programmes)
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn channel_ids_in_order(&self) -> Vec<String> {
+        self.flat
+            .channels_hot()
+            .iter()
+            .map(|ch| {
+                let hex = blake3::Hash::from_bytes(ch.id_digest).to_hex();
+                format!("{CHANNEL_ID_PREFIX}{}", hex.as_str())
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn channel_names_and_ids(&self) -> Vec<(String, String)> {
+        self.flat
+            .channels_hot()
+            .iter()
+            .enumerate()
+            .map(|(idx, ch)| {
+                let hex = blake3::Hash::from_bytes(ch.id_digest).to_hex();
+                (
+                    self.flat.channel_name(idx).to_owned(),
+                    format!("{CHANNEL_ID_PREFIX}{}", hex.as_str()),
+                )
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_cache_mapping(
+        mapping: CatalogCacheMapping,
+        generation: CatalogGeneration,
+    ) -> Option<Self> {
+        FlatCatalog::from_mapping(mapping, generation).map(|flat| Self { flat })
     }
 }
 
-fn compare_channels(left: &PendingChannel, right: &PendingChannel) -> Ordering {
-    left.group_order
-        .cmp(&right.group_order)
-        .then_with(|| left.source_index.cmp(&right.source_index))
+#[derive(Clone, Copy)]
+struct ChannelSlots {
+    id: TextSlot,
+    name: TextSlot,
+    group: TextSlot,
+    number: u32,
+    variant: Option<(ChannelQuality, TextSlot)>,
+}
+
+impl ChannelSlots {
+    const fn empty() -> Self {
+        Self {
+            id: empty_slot(),
+            name: empty_slot(),
+            group: empty_slot(),
+            number: 0,
+            variant: None,
+        }
+    }
+}
+
+fn resolve_channel_summary(
+    item: &ChannelSlots,
+    frozen: &crate::domain::FrozenPageTextArena,
+) -> ChannelSummary {
+    ChannelSummary::new(
+        ChannelId::from_shared(frozen.resolve(item.id)),
+        frozen.resolve(item.name),
+        frozen.resolve(item.group),
+        item.number,
+        item.variant
+            .map(|(quality, base)| ChannelVariant::new(quality, frozen.resolve(base))),
+    )
+}
+
+const fn empty_slot() -> TextSlot {
+    TextSlot::empty()
+}
+
+fn intern_stack_slot<V: Copy>(
+    table: &mut [(u32, V); MAX_PAGE_ITEMS],
+    len: &mut usize,
+    key: u32,
+    compute: impl FnOnce(u32) -> V,
+) -> V {
+    for &(existing_key, value) in &table[..*len] {
+        if existing_key == key {
+            return value;
+        }
+    }
+    let value = compute(key);
+    table[*len] = (key, value);
+    *len += 1;
+    value
 }
 
 fn query_hash(tag: u8, discriminator: Option<&str>) -> CursorQueryHash {

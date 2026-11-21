@@ -7,10 +7,15 @@ fallback. The cache is disposable and never bundled into the app or exported.
 - The key binds the Source Configuration, both source checksums, storage format,
   and a build fingerprint of the core Rust sources and locked dependencies.
   An app update that changes these semantics rebuilds automatically.
-- A cache hit checks the current snapshot manifests and the cache checksum, then
-  restores the prepared catalog without reading/parsing raw source payloads.
-  It does not revalidate raw payload bytes: the independently checked derived
-  copy remains usable if those bytes are damaged later.
+- A cache hit checks the current snapshot manifests, verifies that the
+  participating raw snapshot payloads match the stat stamp and pre-verification
+  timestamp boundary recorded in the atomic `catalog-cache-v1.stamp` sidecar
+  (re-hashing those raw payloads and refreshing the sidecar if stat evidence
+  changed or is ambiguous), verifies the cache checksum and flat binary
+  structure, and serves the catalog zero-copy via read-only `mmap` without
+  parsing raw source payloads. If a participating raw payload was corrupted in
+  place, the cache miss falls back to raw snapshot recovery and fallback-slot
+  adoption.
 - A cache miss opens saved Channels first. Saved EPG recovery runs on a blocking
   worker after initial status, publishes a new generation when ready, and then
   starts normal network revalidation. Source changes invalidate delayed recovery.
