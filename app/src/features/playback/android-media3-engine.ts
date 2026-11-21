@@ -334,6 +334,16 @@ export function createAndroidMedia3PlaybackEngine(
 /** Shared production instance selected only by Android's platform router. */
 export const androidMedia3PlaybackEngine = createAndroidMedia3PlaybackEngine();
 
+function setDatasetIfChanged(
+  dataset: DOMStringMap,
+  key: string,
+  value: string,
+): void {
+  if (dataset[key] !== value) {
+    dataset[key] = value;
+  }
+}
+
 function markPlaybackStatus(
   video: HTMLVideoElement,
   state: "starting" | "playing" | "paused" | "failed" | "stopped",
@@ -343,13 +353,14 @@ function markPlaybackStatus(
   silent: boolean,
   audio: AndroidPlaybackAudio,
 ): void {
-  video.dataset.playbackEngine = "android-media3";
-  video.dataset.playbackState = state;
-  video.dataset.decodedFrames = String(decodedFrames);
-  video.dataset.droppedFrames = String(droppedFrames);
-  video.dataset.bufferedDurationMs = String(bufferedDurationMs);
-  video.dataset.processSilent = String(silent);
-  video.dataset.playbackAudio = audio;
+  const { dataset } = video;
+  setDatasetIfChanged(dataset, "playbackEngine", "android-media3");
+  setDatasetIfChanged(dataset, "playbackState", state);
+  setDatasetIfChanged(dataset, "decodedFrames", String(decodedFrames));
+  setDatasetIfChanged(dataset, "droppedFrames", String(droppedFrames));
+  setDatasetIfChanged(dataset, "bufferedDurationMs", String(bufferedDurationMs));
+  setDatasetIfChanged(dataset, "processSilent", String(silent));
+  setDatasetIfChanged(dataset, "playbackAudio", audio);
 }
 
 function clearPlaybackStatus(video: HTMLVideoElement): void {
@@ -388,6 +399,16 @@ export function createBrowserAndroidMedia3Runtime(
           listener(measure(video));
         });
       };
+      const onScroll = (event: Event) => {
+        const target = event.target;
+        if (
+          target === document ||
+          target === document.documentElement ||
+          (target instanceof Node && target.contains(video))
+        ) {
+          update();
+        }
+      };
       const observer =
         typeof ResizeObserver === "undefined"
           ? null
@@ -398,7 +419,10 @@ export function createBrowserAndroidMedia3Runtime(
       }
       observer?.observe(document.body);
       window.addEventListener("resize", update);
-      document.addEventListener("scroll", update, true);
+      document.addEventListener("scroll", onScroll, {
+        capture: true,
+        passive: true,
+      });
       document.addEventListener("fullscreenchange", update);
       const visualViewport = window.visualViewport;
       visualViewport?.addEventListener("resize", update);
@@ -412,7 +436,7 @@ export function createBrowserAndroidMedia3Runtime(
         }
         observer?.disconnect();
         window.removeEventListener("resize", update);
-        document.removeEventListener("scroll", update, true);
+        document.removeEventListener("scroll", onScroll, { capture: true });
         document.removeEventListener("fullscreenchange", update);
         visualViewport?.removeEventListener("resize", update);
         visualViewport?.removeEventListener("scroll", update);

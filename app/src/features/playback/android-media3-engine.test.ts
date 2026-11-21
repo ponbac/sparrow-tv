@@ -510,6 +510,36 @@ describe("browser Android Media3 viewport runtime", () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it("ignores scroll events from sibling containers that do not wrap the video", () => {
+    const stage = document.createElement("div");
+    const video = document.createElement("video");
+    const guideBoard = document.createElement("div");
+    stage.append(video);
+    document.body.append(stage, guideBoard);
+    vi.spyOn(video, "getBoundingClientRect").mockImplementation(() =>
+      viewportRectangle(0, 0, 640, 360),
+    );
+    const requestAnimationFrame = vi.fn(() => 1);
+    vi.stubGlobal("requestAnimationFrame", requestAnimationFrame);
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    const listener = vi.fn();
+    const release = createBrowserAndroidMedia3Runtime().observeViewport(
+      video,
+      listener,
+    );
+
+    try {
+      guideBoard.dispatchEvent(new Event("scroll"));
+      expect(requestAnimationFrame).not.toHaveBeenCalled();
+      expect(listener).not.toHaveBeenCalled();
+    } finally {
+      release();
+      stage.remove();
+      guideBoard.remove();
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 function presentationFixture(status: {

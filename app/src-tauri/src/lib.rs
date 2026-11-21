@@ -37,19 +37,34 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .map_err(|_| runtime::InstalledStartupError::AppData)?;
+            let prepared = runtime::InstalledRuntime::prepare(app_data)?;
             let screen_wake = screen_wake::platform_screen_wake(app.handle().clone());
-            let runtime = Arc::new(tauri::async_runtime::block_on(
-                runtime::InstalledRuntime::open_with_screen_wake(app_data, screen_wake),
-            )?);
-            #[cfg(target_os = "android")]
-            android_playback::bind_runtime(Arc::downgrade(&runtime))
-                .map_err(|_| runtime::InstalledStartupError::PlaybackAdapter)?;
-            app.state::<runtime::InstalledRuntimeSlot>()
-                .fill(runtime)
-                .map_err(|_| runtime::InstalledStartupError::Core)?;
             #[cfg(target_os = "android")]
             android_lifecycle::bind(app.handle().clone());
             agent_control::start(app.handle().clone());
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                match runtime::InstalledRuntime::finish_open(prepared, screen_wake).await {
+                    Ok(runtime) => {
+                        let runtime = Arc::new(runtime);
+                        #[cfg(target_os = "android")]
+                        if android_playback::bind_runtime(Arc::downgrade(&runtime)).is_err() {
+                            app_handle.exit(1);
+                            return;
+                        }
+                        if app_handle
+                            .state::<runtime::InstalledRuntimeSlot>()
+                            .fill(runtime)
+                            .is_err()
+                        {
+                            app_handle.exit(1);
+                        }
+                    }
+                    Err(_) => {
+                        app_handle.exit(1);
+                    }
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -328,19 +343,17 @@ fn report_lifecycle(app: &tauri::AppHandle, event: tauri::RunEvent) {
     }
 }
 
-/// Hands one lifecycle signal to the installed runtime, which orders signals
-/// by the time of this call and publishes each confirmed change to the page.
+/// Hands one lifecycle signal to the installed runtime slot, which reserves
+/// arrival order synchronously even while startup is still in flight and
+/// publishes each confirmed change to the page.
 fn dispatch_lifecycle_signal(app: &tauri::AppHandle, signal: sparrow_core::LifecycleSignal) {
     use tauri::{Emitter as _, Manager as _};
 
-    let Some(runtime) = app
-        .try_state::<runtime::InstalledRuntimeSlot>()
-        .and_then(|slot| slot.ready())
-    else {
+    let Some(slot) = app.try_state::<runtime::InstalledRuntimeSlot>() else {
         return;
     };
     let app = app.clone();
-    let dispatch = runtime.dispatch_lifecycle(signal, move |event| {
+    let dispatch = slot.dispatch_lifecycle(signal, move |event| {
         let _ = app.emit("sparrow://playback-lifecycle", event);
     });
     tauri::async_runtime::spawn(async move {

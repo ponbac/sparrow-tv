@@ -12,8 +12,26 @@ import {
 export type { IsoInstant } from "./guide-contract";
 
 const textEncoder = new TextEncoder();
-const withinUtf8ByteLimit = (value: string, limit: number): boolean =>
-  textEncoder.encode(value).byteLength <= limit;
+const withinUtf8ByteLimit = (value: string, limit: number): boolean => {
+  const { length } = value;
+  if (length * 3 <= limit) {
+    return true;
+  }
+  if (length > limit) {
+    return false;
+  }
+  let ascii = true;
+  for (let index = 0; index < length; index += 1) {
+    if (value.charCodeAt(index) > 0x7f) {
+      ascii = false;
+      break;
+    }
+  }
+  if (ascii) {
+    return true;
+  }
+  return textEncoder.encode(value).byteLength <= limit;
+};
 
 const channelIdSchema = z.string().min(1).max(1024).brand<"ChannelId">();
 const sameOriginPlaybackEndpointSchema = z

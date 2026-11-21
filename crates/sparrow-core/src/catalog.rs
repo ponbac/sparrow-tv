@@ -1,6 +1,7 @@
 use std::{cmp::Ordering, collections::HashMap, ops::Range, sync::Arc};
 
 use chrono::{DateTime, Utc};
+use url::Url;
 
 use crate::{
     domain::{
@@ -34,25 +35,22 @@ const CHANNEL_SEARCH_QUERY_TAG: u8 = 4;
 const PROGRAMME_SEARCH_QUERY_TAG: u8 = 5;
 const GUIDE_WINDOW_QUERY_TAG: u8 = 6;
 
-#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct ChannelCatalog {
-    #[serde(with = "cache::generation")]
     generation: CatalogGeneration,
     source_channels: Arc<Vec<ParsedChannel>>,
     source_guide: Option<Arc<ParsedGuide>>,
-    #[serde(with = "cache::groups")]
     groups: Arc<[ChannelGroupView]>,
     channels: Box<[CatalogChannel]>,
     programmes: Box<[CatalogProgramme]>,
     channel_search: SearchIndex,
     programme_search: SearchIndex,
     group_ranges: HashMap<Arc<str>, Range<usize>>,
-    #[serde(with = "cache::channel_map")]
-    schedule_ranges: HashMap<ChannelId, Range<usize>>,
     schedule_overlap_index: ScheduleOverlapIndex,
-    #[serde(with = "cache::channel_map")]
     by_id: HashMap<ChannelId, usize>,
 }
+
+const PARALLEL_CHANNEL_THRESHOLD: usize = 1_024;
+const PARALLEL_SEARCH_THRESHOLD: usize = 512;
 
 impl ChannelCatalog {
     pub(crate) fn from_parsed(
@@ -61,12 +59,14 @@ impl ChannelCatalog {
         guide: Option<Arc<ParsedGuide>>,
         generation: CatalogGeneration,
     ) -> Self {
-        let mut occurrences = HashMap::<[u8; 32], u32>::new();
+        let seeds_and_names = compute_channel_identities(&parsed);
+        let mut occurrences = HashMap::<[u8; 32], u32>::with_capacity(parsed.len());
         let mut group_first_seen = HashMap::<Arc<str>, usize>::new();
         let mut pending = Vec::with_capacity(parsed.len());
 
-        for (source_index, channel) in parsed.iter().enumerate() {
-            let seed = identity::seed(&channel.tvg_id, &channel.name, &channel.group);
+        for ((source_index, channel), (seed, name_order)) in
+            parsed.iter().enumerate().zip(seeds_and_names)
+        {
             let occurrence = occurrences.entry(seed).or_default();
             let id = identity::channel_id(&configuration.fingerprint, &seed, *occurrence);
             *occurrence = occurrence.saturating_add(1);
@@ -77,7 +77,7 @@ impl ChannelCatalog {
             pending.push(PendingChannel {
                 source_index,
                 group_order,
-                name_order: identity::normalize_identity_field(&channel.name),
+                name_order,
                 tvg_id: Arc::clone(&channel.tvg_id),
                 id,
             });
@@ -87,17 +87,48 @@ impl ChannelCatalog {
         // ranges, then keep each group's M3U source order.
         pending.sort_unstable_by(compare_channels);
 
-        let (programmes, schedule_ranges) = build_programmes(&pending, guide.as_deref());
-        let schedule_overlap_index = ScheduleOverlapIndex::build(&programmes, guide.as_deref());
-
-        let placements = variants::placements(pending.iter().map(|channel| {
-            let source = &parsed[channel.source_index];
-            (&*source.name, &*source.group)
-        }));
+        let ((programmes, schedule_ranges, schedule_overlap_index), placements) = if pending.len()
+            >= PARALLEL_CHANNEL_THRESHOLD
+            && guide.is_some()
+        {
+            let pending_ref = &pending;
+            let parsed_ref = parsed.as_ref();
+            let guide_ref = guide.as_deref();
+            std::thread::scope(|scope| {
+                let placements_handle = scope.spawn(move || {
+                    variants::placements(pending_ref.iter().map(|channel| {
+                        let source = &parsed_ref[channel.source_index];
+                        (&*source.name, &*source.group)
+                    }))
+                });
+                let (programmes, schedule_ranges) = build_programmes(pending_ref, guide_ref);
+                let schedule_overlap_index = ScheduleOverlapIndex::build(&programmes, guide_ref);
+                let placements = placements_handle
+                    .join()
+                    .expect("variant placement thread did not panic");
+                (
+                    (programmes, schedule_ranges, schedule_overlap_index),
+                    placements,
+                )
+            })
+        } else {
+            let (programmes, schedule_ranges) = build_programmes(&pending, guide.as_deref());
+            let schedule_overlap_index = ScheduleOverlapIndex::build(&programmes, guide.as_deref());
+            let placements = variants::placements(pending.iter().map(|channel| {
+                let source = &parsed[channel.source_index];
+                (&*source.name, &*source.group)
+            }));
+            (
+                (programmes, schedule_ranges, schedule_overlap_index),
+                placements,
+            )
+        };
 
         let mut channels = Vec::with_capacity(pending.len());
         let mut by_id = HashMap::with_capacity(pending.len());
-        for (channel, placement) in pending.iter().zip(placements) {
+        for ((channel, placement), (schedule_start, schedule_end)) in
+            pending.iter().zip(placements).zip(schedule_ranges)
+        {
             let index = channels.len();
             let previous = by_id.insert(channel.id.clone(), index);
             debug_assert!(previous.is_none());
@@ -106,6 +137,8 @@ impl ChannelCatalog {
                 source_index: channel.source_index,
                 number: placement.number,
                 quality: placement.quality,
+                schedule_start,
+                schedule_end,
             });
         }
 
@@ -131,42 +164,8 @@ impl ChannelCatalog {
             group_start = group_end;
         }
 
-        let mut channel_search = SearchIndexBuilder::with_capacity(
-            channels.len(),
-            channels.iter().fold(0, |bytes, channel| {
-                let source = &parsed[channel.source_index];
-                bytes.saturating_add(source.name.len() + source.group.len())
-            }),
-        );
-        for channel in &channels {
-            let source = &parsed[channel.source_index];
-            channel_search.push(&source.name, Some(&source.group));
-        }
-        let channel_search = channel_search.finish();
-        let mut programme_search = SearchIndexBuilder::with_capacity(
-            programmes.len(),
-            programmes.iter().fold(0, |bytes, programme| {
-                let source = &guide
-                    .as_ref()
-                    .expect("catalogued Programmes have a parsed EPG Source")
-                    .programmes[programme.source_index];
-                bytes.saturating_add(
-                    source.title.len()
-                        + source
-                            .description
-                            .as_ref()
-                            .map_or(0, |description| description.len()),
-                )
-            }),
-        );
-        for programme in &programmes {
-            let source = &guide
-                .as_ref()
-                .expect("catalogued Programmes have a parsed EPG Source")
-                .programmes[programme.source_index];
-            programme_search.push(&source.title, source.description.as_deref());
-        }
-        let programme_search = programme_search.finish();
+        let (channel_search, programme_search) =
+            build_search_indexes(&channels, &parsed, &programmes, guide.as_deref());
 
         Self {
             generation,
@@ -178,7 +177,6 @@ impl ChannelCatalog {
             channel_search,
             programme_search,
             group_ranges,
-            schedule_ranges,
             schedule_overlap_index,
             by_id,
         }
@@ -232,10 +230,11 @@ impl ChannelCatalog {
     ) -> Result<ResolvedPlaybackSource, CoreError> {
         self.by_id
             .get(id)
-            .map(|index| {
+            .and_then(|index| {
                 let source = self.source_channel(&self.channels[*index]);
-                ResolvedPlaybackSource::new(SecretPlaybackLocation::new(Arc::clone(
-                    &source.playback,
+                let url = Url::parse(&source.playback).ok()?;
+                Some(ResolvedPlaybackSource::new(SecretPlaybackLocation::new(
+                    Arc::new(url),
                 )))
             })
             .ok_or_else(|| CoreError::ChannelNotFound { id: id.clone() })
@@ -245,16 +244,13 @@ impl ChannelCatalog {
         &self,
         query: &ScheduleQuery,
     ) -> Result<Page<ProgrammeSummary>, CoreError> {
-        if !self.by_id.contains_key(query.channel_id()) {
+        let Some(&channel_index) = self.by_id.get(query.channel_id()) else {
             return Err(CoreError::ChannelNotFound {
                 id: query.channel_id().clone(),
             });
-        }
-        let collection = self
-            .schedule_ranges
-            .get(query.channel_id())
-            .cloned()
-            .unwrap_or(0..0);
+        };
+        let channel = &self.channels[channel_index];
+        let collection = channel.schedule_start as usize..channel.schedule_end as usize;
         let Some(from) = query.from() else {
             return Page::from_projection(
                 self.generation,
@@ -471,7 +467,7 @@ impl ChannelCatalog {
     fn programme_summary(&self, programme: &CatalogProgramme) -> ProgrammeSummary {
         let source = self.source_programme(programme);
         ProgrammeSummary::new(
-            programme.channel_id.clone(),
+            self.channels[programme.channel_index as usize].id.clone(),
             Arc::clone(&source.title),
             source.description.as_ref().map(Arc::clone),
             source.starts_at,
@@ -480,13 +476,9 @@ impl ChannelCatalog {
     }
 
     fn programme_search_hit(&self, programme: &CatalogProgramme) -> ProgrammeSearchHit {
-        let channel_index = self
-            .by_id
-            .get(&programme.channel_id)
-            .expect("catalogued Programmes always reference a catalogued Channel");
         let source = self.source_programme(programme);
         ProgrammeSearchHit::new(
-            self.channel_summary(&self.channels[*channel_index]),
+            self.channel_summary(&self.channels[programme.channel_index as usize]),
             Arc::clone(&source.title),
             source.starts_at,
             source.ends_at,
@@ -503,7 +495,7 @@ impl ChannelCatalog {
             .source_guide
             .as_ref()
             .expect("catalogued Programmes have a parsed EPG Source")
-            .programmes[programme.source_index]
+            .programmes[programme.source_index as usize]
     }
 
     /// Finds the first Programme of one schedule that can still end after
@@ -525,14 +517,9 @@ impl ChannelCatalog {
         channel: &CatalogChannel,
         query: &GuideWindowQuery,
     ) -> GuideWindowChannel {
-        let channel_id = &channel.id;
         let starts_at = query.starts_at();
         let ends_at = query.ends_at();
-        let schedule = self
-            .schedule_ranges
-            .get(channel_id)
-            .cloned()
-            .unwrap_or(0..0);
+        let schedule = channel.schedule_start as usize..channel.schedule_end as usize;
         let first_possible_overlap = self.first_possible_overlap(&schedule, starts_at);
         let programmes = self.programmes[first_possible_overlap..schedule.end]
             .iter()
@@ -553,14 +540,119 @@ struct PendingChannel {
     id: ChannelId,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
 struct CatalogChannel {
-    #[serde(with = "cache::channel_id")]
     id: ChannelId,
     source_index: usize,
     number: u32,
-    #[serde(with = "cache::quality")]
     quality: Option<ChannelQuality>,
+    schedule_start: u32,
+    schedule_end: u32,
+}
+
+fn compute_channel_identities(parsed: &[ParsedChannel]) -> Vec<([u8; 32], String)> {
+    let worker_count = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1)
+        .min(8);
+    if parsed.len() < PARALLEL_CHANNEL_THRESHOLD || worker_count <= 1 {
+        return parsed
+            .iter()
+            .map(|channel| {
+                (
+                    identity::seed(&channel.tvg_id, &channel.name, &channel.group),
+                    identity::normalize_identity_field(&channel.name),
+                )
+            })
+            .collect();
+    }
+    let chunk_size = parsed.len().div_ceil(worker_count);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = parsed
+            .chunks(chunk_size)
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|channel| {
+                            (
+                                identity::seed(&channel.tvg_id, &channel.name, &channel.group),
+                                identity::normalize_identity_field(&channel.name),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let mut combined = Vec::with_capacity(parsed.len());
+        for handle in handles {
+            combined.extend(
+                handle
+                    .join()
+                    .expect("channel identity worker did not panic"),
+            );
+        }
+        combined
+    })
+}
+
+fn build_search_indexes(
+    channels: &[CatalogChannel],
+    parsed: &[ParsedChannel],
+    programmes: &[CatalogProgramme],
+    guide: Option<&ParsedGuide>,
+) -> (SearchIndex, SearchIndex) {
+    let build_channels = || {
+        let mut channel_search = SearchIndexBuilder::with_capacity(
+            channels.len(),
+            channels.iter().fold(0, |bytes, channel| {
+                let source = &parsed[channel.source_index];
+                bytes.saturating_add(source.name.len() + source.group.len())
+            }),
+        );
+        for channel in channels {
+            let source = &parsed[channel.source_index];
+            channel_search.push(&source.name, Some(&source.group));
+        }
+        channel_search.finish()
+    };
+    let build_programmes = || {
+        let mut programme_search = SearchIndexBuilder::with_capacity(
+            programmes.len(),
+            programmes.iter().fold(0, |bytes, programme| {
+                let source = &guide
+                    .expect("catalogued Programmes have a parsed EPG Source")
+                    .programmes[programme.source_index as usize];
+                bytes.saturating_add(
+                    source.title.len()
+                        + source
+                            .description
+                            .as_ref()
+                            .map_or(0, |description| description.len()),
+                )
+            }),
+        );
+        for programme in programmes {
+            let source = &guide
+                .expect("catalogued Programmes have a parsed EPG Source")
+                .programmes[programme.source_index as usize];
+            programme_search.push(&source.title, source.description.as_deref());
+        }
+        programme_search.finish()
+    };
+
+    if channels.len() >= PARALLEL_SEARCH_THRESHOLD && programmes.len() >= PARALLEL_SEARCH_THRESHOLD
+    {
+        std::thread::scope(|scope| {
+            let programmes_handle = scope.spawn(build_programmes);
+            let channel_search = build_channels();
+            let programme_search = programmes_handle
+                .join()
+                .expect("programme search index thread did not panic");
+            (channel_search, programme_search)
+        })
+    } else {
+        (build_channels(), build_programmes())
+    }
 }
 
 fn compare_channels(left: &PendingChannel, right: &PendingChannel) -> Ordering {

@@ -675,8 +675,11 @@ mod platform {
             Ok(bytes) => bytes,
             Err(_) => return Ok(NATIVE_READ_FAILED),
         };
-        let signed = bytes.iter().map(|byte| *byte as i8).collect::<Vec<_>>();
-        output.set_region(environment, offset as jsize, &signed)?;
+        // SAFETY: `u8` and `i8` have identical size and alignment (1 byte), and
+        // every bit pattern is valid for `i8`.
+        let signed =
+            unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast::<i8>(), bytes.len()) };
+        output.set_region(environment, offset as jsize, signed)?;
         Ok(bytes.len() as jint)
     }
 

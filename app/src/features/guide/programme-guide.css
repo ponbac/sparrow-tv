@@ -166,6 +166,11 @@
   font-style: normal;
 }
 
+.programme-guide__lane :focus-visible,
+.programme-guide__times :focus-visible {
+  outline-offset: -2px;
+}
+
 .programme-guide__ruler {
   position: sticky;
   z-index: 6;

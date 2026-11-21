@@ -55,6 +55,7 @@ pub(crate) struct InstalledRuntimeSlot {
 struct InstalledRuntimeSlotInner {
     runtime: OnceLock<Arc<InstalledRuntime>>,
     ready: watch::Sender<bool>,
+    lifecycle_order: LifecycleOrder,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -67,6 +68,7 @@ impl InstalledRuntimeSlot {
             inner: Arc::new(InstalledRuntimeSlotInner {
                 runtime: OnceLock::new(),
                 ready,
+                lifecycle_order: LifecycleOrder::default(),
             }),
         }
     }
@@ -84,6 +86,9 @@ impl InstalledRuntimeSlot {
     }
 
     pub(crate) async fn wait(&self) -> Arc<InstalledRuntime> {
+        if let Some(runtime) = self.ready() {
+            return runtime;
+        }
         let mut ready = self.inner.ready.subscribe();
         loop {
             if let Some(runtime) = self.ready() {
@@ -99,6 +104,27 @@ impl InstalledRuntimeSlot {
     pub(crate) fn ready(&self) -> Option<Arc<InstalledRuntime>> {
         self.inner.runtime.get().map(Arc::clone)
     }
+
+    pub(crate) fn dispatch_lifecycle<Publish>(
+        &self,
+        signal: sparrow_core::LifecycleSignal,
+        publish: Publish,
+    ) -> impl std::future::Future<Output = Result<(), PlaybackManagerError>> + Send + 'static
+    where
+        Publish: FnOnce(InstalledLifecycleEvent) + Send + 'static,
+    {
+        let slot = self.clone();
+        let sequence = self.inner.lifecycle_order.reserve();
+        async move {
+            let sequence = sequence?;
+            let runtime = slot.wait().await;
+            let _turn = slot.inner.lifecycle_order.wait(sequence).await?;
+            if let Some(event) = runtime.apply_lifecycle(signal).await? {
+                publish(event);
+            }
+            Ok(())
+        }
+    }
 }
 
 /// The complete on-device catalog composition managed by Tauri.
@@ -113,7 +139,6 @@ pub(crate) struct InstalledRuntime {
     search_cancellations: SearchCancellationRegistry,
     subscriptions: SubscriptionRegistry,
     android_presentation: AndroidPresentationGate,
-    lifecycle_order: LifecycleOrder,
     lifecycle_revision: AtomicU64,
     _instance_lock: InstanceLock,
 }
@@ -160,16 +185,25 @@ pub(crate) struct InstalledLifecycleEvent {
     state: &'static str,
 }
 
+/// Fast synchronous startup prerequisites checked before spawning async bootstrap.
+pub(crate) struct PreparedInstalledRuntime {
+    #[cfg(target_os = "linux")]
+    linux_playback: LinuxPlaybackEngine,
+    private_root: PathBuf,
+    instance_lock: InstanceLock,
+    configuration_store: SourceConfigurationStore,
+    configuration: Option<sparrow_core::SourceConfiguration>,
+}
+
 impl InstalledRuntime {
     #[cfg(test)]
     pub(crate) async fn open(app_data: PathBuf) -> Result<Self, InstalledStartupError> {
         Self::open_with_screen_wake(app_data, noop_screen_wake()).await
     }
 
-    pub(crate) async fn open_with_screen_wake(
+    pub(crate) fn prepare(
         app_data: PathBuf,
-        screen_wake: Arc<dyn ScreenWake>,
-    ) -> Result<Self, InstalledStartupError> {
+    ) -> Result<PreparedInstalledRuntime, InstalledStartupError> {
         #[cfg(target_os = "linux")]
         let linux_playback = LinuxPlaybackEngine::configured()?;
         prepare_app_data(&app_data)?;
@@ -180,11 +214,36 @@ impl InstalledRuntime {
         let configuration_store =
             SourceConfigurationStore::open(&private_root).map_err(InstalledStartupError::from)?;
         let configuration = load_persisted_configuration(&configuration_store)?;
+        Ok(PreparedInstalledRuntime {
+            #[cfg(target_os = "linux")]
+            linux_playback,
+            private_root,
+            instance_lock,
+            configuration_store,
+            configuration,
+        })
+    }
+
+    pub(crate) async fn finish_open(
+        prepared: PreparedInstalledRuntime,
+        screen_wake: Arc<dyn ScreenWake>,
+    ) -> Result<Self, InstalledStartupError> {
+        let PreparedInstalledRuntime {
+            #[cfg(target_os = "linux")]
+            linux_playback,
+            private_root,
+            instance_lock,
+            configuration_store,
+            configuration,
+        } = prepared;
 
         let source =
             Arc::new(HttpSourceAccess::new().map_err(|_| InstalledStartupError::SourceAdapter)?);
+        let snapshot_dir = private_root.join(SNAPSHOT_DIRECTORY);
         let snapshots = Arc::new(
-            AtomicFileSnapshotStore::open(private_root.join(SNAPSHOT_DIRECTORY))
+            tokio::task::spawn_blocking(move || AtomicFileSnapshotStore::open(snapshot_dir))
+                .await
+                .map_err(|_| InstalledStartupError::SnapshotAdapter)?
                 .map_err(|_| InstalledStartupError::SnapshotAdapter)?,
         );
         let core = Arc::new(
@@ -202,7 +261,7 @@ impl InstalledRuntime {
             Arc::clone(&core),
             playback_access,
             audio_preferences,
-            private_root.clone(),
+            private_root,
             screen_wake,
         ));
 
@@ -217,10 +276,18 @@ impl InstalledRuntime {
             search_cancellations: SearchCancellationRegistry::default(),
             subscriptions: SubscriptionRegistry::default(),
             android_presentation: AndroidPresentationGate::default(),
-            lifecycle_order: LifecycleOrder::default(),
             lifecycle_revision: AtomicU64::new(0),
             _instance_lock: instance_lock,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn open_with_screen_wake(
+        app_data: PathBuf,
+        screen_wake: Arc<dyn ScreenWake>,
+    ) -> Result<Self, InstalledStartupError> {
+        let prepared = Self::prepare(app_data)?;
+        Self::finish_open(prepared, screen_wake).await
     }
 
     pub(crate) fn core(&self) -> &SparrowCore {
@@ -540,25 +607,6 @@ impl InstalledRuntime {
         active: bool,
     ) -> Result<(), PlaybackManagerError> {
         self.playback.set_activity(session_id, active).await
-    }
-
-    pub(crate) fn dispatch_lifecycle<Publish>(
-        self: Arc<Self>,
-        signal: sparrow_core::LifecycleSignal,
-        publish: Publish,
-    ) -> impl std::future::Future<Output = Result<(), PlaybackManagerError>> + Send + 'static
-    where
-        Publish: FnOnce(InstalledLifecycleEvent) + Send + 'static,
-    {
-        let sequence = self.lifecycle_order.reserve();
-        async move {
-            let sequence = sequence?;
-            let _turn = self.lifecycle_order.wait(sequence).await?;
-            if let Some(event) = self.apply_lifecycle(signal).await? {
-                publish(event);
-            }
-            Ok(())
-        }
     }
 
     async fn apply_lifecycle(
@@ -1504,27 +1552,25 @@ mod tests {
                 .await
                 .expect("runtime opens"),
         );
+        let slot = InstalledRuntimeSlot::new();
+        slot.fill(runtime).expect("slot fills once");
         let events = Arc::new(StdMutex::new(Vec::new()));
         let suspended_events = Arc::clone(&events);
-        let suspended = Arc::clone(&runtime).dispatch_lifecycle(
-            sparrow_core::LifecycleSignal::Suspended,
-            move |event| {
+        let suspended =
+            slot.dispatch_lifecycle(sparrow_core::LifecycleSignal::Suspended, move |event| {
                 suspended_events
                     .lock()
                     .expect("lifecycle events are readable")
                     .push(event);
-            },
-        );
+            });
         let resumed_events = Arc::clone(&events);
-        let resumed = Arc::clone(&runtime).dispatch_lifecycle(
-            sparrow_core::LifecycleSignal::Resumed,
-            move |event| {
+        let resumed =
+            slot.dispatch_lifecycle(sparrow_core::LifecycleSignal::Resumed, move |event| {
                 resumed_events
                     .lock()
                     .expect("lifecycle events are readable")
                     .push(event);
-            },
-        );
+            });
 
         let resumed_task = tokio::spawn(resumed);
         tokio::task::yield_now().await;
@@ -1550,6 +1596,81 @@ mod tests {
         assert_eq!(events[0].state, "suspended");
         assert_eq!(events[1].revision, 2);
         assert_eq!(events[1].state, "resumed");
+    }
+
+    #[tokio::test]
+    async fn runtime_slot_preserves_lifecycle_order_across_async_startup() {
+        let directory = TempDir::new().expect("temporary directory");
+        let slot = InstalledRuntimeSlot::new();
+        let events = Arc::new(StdMutex::new(Vec::new()));
+
+        let first_events = Arc::clone(&events);
+        let first_suspended =
+            slot.dispatch_lifecycle(sparrow_core::LifecycleSignal::Suspended, move |event| {
+                first_events
+                    .lock()
+                    .expect("lifecycle events are readable")
+                    .push(event);
+            });
+        let second_events = Arc::clone(&events);
+        let second_resumed =
+            slot.dispatch_lifecycle(sparrow_core::LifecycleSignal::Resumed, move |event| {
+                second_events
+                    .lock()
+                    .expect("lifecycle events are readable")
+                    .push(event);
+            });
+
+        // Start awaiting the newer signal before the older one, while startup is still pending.
+        let second_task = tokio::spawn(second_resumed);
+        let first_task = tokio::spawn(first_suspended);
+        tokio::task::yield_now().await;
+        assert!(
+            events
+                .lock()
+                .expect("lifecycle events are readable")
+                .is_empty()
+        );
+
+        let runtime = Arc::new(
+            InstalledRuntime::open(directory.path().join("app-data"))
+                .await
+                .expect("runtime opens"),
+        );
+        slot.fill(runtime).expect("slot fills once");
+
+        // Dispatch a third signal immediately after fill; it must still wait behind pre-fill signals.
+        let third_events = Arc::clone(&events);
+        let third_suspended =
+            slot.dispatch_lifecycle(sparrow_core::LifecycleSignal::Suspended, move |event| {
+                third_events
+                    .lock()
+                    .expect("lifecycle events are readable")
+                    .push(event);
+            });
+        let third_task = tokio::spawn(third_suspended);
+
+        first_task
+            .await
+            .expect("first task joins")
+            .expect("first signal dispatches");
+        second_task
+            .await
+            .expect("second task joins")
+            .expect("second signal dispatches");
+        third_task
+            .await
+            .expect("third task joins")
+            .expect("third signal dispatches");
+
+        let events = events.lock().expect("lifecycle events are readable");
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].revision, 1);
+        assert_eq!(events[0].state, "suspended");
+        assert_eq!(events[1].revision, 2);
+        assert_eq!(events[1].state, "resumed");
+        assert_eq!(events[2].revision, 3);
+        assert_eq!(events[2].state, "suspended");
     }
 
     #[tokio::test]
@@ -1840,8 +1961,8 @@ mod tests {
             .expect("offline snapshot reopens without the source server");
         let offline_status = serde_json::to_value(CatalogStatusDto::from(offline.core().status()))
             .expect("offline status serializes");
-        assert_eq!(offline_status["m3u"]["_tag"], "stale");
-        assert!(offline_status["m3u"]["nextAttemptAt"].is_string());
+        assert_eq!(offline_status["m3u"]["_tag"], "fresh");
+        assert!(offline_status["m3u"]["validatedAt"].is_string());
         assert_safe_routine_json(&offline_status);
         let offline_channels = crate::ipc::list_channels(
             &offline,

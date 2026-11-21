@@ -974,3 +974,75 @@ async fn slow_cache_storage_does_not_delay_installed_startup_or_refresh_completi
     );
     wait_for_cache_write(&store, 0).await;
 }
+
+#[tokio::test]
+async fn installed_startup_respects_the_six_hour_freshness_window() {
+    let directory = TempDir::new().unwrap();
+    let store = Arc::new(CapturingSnapshotStore::new(Arc::new(
+        AtomicFileSnapshotStore::open(directory.path()).unwrap(),
+    )));
+    drop(
+        bootstrap(
+            configuration(M3U_URL, EPG_URL),
+            FixtureSource::online(),
+            Arc::clone(&store),
+        )
+        .await,
+    );
+    let seed = snapshot_restart(Arc::clone(&store), false).await;
+    wait_for_cache_write(&store, 0).await;
+    drop(seed);
+
+    // Reopening 2 hours later (within the 6-hour freshness window) must keep
+    // snapshots fresh and avoid re-downloading M3U/EPG over the network.
+    let fresh_source = Arc::new(FixtureSource::online());
+    let fresh = SparrowCore::bootstrap_installed(
+        Some(configuration(M3U_URL, EPG_URL)),
+        CoreAdapters::new(
+            Arc::clone(&fresh_source) as _,
+            store.clone(),
+            Arc::new(FixedClock(parse_time("2026-08-29T14:00:00Z"))),
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        fresh.status().m3u(),
+        sparrow_core::SourceState::Fresh { .. }
+    ));
+    assert!(matches!(
+        fresh.status().epg(),
+        Some(sparrow_core::SourceState::Fresh { .. })
+    ));
+    fresh.activate_automation();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(fresh_source.m3u_opens.load(Ordering::SeqCst), 0);
+    assert_eq!(fresh_source.epg_opens.load(Ordering::SeqCst), 0);
+    drop(fresh);
+
+    // Reopening 7 hours later (past the 6-hour window) marks snapshots stale
+    // and refreshes them in the background once automation starts.
+    let stale_source = Arc::new(FixtureSource::online());
+    let stale = SparrowCore::bootstrap_installed(
+        Some(configuration(M3U_URL, EPG_URL)),
+        CoreAdapters::new(
+            Arc::clone(&stale_source) as _,
+            store,
+            Arc::new(FixedClock(parse_time("2026-08-29T19:00:00Z"))),
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        stale.status().m3u(),
+        sparrow_core::SourceState::Stale { .. }
+    ));
+    stale.activate_automation();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while stale_source.m3u_opens.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("stale installed snapshot refreshes in background");
+}

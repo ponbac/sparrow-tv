@@ -1,6 +1,8 @@
-use std::{io::BufRead, sync::Arc};
+use std::{collections::HashSet, io::BufRead, sync::Arc};
 
-use chrono::{DateTime, Datelike, Timelike, Utc};
+use chrono::{
+    DateTime, Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc,
+};
 use quick_xml::{
     XmlVersion,
     events::{BytesDecl, BytesRef, BytesStart, Event},
@@ -68,6 +70,7 @@ struct GuideParser {
     declaration_seen: bool,
     doctype_seen: bool,
     prolog_misc_seen: bool,
+    interned_ids: HashSet<Arc<str>>,
     channels: Vec<ParsedGuideChannel>,
     programmes: Vec<ParsedProgramme>,
     record: Option<PendingRecord>,
@@ -251,12 +254,23 @@ impl GuideParser {
         }
     }
 
+    fn intern_id(&mut self, value: String) -> Arc<str> {
+        if let Some(existing) = self.interned_ids.get(value.as_str()) {
+            Arc::clone(existing)
+        } else {
+            let interned: Arc<str> = Arc::from(value);
+            self.interned_ids.insert(Arc::clone(&interned));
+            interned
+        }
+    }
+
     fn finish_record(&mut self, record: PendingRecord) -> Result<(), SafeFailure> {
         match record {
             PendingRecord::Channel(channel) => {
                 if let Some(id) = channel.id {
+                    let id = self.intern_id(id);
                     self.channels.push(ParsedGuideChannel {
-                        id: Arc::from(id),
+                        id,
                         display_names: channel.display_names.into_iter().map(Arc::from).collect(),
                     });
                 }
@@ -277,8 +291,9 @@ impl GuideParser {
                 if ends_at <= starts_at {
                     return Ok(());
                 }
+                let guide_channel_id = self.intern_id(guide_channel_id);
                 self.programmes.push(ParsedProgramme {
-                    guide_channel_id: Arc::from(guide_channel_id),
+                    guide_channel_id,
                     title: Arc::from(title),
                     description: programme.description.map(Arc::from),
                     starts_at,
@@ -427,6 +442,14 @@ fn is_encoding_name(value: &str) -> bool {
 }
 
 fn parse_timestamp(value: &str) -> Option<DateTime<Utc>> {
+    let bytes = value.as_bytes();
+    if bytes.len() >= 14
+        && bytes[..14].iter().all(u8::is_ascii_digit)
+        && let Some(timestamp) = parse_timestamp_fast(bytes)
+    {
+        return normalize_browser_instant(timestamp);
+    }
+
     let timestamp = [
         "%Y%m%d%H%M%S %z",
         "%Y%m%d%H%M%S%z",
@@ -437,12 +460,80 @@ fn parse_timestamp(value: &str) -> Option<DateTime<Utc>> {
     .find_map(|format| DateTime::parse_from_str(value, format).ok())
     .map(|time| time.with_timezone(&Utc))
     .or_else(|| {
-        chrono::NaiveDateTime::parse_from_str(value, "%Y%m%d%H%M%S")
+        NaiveDateTime::parse_from_str(value, "%Y%m%d%H%M%S")
             .ok()
             .map(|time| time.and_utc())
     })?;
 
     normalize_browser_instant(timestamp)
+}
+
+fn parse_timestamp_fast(bytes: &[u8]) -> Option<DateTime<Utc>> {
+    let year = parse_4_digits(&bytes[0..4])? as i32;
+    let month = parse_2_digits(&bytes[4..6])?;
+    let day = parse_2_digits(&bytes[6..8])?;
+    let hour = parse_2_digits(&bytes[8..10])?;
+    let minute = parse_2_digits(&bytes[10..12])?;
+    let second = parse_2_digits(&bytes[12..14])?;
+    // Let chrono handle leap seconds (`second == 60`) identically to fallback.
+    if second >= 60 {
+        return None;
+    }
+    let date = NaiveDate::from_ymd_opt(year, month, day)?;
+    let time = NaiveTime::from_hms_opt(hour, minute, second)?;
+    let naive = NaiveDateTime::new(date, time);
+    let mut rest = &bytes[14..];
+    if rest.is_empty() {
+        return Some(naive.and_utc());
+    }
+    if rest[0] == b' ' {
+        rest = &rest[1..];
+    }
+    if rest == b"Z" || rest == b"z" {
+        return Some(naive.and_utc());
+    }
+    let sign = match *rest.first()? {
+        b'+' => 1_i32,
+        b'-' => -1_i32,
+        _ => return None,
+    };
+    let offset_bytes = &rest[1..];
+    let (tz_hour, tz_min) = match offset_bytes.len() {
+        4 => (
+            parse_2_digits(&offset_bytes[0..2])?,
+            parse_2_digits(&offset_bytes[2..4])?,
+        ),
+        5 if offset_bytes[2] == b':' => (
+            parse_2_digits(&offset_bytes[0..2])?,
+            parse_2_digits(&offset_bytes[3..5])?,
+        ),
+        _ => return None,
+    };
+    if tz_hour > 23 || tz_min > 59 {
+        return None;
+    }
+    let offset_secs = sign * ((tz_hour * 3600 + tz_min * 60) as i32);
+    let offset = FixedOffset::east_opt(offset_secs)?;
+    offset
+        .from_local_datetime(&naive)
+        .single()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+#[inline]
+fn parse_2_digits(bytes: &[u8]) -> Option<u32> {
+    let a = bytes[0].wrapping_sub(b'0');
+    let b = bytes[1].wrapping_sub(b'0');
+    if a <= 9 && b <= 9 {
+        Some(u32::from(a) * 10 + u32::from(b))
+    } else {
+        None
+    }
+}
+
+#[inline]
+fn parse_4_digits(bytes: &[u8]) -> Option<u32> {
+    Some(parse_2_digits(&bytes[0..2])? * 100 + parse_2_digits(&bytes[2..4])?)
 }
 
 fn normalize_browser_instant(timestamp: DateTime<Utc>) -> Option<DateTime<Utc>> {

@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.graphics.Rect
 import android.graphics.drawable.Icon
 import android.os.Build
 import android.util.Rational
@@ -32,6 +33,13 @@ internal class PictureInPicturePlayback(
 
   private var playback = AndroidPlayerPlayback.NONE
   private var released = false
+  private var lastParamsKey: ParamsKey? = null
+
+  private data class ParamsKey(
+    val playback: AndroidPlayerPlayback,
+    val aspect: Pair<Int, Int>,
+    val bounds: Rect?,
+  )
 
   private val receiver = object : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -115,18 +123,28 @@ internal class PictureInPicturePlayback(
     if (!supported || released || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
       return
     }
-    runCatching { activity.setPictureInPictureParams(params()) }
+    val key = ParamsKey(
+      playback = playback,
+      aspect = nativePlayback.videoAspect(),
+      bounds = nativePlayback.pictureBounds()?.let { Rect(it) },
+    )
+    if (key == lastParamsKey) {
+      return
+    }
+    if (runCatching { activity.setPictureInPictureParams(params(key)) }.isSuccess) {
+      lastParamsKey = key
+    }
   }
 
   @RequiresApi(Build.VERSION_CODES.O)
-  private fun params(): PictureInPictureParams {
-    val (numerator, denominator) = nativePlayback.videoAspect()
+  private fun params(key: ParamsKey? = null): PictureInPictureParams {
+    val (numerator, denominator) = key?.aspect ?: nativePlayback.videoAspect()
     val builder = PictureInPictureParams.Builder()
       .setAspectRatio(Rational(numerator, denominator))
       .setActions(listOfNotNull(action()))
     // Lets the window grow out of the picture's place rather than the
     // whole screen.
-    nativePlayback.pictureBounds()?.let(builder::setSourceRectHint)
+    (key?.bounds ?: nativePlayback.pictureBounds())?.let(builder::setSourceRectHint)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
       builder.setAutoEnterEnabled(playback == AndroidPlayerPlayback.PLAYING)
     }

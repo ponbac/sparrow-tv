@@ -70,6 +70,7 @@ export const ProgrammeGuideRow = memo(function ProgrammeGuideRow({
             currentChannel={playingChannel ?? preferred.channel.id}
             playingChannel={playingChannel}
             acceptanceChannel
+            focusable={false}
             onPreparePlayback={onPreparePlayback}
             onTuneVariant={onTuneVariant}
           />

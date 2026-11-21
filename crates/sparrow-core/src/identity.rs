@@ -47,6 +47,23 @@ fn hash_field(hasher: &mut Hasher, value: &[u8]) {
 
 /// Returns the canonical comparison key used by identity and EPG name matching.
 pub(crate) fn normalize_identity_field(value: &str) -> String {
+    if value.is_ascii() {
+        let mut normalized = String::with_capacity(value.len());
+        let mut whitespace_pending = false;
+        for byte in value.bytes() {
+            if matches!(byte, b' ' | b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r') {
+                whitespace_pending = !normalized.is_empty();
+            } else {
+                if whitespace_pending {
+                    normalized.push(' ');
+                    whitespace_pending = false;
+                }
+                normalized.push(byte.to_ascii_lowercase() as char);
+            }
+        }
+        return normalized;
+    }
+
     let compatibility_normalized = value.nfkc().collect::<String>();
     let mut normalized = String::with_capacity(compatibility_normalized.len());
 

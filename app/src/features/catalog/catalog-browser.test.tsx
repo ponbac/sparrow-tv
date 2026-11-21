@@ -2958,6 +2958,50 @@ describe("CatalogBrowser pocket layout", () => {
       "60 min left",
     ]);
   });
+
+  it("keeps the guide clock advancing while watching in split-pocket layout", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 1, 20, 59, 20));
+    vi.stubGlobal("matchMedia", (media: string): MediaQueryList => ({
+      matches: media.includes("orientation: landscape"),
+      media,
+      onchange: null,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      dispatchEvent: () => false,
+    }));
+    renderHostedBrowser(new FakeSparrowClient());
+    await settleRequests();
+    const guide = within(screen.getByLabelText("Programme guide"));
+    fireEvent.click(guide.getByRole("button", { name: "Now", expanded: false }));
+    await settleRequests();
+    const times = within(guide.getByRole("group", { name: "Time" }));
+    fireEvent.click(times.getByRole("button", { name: "21:00" }));
+    fireEvent.click(guide.getByRole("button", { name: "Tune World News" }));
+    await settleRequests();
+
+    const shell = requireShell();
+    expect(shell).toHaveAttribute("data-layout", "pocket");
+    expect(shell).toHaveAttribute("data-pocket", "split");
+    expect(shell).toHaveAttribute("data-mode", "watch");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    await settleRequests();
+
+    expect(
+      guide.getByRole("button", { name: "Now", expanded: true }),
+    ).toHaveAttribute("aria-pressed", "false");
+    expect(listRowLines("World News")).toEqual([
+      "World News",
+      "Live Bulletin",
+      "22:00 Future Bulletin",
+      "60 min left",
+    ]);
+  });
 });
 
 /** Waits until the frame callbacks already asked for have run. */

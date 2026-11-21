@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
-    io::{self, BufReader, Read, Write},
+    io::{self, BufReader, BufWriter, Read, Write},
     path::Path,
     sync::{
         Arc, Mutex,
@@ -25,6 +25,7 @@ use crate::{
 
 const FIRST_TRANSIENT_TOKEN: u64 = 1_024;
 const HASH_BUFFER_BYTES: usize = 64 * 1024;
+const IO_BUFFER_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DiskError {
@@ -88,6 +89,7 @@ pub(crate) struct DiskStore {
     layout: Layout,
     next_token: AtomicU64,
     registry: Mutex<HashMap<u64, StageRecord>>,
+    stage_writers: Mutex<HashMap<u64, BufWriter<File>>>,
     faults: Arc<dyn FaultInjector>,
 }
 
@@ -142,6 +144,7 @@ impl DiskStore {
             layout,
             next_token: AtomicU64::new(FIRST_TRANSIENT_TOKEN),
             registry: Mutex::new(HashMap::new()),
+            stage_writers: Mutex::new(HashMap::new()),
             faults,
         })
     }
@@ -179,9 +182,15 @@ impl DiskStore {
                 .faults
                 .check(FileOperation::CreateStage)
                 .map_err(map_io)
-                .and_then(|()| create_private_file(&path).map(drop));
+                .and_then(|()| create_private_file(&path));
             match creation {
-                Ok(()) => return Ok(token),
+                Ok(file) => {
+                    self.stage_writers
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(token, BufWriter::with_capacity(IO_BUFFER_BYTES, file));
+                    return Ok(token);
+                }
                 Err(DiskError::Busy) => {
                     self.registry().remove(&token);
                 }
@@ -191,6 +200,18 @@ impl DiskStore {
                 }
             }
         }
+    }
+
+    fn flush_and_close_stage_writer(&self, token: u64) -> Result<(), DiskError> {
+        let writer = self
+            .stage_writers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&token);
+        if let Some(mut writer) = writer {
+            writer.flush().map_err(map_io)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn append(
@@ -203,6 +224,14 @@ impl DiskStore {
         self.faults
             .check(FileOperation::AppendStage)
             .map_err(map_io)?;
+        let mut writers = self
+            .stage_writers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(writer) = writers.get_mut(&token) {
+            return writer.write_all(bytes).map_err(map_io);
+        }
+        drop(writers);
         let path = self.layout.stage(source.kind, token);
         let mut options = OpenOptions::new();
         options.append(true);
@@ -218,11 +247,14 @@ impl DiskStore {
         source: DiskSource,
     ) -> Result<Box<dyn std::io::BufRead + Send>, DiskError> {
         self.require_stage(token, source, |phase| matches!(phase, StagePhase::Staged))?;
+        self.flush_and_close_stage_writer(token)?;
         let path = self.layout.stage(source.kind, token);
-        open_private_regular(&path).map(|file| Box::new(BufReader::new(file)) as _)
+        open_private_regular(&path)
+            .map(|file| Box::new(BufReader::with_capacity(IO_BUFFER_BYTES, file)) as _)
     }
 
     pub(crate) fn prepare(&self, token: u64, metadata: &DiskMetadata) -> Result<(), DiskError> {
+        self.flush_and_close_stage_writer(token)?;
         {
             let mut registry = self.registry();
             let record = registry.get_mut(&token).ok_or(DiskError::Corrupt)?;
@@ -388,6 +420,11 @@ impl DiskStore {
     }
 
     pub(crate) fn discard(&self, token: u64, source: DiskSource) -> Result<(), DiskError> {
+        let _ = self
+            .stage_writers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&token);
         let has_record = {
             let mut registry = self.registry();
             match registry.get_mut(&token) {
@@ -672,7 +709,7 @@ impl DiskStore {
                 .layout
                 .payload(candidate.metadata.source.kind, candidate.slot),
         )
-        .map(|file| Box::new(BufReader::new(file)) as _)
+        .map(|file| Box::new(BufReader::with_capacity(IO_BUFFER_BYTES, file)) as _)
     }
 
     pub(crate) fn adopt(&self, candidate: &DiskCandidate) -> Result<DiskCandidate, DiskError> {
@@ -947,7 +984,7 @@ fn checksum_file(path: &Path) -> Result<[u8; 32], DiskError> {
 fn path_presence(path: &Path) -> Result<bool, DiskError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_file() => {
-            ensure_private_file_mode(path)?;
+            ensure_private_file_mode_if_needed(path, &metadata)?;
             Ok(true)
         }
         Ok(_) => Err(DiskError::UnsafeLayout),
@@ -1012,7 +1049,7 @@ fn open_private_regular(path: &Path) -> Result<File, DiskError> {
     if !metadata.file_type().is_file() {
         return Err(DiskError::UnsafeLayout);
     }
-    ensure_private_file_mode(path)?;
+    ensure_private_file_mode_if_needed(path, &metadata)?;
     File::open(path).map_err(map_io)
 }
 
@@ -1023,7 +1060,9 @@ fn ensure_private_directory(path: &Path) -> Result<(), DiskError> {
         return Err(DiskError::UnsafeLayout);
     }
     #[cfg(unix)]
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(map_io)?;
+    if (metadata.permissions().mode() & 0o777) != 0o700 {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(map_io)?;
+    }
     Ok(())
 }
 
@@ -1035,11 +1074,25 @@ fn ensure_private_file_mode(path: &Path) -> Result<(), DiskError> {
     Ok(())
 }
 
+fn ensure_private_file_mode_if_needed(
+    path: &Path,
+    metadata: &fs::Metadata,
+) -> Result<(), DiskError> {
+    #[cfg(unix)]
+    if (metadata.permissions().mode() & 0o777) != 0o600 {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(map_io)?;
+    }
+    #[cfg(not(unix))]
+    let _ = (path, metadata);
+    Ok(())
+}
+
 fn sync_directory(path: &Path) -> Result<(), DiskError> {
     File::open(path).map_err(map_io)?.sync_all().map_err(map_io)
 }
 
 fn remove_abandoned_transients(directory: &Path) -> Result<(), DiskError> {
+    let mut removed = false;
     for entry in fs::read_dir(directory).map_err(map_io)? {
         let entry = entry.map_err(map_io)?;
         let name = entry.file_name();
@@ -1050,12 +1103,16 @@ fn remove_abandoned_transients(directory: &Path) -> Result<(), DiskError> {
             let file_type = entry.file_type().map_err(map_io)?;
             if file_type.is_file() || file_type.is_symlink() {
                 fs::remove_file(entry.path()).map_err(map_io)?;
+                removed = true;
             } else {
                 return Err(DiskError::UnsafeLayout);
             }
         }
     }
-    sync_directory(directory)
+    if removed {
+        sync_directory(directory)?;
+    }
+    Ok(())
 }
 
 fn remove_file_if_present(path: &Path) -> Result<(), DiskError> {
