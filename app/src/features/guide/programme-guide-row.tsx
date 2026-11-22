@@ -21,6 +21,7 @@ export const ProgrammeGuideRow = memo(function ProgrammeGuideRow({
   window,
   now,
   playingChannel,
+  lastPlayed = false,
   channelNameTooltip,
   onPreparePlayback,
   onTune,
@@ -33,6 +34,8 @@ export const ProgrammeGuideRow = memo(function ProgrammeGuideRow({
   readonly now: Date;
   /** The playing Channel when it is one of this row's variants, else null. */
   readonly playingChannel: ChannelId | null;
+  /** True when this row's family was the last played Channel after Stop. */
+  readonly lastPlayed?: boolean;
   readonly channelNameTooltip: Tooltip.Handle<string>;
   readonly onPreparePlayback: () => void;
   readonly onTune: (channel: ChannelSummary) => void;
@@ -42,7 +45,11 @@ export const ProgrammeGuideRow = memo(function ProgrammeGuideRow({
   const switchable = family.variants.length > 1;
   const source = familyProgrammeSource(family, preferred);
   return (
-    <div className="programme-guide__row" data-playing={playing}>
+    <div
+      className="programme-guide__row"
+      data-playing={playing}
+      data-last-played={lastPlayed ? "true" : undefined}
+    >
       <div className="programme-guide__channel-cell">
         <span className="programme-guide__number" aria-hidden="true">
           {family.number}

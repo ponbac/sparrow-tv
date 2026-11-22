@@ -1,6 +1,7 @@
 import { Dialog } from "@base-ui/react/dialog";
 import { RadioTower, X } from "lucide-react";
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useRef } from "react";
+import { handleLinearDialogArrows } from "./dialog-navigation";
 import type { FeedsDialogContentProps } from "./feeds-dialog-content";
 import "./feeds-dialog.css";
 
@@ -13,6 +14,8 @@ const FeedsDialogContent = lazy(async () => {
 /** Opens source configuration and safe status without exposing private locations. */
 export function FeedsDialog(props: FeedsDialogContentProps) {
   const configured = props.status?.configuration.configured === true;
+  const popupRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   return (
     <Dialog.Root>
       <Dialog.Trigger
@@ -26,7 +29,19 @@ export function FeedsDialog(props: FeedsDialogContentProps) {
       </Dialog.Trigger>
       <Dialog.Portal>
         <Dialog.Backdrop className="feeds-dialog__backdrop" />
-        <Dialog.Popup className="feeds-dialog__popup">
+        <Dialog.Popup
+          ref={popupRef}
+          className="feeds-dialog__popup"
+          onKeyDown={(event) => {
+            if (popupRef.current !== null) {
+              handleLinearDialogArrows(event, {
+                television: props.television === true,
+                popup: popupRef.current,
+                scroller: contentRef.current,
+              });
+            }
+          }}
+        >
           <header className="feeds-dialog__header">
             <div>
               <Dialog.Title>Sources</Dialog.Title>
@@ -43,7 +58,7 @@ export function FeedsDialog(props: FeedsDialogContentProps) {
               <X aria-hidden="true" />
             </Dialog.Close>
           </header>
-          <div className="feeds-dialog__content">
+          <div className="feeds-dialog__content" ref={contentRef}>
             <Suspense
               fallback={
                 <p className="feeds-dialog__loading" role="status">

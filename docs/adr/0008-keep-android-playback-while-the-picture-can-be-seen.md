@@ -18,6 +18,7 @@ A Playback Session on Android lives while the Activity is started, not while it 
 - One button: Pause while playing, Play while paused or after a failure that allows Restart. Play runs the same recovery as the player's own button.
 - Android 12 and later enter on their own when the viewer goes Home with a picture playing (`setAutoEnterEnabled`). Android 8 to 11 enter from `onUserLeaveHint`. Android refuses an explicit entry while it switches straight to another app, so switching through Recents or the quick switch on Android 12+ stops playback as before.
 - A paused picture does not shrink on its own; the button still works.
+- Android TV (`Configuration.UI_MODE_TYPE_TELEVISION`) is an exception: picture-in-picture is disabled (`PictureInPicturePlayback.supported = false`), omitting the in-app Picture in picture button and disabling Home auto-entry so pressing Home stops the Activity and suspends playback.
 
 ## Page and window
 

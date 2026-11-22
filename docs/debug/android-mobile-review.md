@@ -21,17 +21,23 @@ The Guide uses the full app surface. Its live preview sits beside search
 and Channel Groups on wide TVs, with the Channel grid below. An inset amber
 outline marks the focused control even at the edges. Use the D-pad to browse.
 Press center or gamepad **A** to tune a Channel in fullscreen. The controls
-hide when idle. **Back** or gamepad **B** dismisses the keyboard or a panel,
-and returns to the Guide from playback. From the Guide, Back returns you to
-Android TV.
+hide when idle. **Back** or gamepad **B** dismisses the keyboard, a panel, the
+open time row, or visible fullscreen playback controls; once fullscreen
+controls are hidden, **Back** returns to the Guide. From the Guide, **Back**
+returns you to Android TV. Picture-in-picture is disabled on Android TV, so
+**Home** stops playback. **Copy diagnostics** is omitted from Android TV player
+controls; safe source diagnostics remain readable in **Sources**.
 
 On the watch screen the channel bar offers the previous and next Channel.
 In fullscreen, **Up** goes to the previous Channel and **Down** goes to the
-next. **Left** or **Right** reveal the playback controls. Center on the
-picture pauses or resumes. A dedicated
-**Play/Pause** key works wherever the Channel is playing. Gamepad **L1/R1** and
-dedicated **Channel down/up** keys work in and out of fullscreen. Volume keys
-control the TV's volume.
+next when focus is on the picture. **Left**, **Right**, or **Center** while the
+controls are hidden reveal the playback controls and move focus into the bar
+without interrupting playback. While focus is on the picture with controls
+visible (or when playback cannot auto-hide controls), **Center** pauses,
+resumes, or triggers recovery. A dedicated **Play/Pause** key works wherever
+the Channel is playing. Gamepad **L1/R1** and dedicated **Channel down/up**
+keys work in and out of fullscreen unless a dialog, menu, or search popup is
+open. Volume keys control the TV's volume.
 
 For an emulator run, use an Android TV image and select its serial before
 installing a debug APK. Start the launcher activity and drive the app with

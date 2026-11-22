@@ -1,4 +1,4 @@
-import { useLayoutEffect, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { stageMonitorSize } from "./stage-dom";
 
 /** The root properties `pocket.css` sizes a held picture by. */
@@ -27,6 +27,7 @@ export function usePicturePin(
   follows: boolean,
   pictureInPicture: boolean,
   television = false,
+  mode?: "watch" | "guide",
 ): void {
   const [shrunk, setShrunk] = useState(false);
   if (pictureInPicture && !shrunk) {
@@ -35,31 +36,91 @@ export function usePicturePin(
     setShrunk(false);
   }
   const hold = !follows && !pictureInPicture && !shrunk;
+  const wasFullscreenRef = useRef(false);
+  const pendingExitRemeasureRef = useRef(false);
+  const lastModeRef = useRef(mode);
+
   // Before paint, so the box is never drawn at a size the picture has left.
   useLayoutEffect(() => {
     if (!hold) {
+      wasFullscreenRef.current = document.fullscreenElement != null;
+      pendingExitRemeasureRef.current = false;
       return;
     }
     const root = document.documentElement;
-    function unpin() {
-      root.style.removeProperty(PINNED_WIDTH);
-      root.style.removeProperty(PINNED_HEIGHT);
-    }
+    let clearExitFrame: number | null = null;
     function measure() {
-      unpin();
+      unpinPicture(root);
       // Android temporarily restores its default page scale in element fullscreen.
       // The hidden monitor has the right coordinates again on fullscreen exit.
-      if (television && document.fullscreenElement) return;
-      const size = stageMonitorSize();
-      if (size === null) return;
-      root.style.setProperty(PINNED_WIDTH, `${size.width}px`);
-      root.style.setProperty(PINNED_HEIGHT, `${size.height}px`);
+      if (television && document.fullscreenElement != null) {
+        wasFullscreenRef.current = true;
+        pendingExitRemeasureRef.current = false;
+        return;
+      }
+      pinPicture(root);
+    }
+    function onFullscreenChange() {
+      if (clearExitFrame !== null) {
+        cancelAnimationFrame(clearExitFrame);
+        clearExitFrame = null;
+      }
+      if (document.fullscreenElement != null) {
+        wasFullscreenRef.current = true;
+        pendingExitRemeasureRef.current = false;
+        unpinPicture(root);
+        return;
+      }
+      if (wasFullscreenRef.current) {
+        wasFullscreenRef.current = false;
+        pendingExitRemeasureRef.current = true;
+        // Expire the post-exit remeasure flag if fullscreen ended without a
+        // subsequent mode commit (for example via the Exit fullscreen button).
+        clearExitFrame = requestAnimationFrame(() => {
+          clearExitFrame = null;
+          pendingExitRemeasureRef.current = false;
+        });
+      }
+      measure();
     }
     measure();
-    if (television) document.addEventListener("fullscreenchange", measure);
+    if (television) document.addEventListener("fullscreenchange", onFullscreenChange);
     return () => {
-      document.removeEventListener("fullscreenchange", measure);
-      unpin();
+      if (clearExitFrame !== null) cancelAnimationFrame(clearExitFrame);
+      document.removeEventListener("fullscreenchange", onFullscreenChange);
+      unpinPicture(root);
     };
   }, [hold, television]);
+
+  // When TV Back exits fullscreen and then commits Guide mode, remeasure once
+  // against the committed Guide layout without touching ordinary held pins.
+  useLayoutEffect(() => {
+    const modeChanged = lastModeRef.current !== mode;
+    lastModeRef.current = mode;
+    if (
+      !television ||
+      !hold ||
+      !modeChanged ||
+      !pendingExitRemeasureRef.current ||
+      document.fullscreenElement != null
+    ) {
+      return;
+    }
+    pendingExitRemeasureRef.current = false;
+    const root = document.documentElement;
+    unpinPicture(root);
+    pinPicture(root);
+  }, [hold, mode, television]);
+}
+
+function unpinPicture(root: HTMLElement): void {
+  root.style.removeProperty(PINNED_WIDTH);
+  root.style.removeProperty(PINNED_HEIGHT);
+}
+
+function pinPicture(root: HTMLElement): void {
+  const size = stageMonitorSize();
+  if (size === null) return;
+  root.style.setProperty(PINNED_WIDTH, `${size.width}px`);
+  root.style.setProperty(PINNED_HEIGHT, `${size.height}px`);
 }

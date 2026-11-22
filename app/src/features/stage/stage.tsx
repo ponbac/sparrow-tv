@@ -1,7 +1,12 @@
 import { Maximize2 } from "lucide-react";
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
 import type { ChannelId } from "../../client/contracts";
-import { focusIsInChannelBar, isPictureTap } from "./stage-dom";
+import { handleGuideDockArrowKey } from "../guide/guide-navigation";
+import {
+  focusIsInChannelBar,
+  isPictureTap,
+  visibleStageControls,
+} from "./stage-dom";
 import "./stage.css";
 
 /** Inputs for the picture and the block of information beside it. */
@@ -39,6 +44,7 @@ export function Stage({
   keyHints,
   onShowPicture,
 }: StageProps) {
+  const stageRef = useRef<HTMLElement>(null);
   const monitorRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (playingChannel === null || television) return;
@@ -54,8 +60,115 @@ export function Stage({
     return () => cancelAnimationFrame(frame);
   }, [playingChannel, television]);
 
+  const handleStageKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (
+      event.defaultPrevented ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.nativeEvent.isComposing ||
+      document.fullscreenElement != null ||
+      document.querySelector('[role="menu"][data-open]') !== null ||
+      !(event.target instanceof HTMLElement)
+    ) {
+      return;
+    }
+    const { key, target } = event;
+    if (
+      key !== "ArrowUp" &&
+      key !== "ArrowDown" &&
+      key !== "ArrowLeft" &&
+      key !== "ArrowRight"
+    ) {
+      return;
+    }
+    const stage = stageRef.current;
+    if (stage === null) return;
+    if (target.classList.contains("stage__undock")) {
+      handleGuideDockArrowKey(event, stage);
+      return;
+    }
+    if (!television) return;
+
+    const qualitySwitch = target.closest<HTMLElement>(".now-playing .quality-switch");
+    if (qualitySwitch !== null) {
+      if (key === "ArrowLeft" || key === "ArrowRight") {
+        stepHorizontal(event, visibleStageControls(qualitySwitch, "button"), target);
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (key === "ArrowDown") {
+        (
+          firstLoadNoticeControl(stage) ??
+          firstPlaybackControl(stage) ??
+          preferredChannelBarButton(stage)
+        )?.focus({ preventScroll: true });
+      }
+      return;
+    }
+
+    const loadNoticeActions = target.closest<HTMLElement>(".playback-load-notice__actions");
+    if (loadNoticeActions !== null) {
+      if (key === "ArrowLeft" || key === "ArrowRight") {
+        stepHorizontal(event, visibleStageControls(loadNoticeActions, "button"), target);
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (key === "ArrowUp") {
+        preferredQualityChip(stage)?.focus({ preventScroll: true });
+      } else {
+        (firstPlaybackControl(stage) ?? preferredChannelBarButton(stage))?.focus({
+          preventScroll: true,
+        });
+      }
+      return;
+    }
+
+    const playbackControls = target.closest<HTMLElement>(".now-playing__controls");
+    if (playbackControls !== null) {
+      if (key === "ArrowLeft" || key === "ArrowRight") {
+        stepHorizontal(event, visibleStageControls(playbackControls, "button, select"), target);
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (key === "ArrowUp") {
+        (firstLoadNoticeControl(stage) ?? preferredQualityChip(stage))?.focus({
+          preventScroll: true,
+        });
+      } else {
+        preferredChannelBarButton(stage)?.focus({ preventScroll: true });
+      }
+      return;
+    }
+
+    const channelBar = target.closest<HTMLElement>(".channel-bar");
+    if (channelBar !== null) {
+      if (key === "ArrowLeft" || key === "ArrowRight") {
+        stepHorizontal(event, visibleStageControls(channelBar, "button"), target);
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (key === "ArrowUp") {
+        (
+          firstLoadNoticeControl(stage) ??
+          firstPlaybackControl(stage) ??
+          preferredQualityChip(stage)
+        )?.focus({ preventScroll: true });
+      }
+    }
+  };
+
   return (
-    <section className="stage" aria-labelledby="stage-heading">
+    <section
+      className="stage"
+      ref={stageRef}
+      aria-labelledby="stage-heading"
+      onKeyDown={handleStageKeyDown}
+    >
       <div
         className="stage__monitor"
         ref={monitorRef}
@@ -78,7 +191,7 @@ export function Stage({
         )}
       </div>
       {info}
-      {onShowPicture === null ? null : (
+      {onShowPicture === null || playingChannel === null ? null : (
         <button
           className="stage__undock"
           type="button"
@@ -117,4 +230,47 @@ export function Stage({
       ) : null}
     </section>
   );
+}
+
+function stepHorizontal(
+  event: KeyboardEvent<HTMLElement>,
+  items: readonly HTMLElement[],
+  target: HTMLElement,
+): void {
+  const index = items.indexOf(target);
+  if (index === -1) return;
+  event.preventDefault();
+  event.stopPropagation();
+  items[event.key === "ArrowRight" ? index + 1 : index - 1]?.focus({
+    preventScroll: true,
+  });
+}
+
+function firstLoadNoticeControl(stage: HTMLElement): HTMLElement | undefined {
+  return visibleStageControls(
+    stage.querySelector<HTMLElement>(".playback-load-notice__actions"),
+    "button",
+  )[0];
+}
+
+function firstPlaybackControl(stage: HTMLElement): HTMLElement | undefined {
+  return visibleStageControls(
+    stage.querySelector<HTMLElement>(".now-playing__controls"),
+    "button, select",
+  )[0];
+}
+
+function preferredChannelBarButton(stage: HTMLElement): HTMLElement | undefined {
+  const bar = stage.querySelector<HTMLElement>(".channel-bar");
+  if (bar === null) return undefined;
+  const buttons = visibleStageControls(bar, "button");
+  const guide = bar.querySelector<HTMLElement>(".channel-bar__guide");
+  return guide !== null && buttons.includes(guide) ? guide : buttons[0];
+}
+
+function preferredQualityChip(stage: HTMLElement): HTMLElement | undefined {
+  const switchGroup = stage.querySelector<HTMLElement>(".now-playing .quality-switch");
+  if (switchGroup === null) return undefined;
+  const chips = visibleStageControls(switchGroup, "button");
+  return chips.find((chip) => chip.getAttribute("data-current") === "true") ?? chips[0];
 }

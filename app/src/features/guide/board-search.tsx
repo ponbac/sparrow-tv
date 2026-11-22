@@ -1,7 +1,7 @@
 import { Autocomplete } from "@base-ui/react/autocomplete";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Search, X } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { RotateCcw, Search, X } from "lucide-react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import type {
   CatalogGeneration,
   ChannelSummary,
@@ -24,15 +24,20 @@ import {
   SEARCH_DEBOUNCE_MS,
   searchTermFits,
 } from "./board-search-term";
+import { useTelevisionInputEdit } from "./dialog-navigation";
+import { revealInScrollContainer } from "../stage/stage-dom";
 import { channelTitle, qualityLabel } from "./guide-families";
+import { focusGuideFallback } from "./guide-navigation";
 import { clockLabel } from "./guide-window";
 import "./board-search.css";
 
 const SEARCH_RESULT_LIMIT = 8;
 const SEARCH_FETCH_LIMIT = 40;
 const DESK_CHOICE_LABEL = "Open full channel search";
+const RETRY_CHOICE_LABEL = "Search again";
 
 type SearchChoice =
+  | { readonly _tag: "retry" }
   | { readonly _tag: "desk" }
   | { readonly _tag: "channel"; readonly channel: ChannelSummary }
   | { readonly _tag: "programme"; readonly programme: ProgrammeSearchHit };
@@ -49,6 +54,8 @@ type SearchPresentation =
 
 /** Inputs for the asynchronous Channel and Programme board search. */
 export interface BoardSearchProps {
+  /** Uses press-Center-to-edit on Android TV so browsing across search keeps the keyboard closed. */
+  readonly television?: boolean;
   readonly client: Pick<SparrowClient, "search" | "searchChannels">;
   readonly generation: CatalogGeneration | null;
   readonly excludedGroups: ReadonlySet<string>;
@@ -59,6 +66,7 @@ export interface BoardSearchProps {
 
 /** Searches the complete catalog while keeping results inside the guide pane. */
 export function BoardSearch({
+  television = false,
   client,
   generation,
   excludedGroups,
@@ -67,6 +75,9 @@ export function BoardSearch({
   onTune,
 }: BoardSearchProps) {
   const queryClient = useQueryClient();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const searchEdit = useTelevisionInputEdit(television);
   const [searchBoundary, setSearchBoundary] = useState<HTMLElement | null>(null);
   const bindSearchBoundary = useCallback((element: HTMLElement | null) => {
     // In the pocket layout the results must stay inside the guide pane,
@@ -145,6 +156,8 @@ export function BoardSearch({
       : result.channels.items.length -
         visibleChannels.length +
         (result.programmes.items.length - visibleProgrammes.length);
+  const error = clientErrorFromQuery(searchQuery.error);
+  const generationMismatch = error?._tag === "stale-cursor";
   const choices = useMemo<readonly SearchChoice[]>(() => {
     const hits: SearchChoice[] = [
       ...visibleChannels.slice(0, SEARCH_RESULT_LIMIT).map(
@@ -163,10 +176,17 @@ export function BoardSearch({
     if (requestTerm.length === 0 || !requestValid) {
       return hits;
     }
+    if (generationMismatch) {
+      return [{ _tag: "retry" }, { _tag: "desk" }];
+    }
     return [{ _tag: "desk" }, ...hits];
-  }, [requestTerm.length, requestValid, visibleChannels, visibleProgrammes]);
-  const error = clientErrorFromQuery(searchQuery.error);
-  const generationMismatch = error?._tag === "stale-cursor";
+  }, [
+    generationMismatch,
+    requestTerm.length,
+    requestValid,
+    visibleChannels,
+    visibleProgrammes,
+  ]);
   const presentation = searchPresentation({
     requestValid,
     generationAvailable: generation !== null,
@@ -192,6 +212,10 @@ export function BoardSearch({
     onPreparePlayback();
   };
   const choose = (choice: SearchChoice) => {
+    if (choice._tag === "retry") {
+      onGenerationMismatch();
+      return;
+    }
     if (choice._tag === "desk") {
       openDesk();
       return;
@@ -200,6 +224,7 @@ export function BoardSearch({
     onTune(choiceChannel(choice));
     clear();
   };
+  const popupOpen = open && requestTerm.length > 0 && !deskOpen;
 
   return (
     <>
@@ -207,7 +232,7 @@ export function BoardSearch({
         items={choices}
         mode="none"
         value={query}
-        open={open && requestTerm.length > 0 && !deskOpen}
+        open={popupOpen}
         onValueChange={(value, details) => {
           if (details.reason === "item-press") {
             return;
@@ -215,7 +240,16 @@ export function BoardSearch({
           setQuery(value);
           setOpen(value.trim().length > 0);
         }}
-        onOpenChange={setOpen}
+        onOpenChange={(nextOpen, details) => {
+          if (
+            !nextOpen &&
+            details.reason === "item-press" &&
+            generationMismatch
+          ) {
+            return;
+          }
+          setOpen(nextOpen);
+        }}
         itemToStringValue={choiceLabel}
         autoHighlight="always"
         openOnInputClick
@@ -228,10 +262,58 @@ export function BoardSearch({
         >
           <Search aria-hidden="true" />
           <Autocomplete.Input
+            ref={inputRef}
             aria-label="Search channels and programmes"
             placeholder="Search channels and programmes"
             autoComplete="off"
             spellCheck={false}
+            readOnly={searchEdit.readOnly}
+            onClick={searchEdit.startEditing}
+            onBlur={searchEdit.stopEditing}
+            onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing) {
+                event.preventBaseUIHandler();
+                return;
+              }
+              if (
+                television &&
+                popupOpen &&
+                event.key === "ArrowDown" &&
+                !event.altKey &&
+                !event.ctrlKey &&
+                !event.metaKey
+              ) {
+                // On Android TV WebView, pressing Center (KEYCODE_DPAD_CENTER)
+                // on a focused editable <input> re-opens the soft keyboard
+                // instead of firing Enter. Move real DOM focus into the option
+                // list so D-pad Center activates suggestions directly.
+                const firstOption = listRef.current?.querySelector<HTMLElement>(
+                  ".board-search__result",
+                );
+                if (firstOption != null) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  event.preventBaseUIHandler();
+                  searchEdit.stopEditing();
+                  firstOption.focus({ preventScroll: true });
+                  revealInScrollContainer(listRef.current, firstOption);
+                  return;
+                }
+              }
+              if (searchEdit.handleKeyDown(event, { popupOpen })) {
+                event.preventBaseUIHandler();
+                return;
+              }
+              if (television && event.key === "Escape" && !popupOpen) {
+                event.preventDefault();
+                event.stopPropagation();
+                searchEdit.stopEditing();
+                focusGuideFallback(
+                  event.currentTarget.closest<HTMLElement>(".programme-guide"),
+                  { includeNotice: true },
+                );
+              }
+            }}
           />
           <Autocomplete.Clear aria-label="Clear search">
             <X aria-hidden="true" />
@@ -245,7 +327,14 @@ export function BoardSearch({
             sideOffset={7}
             collisionBoundary={searchBoundary ?? undefined}
           >
-            <Autocomplete.Popup className="board-search__popup">
+            <Autocomplete.Popup
+              className="board-search__popup"
+              onFocus={(event) => {
+                if (television) {
+                  event.preventBaseUIHandler();
+                }
+              }}
+            >
               {presentation === "invalid" ? (
                 <p className="board-search__state" role="alert">
                   That search is too long. Shorten it and try again.
@@ -256,14 +345,111 @@ export function BoardSearch({
                 </p>
               ) : (
                 <>
-                  <Autocomplete.List className="board-search__results">
+                  <Autocomplete.List
+                    ref={listRef}
+                    className="board-search__results"
+                    onKeyDown={(event) => {
+                      if (
+                        !television ||
+                        event.defaultPrevented ||
+                        event.nativeEvent.isComposing ||
+                        event.altKey ||
+                        event.ctrlKey ||
+                        event.metaKey ||
+                        !(event.target instanceof HTMLElement)
+                      ) {
+                        return;
+                      }
+                      const list = listRef.current;
+                      const item = event.target.closest<HTMLElement>(
+                        ".board-search__result",
+                      );
+                      if (list === null || item === null || !list.contains(item)) {
+                        return;
+                      }
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setOpen(false);
+                        searchEdit.stopEditing();
+                        inputRef.current?.focus({ preventScroll: true });
+                        return;
+                      }
+                      if (
+                        event.key === "ArrowLeft" ||
+                        event.key === "ArrowRight"
+                      ) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        return;
+                      }
+                      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        const items = Array.from(
+                          list.querySelectorAll<HTMLElement>(
+                            ".board-search__result",
+                          ),
+                        );
+                        const idx = items.indexOf(item);
+                        if (idx === -1) return;
+                        if (event.key === "ArrowUp" && idx === 0) {
+                          searchEdit.stopEditing();
+                          inputRef.current?.focus({ preventScroll: true });
+                          return;
+                        }
+                        const next =
+                          items[event.key === "ArrowDown" ? idx + 1 : idx - 1];
+                        if (next !== undefined) {
+                          next.focus({ preventScroll: true });
+                          revealInScrollContainer(list, next);
+                        }
+                        return;
+                      }
+                      if (
+                        (event.key === "Enter" || event.key === " ") &&
+                        !event.repeat
+                      ) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        const items = Array.from(
+                          list.querySelectorAll<HTMLElement>(
+                            ".board-search__result",
+                          ),
+                        );
+                        const idx = items.indexOf(item);
+                        const choice = idx >= 0 ? choices[idx] : undefined;
+                        if (choice !== undefined) {
+                          choose(choice);
+                        }
+                      }
+                    }}
+                  >
                     {choices.map((choice, index) =>
-                      choice._tag === "desk" ? (
+                      choice._tag === "retry" ? (
+                        <Autocomplete.Item
+                          className="board-search__result board-search__result--desk"
+                          key="retry"
+                          index={index}
+                          value={choice}
+                          tabIndex={television ? -1 : undefined}
+                          onClick={() => choose(choice)}
+                        >
+                          <span className="board-search__number">
+                            <RotateCcw aria-hidden="true" />
+                          </span>
+                          <span className="board-search__name">
+                            <strong>{RETRY_CHOICE_LABEL}</strong>
+                          </span>
+                          <small>Reload channels</small>
+                        </Autocomplete.Item>
+                      ) : choice._tag === "desk" ? (
                         <Autocomplete.Item
                           className="board-search__result board-search__result--desk"
                           key="desk"
                           index={index}
                           value={choice}
+                          tabIndex={television ? -1 : undefined}
                           onClick={() => choose(choice)}
                         >
                           <span className="board-search__number">
@@ -280,6 +466,7 @@ export function BoardSearch({
                           key={choiceKey(choice, index)}
                           index={index}
                           value={choice}
+                          tabIndex={television ? -1 : undefined}
                           onMouseEnter={prepareChoice}
                           onFocus={prepareChoice}
                           onClick={() => choose(choice)}
@@ -309,12 +496,9 @@ export function BoardSearch({
                   {presentation === "loading" ? (
                     <p className="board-search__state">Searching…</p>
                   ) : presentation === "generation-mismatch" ? (
-                    <div className="board-search__state" role="alert">
+                    <p className="board-search__state" role="alert">
                       The channels changed while you searched.
-                      <button type="button" onClick={onGenerationMismatch}>
-                        Search again
-                      </button>
-                    </div>
+                    </p>
                   ) : presentation === "error" ? (
                     <p className="board-search__state" role="alert">
                       Search is not available right now. Try again in a moment.
@@ -335,6 +519,7 @@ export function BoardSearch({
         </Autocomplete.Portal>
       </Autocomplete.Root>
       <BoardSearchDesk
+        television={television}
         client={client}
         generation={generation}
         term={query}
@@ -344,6 +529,7 @@ export function BoardSearch({
         onTermChange={setQuery}
         onGenerationMismatch={onGenerationMismatch}
         onPreparePlayback={onPreparePlayback}
+        returnFocusElement={() => inputRef.current}
         onTune={(channel) => {
           onTune(channel);
           clear();
@@ -396,6 +582,9 @@ function searchPresentation({
 }
 
 function choiceKey(choice: SearchChoice, occurrence: number): string {
+  if (choice._tag === "retry") {
+    return "retry";
+  }
   if (choice._tag === "desk") {
     return "desk";
   }
@@ -405,6 +594,9 @@ function choiceKey(choice: SearchChoice, occurrence: number): string {
 }
 
 function choiceLabel(choice: SearchChoice): string {
+  if (choice._tag === "retry") {
+    return RETRY_CHOICE_LABEL;
+  }
   if (choice._tag === "desk") {
     return DESK_CHOICE_LABEL;
   }
@@ -415,13 +607,13 @@ function choiceLabel(choice: SearchChoice): string {
 
 /** The Channel a hit tunes: itself, or the one airing the Programme. */
 function choiceChannel(
-  choice: Exclude<SearchChoice, { readonly _tag: "desk" }>,
+  choice: Exclude<SearchChoice, { readonly _tag: "desk" } | { readonly _tag: "retry" }>,
 ): ChannelSummary {
   return choice._tag === "channel" ? choice.channel : choice.programme.channel;
 }
 
 function choiceDetail(
-  choice: Exclude<SearchChoice, { readonly _tag: "desk" }>,
+  choice: Exclude<SearchChoice, { readonly _tag: "desk" } | { readonly _tag: "retry" }>,
 ): string {
   if (choice._tag === "channel") {
     return groupDisplayName(choice.channel.group);

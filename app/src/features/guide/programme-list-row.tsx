@@ -23,6 +23,7 @@ export const ProgrammeListRow = memo(function ProgrammeListRow({
   at,
   pending,
   playingChannel,
+  lastPlayed = false,
   onPreparePlayback,
   onTune,
   onTuneVariant,
@@ -37,6 +38,8 @@ export const ProgrammeListRow = memo(function ProgrammeListRow({
   readonly pending: boolean;
   /** The playing Channel when it is one of this row's variants, else null. */
   readonly playingChannel: ChannelId | null;
+  /** True when this row's family was the last played Channel after Stop. */
+  readonly lastPlayed?: boolean;
   readonly onPreparePlayback: () => void;
   readonly onTune: (channel: ChannelSummary) => void;
   readonly onTuneVariant: (channel: ChannelSummary) => void;
@@ -67,6 +70,7 @@ export const ProgrammeListRow = memo(function ProgrammeListRow({
     <div
       className="programme-guide__row"
       data-playing={playing}
+      data-last-played={lastPlayed ? "true" : undefined}
       data-body="list"
       // Titled by its Channel: there is no Programme to name.
       data-bare={lines._tag === "channel"}

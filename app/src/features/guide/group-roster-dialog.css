@@ -190,6 +190,10 @@
   box-shadow: inset 3px 0 0 var(--amber);
 }
 
+.group-roster__row :focus-visible {
+  outline-offset: -2px;
+}
+
 .group-roster__pick {
   display: flex;
   min-width: 0;

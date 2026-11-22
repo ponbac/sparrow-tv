@@ -58,6 +58,57 @@ describe("usePicturePin", () => {
     document.dispatchEvent(new Event("fullscreenchange"));
     expect(pinnedWidth()).toBe("1920px");
   });
+
+  it("preserves a paused phone pin across mode changes and avoids overwriting ordinary TV pins", () => {
+    const monitor = monitorOfSize(360, 203);
+    const phone = renderHook(
+      ({ mode }: { readonly mode: "watch" | "guide" }) =>
+        usePicturePin(false, false, false, mode),
+      { initialProps: { mode: "watch" } },
+    );
+    expect(pinnedWidth()).toBe("360px");
+
+    // Phone keyboard resize + mode switch must keep the originally pinned box.
+    monitor.size(360, 140);
+    phone.rerender({ mode: "guide" });
+    expect(pinnedWidth()).toBe("360px");
+    expect(document.documentElement.style.getPropertyValue("--pocket-pinned-h")).toBe("203px");
+    phone.unmount();
+
+    // Non-exit TV mode switch while already held keeps the held box.
+    monitor.size(1920, 700);
+    const tv = renderHook(
+      ({ mode }: { readonly mode: "watch" | "guide" }) =>
+        usePicturePin(false, false, true, mode),
+      { initialProps: { mode: "watch" } },
+    );
+    expect(pinnedWidth()).toBe("1920px");
+    monitor.size(640, 160);
+    tv.rerender({ mode: "guide" });
+    expect(pinnedWidth()).toBe("1920px");
+  });
+
+  it("remeasures once against committed TV Guide layout after fullscreen exit", () => {
+    const monitor = monitorOfSize(1920, 700);
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      value: document.createElement("section"),
+    });
+    const view = renderHook(
+      ({ mode }: { readonly mode: "watch" | "guide" }) =>
+        usePicturePin(false, false, true, mode),
+      { initialProps: { mode: "watch" } },
+    );
+
+    Reflect.deleteProperty(document, "fullscreenElement");
+    document.dispatchEvent(new Event("fullscreenchange"));
+    monitor.size(640, 160);
+    view.rerender({ mode: "guide" });
+    expect(pinnedWidth()).toBe("640px");
+    expect(
+      document.documentElement.style.getPropertyValue("--pocket-pinned-h"),
+    ).toBe("160px");
+  });
 });
 
 function monitorOfSize(width: number, height: number) {

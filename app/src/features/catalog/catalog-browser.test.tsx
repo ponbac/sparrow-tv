@@ -678,7 +678,7 @@ describe("CatalogBrowser shell", () => {
     expect(client.searchInputs).toHaveLength(1);
     statusGeneration = publishedGeneration;
 
-    await user.click(screen.getByRole("button", { name: "Search again" }));
+    await user.click(screen.getByRole("option", { name: /Search again/ }));
 
     expect(
       await screen.findByRole("option", { name: /World News/ }),
@@ -2555,6 +2555,57 @@ describe("CatalogBrowser pocket layout", () => {
 
     expect(screen.getByLabelText("World News live video")).toBe(video);
     expect(client.installedSessionCount).toBe(1);
+  });
+
+  it("dismisses an open Guide time row on Escape from the sibling docked preview on television", async () => {
+    document.documentElement.setAttribute("data-television", "");
+    const client = new FakeSparrowClient({ pictureOverlay: false });
+    const user = userEvent.setup();
+    renderInstalledBrowser(client);
+    await user.click(
+      await screen.findByRole("button", { name: "Tune World News" }),
+    );
+    const shell = requireShell();
+    const bar = within(await screen.findByRole("group", { name: "Channels" }));
+    await screen.findByRole("button", { name: "Pause" });
+    await user.click(bar.getByRole("button", { name: "Guide" }));
+    expect(shell).toHaveAttribute("data-mode", "guide");
+    expect(shell).toHaveAttribute("data-dock", "true");
+
+    await user.click(screen.getByRole("button", { name: "Now" }));
+    expect(screen.getByRole("group", { name: "Time" })).toBeInTheDocument();
+
+    const undock = screen.getByRole("button", { name: "Back to the picture" });
+    act(() => undock.focus());
+    expect(undock).toHaveFocus();
+
+    // Composing Escape must leave the open Time row intact.
+    const composingEscape = new KeyboardEvent("keydown", {
+      key: "Escape",
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => {
+      undock.dispatchEvent(composingEscape);
+    });
+    expect(composingEscape.defaultPrevented).toBe(false);
+    expect(screen.getByRole("group", { name: "Time" })).toBeInTheDocument();
+
+    // Real Escape on the sibling Stage preview closes ONLY the Time row and stays in Guide.
+    const escape = new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => {
+      undock.dispatchEvent(escape);
+    });
+    expect(escape.defaultPrevented).toBe(true);
+    expect(screen.queryByRole("group", { name: "Time" })).toBeNull();
+    expect(shell).toHaveAttribute("data-mode", "guide");
+    expect(shell).toHaveAttribute("data-playing", "true");
+    expect(undock).toHaveFocus();
   });
 
   it("holds the picture's box at its size while native video cannot follow it, and lets go when it can", async () => {

@@ -3,6 +3,7 @@ import { Search, X } from "lucide-react";
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type FocusEvent,
@@ -14,6 +15,12 @@ import type {
 } from "../../client/contracts";
 import { useDebounce } from "../../hooks/useDebounce";
 import { groupDisplayName } from "./board-group-roster";
+import {
+  handleLinearDialogArrows,
+  revealInScrollContainer,
+  useMoreButtonFocusHandoff,
+  useTelevisionInputEdit,
+} from "./dialog-navigation";
 import { channelTitle, qualityLabel } from "./guide-families";
 import {
   shouldAdvancePastExcludedSearchHits,
@@ -28,6 +35,8 @@ import { useBoardChannelSearch } from "./use-board-channel-search";
 
 /** Inputs for the dedicated Channel search desk over the guide pane. */
 export interface BoardSearchDeskProps {
+  /** Keeps Android TV D-pad focus and pagination predictable inside the sheet. */
+  readonly television?: boolean;
   readonly client: Pick<SparrowClient, "searchChannels">;
   readonly generation: CatalogGeneration | null;
   readonly term: string;
@@ -37,6 +46,8 @@ export interface BoardSearchDeskProps {
   readonly onTermChange: (term: string) => void;
   readonly onGenerationMismatch: () => void;
   readonly onPreparePlayback: () => void;
+  /** Resolves the toolbar control to focus when the sheet closes without tuning. */
+  readonly returnFocusElement?: () => HTMLElement | null;
   readonly onTune: (channel: ChannelSummary) => void;
 }
 
@@ -48,6 +59,7 @@ const SEARCH_AUTO_LOAD_FOCUS_TAIL_ROWS = 6;
  * desk leaves out hidden Channel Groups until the viewer includes them.
  */
 export function BoardSearchDesk({
+  television = false,
   client,
   generation,
   term,
@@ -57,16 +69,23 @@ export function BoardSearchDesk({
   onTermChange,
   onGenerationMismatch,
   onPreparePlayback,
+  returnFocusElement,
   onTune,
 }: BoardSearchDeskProps) {
   const [includeExcluded, setIncludeExcluded] = useState(false);
   const [listElement, setListElement] = useState<HTMLDivElement | null>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
   const termInput = useRef<HTMLInputElement>(null);
+  const searchEdit = useTelevisionInputEdit(television);
   const closedByTune = useRef(false);
-  const morePointerDownRef = useRef(false);
+  const pendingInitialResultFocusRef = useRef(false);
   const autoLoadTriggeredForCountRef = useRef<number | null>(null);
   useEffect(() => {
-    if (open) closedByTune.current = false;
+    if (open) {
+      closedByTune.current = false;
+    } else {
+      pendingInitialResultFocusRef.current = false;
+    }
   }, [open]);
   const requestTerm = canonicalSearchTerm(term);
   const requestValid = searchTermFits(term);
@@ -209,12 +228,74 @@ export function BoardSearchDesk({
     [canAutoLoad, requestAutoLoad],
   );
 
+  const moreButtonHandlers = useMoreButtonFocusHandoff({
+    television,
+    active: open,
+    busy: loadingMore,
+    hasError:
+      presentation === "generation-mismatch" ||
+      presentation === "error" ||
+      error !== null,
+    scopeKey: `${searchTerm}:${includeExcluded ? "all" : "visible"}`,
+    rowCount: visibleChannels.length,
+    canAutoLoad,
+    onRequestAutoLoad: requestAutoLoad,
+    onManualLoadMore: loadMore,
+    resolveTarget: ({ existingRows, hasError, buttonConnected }) => {
+      if (listElement === null) return null;
+      const stateAction = listElement.querySelector<HTMLButtonElement>(
+        ".board-search-desk__state button",
+      );
+      const picks = listElement.querySelectorAll<HTMLButtonElement>(
+        ".board-search-desk__pick",
+      );
+      if (hasError) {
+        return stateAction ?? picks[picks.length - 1];
+      }
+      if (picks[existingRows] !== undefined) {
+        return picks[existingRows];
+      }
+      return buttonConnected ? null : (picks[picks.length - 1] ?? stateAction);
+    },
+    revealTarget: (target) => {
+      revealInScrollContainer(listElement, target);
+    },
+  });
+
+  useLayoutEffect(() => {
+    if (
+      !pendingInitialResultFocusRef.current ||
+      !open ||
+      !television ||
+      presentation === "loading"
+    ) {
+      return;
+    }
+    pendingInitialResultFocusRef.current = false;
+    const popup = popupRef.current;
+    if (popup === null) return;
+    const closeButton = popup.querySelector<HTMLElement>(
+      ".board-search-desk__close",
+    );
+    if (closeButton === null || document.activeElement !== closeButton) {
+      return;
+    }
+    const target =
+      popup.querySelector<HTMLElement>(".board-search-desk__pick") ??
+      popup.querySelector<HTMLElement>(".board-search-desk__state button");
+    if (target !== null) {
+      target.focus({ preventScroll: true });
+      revealInScrollContainer(listElement, target);
+    }
+  }, [listElement, open, presentation, television]);
+
   return (
     <Dialog.Root
       open={open}
       onOpenChange={(nextOpen) => {
         if (!nextOpen) {
           setIncludeExcluded(false);
+          searchEdit.stopEditing();
         }
         onOpenChange(nextOpen);
       }}
@@ -222,11 +303,50 @@ export function BoardSearchDesk({
       <Dialog.Portal>
         <Dialog.Backdrop className="board-search-desk__backdrop" />
         <Dialog.Popup
+          ref={popupRef}
           className="board-search-desk__popup"
-          initialFocus={termInput}
+          initialFocus={() => {
+            if (television && term.trim().length > 0) {
+              const readyTarget =
+                popupRef.current?.querySelector<HTMLElement>(
+                  ".board-search-desk__pick",
+                ) ??
+                popupRef.current?.querySelector<HTMLElement>(
+                  ".board-search-desk__state button",
+                );
+              if (readyTarget != null) {
+                pendingInitialResultFocusRef.current = false;
+                return readyTarget;
+              }
+              const closeButton =
+                popupRef.current?.querySelector<HTMLElement>(
+                  ".board-search-desk__close",
+                );
+              if (closeButton != null) {
+                pendingInitialResultFocusRef.current =
+                  presentation === "loading";
+                return closeButton;
+              }
+              return termInput.current;
+            }
+            pendingInitialResultFocusRef.current = false;
+            return termInput.current;
+          }}
           // Stage takes focus on tune; restoring the search input here
           // would reopen Android's keyboard over the new Playback Session.
-          finalFocus={() => !closedByTune.current}
+          finalFocus={() =>
+            closedByTune.current ? false : (returnFocusElement?.() ?? true)
+          }
+          onKeyDown={(event) => {
+            if (popupRef.current !== null) {
+              handleLinearDialogArrows(event, {
+                television,
+                popup: popupRef.current,
+                scroller: listElement,
+                horizontalGroups: [".board-search-desk__toolbar"],
+              });
+            }
+          }}
         >
           <header className="board-search-desk__header">
             <div>
@@ -259,7 +379,13 @@ export function BoardSearchDesk({
                 autoComplete="off"
                 autoCapitalize="none"
                 spellCheck={false}
+                readOnly={searchEdit.readOnly}
                 aria-label="Search channels"
+                onClick={searchEdit.startEditing}
+                onBlur={searchEdit.stopEditing}
+                onKeyDown={(event) => {
+                  searchEdit.handleKeyDown(event);
+                }}
                 onChange={(event) => onTermChange(event.target.value)}
               />
             </label>
@@ -370,26 +496,7 @@ export function BoardSearchDesk({
                 className="board-search-desk__more"
                 type="button"
                 aria-disabled={loadingMore || undefined}
-                onPointerDown={() => {
-                  morePointerDownRef.current = true;
-                }}
-                onPointerCancel={() => {
-                  morePointerDownRef.current = false;
-                }}
-                onBlur={() => {
-                  morePointerDownRef.current = false;
-                }}
-                onFocus={() => {
-                  if (!morePointerDownRef.current) {
-                    requestAutoLoad();
-                  }
-                }}
-                onClick={() => {
-                  morePointerDownRef.current = false;
-                  if (!loadingMore) {
-                    loadMore();
-                  }
-                }}
+                {...moreButtonHandlers}
               >
                 {loadingMore ? "Loading more channels…" : "More channels"}
               </button>

@@ -74,8 +74,11 @@ class MainActivity : TauriActivity() {
     super.onWebViewCreate(webView)
     webView.setBackgroundColor(Color.BLACK)
     this.webView = webView
+    val isTelevision =
+      getSystemService(UiModeManager::class.java)?.currentModeType ==
+        Configuration.UI_MODE_TYPE_TELEVISION
     val focus = PlaybackAudioFocus(this) { playerBridge?.send(AndroidPlayerEvent.PAUSE) }
-    val window = PictureInPicturePlayback(this, nativePlayback) { command ->
+    val window = PictureInPicturePlayback(this, nativePlayback, television = isTelevision) { command ->
       playerBridge?.send(command)
     }
     audioFocus = focus
@@ -109,9 +112,8 @@ class MainActivity : TauriActivity() {
       applyFullscreenSystemBars()
       ViewCompat.requestApplyInsets(findViewById(android.R.id.content))
     }
-    val mode = getSystemService(UiModeManager::class.java)?.currentModeType
     if (
-      mode == Configuration.UI_MODE_TYPE_TELEVISION &&
+      isTelevision &&
       WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) &&
       WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
     ) {
@@ -163,6 +165,16 @@ class MainActivity : TauriActivity() {
   override fun onResume() {
     super.onResume()
     applyFullscreenSystemBars()
+    if (televisionControls != null && hasWindowFocus()) {
+      webView?.let { if (!it.hasFocus()) it.requestFocus() }
+    }
+  }
+
+  override fun onWindowFocusChanged(hasFocus: Boolean) {
+    super.onWindowFocusChanged(hasFocus)
+    if (hasFocus && televisionControls != null) {
+      webView?.let { if (!it.hasFocus()) it.requestFocus() }
+    }
   }
 
   override fun onPause() {

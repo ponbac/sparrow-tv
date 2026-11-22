@@ -14,6 +14,7 @@ import {
 } from "react";
 import type { ChannelGroup } from "../../client/contracts";
 import { groupDisplayName, visibleChannelGroups } from "./board-group-roster";
+import { revealInHorizontalScroller } from "../stage/stage-dom";
 import { GroupRosterDialog } from "./group-roster-dialog";
 import { clockLabel } from "./guide-window";
 
@@ -35,6 +36,8 @@ export interface GuideTime {
 
 /** Inputs for the scrollable Channel Group lane and roster. */
 export interface ChannelGroupLaneProps {
+  /** Decouples D-pad arrow focus from group selection until Enter/Space on TV. */
+  readonly television?: boolean;
   readonly groups: readonly ChannelGroup[];
   readonly activeGroup: string | null;
   /** Null where the guide is a timeline, which shows every time at once. */
@@ -52,6 +55,7 @@ export interface ChannelGroupLaneProps {
  * lane starts with a chip that opens a row of times under it.
  */
 export const ChannelGroupLane = memo(function ChannelGroupLane({
+  television = false,
   groups,
   activeGroup,
   time,
@@ -100,7 +104,7 @@ export const ChannelGroupLane = memo(function ChannelGroupLane({
     if (checked === null) {
       return;
     }
-    scrollChildIntoLane(scroller, checked);
+    revealInHorizontalScroller(scroller, checked);
   }, [activeGroup, visibleGroups.length]);
 
   const step = (direction: -1 | 1) => {
@@ -146,6 +150,13 @@ export const ChannelGroupLane = memo(function ChannelGroupLane({
           <RadioGroup
             className="programme-guide__groups"
             value={activeFilter}
+            onKeyDownCapture={(event) => {
+              // On TV, stop Base UI RadioGroup from arming focus-follows-selection
+              // on arrow keys while preserving pointer clicks and Enter/Space commit.
+              if (television && event.key.startsWith("Arrow")) {
+                event.preventBaseUIHandler();
+              }
+            }}
             onValueChange={(value) => onSelectGroup(groupFromFilterValue(value))}
             aria-label="Channel groups"
           >
@@ -155,12 +166,17 @@ export const ChannelGroupLane = memo(function ChannelGroupLane({
               value={ALL_GROUPS}
               onMouseEnter={() => onPrefetchGroup(null)}
               onFocus={(event) => {
-                if (scrollerRef.current !== null) {
-                  scrollChildIntoLane(scrollerRef.current, event.currentTarget);
-                }
+                revealInHorizontalScroller(scrollerRef.current, event.currentTarget);
                 scheduleFocusPrefetch(null);
               }}
               onBlur={cancelFocusPrefetch}
+              onKeyDown={(event) => {
+                if (television && (event.key === "Enter" || event.key === " ")) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onSelectGroup(null);
+                }
+              }}
             >
               All
             </Radio.Root>
@@ -174,15 +190,20 @@ export const ChannelGroupLane = memo(function ChannelGroupLane({
                   value={groupValue}
                   onMouseEnter={() => onPrefetchGroup(group.name)}
                   onFocus={(event) => {
-                    if (scrollerRef.current !== null) {
-                      scrollChildIntoLane(
-                        scrollerRef.current,
-                        event.currentTarget,
-                      );
-                    }
+                    revealInHorizontalScroller(
+                      scrollerRef.current,
+                      event.currentTarget,
+                    );
                     scheduleFocusPrefetch(group.name);
                   }}
                   onBlur={cancelFocusPrefetch}
+                  onKeyDown={(event) => {
+                    if (television && (event.key === "Enter" || event.key === " ")) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onSelectGroup(group.name);
+                    }
+                  }}
                 >
                   {groupDisplayName(group.name)}
                   <em>{group.channelCount}</em>
@@ -201,6 +222,7 @@ export const ChannelGroupLane = memo(function ChannelGroupLane({
           <ChevronRight aria-hidden="true" />
         </button>
         <GroupRosterDialog
+          television={television}
           groups={groups}
           activeGroup={activeGroup}
           excluded={excluded}
@@ -317,18 +339,6 @@ function onLaneWheel(event: WheelEvent): void {
   }
   event.preventDefault();
   node.scrollLeft = next;
-}
-
-function scrollChildIntoLane(scroller: HTMLElement, child: HTMLElement): void {
-  const scrollerRect = scroller.getBoundingClientRect();
-  const childRect = child.getBoundingClientRect();
-  if (childRect.left < scrollerRect.left) {
-    scroller.scrollLeft -= scrollerRect.left - childRect.left + 8;
-    return;
-  }
-  if (childRect.right > scrollerRect.right) {
-    scroller.scrollLeft += childRect.right - scrollerRect.right + 8;
-  }
 }
 
 function filterValue(group: string | null): string {

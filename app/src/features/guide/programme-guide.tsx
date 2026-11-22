@@ -8,7 +8,6 @@ import {
   useRef,
   useState,
   type FocusEvent,
-  type KeyboardEvent,
   type ReactNode,
 } from "react";
 import type {
@@ -19,13 +18,14 @@ import type {
   GuideWindowChannel,
 } from "../../client/contracts";
 import { ChannelGroupLane, type GuideTime } from "./channel-group-lane";
+import { useMoreButtonFocusHandoff } from "./dialog-navigation";
 import {
   guideFamilies,
   preferredVariant,
   type GuideFamily,
   type VariantPreferences,
 } from "./guide-families";
-import { handleGuideArrowKey } from "./guide-navigation";
+import { handleGuideArrowKey, scrollBoardToReveal } from "./guide-navigation";
 import {
   clockLabel,
   clockMarks,
@@ -49,6 +49,8 @@ export interface ProgrammeGuideProps {
   readonly window: ClockWindow;
   readonly now: Date;
   readonly playingChannel: ChannelId | null;
+  /** The most recently played Channel so Stop restores focus to its row. */
+  readonly lastPlayedChannel?: ChannelId | null;
   /** The picture quality chosen per guide row. */
   readonly variantPreferences: VariantPreferences;
   /**
@@ -107,6 +109,7 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
   window: guideWindow,
   now,
   playingChannel,
+  lastPlayedChannel = null,
   variantPreferences,
   layout,
   mode,
@@ -136,26 +139,14 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
   const nowLeft = `calc(var(--guide-gutter) + (100% - var(--guide-gutter)) * ${nowFraction})`;
   const [channelNameTooltip] = useState(() => Tooltip.createHandle<string>());
   const sectionRef = useRef<HTMLElement>(null);
-  const boardRef = useListScroll({ layout, mode, playingChannel, activeGroup });
+  const boardRef = useListScroll({
+    layout,
+    mode,
+    playingChannel,
+    lastPlayedChannel,
+    activeGroup,
+  });
   const paginationBusy = loadingMore || replacing;
-  const pageFocus = useRef<{
-    readonly button: HTMLButtonElement;
-    readonly existingRows: number;
-    readonly group: string | null;
-  } | null>(null);
-  useLayoutEffect(() => {
-    const request = pageFocus.current;
-    if (request === null || paginationBusy) return;
-    pageFocus.current = null;
-    if (mode !== "guide" || activeGroup !== request.group) return;
-    const focus = document.activeElement;
-    if (focus !== request.button && (request.button.isConnected || focus !== document.body)) return;
-    const channelButtons = boardRef.current?.querySelectorAll<HTMLButtonElement>(
-      ".programme-guide__row .programme-guide__channel",
-    );
-    channelButtons?.[request.existingRows]?.focus();
-  }, [activeGroup, boardRef, families.length, mode, paginationBusy]);
-  const morePointerDownRef = useRef(false);
   const autoLoadTriggeredForCountRef = useRef<number | null>(null);
   const canAutoLoad = hasMore && !paginationBusy && error === null;
   const requestAutoLoad = useCallback(() => {
@@ -165,6 +156,41 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
     autoLoadTriggeredForCountRef.current = rows.length;
     onLoadMore();
   }, [canAutoLoad, onLoadMore, rows.length]);
+  const moreButtonHandlers = useMoreButtonFocusHandoff({
+    television,
+    active: mode === "guide",
+    busy: paginationBusy,
+    hasError: error !== null,
+    scopeKey: activeGroup ?? "__all__",
+    rowCount: families.length,
+    canAutoLoad,
+    onRequestAutoLoad: requestAutoLoad,
+    onManualLoadMore: onLoadMore,
+    resolveTarget: ({ existingRows, hasError, buttonConnected }) => {
+      const board = boardRef.current;
+      if (board === null) return null;
+      const channelButtons = board.querySelectorAll<HTMLButtonElement>(
+        ".programme-guide__row .programme-guide__channel",
+      );
+      if (hasError) {
+        return (
+          board.querySelector<HTMLButtonElement>(
+            ".programme-guide__retained button",
+          ) ?? channelButtons[channelButtons.length - 1]
+        );
+      }
+      if (channelButtons[existingRows] !== undefined) {
+        return channelButtons[existingRows];
+      }
+      return buttonConnected ? null : channelButtons[channelButtons.length - 1];
+    },
+    revealTarget: (target) => {
+      const board = boardRef.current;
+      if (board !== null) {
+        scrollBoardToReveal(board, target);
+      }
+    },
+  });
 
   useEffect(() => {
     if (
@@ -251,28 +277,17 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
     )
       ? playingChannel
       : null,
+    lastPlayed:
+      playingChannel === null &&
+      lastPlayedChannel !== null &&
+      family.variants.some((variant) => variant.channel.id === lastPlayedChannel),
     onPreparePlayback,
     onTune,
     onTuneVariant,
   });
 
-  const onKeyDownCapture = useCallback(
-    (event: KeyboardEvent<HTMLElement>) => {
-      const section = sectionRef.current;
-      if (section === null) {
-        return;
-      }
-      handleGuideArrowKey(event, {
-        section,
-        board: boardRef.current,
-        layout,
-        mode,
-        hasMore,
-        onRequestMore: requestAutoLoad,
-      });
-    },
-    [boardRef, hasMore, layout, mode, requestAutoLoad],
-  );
+  const timeOpen = time?.open === true;
+  const toggleTime = time?.onToggle;
 
   return (
     <section
@@ -280,7 +295,46 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
       className="programme-guide"
       data-layout={layout}
       aria-label="Programme guide"
-      onKeyDownCapture={onKeyDownCapture}
+      onKeyDownCapture={(event) => {
+        const section = sectionRef.current;
+        if (section === null) return;
+        handleGuideArrowKey(event, {
+          section,
+          workspace: section.closest<HTMLElement>(".shell__workspace"),
+          board: boardRef.current,
+          layout,
+          mode,
+          television,
+          hasMore,
+          onRequestMore: requestAutoLoad,
+        });
+      }}
+      onKeyDown={(event) => {
+        if (
+          !timeOpen ||
+          mode !== "guide" ||
+          event.defaultPrevented ||
+          event.nativeEvent.isComposing ||
+          event.key !== "Escape" ||
+          toggleTime === undefined
+        ) {
+          return;
+        }
+        event.preventDefault();
+        const section = sectionRef.current;
+        const fromTimes =
+          event.target instanceof Node &&
+          (section
+            ?.querySelector(".programme-guide__times")
+            ?.contains(event.target) ??
+            false);
+        toggleTime();
+        if (fromTimes) {
+          section
+            ?.querySelector<HTMLElement>(".programme-guide__when")
+            ?.focus({ preventScroll: true });
+        }
+      }}
     >
       <header className="programme-guide__toolbar">
         {masthead?.wordmark}
@@ -292,6 +346,7 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
 
       <div className="programme-guide__body">
         <ChannelGroupLane
+          television={television}
           groups={groups}
           activeGroup={activeGroup}
           time={time}
@@ -387,43 +442,7 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
                 className="programme-guide__more"
                 type="button"
                 aria-disabled={paginationBusy || undefined}
-                onPointerDown={() => {
-                  morePointerDownRef.current = true;
-                }}
-                onPointerCancel={() => {
-                  morePointerDownRef.current = false;
-                }}
-                onBlur={() => {
-                  morePointerDownRef.current = false;
-                }}
-                onFocus={(event) => {
-                  if (!morePointerDownRef.current && canAutoLoad) {
-                    if (television) {
-                      pageFocus.current = {
-                        button: event.currentTarget,
-                        existingRows: families.length,
-                        group: activeGroup,
-                      };
-                    }
-                    requestAutoLoad();
-                  }
-                }}
-                onClick={(event) => {
-                  morePointerDownRef.current = false;
-                  if (paginationBusy) return;
-                  if (television && event.currentTarget === document.activeElement) {
-                    pageFocus.current = {
-                      button: event.currentTarget,
-                      existingRows: families.length,
-                      group: activeGroup,
-                    };
-                  }
-                  if (canAutoLoad) {
-                    requestAutoLoad();
-                  } else {
-                    onLoadMore();
-                  }
-                }}
+                {...moreButtonHandlers}
               >
                 {replacing
                   ? "Updating the guide…"
@@ -452,10 +471,11 @@ function useListScroll({
   layout,
   mode,
   playingChannel,
+  lastPlayedChannel,
   activeGroup,
 }: Pick<
   ProgrammeGuideProps,
-  "layout" | "mode" | "playingChannel" | "activeGroup"
+  "layout" | "mode" | "playingChannel" | "lastPlayedChannel" | "activeGroup"
 >) {
   const boardRef = useRef<HTMLDivElement>(null);
   const lastMode = useRef<ProgrammeGuideProps["mode"] | null>(null);
@@ -472,9 +492,13 @@ function useListScroll({
     if (layout !== "pocket" || board === null || board.clientHeight === 0) {
       return;
     }
-    const row = board.querySelector<HTMLElement>(
-      '.programme-guide__row[data-playing="true"]',
-    );
+    const row =
+      board.querySelector<HTMLElement>(
+        '.programme-guide__row[data-playing="true"]',
+      ) ??
+      board.querySelector<HTMLElement>(
+        '.programme-guide__row[data-last-played="true"]',
+      );
     if (row === null) {
       return;
     }
@@ -490,7 +514,7 @@ function useListScroll({
     if (scrollTop !== board.scrollTop) {
       board.scrollTop = scrollTop;
     }
-  }, [layout, mode, playingChannel]);
+  }, [lastPlayedChannel, layout, mode, playingChannel]);
   return boardRef;
 }
 

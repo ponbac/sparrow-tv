@@ -405,12 +405,14 @@
   font-weight: 600;
 }
 
-.board-search-desk__more:hover:not(:disabled) {
+.board-search-desk__more:hover:not(:disabled, [aria-disabled="true"]) {
   background: var(--cell);
 }
 
-.board-search-desk__more:disabled {
+.board-search-desk__more:disabled,
+.board-search-desk__more[aria-disabled="true"] {
   color: var(--dim);
+  opacity: 0.65;
 }
 
 @media (max-width: 760px) {

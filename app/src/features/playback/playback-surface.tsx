@@ -30,6 +30,7 @@ import {
   useStageChrome,
   type WindowBox,
 } from "../stage/stage-chrome";
+import { visibleStageControls } from "../stage/stage-dom";
 import { playerPresentation, type PlayerState } from "./playback-presentation";
 import "./hosted-player.css";
 
@@ -67,6 +68,8 @@ export type PlaybackSurfaceProps = PlaybackSurfaceInputs & (
 
 interface PlaybackSurfaceInputs {
   readonly channel: { readonly id: ChannelId; readonly name: string };
+  /** Immediate heading shown during a pending zap before the session changes. */
+  readonly displayName?: string;
   readonly state: PlayerState;
   readonly videoKey: string;
   readonly videoRef: RefObject<HTMLVideoElement>;
@@ -76,7 +79,11 @@ interface PlaybackSurfaceInputs {
     readonly label: string;
     readonly onAction: () => void;
   };
-  readonly pause?: { readonly onPause: () => void };
+  readonly pause?: {
+    readonly onPause: () => void;
+    /** Keeps the Pause button mounted and focusable while suspending settles. */
+    readonly pending?: boolean;
+  };
   /** A label wrapping the native Audio Track select. */
   readonly audio?: ReactNode;
   /** Audio and copy status messages. */
@@ -114,6 +121,7 @@ interface PlaybackSurfaceInputs {
 /** Accessible playback chrome shared without sharing transport ownership. */
 export function PlaybackSurface({
   channel,
+  displayName,
   state,
   videoKey,
   videoRef,
@@ -161,6 +169,10 @@ export function PlaybackSurface({
     void section.requestFullscreen?.().catch(() => undefined);
   }, [channel.id, fullscreenTune, television]);
   const hideControls = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const focusFrameRef = useRef<number | null>(null);
+  const suppressRevealRef = useRef(false);
+  const returnToFullscreenButtonRef = useRef(false);
+  const wasSectionFullscreenRef = useRef(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   // Where the More menu may open while it must keep clear of the picture;
   // measured each time it opens, because the picture's box moves with the
@@ -168,37 +180,110 @@ export function PlaybackSurface({
   const [menuRoom, setMenuRoom] = useState<WindowBox | null>(null);
   const playing = state._tag === "playing";
   const canHideControls = fullscreen && playing;
-  const hideWhenIdle = useCallback(function hideWhenIdle() {
-    const picker = surfaceRef.current?.querySelector("select:focus");
-    // A native picker receives no page events while open. Removing its select
-    // from layout would dismiss it before the viewer can choose a track.
-    const pickerOpen = picker != null && (
-      typeof CSS === "undefined" ||
-      !CSS.supports("selector(:open)") ||
-      picker.matches(":open")
-    );
-    const draggingVolume = surfaceRef.current?.querySelector('input[type="range"]:active');
-    if (pickerOpen || draggingVolume != null) {
-      hideControls.current = setTimeout(hideWhenIdle, 2500);
-      return;
+  const cancelPendingFocus = useCallback(() => {
+    if (focusFrameRef.current !== null) {
+      cancelAnimationFrame(focusFrameRef.current);
+      focusFrameRef.current = null;
     }
-    hideControls.current = null;
-    setControlsVisible(false);
   }, []);
-  const revealControls = () => {
-    setControlsVisible(true);
-    if (hideControls.current !== null) clearTimeout(hideControls.current);
-    if (canHideControls)
-      hideControls.current = setTimeout(hideWhenIdle, 2500);
-  };
+  const focusInFullscreenControls = useCallback((): boolean => {
+    const section = surfaceRef.current;
+    const controlsEl = section?.querySelector(".hosted-player__controls");
+    return (
+      television === true &&
+      section !== null &&
+      document.fullscreenElement === section &&
+      controlsEl != null &&
+      document.activeElement !== null &&
+      controlsEl.contains(document.activeElement)
+    );
+  }, [television]);
+  const hideControlsCleanly = useCallback(() => {
+    cancelPendingFocus();
+    if (hideControls.current !== null) {
+      clearTimeout(hideControls.current);
+      hideControls.current = null;
+    }
+    const section = surfaceRef.current;
+    suppressRevealRef.current = true;
+    if (television && section !== null && document.fullscreenElement === section) {
+      section.focus({ preventScroll: true });
+    }
+    setControlsVisible(false);
+    suppressRevealRef.current = false;
+  }, [cancelPendingFocus, television]);
+  const hideWhenIdle = useCallback(
+    function hideWhenIdle() {
+      const section = surfaceRef.current;
+      const picker = section?.querySelector("select:focus");
+      // A native picker receives no page events while open. Removing its select
+      // from layout would dismiss it before the viewer can choose a track.
+      const pickerOpen =
+        picker != null &&
+        (typeof CSS === "undefined" ||
+          !CSS.supports("selector(:open)") ||
+          picker.matches(":open"));
+      const menuOpen =
+        document.querySelector('[role="menu"][data-open]') !== null;
+      const draggingVolume = section?.querySelector(
+        'input[type="range"]:active',
+      );
+      if (pickerOpen || menuOpen || draggingVolume != null) {
+        hideControls.current = setTimeout(hideWhenIdle, 2500);
+        return;
+      }
+      hideControlsCleanly();
+    },
+    [hideControlsCleanly],
+  );
+  const scheduleHide = useCallback(
+    (preferExtended = false) => {
+      if (hideControls.current !== null) {
+        clearTimeout(hideControls.current);
+        hideControls.current = null;
+      }
+      if (canHideControls) {
+        const delayMs =
+          preferExtended || focusInFullscreenControls() ? 7500 : 2500;
+        hideControls.current = setTimeout(hideWhenIdle, delayMs);
+      }
+    },
+    [canHideControls, focusInFullscreenControls, hideWhenIdle],
+  );
+  const revealControls = useCallback(
+    (preferExtended = false) => {
+      if (suppressRevealRef.current) return;
+      setControlsVisible(true);
+      scheduleHide(preferExtended);
+    },
+    [scheduleHide],
+  );
+  const scheduleFullscreenBarFocus = useCallback(
+    (pick: "first" | "last") => {
+      cancelPendingFocus();
+      focusFrameRef.current = requestAnimationFrame(() => {
+        focusFrameRef.current = null;
+        const section = surfaceRef.current;
+        if (section === null || document.fullscreenElement !== section) return;
+        const items = visibleControlBarItems(section);
+        const destination =
+          pick === "last" ? items[items.length - 1] : items[0];
+        destination?.focus({ preventScroll: true });
+      });
+    },
+    [cancelPendingFocus],
+  );
   useEffect(() => {
     setControlsVisible(true);
-    if (canHideControls)
-      hideControls.current = setTimeout(hideWhenIdle, 2500);
+    scheduleHide();
     return () => {
-      if (hideControls.current !== null) clearTimeout(hideControls.current);
+      cancelPendingFocus();
+      if (hideControls.current !== null) {
+        clearTimeout(hideControls.current);
+        hideControls.current = null;
+      }
     };
-  }, [canHideControls, hideWhenIdle]);
+  }, [cancelPendingFocus, scheduleHide]);
 
   // Whether this section is the document's fullscreen element. The document
   // says so itself: the chrome's target can change while the section is
@@ -208,13 +293,23 @@ export function PlaybackSurface({
     const update = () => {
       const section = surfaceRef.current;
       const active = section !== null && document.fullscreenElement === section;
+      const wasActive = wasSectionFullscreenRef.current;
+      wasSectionFullscreenRef.current = active;
       setSectionFullscreen(active);
-      if (television && active) section.focus({ preventScroll: true });
+      if (television && active) {
+        returnToFullscreenButtonRef.current = false;
+        section.focus({ preventScroll: true });
+      } else if (television && wasActive && !active) {
+        cancelPendingFocus();
+      }
     };
     document.addEventListener("fullscreenchange", update);
     update();
-    return () => document.removeEventListener("fullscreenchange", update);
-  }, [television]);
+    return () => {
+      document.removeEventListener("fullscreenchange", update);
+      returnToFullscreenButtonRef.current = false;
+    };
+  }, [cancelPendingFocus, television]);
 
   const presentation = playerPresentation(state);
   const { reportPicture } = chrome;
@@ -235,7 +330,12 @@ export function PlaybackSurface({
       target: chrome.fullscreenTarget,
       section: surfaceRef.current,
     });
-    if (target !== null) onRequestFullscreen(target);
+    if (target !== null) {
+      if (television && sectionFullscreen && target === surfaceRef.current) {
+        returnToFullscreenButtonRef.current = true;
+      }
+      onRequestFullscreen(target);
+    }
   };
   const beginBlockedPlayback = () => {
     if (onBeginBlockedPlayback !== undefined) {
@@ -250,6 +350,22 @@ export function PlaybackSurface({
   // While the player section is the fullscreen element the controls are its
   // own inline bar; the shell's slot lies outside what fullscreen draws.
   const controlsPlacement = controlPresentation(chrome, sectionFullscreen);
+  useLayoutEffect(() => {
+    if (
+      !television ||
+      sectionFullscreen ||
+      !returnToFullscreenButtonRef.current
+    ) {
+      return;
+    }
+    const container = controlsPlacement.slot ?? surfaceRef.current;
+    const button = container?.querySelector<HTMLElement>(
+      '[data-stage-action="fullscreen"]',
+    );
+    if (button == null) return;
+    returnToFullscreenButtonRef.current = false;
+    button.focus({ preventScroll: true });
+  }, [controlsPlacement.slot, sectionFullscreen, television]);
   const compact = controlsPlacement.variant === "compact";
   // Compact buttons show only an icon; the label stays in the DOM (the
   // accessible name and the text scripts match on) and doubles as the hint.
@@ -265,6 +381,7 @@ export function PlaybackSurface({
     >
       {state._tag === "autoplay-blocked" ? (
         <button
+          key="primary-playback-action"
           className="hosted-player__primary-control hosted-player__recovery"
           type="button"
           onClick={beginBlockedPlayback}
@@ -273,6 +390,7 @@ export function PlaybackSurface({
         </button>
       ) : recoveryAction !== undefined ? (
         <button
+          key="primary-playback-action"
           className="hosted-player__primary-control hosted-player__recovery"
           type="button"
           onClick={recoveryAction.onAction}
@@ -280,18 +398,20 @@ export function PlaybackSurface({
           <RotateCcw aria-hidden="true" />
           {recoveryAction.label}
         </button>
-      ) : null}
-      {pause === undefined ? null : (
+      ) : pause !== undefined ? (
         <button
+          key="primary-playback-action"
           className="hosted-player__primary-control"
           type="button"
-          onClick={pause.onPause}
+          aria-disabled={pause.pending || undefined}
+          aria-busy={pause.pending || undefined}
+          onClick={pause.pending ? undefined : pause.onPause}
           {...hint("Pause")}
         >
           <Pause aria-hidden="true" />
           <span>Pause</span>
         </button>
-      )}
+      ) : null}
       {showMediaControls ? (
         <>
           <button
@@ -308,7 +428,10 @@ export function PlaybackSurface({
             )}
             <span>{muted ? "Unmute" : "Mute"}</span>
           </button>
-          <label className="hosted-player__volume">
+          <label
+            className="hosted-player__volume"
+            aria-hidden={television || undefined}
+          >
             <span>Volume</span>
             <input
               type="range"
@@ -317,6 +440,7 @@ export function PlaybackSurface({
               step="1"
               value={Math.round(volume * 100)}
               aria-label="Volume"
+              tabIndex={television ? -1 : undefined}
               onChange={(event) =>
                 onVolumeChange(Number(event.currentTarget.value) / 100)
               }
@@ -459,32 +583,108 @@ export function PlaybackSurface({
       tabIndex={television ? -1 : 0}
       data-controls-visible={controlsVisible || !canHideControls}
       data-native-video={nativeVideo}
-      onPointerMove={revealControls}
-      onPointerDown={revealControls}
-      onFocusCapture={revealControls}
-      onChangeCapture={revealControls}
+      onPointerMove={() => revealControls()}
+      onPointerDown={() => revealControls()}
+      onFocusCapture={() => revealControls()}
+      onChangeCapture={() => revealControls()}
       onKeyDown={(event) => {
-        revealControls();
-        if (television && sectionFullscreen && event.target === event.currentTarget) {
+        if (
+          television &&
+          sectionFullscreen &&
+          event.key === "Escape" &&
+          !event.defaultPrevented &&
+          !event.nativeEvent.isComposing
+        ) {
+          if (controlsVisible && canHideControls) {
+            event.preventDefault();
+            event.stopPropagation();
+            hideControlsCleanly();
+          }
+          // When controls are already hidden or cannot hide, let Escape bubble
+          // without revealing controls so TV Back/Escape exits fullscreen to Guide.
+          return;
+        }
+        const target = event.target instanceof HTMLElement ? event.target : null;
+        if (television && sectionFullscreen && target === event.currentTarget) {
           if (event.key === "Enter") {
             event.preventDefault();
-            if (!event.repeat) (pause?.onPause ?? recoveryAction?.onAction)?.();
+            if (event.repeat) return;
+            if (!controlsVisible && canHideControls) {
+              revealControls(true);
+              scheduleFullscreenBarFocus("first");
+              return;
+            }
+            revealControls();
+            (
+              pause?.pending
+                ? undefined
+                : (pause?.onPause ??
+                  recoveryAction?.onAction ??
+                  (state._tag === "autoplay-blocked"
+                    ? beginBlockedPlayback
+                    : undefined))
+            )?.();
             return;
           }
           if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
             event.preventDefault();
-            requestAnimationFrame(() => {
-              surfaceRef.current?.querySelector<HTMLButtonElement>(
-                ".hosted-player__controls button:not(:disabled)",
-              )?.focus({ preventScroll: true });
-            });
+            revealControls(true);
+            scheduleFullscreenBarFocus(
+              event.key === "ArrowLeft" ? "last" : "first",
+            );
             return;
           }
         }
+
+        if (
+          television &&
+          sectionFullscreen &&
+          target !== null &&
+          !event.defaultPrevented &&
+          !event.altKey &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          target.closest(".hosted-player__controls") !== null &&
+          target.closest('[role="menu"]') === null &&
+          document.querySelector('[role="menu"][data-open]') === null &&
+          (event.key === "ArrowLeft" ||
+            event.key === "ArrowRight" ||
+            event.key === "ArrowUp" ||
+            event.key === "ArrowDown")
+        ) {
+          const bar = target.closest<HTMLElement>(".hosted-player__controls");
+          const items = visibleControlBarItems(bar);
+          const index = items.indexOf(target);
+          event.preventDefault();
+          event.stopPropagation();
+          if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+            revealControls(true);
+            if (index !== -1) {
+              items[event.key === "ArrowRight" ? index + 1 : index - 1]?.focus({
+                preventScroll: true,
+              });
+            }
+            return;
+          }
+          if (event.key === "ArrowUp") {
+            if (canHideControls) {
+              hideControlsCleanly();
+            } else {
+              surfaceRef.current?.focus({ preventScroll: true });
+            }
+          } else {
+            revealControls(true);
+          }
+          return;
+        }
+
+        if (event.key !== "Escape") {
+          revealControls();
+        }
         // Portalled controls and the More menu still bubble here through React.
         if (
-          event.target instanceof HTMLElement &&
-          event.target.closest(
+          target !== null &&
+          target.closest(
             'input, select, textarea, [contenteditable="true"], [role="menu"]',
           )
         )
@@ -502,7 +702,7 @@ export function PlaybackSurface({
       }}
     >
       <div className="hosted-player__heading">
-        <h2 id="playback-player-heading">{channel.name}</h2>
+        <h2 id="playback-player-heading">{displayName ?? channel.name}</h2>
         <div
           className="hosted-player__state"
           data-state={state._tag}
@@ -546,4 +746,12 @@ export function PlaybackSurface({
         : createPortal(controls, controlsPlacement.slot)}
     </section>
   );
+}
+
+function visibleControlBarItems(root: HTMLElement | null): HTMLElement[] {
+  if (root === null) return [];
+  const scope = root.classList.contains("hosted-player")
+    ? root.querySelector<HTMLElement>(".hosted-player__controls")
+    : root;
+  return visibleStageControls(scope, "button, select");
 }
