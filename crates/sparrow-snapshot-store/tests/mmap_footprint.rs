@@ -362,7 +362,8 @@ fn generated_m3u() -> Vec<u8> {
     for channel in 0..CHANNEL_COUNT {
         writeln!(
             m3u,
-            "#EXTINF:-1 tvg-id=\"fp-{channel}\" group-title=\"Group {:02}\",Footprint Channel {channel:04}",
+            "#EXTINF:-1 tvg-id=\"fp-{channel}\" tvg-logo=\"http://icons.example/images/logos/channels/{:08}-logo.jpg\" group-title=\"Group {:02}\",Footprint Channel {channel:04}",
+            channel * 45 / 100,
             channel % 32,
         )
         .unwrap();

@@ -11,7 +11,7 @@ https://media.fixture.invalid/sweden/svt1-fhd
 https://media.fixture.invalid/sweden/svt2-hd
 #EXTINF:-1 group-title="Sweden",Kunskapskanalen
 https://media.fixture.invalid/sweden/kunskapskanalen
-#EXTINF:-1 group-title="Sport",Arena 4K
+#EXTINF:-1 tvg-logo="https://icons.example/arena.png" group-title="Sport",Arena 4K
 https://media.fixture.invalid/sport/arena-uhd
 #EXTINF:-1 group-title="Sport",Arena HD
 https://media.fixture.invalid/sport/arena-hd-backup

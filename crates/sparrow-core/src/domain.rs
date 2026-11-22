@@ -758,6 +758,73 @@ impl ChannelVariant {
     }
 }
 
+/// A Channel Icon (see CONTEXT.md): an absolute `http(s)` location exactly as
+/// the M3U Source gave it. It is provider-derived, so `Debug` never prints it.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ChannelIcon(SharedText);
+
+impl ChannelIcon {
+    pub(crate) fn new(location: SharedText) -> Self {
+        Self(location)
+    }
+
+    /// Returns the icon location for an explicit transport projection.
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl Debug for ChannelIcon {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ChannelIcon(..)")
+    }
+}
+
+/// The cheap part of the Channel Icon rule: an explicit `http://` or
+/// `https://` prefix followed directly by a non-empty authority without `@`
+/// (so no credentials, not even empty ones), and no whitespace or control
+/// characters. URL parsers read `\` like `/` in `http(s)` URLs, so it ends the
+/// authority too; otherwise `https://\/user:pass@host` would hide userinfo. A reopened,
+/// checksummed processed catalog only rechecks this; its icons passed the full
+/// rule when it was built.
+pub(crate) fn has_channel_icon_shape(value: &str) -> bool {
+    let after_scheme = if value
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
+    {
+        &value[8..]
+    } else if value
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
+    {
+        &value[7..]
+    } else {
+        return false;
+    };
+    let authority = after_scheme
+        .split(['/', '\\', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    !authority.is_empty()
+        && !authority.contains('@')
+        && !value
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+}
+
+/// Accepts a trimmed `tvg-logo` value as a Channel Icon location: the shape
+/// above, parsed as an `http` or `https` URL with a host and no userinfo. The
+/// value itself is kept unchanged.
+pub(crate) fn is_channel_icon_location(value: &str) -> bool {
+    has_channel_icon_shape(value)
+        && Url::parse(value).ok().is_some_and(|url| {
+            matches!(url.scheme(), "http" | "https")
+                && url.has_host()
+                && url.username().is_empty()
+                && url.password().is_none()
+        })
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChannelSummary {
     id: ChannelId,
@@ -765,6 +832,7 @@ pub struct ChannelSummary {
     group: SharedText,
     number: u32,
     variant: Option<ChannelVariant>,
+    icon: Option<ChannelIcon>,
 }
 
 impl ChannelSummary {
@@ -774,6 +842,7 @@ impl ChannelSummary {
         group: SharedText,
         number: u32,
         variant: Option<ChannelVariant>,
+        icon: Option<ChannelIcon>,
     ) -> Self {
         Self {
             id,
@@ -781,7 +850,13 @@ impl ChannelSummary {
             group,
             number,
             variant,
+            icon,
         }
+    }
+
+    /// Returns the guide row's Channel Icon, if any (see CONTEXT.md).
+    pub const fn icon(&self) -> Option<&ChannelIcon> {
+        self.icon.as_ref()
     }
 
     pub fn id(&self) -> &ChannelId {
@@ -815,6 +890,7 @@ pub struct ChannelDetails {
     group: SharedText,
     number: u32,
     variant: Option<ChannelVariant>,
+    icon: Option<ChannelIcon>,
 }
 
 impl ChannelDetails {
@@ -824,6 +900,7 @@ impl ChannelDetails {
         group: SharedText,
         number: u32,
         variant: Option<ChannelVariant>,
+        icon: Option<ChannelIcon>,
     ) -> Self {
         Self {
             id,
@@ -831,7 +908,13 @@ impl ChannelDetails {
             group,
             number,
             variant,
+            icon,
         }
+    }
+
+    /// Returns the guide row's Channel Icon, if any (see CONTEXT.md).
+    pub const fn icon(&self) -> Option<&ChannelIcon> {
+        self.icon.as_ref()
     }
 
     pub fn id(&self) -> &ChannelId {

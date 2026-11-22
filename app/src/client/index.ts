@@ -9,6 +9,7 @@ export type {
   CatalogStatus,
   ChannelDetails,
   ChannelGroup,
+  ChannelIcon,
   ChannelId,
   ChannelInput,
   ChannelSummary,

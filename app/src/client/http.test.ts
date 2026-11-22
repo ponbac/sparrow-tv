@@ -446,8 +446,16 @@ describe("hosted HTTP Sparrow client", () => {
           group: "Sport",
           number: 4,
           variant: { quality: "uhd", baseName: "Arena" },
+          icon: "https://icons.example/arena.png",
         },
-        { id: "arena", name: "Arena", group: "Sport", number: 5, variant: null },
+        {
+          id: "arena",
+          name: "Arena",
+          group: "Sport",
+          number: 5,
+          variant: null,
+          icon: null,
+        },
       ],
       next: null,
     };
@@ -459,7 +467,7 @@ describe("hosted HTTP Sparrow client", () => {
       value: page,
     });
 
-    const plain = { id: "arena", name: "Arena", group: "Sport" };
+    const plain = { id: "arena", name: "Arena", group: "Sport", icon: null };
     const variant = { quality: "hd", baseName: "Arena" };
     for (const malformed of [
       { ...plain, variant: null },
@@ -481,6 +489,50 @@ describe("hosted HTTP Sparrow client", () => {
         clientSchemas.channelsPage.safeParse({ ...page, items: [malformed] })
           .success,
         JSON.stringify(malformed),
+      ).toBe(false);
+    }
+  });
+
+  it("accepts a Channel Icon only as an absolute http(s) location or null", () => {
+    const channel = {
+      id: "arena",
+      name: "Arena",
+      group: "Sport",
+      number: 1,
+      variant: null,
+    };
+    for (const icon of [
+      null,
+      "https://icons.example/arena.png",
+      "http://icons.example/logos/arena.jpg?size=small",
+      "HTTPS://Icons.Example:443/a/../arena",
+      // Not White_Space in Unicode, so core keeps it too.
+      "https://icons.example/bom\uFEFF.png",
+      "https://icons.example:8443/art/@2x.png",
+    ]) {
+      const parsed = clientSchemas.channel.safeParse({ ...channel, icon });
+      expect(parsed.success, String(icon)).toBe(true);
+      expect(parsed.data?.icon, String(icon)).toBe(icon);
+    }
+    for (const icon of [
+      undefined,
+      "",
+      42,
+      "/logos/arena.png",
+      "https:icons.example/arena.png",
+      "ftp://icons.example/arena.png",
+      "javascript:alert(1)",
+      "data:image/png;base64,AAAA",
+      "https://user:secret@icons.example/arena.png",
+      "https://@icons.example/arena.png",
+      "https://\\/user:secret@icons.example/arena.png",
+      "https:///icons.example/arena.png",
+      "https://icons.example:bad/arena.png",
+      "https://icons.example/has space.png",
+    ]) {
+      expect(
+        clientSchemas.channel.safeParse({ ...channel, icon }).success,
+        String(icon),
       ).toBe(false);
     }
   });

@@ -40,6 +40,10 @@ _Avoid_: Channel URL, tvg-id, stream ID
 A category from the M3U Source used to organize Channels in the Channel Catalog.
 _Avoid_: Category, folder, bouquet
 
+**Channel Icon**:
+The image location an M3U Source names for a Channel (`tvg-logo`), kept exactly as given when it is an absolute `http` or `https` URL with a host and no credentials. Quality Variants of one guide row share the first Channel Icon named in Channel Catalog order. Sparrow passes it to clients and never fetches it.
+_Avoid_: Logo URL, thumbnail, artwork
+
 **Channel Number**:
 The 1-based position of a Channel's guide row in Channel Catalog order. Quality Variants of one Channel share a Channel Number. It changes when the M3U Source reorders.
 _Avoid_: LCN, channel index, tvg-chno

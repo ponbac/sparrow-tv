@@ -380,6 +380,7 @@ async fn schedule_and_search_project_the_enriched_core_fixture_exactly() {
                 "group": "News",
                 "number": 2,
                 "variant": null,
+                "icon": null,
             },
             "title": "Fallback Programme",
             "titleTruncated": false,

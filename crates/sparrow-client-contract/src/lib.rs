@@ -1,7 +1,9 @@
+use std::fmt::{self, Debug, Formatter};
+
 use chrono::{DateTime, Datelike, SecondsFormat, Utc};
 use serde::Serialize;
 use sparrow_core::{
-    ChannelDetails, ChannelGroupView, ChannelQuality, ChannelSummary, ChannelVariant,
+    ChannelDetails, ChannelGroupView, ChannelIcon, ChannelQuality, ChannelSummary, ChannelVariant,
     GuideProgramme, GuideWindowChannel, Page, ProgrammeSearchHit, ProgrammeSummary, SearchResults,
 };
 
@@ -72,6 +74,8 @@ pub struct ChannelSummaryDto {
     group: String,
     number: u32,
     variant: Option<ChannelVariantDto>,
+    /// The guide row's Channel Icon (see CONTEXT.md), or `null`.
+    icon: Option<ChannelIconDto>,
 }
 
 impl From<&ChannelSummary> for ChannelSummaryDto {
@@ -82,6 +86,7 @@ impl From<&ChannelSummary> for ChannelSummaryDto {
             group: channel.group().to_owned(),
             number: channel.number(),
             variant: channel.variant().map(ChannelVariantDto::from),
+            icon: channel.icon().map(ChannelIconDto::from),
         }
     }
 }
@@ -96,7 +101,26 @@ impl From<&ChannelDetails> for ChannelSummaryDto {
             group: channel.group().to_owned(),
             number: channel.number(),
             variant: channel.variant().map(ChannelVariantDto::from),
+            icon: channel.icon().map(ChannelIconDto::from),
         }
+    }
+}
+
+/// A Channel Icon location on the wire: a plain JSON string. It is
+/// provider-derived, so `Debug` never prints it.
+#[derive(Clone, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct ChannelIconDto(String);
+
+impl From<&ChannelIcon> for ChannelIconDto {
+    fn from(icon: &ChannelIcon) -> Self {
+        Self(icon.as_str().to_owned())
+    }
+}
+
+impl Debug for ChannelIconDto {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ChannelIconDto(..)")
     }
 }
 
@@ -264,7 +288,22 @@ pub fn browser_instant(value: DateTime<Utc>) -> String {
 mod tests {
     use chrono::{DateTime, Utc};
 
-    use super::browser_instant;
+    use super::{ChannelIconDto, ChannelSummaryDto, browser_instant};
+
+    #[test]
+    fn channel_icon_dtos_never_debug_print_the_location() {
+        let summary = ChannelSummaryDto {
+            id: "ch1_fixture".to_owned(),
+            name: "Fixture".to_owned(),
+            group: "News".to_owned(),
+            number: 1,
+            variant: None,
+            icon: Some(ChannelIconDto(
+                "https://icons.example/fixture.png".to_owned(),
+            )),
+        };
+        assert!(!format!("{summary:?}").contains("icons.example"));
+    }
 
     #[test]
     fn browser_instant_clamps_years_and_preserves_nanoseconds() {

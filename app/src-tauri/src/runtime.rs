@@ -1883,6 +1883,7 @@ mod tests {
         assert_eq!(channels_json["items"].as_array().map(Vec::len), Some(1));
         assert_safe_routine_json(&groups_json);
         assert_safe_routine_json(&channels_json);
+        assert_eq!(channels_json["items"][0]["icon"], FIXTURE_ICON);
 
         let channel_id = channels_json["items"][0]["id"]
             .as_str()
@@ -1894,7 +1895,9 @@ mod tests {
                 .expect("channel input parses"),
         )
         .expect("channel resolves locally");
-        assert_safe_routine_json(&serde_json::to_value(channel).expect("channel serializes"));
+        let channel_json = serde_json::to_value(channel).expect("channel serializes");
+        assert_eq!(channel_json["icon"], FIXTURE_ICON);
+        assert_safe_routine_json(&channel_json);
 
         let schedule = crate::ipc::schedule(
             &runtime,
@@ -1939,6 +1942,7 @@ mod tests {
         );
         assert_eq!(programmes_json["items"].as_array().map(Vec::len), Some(0));
         assert_eq!(search_json["generation"], schedule_json["generation"]);
+        assert_eq!(search_json["channels"]["items"][0]["icon"], FIXTURE_ICON);
         assert_safe_routine_json(&schedule_json);
         assert_safe_routine_json(&search_json);
         assert_safe_routine_json(&programmes_json);
@@ -1972,6 +1976,7 @@ mod tests {
         let offline_json =
             serde_json::to_value(offline_channels).expect("offline channels serialize");
         assert_eq!(offline_json["items"].as_array().map(Vec::len), Some(1));
+        assert_eq!(offline_json["items"][0]["icon"], FIXTURE_ICON);
         assert_safe_routine_json(&offline_json);
     }
 
@@ -2321,7 +2326,7 @@ mod tests {
     fn one_shot_m3u_server() -> (String, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("fixture listener binds");
         let address = listener.local_addr().expect("fixture address exists");
-        let body = b"#EXTM3U\n#EXTINF:-1 tvg-id=\"fixture-one\" group-title=\"News\",World News\nhttp://127.0.0.1:9/live\n";
+        let body = b"#EXTM3U\n#EXTINF:-1 tvg-id=\"fixture-one\" tvg-logo=\"https://icons.example/world-news.png\" group-title=\"News\",World News\nhttp://127.0.0.1:9/live\n";
         let task = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("fixture request arrives");
             let mut request = [0_u8; 2048];
@@ -2439,8 +2444,34 @@ mod tests {
         String::from_utf8(request).expect("fixture request headers are UTF-8")
     }
 
+    /// The Channel Icon the one-shot M3U fixture names.
+    const FIXTURE_ICON: &str = "https://icons.example/world-news.png";
+
+    /// Checks that routine replies carry no private source location. A Channel
+    /// object's `icon` is the one URL a reply may carry: it must be `null` or
+    /// the fixture icon, and is removed before the remainder is scanned.
     fn assert_safe_routine_json(value: &serde_json::Value) {
-        let serialized = value.to_string();
+        fn strip_channel_icons(value: &mut serde_json::Value) {
+            match value {
+                serde_json::Value::Object(object) => {
+                    if object.contains_key("id")
+                        && object.contains_key("name")
+                        && let Some(icon) = object.remove("icon")
+                    {
+                        assert!(
+                            icon.is_null() || icon == FIXTURE_ICON,
+                            "unexpected Channel icon"
+                        );
+                    }
+                    object.values_mut().for_each(strip_channel_icons);
+                }
+                serde_json::Value::Array(items) => items.iter_mut().for_each(strip_channel_icons),
+                _ => {}
+            }
+        }
+        let mut remainder = value.clone();
+        strip_channel_icons(&mut remainder);
+        let serialized = remainder.to_string();
         for forbidden in ["http://", "https://", "m3uLocation", "epgLocation"] {
             assert!(!serialized.contains(forbidden));
         }

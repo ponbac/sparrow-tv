@@ -128,6 +128,96 @@ https://media.fixture.invalid/live/world?token=provider-quirk-canary\r\n",
 }
 
 #[tokio::test]
+async fn channel_icons_keep_usable_tvg_logo_locations_as_given_and_drop_the_rest() {
+    let m3u = br#"#EXTM3U
+#EXTINF:-1 tvg-logo="https://icons.example/a.png" group-title="Icons",Plain
+https://media.fixture.invalid/live/1
+#EXTINF:-1 TVG-LOGO="  http://icons.example/b.jpg?size=small  " group-title="Icons",Trimmed
+https://media.fixture.invalid/live/2
+#EXTINF:-1 tvg-logo="HTTPS://Icons.Example:443/a/../c" group-title="Icons",Verbatim
+https://media.fixture.invalid/live/3
+#EXTINF:-1 tvg-logo="/logos/relative.png" group-title="Icons",Relative
+https://media.fixture.invalid/live/4
+#EXTINF:-1 tvg-logo="https:icons.example/no-authority.png" group-title="Icons",No Authority
+https://media.fixture.invalid/live/5
+#EXTINF:-1 tvg-logo="data:image/png;base64,AAAA" group-title="Icons",Data
+https://media.fixture.invalid/live/6
+#EXTINF:-1 tvg-logo="https://user:secret@icons.example/f.png" group-title="Icons",Credentials
+https://media.fixture.invalid/live/7
+#EXTINF:-1 tvg-logo="" group-title="Icons",Empty
+https://media.fixture.invalid/live/8
+#EXTINF:-1 tvg-logo="https://icons.example/has space.png" group-title="Icons",Space
+https://media.fixture.invalid/live/9
+#EXTINF:-1 tvg-logo="tmhttps://icons.example/x.png" group-title="Icons",Junk Scheme
+https://media.fixture.invalid/live/10
+#EXTINF:-1 group-title="Icons",Missing
+https://media.fixture.invalid/live/11
+#EXTINF:-1 tvg-logo="https://@icons.example/empty-credentials.png" group-title="Icons",Empty Credentials
+https://media.fixture.invalid/live/14
+#EXTINF:-1 tvg-logo="https://icons.example:bad/port.png" group-title="Icons",Bad Port
+https://media.fixture.invalid/live/15
+#EXTINF:-1 tvg-logo="https://\/user:secret@icons.example/hidden.png" group-title="Icons",Hidden Credentials
+https://media.fixture.invalid/live/16
+#EXTINF:-1 tvg-logo="https:///icons.example/empty-authority.png" group-title="Icons",Empty Authority
+https://media.fixture.invalid/live/17
+#EXTINF:-1 tvg-logo="https://icons.example:8443/art/@2x.png" group-title="Icons",At In Path
+https://media.fixture.invalid/live/12
+"#;
+    let mut m3u = m3u.to_vec();
+    // U+FEFF is not Unicode White_Space, so it stays; the TS decoder agrees.
+    m3u.extend_from_slice(
+        "#EXTINF:-1 tvg-logo=\"https://icons.example/bom\u{feff}.png\" group-title=\"Icons\",Byte Order Mark\nhttps://media.fixture.invalid/live/13\n"
+            .as_bytes(),
+    );
+    let source = ScriptedSource::from_bytes(m3u);
+    let snapshots = MemorySnapshotStore::default();
+    let configuration = SparrowCore::parse_source_configuration(SourceConfigurationInput::new(
+        "https://provider.fixture.invalid/list.m3u",
+        None::<String>,
+    ))
+    .expect("the fixture configuration is valid");
+
+    let core = SparrowCore::bootstrap(Some(configuration), adapters(source, snapshots))
+        .await
+        .expect("bootstrap remains usable");
+    assert!(matches!(core.status().m3u(), SourceState::Fresh { .. }));
+    let page = core
+        .list_channels(first_channels(20))
+        .expect("catalog is available");
+    let icons: Vec<(&str, Option<&str>)> = page
+        .items()
+        .iter()
+        .map(|channel| (channel.name(), channel.icon().map(|icon| icon.as_str())))
+        .collect();
+
+    assert_eq!(
+        icons,
+        vec![
+            ("Plain", Some("https://icons.example/a.png")),
+            ("Trimmed", Some("http://icons.example/b.jpg?size=small")),
+            ("Verbatim", Some("HTTPS://Icons.Example:443/a/../c")),
+            ("Relative", None),
+            ("No Authority", None),
+            ("Data", None),
+            ("Credentials", None),
+            ("Empty", None),
+            ("Space", None),
+            ("Junk Scheme", None),
+            ("Missing", None),
+            ("Empty Credentials", None),
+            ("Bad Port", None),
+            ("Hidden Credentials", None),
+            ("Empty Authority", None),
+            ("At In Path", Some("https://icons.example:8443/art/@2x.png")),
+            (
+                "Byte Order Mark",
+                Some("https://icons.example/bom\u{feff}.png")
+            ),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn unescaped_inner_quotes_in_a_provider_attribute_do_not_reject_the_source() {
     let m3u = br#"#EXTM3U
 #EXTINF:-1 tvg-id="" tvg-name="Friday Premiere "Royal Hearts" (2026)" group-title="Drama",

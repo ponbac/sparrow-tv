@@ -1,4 +1,4 @@
-//! Zero-copy flat processed catalog format (`sparrow-processed-catalog-v3`).
+//! Zero-copy flat processed catalog format (`sparrow-processed-catalog-v4`).
 //!
 //! All multi-byte fields use unaligned little-endian `zerocopy` wrappers so
 //! both in-memory (`Owned(Vec<u8>)`) and `mmap`-backed (`Mapped(CatalogCacheMapping)`)
@@ -15,7 +15,10 @@ use zerocopy::{
 };
 
 use crate::{
-    domain::{CatalogGeneration, ChannelQuality, SourceConfiguration, normalize_search_text},
+    domain::{
+        CatalogGeneration, ChannelQuality, SourceConfiguration, has_channel_icon_shape,
+        normalize_search_text,
+    },
     identity,
     m3u::ParsedChannel,
     ports::{CatalogCacheMapping, SnapshotCandidate, SnapshotStore},
@@ -27,8 +30,8 @@ use super::{
     variants,
 };
 
-pub(crate) const FLAT_MAGIC: [u8; 12] = *b"SPARROWCAT\x03\x00";
-const CACHE_KEY_DOMAIN: &[u8] = b"sparrow-processed-catalog-v3\0";
+pub(crate) const FLAT_MAGIC: [u8; 12] = *b"SPARROWCAT\x04\x00";
+const CACHE_KEY_DOMAIN: &[u8] = b"sparrow-processed-catalog-v4\0";
 const FLAG_HAS_EPG: u32 = 1;
 pub(super) const ABSENT_U32: u32 = u32::MAX;
 pub(super) const UNMATCHED_PROG_BIT: u32 = 0x8000_0000;
@@ -56,7 +59,7 @@ pub(crate) fn cache_key(
 
 #[derive(Clone, Copy)]
 #[repr(usize)]
-enum Section {
+pub(super) enum Section {
     // Tier 1: Hot (startup: groups_page, channels_page page 1)
     Groups = 0,
     GroupByNameSorted = 1,
@@ -64,36 +67,38 @@ enum Section {
     GroupSearchStrings = 3,
     ChannelsHot = 4,
     ChannelNames = 5,
+    IconSpans = 6,
+    IconStrings = 7,
     // Tier 2: Warm (guide_window page 1, by_id lookups)
-    ChannelsById = 6,
-    ChannelSchedules = 7,
-    ScheduleEntries = 8,
-    ScheduleOverlap = 9,
-    MatchedProgrammesHot = 10,
-    MatchedProgrammeTitles = 11,
+    ChannelsById = 8,
+    ChannelSchedules = 9,
+    ScheduleEntries = 10,
+    ScheduleOverlap = 11,
+    MatchedProgrammesHot = 12,
+    MatchedProgrammeTitles = 13,
     // Tier 3: Cold (tune, schedule descriptions, search, single-source refresh)
-    PlaybackSpans = 12,
-    PlaybackStrings = 13,
-    TvgIdSpans = 14,
-    TvgIdStrings = 15,
-    MatchedProgrammeDescSpans = 16,
-    MatchedProgrammeDescriptions = 17,
-    ChannelSearchSpans = 18,
-    ChannelSearchArena = 19,
-    ProgrammeSearchSpans = 20,
-    ProgrammeSearchArena = 21,
-    GuideIdSpans = 22,
-    GuideIdStrings = 23,
-    GuideChannels = 24,
-    GuideDisplaySpans = 25,
-    GuideDisplayStrings = 26,
-    MatchedProgGuideIds = 27,
-    UnmatchedProgrammes = 28,
-    UnmatchedProgrammeStrings = 29,
-    GuideProgOrder = 30,
+    PlaybackSpans = 14,
+    PlaybackStrings = 15,
+    TvgIdSpans = 16,
+    TvgIdStrings = 17,
+    MatchedProgrammeDescSpans = 18,
+    MatchedProgrammeDescriptions = 19,
+    ChannelSearchSpans = 20,
+    ChannelSearchArena = 21,
+    ProgrammeSearchSpans = 22,
+    ProgrammeSearchArena = 23,
+    GuideIdSpans = 24,
+    GuideIdStrings = 25,
+    GuideChannels = 26,
+    GuideDisplaySpans = 27,
+    GuideDisplayStrings = 28,
+    MatchedProgGuideIds = 29,
+    UnmatchedProgrammes = 30,
+    UnmatchedProgrammeStrings = 31,
+    GuideProgOrder = 32,
 }
 
-pub(super) const SECTION_COUNT: usize = 31;
+pub(super) const SECTION_COUNT: usize = 33;
 
 #[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
@@ -117,6 +122,7 @@ pub(super) struct FlatHeader {
     pub(super) guide_display_count: U32,
     pub(super) unmatched_prog_count: U32,
     pub(super) total_guide_prog_count: U32,
+    pub(super) icon_count: U32,
     pub(super) sections: [SectionRange; SECTION_COUNT],
 }
 
@@ -139,6 +145,8 @@ pub(super) struct ChannelHot {
     pub(super) name_len: U32,
     pub(super) group_index: U32,
     pub(super) number: U32,
+    /// Index into `IconSpans` of the guide row's Channel Icon, or `ABSENT_U32`.
+    pub(super) icon_index: U32,
     pub(super) quality: u8,
     pub(super) pad: [u8; 3],
 }
@@ -208,9 +216,9 @@ pub(super) struct UnmatchedProgrammeRecord {
 
 const _: () = {
     assert!(size_of::<SectionRange>() == 16);
-    assert!(size_of::<FlatHeader>() == 60 + SECTION_COUNT * 16);
+    assert!(size_of::<FlatHeader>() == 64 + SECTION_COUNT * 16);
     assert!(size_of::<GroupRecord>() == 24);
-    assert!(size_of::<ChannelHot>() == 52);
+    assert!(size_of::<ChannelHot>() == 56);
     assert!(size_of::<Span>() == 8);
     assert!(size_of::<IndexRange>() == 8);
     assert!(size_of::<ScheduleEntry>() == 8);
@@ -432,6 +440,24 @@ impl FlatCatalog {
             channel.name_off.get(),
             channel.name_len.get(),
         )
+    }
+
+    fn channel_icon_span(&self, channel_index: usize) -> Option<Span> {
+        let icon_index = self.channels_hot()[channel_index].icon_index.get();
+        (icon_index != ABSENT_U32)
+            .then(|| self.section_slice::<Span>(Section::IconSpans)[icon_index as usize])
+    }
+
+    /// Returns the Channel Icon location shared by this Channel's guide row.
+    pub(super) fn channel_icon(&self, channel_index: usize) -> Option<&str> {
+        self.channel_icon_span(channel_index)
+            .map(|span| self.section_str_span(Section::IconStrings, span.off.get(), span.len.get()))
+    }
+
+    /// Byte length of the Channel Icon location, for sizing page arenas.
+    pub(super) fn channel_icon_len(&self, channel_index: usize) -> usize {
+        self.channel_icon_span(channel_index)
+            .map_or(0, |span| span.len.get() as usize)
     }
 
     pub(super) fn channel_playback(&self, channel_index: usize) -> &str {
@@ -1159,6 +1185,8 @@ fn build_flat_catalog<G: GuideSource + Sync>(
         (build_placements(), build_epg())
     };
 
+    let (channel_icons, icon_spans, icon_strings) = intern_row_icons(parsed, &pending, &placements);
+
     // Reuse the normalized names already computed in `compute_channel_identities`.
     let mut channel_search_spans = Vec::with_capacity(channel_count);
     let mut channel_search_arena =
@@ -1174,7 +1202,7 @@ fn build_flat_catalog<G: GuideSource + Sync>(
     let mut tvg_id_spans = Vec::with_capacity(channel_count);
     let mut tvg_id_strings = Vec::new();
 
-    for ((idx, ch), placement) in pending.iter().enumerate().zip(placements) {
+    for ((idx, ch), placement) in pending.iter().enumerate().zip(&placements) {
         let source = &parsed[ch.source_index];
         let name_span = push_str_blob(&mut channel_names, &source.name);
         let playback_span = push_str_blob(&mut playback_strings, &source.playback);
@@ -1192,6 +1220,7 @@ fn build_flat_catalog<G: GuideSource + Sync>(
             name_len: name_span.len,
             group_index: U32::new(channel_group_indices[idx]),
             number: U32::new(placement.number),
+            icon_index: U32::new(channel_icons[idx]),
             quality: encode_quality(placement.quality),
             pad: [0; 3],
         });
@@ -1199,6 +1228,8 @@ fn build_flat_catalog<G: GuideSource + Sync>(
         tvg_id_spans.push(tvg_span);
     }
     drop(pending);
+    drop(placements);
+    drop(channel_icons);
     drop(channel_group_indices);
 
     let group_by_name_sorted: Vec<U32> = group_by_name_sorted.into_iter().map(U32::new).collect();
@@ -1214,6 +1245,8 @@ fn build_flat_catalog<G: GuideSource + Sync>(
             group_search_strings: &group_search_strings,
             channels_hot: channels_hot.as_bytes(),
             channel_names: &channel_names,
+            icon_spans: icon_spans.as_bytes(),
+            icon_strings: &icon_strings,
             channels_by_id: channels_by_id.as_bytes(),
             playback_spans: playback_spans.as_bytes(),
             playback_strings: &playback_strings,
@@ -1223,6 +1256,7 @@ fn build_flat_catalog<G: GuideSource + Sync>(
             channel_search_arena: &channel_search_arena,
             group_count: groups.len(),
             channel_count,
+            icon_count: icon_spans.len(),
         },
         &epg_sections,
     )
@@ -1261,6 +1295,8 @@ fn rebuild_with_guide<G: GuideSource>(
             group_search_strings: existing.section_bytes(Section::GroupSearchStrings),
             channels_hot: existing.section_bytes(Section::ChannelsHot),
             channel_names: existing.section_bytes(Section::ChannelNames),
+            icon_spans: existing.section_bytes(Section::IconSpans),
+            icon_strings: existing.section_bytes(Section::IconStrings),
             channels_by_id: existing.section_bytes(Section::ChannelsById),
             playback_spans: existing.section_bytes(Section::PlaybackSpans),
             playback_strings: existing.section_bytes(Section::PlaybackStrings),
@@ -1270,6 +1306,7 @@ fn rebuild_with_guide<G: GuideSource>(
             channel_search_arena: existing.section_bytes(Section::ChannelSearchArena),
             group_count: existing.groups().len(),
             channel_count,
+            icon_count: existing.section_slice::<Span>(Section::IconSpans).len(),
         },
         &epg_sections,
     )
@@ -1282,6 +1319,8 @@ struct FlatSectionsRef<'a> {
     group_search_strings: &'a [u8],
     channels_hot: &'a [u8],
     channel_names: &'a [u8],
+    icon_spans: &'a [u8],
+    icon_strings: &'a [u8],
     channels_by_id: &'a [u8],
     playback_spans: &'a [u8],
     playback_strings: &'a [u8],
@@ -1291,6 +1330,7 @@ struct FlatSectionsRef<'a> {
     channel_search_arena: &'a [u8],
     group_count: usize,
     channel_count: usize,
+    icon_count: usize,
 }
 
 fn assemble_flat_catalog(
@@ -1306,6 +1346,8 @@ fn assemble_flat_catalog(
         m3u.group_search_strings,
         m3u.channels_hot,
         m3u.channel_names,
+        m3u.icon_spans,
+        m3u.icon_strings,
         m3u.channels_by_id,
         epg.channel_schedules.as_bytes(),
         epg.schedule_entries.as_bytes(),
@@ -1383,6 +1425,7 @@ fn assemble_flat_catalog(
         total_guide_prog_count: U32::new(
             u32::try_from(epg.guide_prog_order.len()).expect("total guide programmes fit in u32"),
         ),
+        icon_count: U32::new(u32::try_from(m3u.icon_count).expect("icons fit in u32")),
         sections: section_ranges,
     };
 
@@ -1416,6 +1459,44 @@ fn intern_guide_id<'a>(
     guide_id_spans.push(span);
     guide_id_map.insert(id, idx);
     idx
+}
+
+/// Resolves one Channel Icon per guide row and interns the distinct icons in
+/// first-use Channel Catalog order.
+///
+/// Quality Variants of one guide row share a Channel Number and are adjacent.
+/// Each takes the first icon any of them names, so a row shows one icon
+/// whichever variant a client holds.
+fn intern_row_icons(
+    parsed: &[ParsedChannel],
+    pending: &[PendingChannel],
+    placements: &[variants::Placement],
+) -> (Vec<u32>, Vec<Span>, Vec<u8>) {
+    let mut channel_icons = vec![ABSENT_U32; pending.len()];
+    let mut icon_indices = HashMap::<&str, u32>::new();
+    let mut icon_spans = Vec::new();
+    let mut icon_strings = Vec::new();
+    let mut row_start = 0;
+    while row_start < pending.len() {
+        let number = placements[row_start].number;
+        let mut row_end = row_start + 1;
+        while row_end < pending.len() && placements[row_end].number == number {
+            row_end += 1;
+        }
+        let row_icon = pending[row_start..row_end]
+            .iter()
+            .find_map(|channel| parsed[channel.source_index].icon.as_deref());
+        if let Some(icon) = row_icon {
+            let index = *icon_indices.entry(icon).or_insert_with(|| {
+                let index = u32::try_from(icon_spans.len()).expect("icons fit in u32");
+                icon_spans.push(push_str_blob(&mut icon_strings, icon));
+                index
+            });
+            channel_icons[row_start..row_end].fill(index);
+        }
+        row_start = row_end;
+    }
+    (channel_icons, icon_spans, icon_strings)
 }
 
 fn push_str_blob(blob: &mut Vec<u8>, value: &str) -> Span {
@@ -1546,6 +1627,7 @@ fn validate_flat_bytes(
     let guide_display_count = header.guide_display_count.get() as usize;
     let unmatched_prog_count = header.unmatched_prog_count.get() as usize;
     let total_guide_prog_count = header.total_guide_prog_count.get() as usize;
+    let icon_count = header.icon_count.get() as usize;
 
     if header.matched_prog_count.get() >= UNMATCHED_PROG_BIT
         || header.unmatched_prog_count.get() >= UNMATCHED_PROG_BIT
@@ -1612,6 +1694,7 @@ fn validate_flat_bytes(
     let group_search_strings =
         std::str::from_utf8(layout.slice(bytes, Section::GroupSearchStrings)).ok()?;
     let channel_names = std::str::from_utf8(layout.slice(bytes, Section::ChannelNames)).ok()?;
+    let icon_strings = std::str::from_utf8(layout.slice(bytes, Section::IconStrings)).ok()?;
     let matched_programme_titles =
         std::str::from_utf8(layout.slice(bytes, Section::MatchedProgrammeTitles)).ok()?;
     let playback_strings =
@@ -1636,6 +1719,7 @@ fn validate_flat_bytes(
         typed_section::<U32>(bytes, &layout, Section::GroupByNameSorted, group_count)?;
     let channels_hot =
         typed_section::<ChannelHot>(bytes, &layout, Section::ChannelsHot, channel_count)?;
+    let icon_spans = typed_section::<Span>(bytes, &layout, Section::IconSpans, icon_count)?;
     let channels_by_id =
         typed_section::<U32>(bytes, &layout, Section::ChannelsById, channel_count)?;
     let channel_schedules =
@@ -1753,6 +1837,24 @@ fn validate_flat_bytes(
         prev_group_name = Some(name);
     }
 
+    // Validate interned Channel Icons: contiguous spans with an http(s) shape.
+    // The full location rule ran at build time; the file is checksummed.
+    let mut icon_cursor = 0_usize;
+    for span in icon_spans {
+        let icon = checked_contiguous_span(
+            icon_strings,
+            &mut icon_cursor,
+            span.off.get(),
+            span.len.get(),
+        )?;
+        if !has_channel_icon_shape(icon) {
+            return None;
+        }
+    }
+    if icon_cursor != icon_strings.len() {
+        return None;
+    }
+
     // Validate channels and parallel channel tables with contiguous non-overlapping spans.
     let mut channel_name_cursor = 0_usize;
     let mut playback_cursor = 0_usize;
@@ -1761,6 +1863,10 @@ fn validate_flat_bytes(
     for index in 0..channel_count {
         let ch = &channels_hot[index];
         if ch.pad != [0; 3] || decode_quality(ch.quality).is_none() {
+            return None;
+        }
+        let icon_index = ch.icon_index.get();
+        if icon_index != ABSENT_U32 && icon_index as usize >= icon_count {
             return None;
         }
         let group = groups.get(ch.group_index.get() as usize)?;

@@ -25,7 +25,9 @@ const MAX_FULL_CATALOG_SEARCH_ALLOCATIONS: usize = 6;
 const PRE_FIX_BROAD_SEARCH_ALLOCATIONS: usize = 42;
 const MAX_BROAD_SEARCH_ALLOCATIONS: usize = 28;
 const PRE_FIX_BROAD_SEARCH_PEAK_BYTES: usize = 230_037;
-const MAX_BROAD_SEARCH_PEAK_BYTES: usize = 4_096;
+// 4 KiB of search scratch plus a 64-byte Channel Icon budget for each of the
+// 16 Channels the broad search projects (8 Channel hits, 8 Programme hits).
+const MAX_BROAD_SEARCH_PEAK_BYTES: usize = 4_096 + 16 * 64;
 
 static LIVE_ALLOCATED_BYTES: AtomicUsize = AtomicUsize::new(0);
 static PEAK_LIVE_ALLOCATED_BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -299,7 +301,8 @@ fn generated_m3u() -> Vec<u8> {
     for channel in 0..CHANNEL_COUNT {
         writeln!(
             m3u,
-            "#EXTINF:-1 tvg-id=\"channel-{channel}\" group-title=\"Group {:02}\",Scale Channel {channel:04}",
+            "#EXTINF:-1 tvg-id=\"channel-{channel}\" tvg-logo=\"http://icons.example/images/logos/channels/{:08}-logo.jpg\" group-title=\"Group {:02}\",Scale Channel {channel:04}",
+            channel * 45 / 100,
             channel % 32,
         )
         .expect("writing to a String succeeds");

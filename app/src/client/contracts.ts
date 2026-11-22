@@ -340,6 +340,13 @@ export interface ChannelVariant {
   readonly baseName: string;
 }
 
+/**
+ * A Channel Icon (see CONTEXT.md): an absolute `http:` or `https:` URL exactly
+ * as the M3U Source gave it. Every Quality Variant of a guide row carries the
+ * same icon. It may be plain `http:`.
+ */
+export type ChannelIcon = string;
+
 /** The browser-safe identity and grouping fields for a catalog channel. */
 export interface ChannelSummary {
   readonly id: ChannelId;
@@ -348,6 +355,8 @@ export interface ChannelSummary {
   /** The Channel Number, shared by the Quality Variants of one guide row. */
   readonly number: number;
   readonly variant: ChannelVariant | null;
+  /** The guide row's Channel Icon, or `null` when the M3U Source names none. */
+  readonly icon: ChannelIcon | null;
 }
 
 /** Complete channel metadata currently exposed by the browse contract. */
@@ -358,6 +367,8 @@ export interface ChannelDetails {
   /** The Channel Number, shared by the Quality Variants of one guide row. */
   readonly number: number;
   readonly variant: ChannelVariant | null;
+  /** The guide row's Channel Icon, or `null` when the M3U Source names none. */
+  readonly icon: ChannelIcon | null;
 }
 
 /** The time-bound Programme fields shared by full schedules and guide rows. */
@@ -1128,12 +1139,47 @@ const channelVariantSchema: z.ZodType<ChannelVariant> = z.strictObject({
   baseName: z.string().min(1),
 });
 
+/**
+ * Mirrors core's Channel Icon rule: `http(s)://` followed directly by a
+ * non-empty authority without `@` (`\\` ends it, as URL parsers read it like
+ * `/`), no whitespace or control characters, and a parseable URL with a host
+ * and no userinfo.
+ */
+const isChannelIconLocation = (value: string): boolean => {
+  if (
+    !/^https?:\/\/[^/\\?#@\p{White_Space}\p{Cc}]+([/\\?#][^\p{White_Space}\p{Cc}]*)?$/iu.test(
+      value,
+    )
+  ) {
+    return false;
+  }
+  let location: URL;
+  try {
+    location = new URL(value);
+  } catch {
+    return false;
+  }
+  return (
+    (location.protocol === "http:" || location.protocol === "https:") &&
+    location.hostname !== "" &&
+    location.username === "" &&
+    location.password === ""
+  );
+};
+
+const channelIconSchema = z
+  .string()
+  .refine(isChannelIconLocation, {
+    message: "A Channel Icon must be an absolute http(s) location.",
+  });
+
 const channelSummarySchema: z.ZodType<ChannelSummary> = z.strictObject({
   id: channelIdSchema,
   name: z.string(),
   group: channelGroupNameSchema,
   number: channelNumberSchema,
   variant: channelVariantSchema.nullable(),
+  icon: channelIconSchema.nullable(),
 });
 
 const channelDetailsSchema: z.ZodType<ChannelDetails> = z.strictObject({
@@ -1142,6 +1188,7 @@ const channelDetailsSchema: z.ZodType<ChannelDetails> = z.strictObject({
   group: channelGroupNameSchema,
   number: channelNumberSchema,
   variant: channelVariantSchema.nullable(),
+  icon: channelIconSchema.nullable(),
 });
 
 const programmeSummarySchema: z.ZodType<ProgrammeSummary> = z
