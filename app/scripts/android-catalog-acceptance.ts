@@ -21,6 +21,7 @@ import {
   parseAdbSerial,
   parseCliArguments,
   parseInstalledPackageIdentity,
+  ROUTINE_URL_COUNT_EXPRESSION,
   parseProcessMemory,
   parseReadinessMarker,
   parseSnapshotManifest,
@@ -41,17 +42,11 @@ const COMMAND_OUTPUT_LIMIT = 4 * 1024 * 1024;
 const PUBLIC_IPV4 = "1.1.1.1";
 const PUBLIC_IPV6 = "2606:4700:4700::1111";
 
-const READINESS_EXPRESSION = `(() => {
+/** CDP expression: the catalog shell's readiness, in aggregate. */
+export const READINESS_EXPRESSION = `(() => {
   const allowedStates = new Set(["fresh", "stale", "refreshing", "failed"]);
   const rawState = document.querySelector("[data-acceptance-status]")?.getAttribute("data-state") ?? "unknown";
-  const routineUrlCount = Array.from(document.querySelectorAll("[href], [src], input, textarea"))
-    .filter((node) => {
-      const liveValue = node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement
-        ? node.value
-        : "";
-      return [liveValue, node.getAttribute("value"), node.getAttribute("href"), node.getAttribute("src")]
-        .some((candidate) => /^https?:\\/\\//iu.test((candidate ?? "").trim()));
-    }).length;
+  const routineUrlCount = ${ROUTINE_URL_COUNT_EXPRESSION};
   return {
     nativeBridge: typeof window.__TAURI_INTERNALS__?.invoke === "function",
     catalogShell: document.querySelector("[data-acceptance-catalog-shell]") !== null,

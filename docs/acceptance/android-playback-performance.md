@@ -76,6 +76,13 @@ are mounted but not shown, and the harness presses them through the DOM. The
 player controls it uses are the icon controls under the picture; their labels,
 and the Volume slider that a phone's row does not show, stay in the DOM.
 
+On Android TV there is no watch mode: every tune plays in the Guide's docked
+picture, so the marked buttons are shown, and the player controls are mounted
+in the docked caption's control row, which is not shown. The harness's DOM
+presses reach them the same way. Its Channel switches always press a Channel
+that is not playing, so none of them is the TV's go-fullscreen press, and a
+script press carries no user activation that could take the page fullscreen.
+
 The sustained gate requires uninterrupted playing state, a nonzero Media3
 buffer at every sample, and monotonic counters. When the candidate exposes the
 aggregate decoded-frame count, it must sustain at least 20 decoded frames per

@@ -1,6 +1,6 @@
 import { Radio } from "@base-ui/react/radio";
 import { RadioGroup } from "@base-ui/react/radio-group";
-import { ChevronLeft, ChevronRight, Clock } from "lucide-react";
+import { CalendarRange, ChevronLeft, ChevronRight, Clock, LayoutGrid } from "lucide-react";
 import {
   memo,
   useCallback,
@@ -14,9 +14,13 @@ import {
 } from "react";
 import type { ChannelGroup } from "../../client/contracts";
 import { groupDisplayName, visibleChannelGroups } from "./board-group-roster";
-import { revealInHorizontalScroller } from "../stage/stage-dom";
+import {
+  revealInHorizontalScroller,
+  revealInScrollContainer,
+} from "../stage/stage-dom";
 import { GroupRosterDialog } from "./group-roster-dialog";
 import { clockLabel } from "./guide-window";
+import { railFit, railScrollTop } from "./rail-fit";
 
 const ALL_GROUPS = "all";
 const GROUP_PREFIX = "group:";
@@ -34,6 +38,12 @@ export interface GuideTime {
   readonly onChoose: (time: Date | null) => void;
 }
 
+/** The TV Guide's two layouts and the chip at the head of the lane that swaps them. */
+export interface GuideView {
+  readonly current: "now" | "timeline";
+  readonly onToggle: () => void;
+}
+
 /** Inputs for the scrollable Channel Group lane and roster. */
 export interface ChannelGroupLaneProps {
   /** Decouples D-pad arrow focus from group selection until Enter/Space on TV. */
@@ -42,6 +52,10 @@ export interface ChannelGroupLaneProps {
   readonly activeGroup: string | null;
   /** Null where the guide is a timeline, which shows every time at once. */
   readonly time: GuideTime | null;
+  /** The TV Guide's layout switch, or null where there is one layout. */
+  readonly view?: GuideView | null;
+  /** The TV timeline stands the lane on its side as a rail of groups. */
+  readonly orientation?: "horizontal" | "vertical";
   readonly excluded: ReadonlySet<string>;
   readonly onSelectGroup: (group: string | null) => void;
   readonly onPrefetchGroup: (group: string | null) => void;
@@ -59,12 +73,15 @@ export const ChannelGroupLane = memo(function ChannelGroupLane({
   groups,
   activeGroup,
   time,
+  view = null,
+  orientation = "horizontal",
   excluded,
   onSelectGroup,
   onPrefetchGroup,
   onSetExcluded,
   onRestoreAll,
 }: ChannelGroupLaneProps) {
+  const vertical = orientation === "vertical";
   const scrollerRef = useRef<HTMLDivElement>(null);
   const focusPrefetchTimerRef = useRef<number | null>(null);
   const timesId = useId();
@@ -73,6 +90,7 @@ export const ChannelGroupLane = memo(function ChannelGroupLane({
     [groups, excluded],
   );
   const overflow = useLaneOverflow(scrollerRef, visibleGroups.length);
+  useRailFit(scrollerRef, vertical, visibleGroups.length);
   const activeFilter = filterValue(activeGroup);
 
   const cancelFocusPrefetch = useCallback(() => {
@@ -104,8 +122,19 @@ export const ChannelGroupLane = memo(function ChannelGroupLane({
     if (checked === null) {
       return;
     }
-    revealInHorizontalScroller(scroller, checked);
-  }, [activeGroup, visibleGroups.length]);
+    if (vertical) {
+      revealRailRow(scroller, checked);
+    } else {
+      revealInHorizontalScroller(scroller, checked);
+    }
+  }, [activeGroup, vertical, visibleGroups.length]);
+  const reveal = (target: HTMLElement) => {
+    if (vertical) {
+      revealRailRow(scrollerRef.current, target);
+    } else {
+      revealInHorizontalScroller(scrollerRef.current, target);
+    }
+  };
 
   const step = (direction: -1 | 1) => {
     const scroller = scrollerRef.current;
@@ -123,7 +152,26 @@ export const ChannelGroupLane = memo(function ChannelGroupLane({
         data-overflow={overflow.canBack || overflow.canAhead ? "true" : "false"}
         data-can-back={overflow.canBack ? "true" : "false"}
         data-can-ahead={overflow.canAhead ? "true" : "false"}
+        data-orientation={orientation}
       >
+        {view === null ? null : (
+          <button
+            className="programme-guide__view"
+            type="button"
+            aria-label="Timeline"
+            aria-pressed={view.current === "timeline"}
+            onClick={view.onToggle}
+          >
+            <span data-on={view.current === "now"}>
+              <LayoutGrid aria-hidden="true" />
+              Now
+            </span>
+            <span data-on={view.current === "timeline"}>
+              <CalendarRange aria-hidden="true" />
+              Timeline
+            </span>
+          </button>
+        )}
         {time === null ? null : (
           <button
             className="programme-guide__when"
@@ -166,7 +214,7 @@ export const ChannelGroupLane = memo(function ChannelGroupLane({
               value={ALL_GROUPS}
               onMouseEnter={() => onPrefetchGroup(null)}
               onFocus={(event) => {
-                revealInHorizontalScroller(scrollerRef.current, event.currentTarget);
+                reveal(event.currentTarget);
                 scheduleFocusPrefetch(null);
               }}
               onBlur={cancelFocusPrefetch}
@@ -190,10 +238,7 @@ export const ChannelGroupLane = memo(function ChannelGroupLane({
                   value={groupValue}
                   onMouseEnter={() => onPrefetchGroup(group.name)}
                   onFocus={(event) => {
-                    revealInHorizontalScroller(
-                      scrollerRef.current,
-                      event.currentTarget,
-                    );
+                    reveal(event.currentTarget);
                     scheduleFocusPrefetch(group.name);
                   }}
                   onBlur={cancelFocusPrefetch}
@@ -319,6 +364,87 @@ function useLaneOverflow(
   }, [itemCount, scrollerRef]);
 
   return overflow;
+}
+
+/** The rail's rows, and how far apart they lie. */
+function railRows(
+  scroller: HTMLElement,
+): { readonly rows: HTMLElement[]; readonly height: number; readonly pitch: number } | null {
+  const rows = Array.from(
+    scroller.querySelectorAll<HTMLElement>(".programme-guide__group"),
+  );
+  const first = rows[0]?.getBoundingClientRect();
+  if (first === undefined || first.height <= 0) return null;
+  const second = rows[1]?.getBoundingClientRect();
+  const pitch = second === undefined ? first.height : second.top - first.top;
+  return pitch >= first.height ? { rows, height: first.height, pitch } : null;
+}
+
+/**
+ * Keeps a vertical rail's view on whole rows: the room under the last whole
+ * row goes to `--rail-rest`, which the TV covers, so no group is ever half
+ * shown or faded, and `data-more` says whether groups lie below. Measured
+ * again whenever the rail changes size or scrolls.
+ */
+function useRailFit(
+  scrollerRef: RefObject<HTMLDivElement | null>,
+  enabled: boolean,
+  itemCount: number,
+): void {
+  useLayoutEffect(() => {
+    const node = scrollerRef.current;
+    if (node === null || !enabled) {
+      return;
+    }
+    const measure = () => {
+      const rail = railRows(node);
+      const rest =
+        rail === null ? 0 : railFit(node.clientHeight, rail.height, rail.pitch).rest;
+      node.style.setProperty("--rail-rest", `${rest}px`);
+      markMore();
+    };
+    // Whether groups lie below the view, for the cue in the covered room.
+    const markMore = () => {
+      const more = node.scrollTop + node.clientHeight < node.scrollHeight - 1;
+      if (node.dataset.more !== String(more)) {
+        node.dataset.more = String(more);
+      }
+    };
+    measure();
+    const observer =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(node);
+    node.addEventListener("scroll", markMore, { passive: true });
+    return () => {
+      observer?.disconnect();
+      node.removeEventListener("scroll", markMore);
+      node.style.removeProperty("--rail-rest");
+      delete node.dataset.more;
+    };
+  }, [enabled, itemCount, scrollerRef]);
+}
+
+/** Scrolls a vertical rail by whole rows until `target` is wholly in view. */
+function revealRailRow(scroller: HTMLElement | null, target: HTMLElement): void {
+  if (scroller === null || scroller.clientHeight === 0) {
+    return;
+  }
+  const rail = railRows(scroller);
+  const index = rail?.rows.indexOf(target) ?? -1;
+  if (rail === null || index === -1) {
+    revealInScrollContainer(scroller, target);
+    return;
+  }
+  const next = railScrollTop(
+    index,
+    rail.rows.length,
+    scroller.scrollTop,
+    railFit(scroller.clientHeight, rail.height, rail.pitch),
+    rail.pitch,
+  );
+  if (next !== scroller.scrollTop) {
+    scroller.scrollTop = next;
+  }
 }
 
 function onLaneWheel(event: WheelEvent): void {

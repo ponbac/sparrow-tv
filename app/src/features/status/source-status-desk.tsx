@@ -180,7 +180,9 @@ function SourceCard({
         <h3>{title}</h3>
         <strong className="source-card__state">{presentation.label}</strong>
       </header>
-      <p>{presentation.detail}</p>
+      <p data-restates-label={presentation.restatesLabel ? true : undefined}>
+        {presentation.detail}
+      </p>
       {presentation.time === null ? null : (
         <time dateTime={presentation.time.value}>
           {presentation.time.label} {formatTime(presentation.time.value)}
@@ -263,6 +265,8 @@ interface SourcePresentation {
     | "absent";
   readonly label: string;
   readonly detail: string;
+  /** The detail only says again what the label says; the TV leaves it out. */
+  readonly restatesLabel: boolean;
   readonly time: {
     readonly label: string;
     readonly value: IsoInstant;
@@ -299,7 +303,10 @@ function sourcePresentation(
         "fresh",
         "Fresh",
         "The latest copy is in use.",
-        { time: { label: "Checked", value: state.validatedAt } },
+        {
+          time: { label: "Checked", value: state.validatedAt },
+          restatesLabel: true,
+        },
       );
     case "stale":
       return sourcePresentationValue(
@@ -309,6 +316,7 @@ function sourcePresentation(
         {
           time: { label: "Last checked", value: state.validatedAt },
           nextAttemptAt: state.nextAttemptAt,
+          restatesLabel: true,
         },
       );
     case "refreshing":
@@ -320,7 +328,10 @@ function sourcePresentation(
         state.validatedAt === null
           ? "Sparrow is loading this source for the first time."
           : "The saved copy stays in use while the refresh runs.",
-        { time: { label: "Started", value: state.startedAt } },
+        {
+          time: { label: "Started", value: state.startedAt },
+          restatesLabel: state.validatedAt !== null,
+        },
       );
     case "failed":
       return sourcePresentationValue(
@@ -336,6 +347,7 @@ function sourcePresentation(
               : { label: "Last checked", value: state.validatedAt },
           nextAttemptAt: state.nextAttemptAt,
           failure: safeFailureSummary(state.failure),
+          restatesLabel: state.validatedAt !== null,
         },
       );
     case "unavailable":
@@ -355,7 +367,10 @@ function sourcePresentation(
         state.validatedAt === null
           ? "The refresh starts when Sparrow is free to run it."
           : "The saved copy stays in use until the refresh can run.",
-        { time: { label: "Waiting since", value: state.deferredAt } },
+        {
+          time: { label: "Waiting since", value: state.deferredAt },
+          restatesLabel: state.validatedAt !== null,
+        },
       );
   }
 }
@@ -381,13 +396,17 @@ function sourcePresentationValue(
   label: string,
   detail: string,
   telemetry: Partial<
-    Pick<SourcePresentation, "time" | "nextAttemptAt" | "failure">
+    Pick<
+      SourcePresentation,
+      "time" | "nextAttemptAt" | "failure" | "restatesLabel"
+    >
   > = {},
 ): SourcePresentation {
   return {
     tone,
     label,
     detail,
+    restatesLabel: false,
     time: null,
     nextAttemptAt: null,
     failure: null,

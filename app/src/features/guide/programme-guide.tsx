@@ -17,7 +17,11 @@ import type {
   ClientError,
   GuideWindowChannel,
 } from "../../client/contracts";
-import { ChannelGroupLane, type GuideTime } from "./channel-group-lane";
+import {
+  ChannelGroupLane,
+  type GuideTime,
+  type GuideView,
+} from "./channel-group-lane";
 import { useMoreButtonFocusHandoff } from "./dialog-navigation";
 import {
   guideFamilies,
@@ -25,16 +29,25 @@ import {
   type GuideFamily,
   type VariantPreferences,
 } from "./guide-families";
-import { handleGuideArrowKey, scrollBoardToReveal } from "./guide-navigation";
+import {
+  followTimelineWindow,
+  handleGuideArrowKey,
+  revealTimelineCell,
+  scrollBoardToReveal,
+} from "./guide-navigation";
+import { GuidePreview, type GuidePreviewSource } from "./guide-preview";
+import { createPreviewStore, previewFocusOf } from "./guide-preview-store";
 import {
   clockLabel,
   clockMarks,
+  windowDays,
   playheadPercent,
   type ClockWindow,
 } from "./guide-window";
 import { revealScrollTop } from "./list-scroll";
 import { ProgrammeGuideRow } from "./programme-guide-row";
 import { ProgrammeListRow } from "./programme-list-row";
+import { ProgrammeTimelineRow } from "./programme-timeline-row";
 import "./programme-guide.css";
 
 /** Inputs for the guide: Theater's timetable or pocket's now-and-next list. */
@@ -65,6 +78,16 @@ export interface ProgrammeGuideProps {
   readonly mode: "watch" | "guide";
   /** The time pocket's list looks at; null in Theater. */
   readonly time: GuideTime | null;
+  /**
+   * The TV Guide's layout: the now-and-next grid or the timeline, and the
+   * lane's chip that swaps them. Absent elsewhere.
+   */
+  readonly view?: GuideView | null;
+  /**
+   * Where the TV band's panel about the focused Channel reads descriptions.
+   * Absent where there is no such panel.
+   */
+  readonly preview?: GuidePreviewSource | null;
   readonly loading: boolean;
   readonly replacing: boolean;
   readonly error: ClientError | null;
@@ -114,6 +137,8 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
   layout,
   mode,
   time,
+  view = null,
+  preview = null,
   loading,
   replacing,
   error,
@@ -135,6 +160,11 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
   status,
 }: ProgrammeGuideProps) {
   const families = useMemo(() => guideFamilies(rows), [rows]);
+  const timeline = television && view?.current === "timeline";
+  const [previewStore] = useState(createPreviewStore);
+  const windowMinutes =
+    (guideWindow.endsAt.getTime() - guideWindow.startsAt.getTime()) / 60_000;
+  const nowMinutes = (now.getTime() - guideWindow.startsAt.getTime()) / 60_000;
   const nowFraction = playheadPercent(guideWindow, now) / 100;
   const nowLeft = `calc(var(--guide-gutter) + (100% - var(--guide-gutter)) * ${nowFraction})`;
   const [channelNameTooltip] = useState(() => Tooltip.createHandle<string>());
@@ -242,6 +272,16 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
 
   const onRowsFocus = useCallback(
     (event: FocusEvent<HTMLDivElement>) => {
+      const focus = previewFocusOf(event.target);
+      if (focus !== null) previewStore.set(focus);
+      const board = boardRef.current;
+      if (
+        board !== null &&
+        event.target instanceof HTMLElement &&
+        event.target.classList.contains("programme-guide__programme")
+      ) {
+        revealTimelineCell(board, event.target);
+      }
       if (!canAutoLoad || !(event.target instanceof Element)) {
         return;
       }
@@ -261,8 +301,26 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
         requestAutoLoad();
       }
     },
-    [canAutoLoad, requestAutoLoad],
+    [boardRef, canAutoLoad, previewStore, requestAutoLoad],
   );
+  // A fresh timeline starts at the window's first half hour.
+  useLayoutEffect(() => {
+    const board = boardRef.current;
+    if (board === null) return;
+    board.style.setProperty("--tl-offset", "0");
+    board.dataset.nowHidden = "false";
+  }, [boardRef, timeline]);
+  // When the window moves on, the timeline keeps showing the same time, so a
+  // focused cell does not slide out from under the focus.
+  const windowStart = guideWindow.startsAt.getTime();
+  const shownWindowStart = useRef(windowStart);
+  useLayoutEffect(() => {
+    const moved = (windowStart - shownWindowStart.current) / 60_000;
+    shownWindowStart.current = windowStart;
+    const board = boardRef.current;
+    if (board === null || !timeline) return;
+    followTimelineWindow(board, moved);
+  }, [boardRef, timeline, windowStart]);
   const boardEmpty =
     emptyState === undefined &&
     groups.length > 0 &&
@@ -294,6 +352,7 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
       ref={sectionRef}
       className="programme-guide"
       data-layout={layout}
+      data-view={view?.current}
       aria-label="Programme guide"
       onKeyDownCapture={(event) => {
         const section = sectionRef.current;
@@ -344,12 +403,26 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
         {masthead?.clock}
       </header>
 
+      {preview === null ? null : (
+        <GuidePreview
+          source={preview}
+          store={previewStore}
+          families={families}
+          variantPreferences={variantPreferences}
+          playingChannel={playingChannel}
+          now={now}
+          windowStart={guideWindow.startsAt}
+        />
+      )}
+
       <div className="programme-guide__body">
         <ChannelGroupLane
           television={television}
           groups={groups}
           activeGroup={activeGroup}
           time={time}
+          view={view}
+          orientation={timeline ? "vertical" : "horizontal"}
           excluded={excludedGroups}
           onSelectGroup={onSelectGroup}
           onPrefetchGroup={onPrefetchGroup}
@@ -362,6 +435,10 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
             className="programme-guide__board"
             ref={boardRef}
             aria-busy={loading || replacing}
+            data-view={timeline ? "timeline" : undefined}
+            data-window-minutes={timeline ? windowMinutes : undefined}
+            data-now-minutes={timeline ? nowMinutes : undefined}
+            style={timeline ? { "--tl-now": nowMinutes } : undefined}
           >
             {layout === "theater" ? (
               <GuideRuler
@@ -370,6 +447,8 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
                 nowFraction={nowFraction}
                 nowLeft={nowLeft}
               />
+            ) : timeline ? (
+              <TimelineRuler window={guideWindow} now={now} />
             ) : null}
 
             {loading && rows.length === 0 ? (
@@ -415,12 +494,24 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
                 </div>
                 <ChannelNameTooltip handle={channelNameTooltip} />
               </Tooltip.Provider>
+            ) : timeline ? (
+              <div className="programme-guide__rows" onFocus={onRowsFocus}>
+                <div className="programme-guide__now-band" aria-hidden="true" />
+                {families.map((family) => (
+                  <ProgrammeTimelineRow
+                    key={family.number}
+                    {...rowProps(family)}
+                    window={guideWindow}
+                  />
+                ))}
+              </div>
             ) : (
               <div className="programme-guide__rows" onFocus={onRowsFocus}>
                 {families.map((family) => (
                   <ProgrammeListRow
                     key={family.number}
                     {...rowProps(family)}
+                    channelIcon={television}
                     at={time?.chosen ?? null}
                     pending={replacing}
                   />
@@ -555,6 +646,50 @@ function GuideRuler({
       <span className="programme-guide__now" style={{ left: nowLeft }}>
         {clockLabel(now)}
       </span>
+    </div>
+  );
+}
+
+/**
+ * The TV timeline's ruler: a mark at every half hour of the window, and a
+ * tab on the now line. Placed against the first minute the timeline shows.
+ */
+function TimelineRuler({
+  window,
+  now,
+}: {
+  readonly window: ClockWindow;
+  readonly now: Date;
+}) {
+  const start = window.startsAt.getTime();
+  return (
+    <div className="programme-guide__timeline-ruler" aria-hidden="true">
+      {/* The day of the first minute shown. Each day the window touches has
+          its label; CSS shows the one under the board's --tl-offset. */}
+      <span className="programme-guide__timeline-day">
+        {windowDays(window, now).map((day, index, days) => (
+          <span
+            key={day.fromMinute}
+            style={{
+              "--day-from": index === 0 ? -1_000_000 : day.fromMinute,
+              "--day-to": index === days.length - 1 ? 1_000_000 : day.toMinute,
+            }}
+          >
+            {day.label}
+          </span>
+        ))}
+      </span>
+      <div className="programme-guide__ticks">
+        {clockMarks(window).map((mark) => (
+          <time
+            key={mark.toISOString()}
+            style={{ "--at": (mark.getTime() - start) / 60_000 }}
+          >
+            {clockLabel(mark)}
+          </time>
+        ))}
+        <span className="programme-guide__now-tab">Now {clockLabel(now)}</span>
+      </div>
     </div>
   );
 }

@@ -92,6 +92,41 @@ export function preferredVariant(
   return best;
 }
 
+/**
+ * The variant a search result row tunes, as `preferredVariant` chooses it for
+ * the guide row: the stored quality when the row has it, otherwise the
+ * highest quality. The variants are one guide row's, so they share a group
+ * and a base name.
+ */
+export function preferredChannel(
+  variants: readonly [ChannelSummary, ...ChannelSummary[]],
+  preferences: VariantPreferences,
+): ChannelSummary {
+  const first = variants[0];
+  const stored = preferences.get(
+    familyKey({ group: first.group, title: channelTitle(first) }),
+  );
+  let best = first;
+  for (const channel of variants) {
+    const quality = channel.variant?.quality;
+    if (quality !== undefined && quality === stored) {
+      return channel;
+    }
+    if (channelQualityRank(channel) > channelQualityRank(best)) {
+      best = channel;
+    }
+  }
+  return best;
+}
+
+/** Orders a guide row's variants from the lowest picture quality up. */
+export function byQuality(
+  left: ChannelSummary,
+  right: ChannelSummary,
+): number {
+  return channelQualityRank(left) - channelQualityRank(right);
+}
+
 /** The closest lower quality in the family of the Channel that actually stalled. */
 export function lowerQualityVariant(
   rows: readonly GuideWindowChannel[],
@@ -152,6 +187,10 @@ export function familyKey(family: Pick<GuideFamily, "group" | "title">): string 
 }
 
 function qualityRank(row: GuideWindowChannel): number {
-  const quality = row.channel.variant?.quality;
+  return channelQualityRank(row.channel);
+}
+
+function channelQualityRank(channel: ChannelSummary): number {
+  const quality = channel.variant?.quality;
   return quality === undefined ? -1 : QUALITY_RANKS[quality];
 }

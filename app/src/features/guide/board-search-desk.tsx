@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type FocusEvent,
@@ -21,11 +22,21 @@ import {
   useMoreButtonFocusHandoff,
   useTelevisionInputEdit,
 } from "./dialog-navigation";
-import { channelTitle, qualityLabel } from "./guide-families";
+import { ChannelIcon } from "./channel-icon";
 import {
+  channelTitle,
+  qualityLabel,
+  type VariantPreferences,
+} from "./guide-families";
+import {
+  foldSearchVariants,
   shouldAdvancePastExcludedSearchHits,
   visibleSearchChannels,
+  type SearchChannelRow,
 } from "./board-search-scope";
+import { SearchQualities } from "./search-qualities";
+import { searchHitOnNow, type SearchOnNow } from "./search-on-now";
+import { minutesLeft } from "./now-next";
 import {
   canonicalSearchTerm,
   SEARCH_DEBOUNCE_MS,
@@ -41,6 +52,13 @@ export interface BoardSearchDeskProps {
   readonly generation: CatalogGeneration | null;
   readonly term: string;
   readonly excludedGroups: ReadonlySet<string>;
+  /**
+   * The viewer's chosen quality per guide row. The TV folds a guide row's
+   * Quality Variants into one row that tunes the chosen or best one.
+   */
+  readonly variantPreferences?: VariantPreferences;
+  /** What the Guide has read, so a TV hit can say what is on now. */
+  readonly onNow?: SearchOnNow;
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly onTermChange: (term: string) => void;
@@ -52,6 +70,7 @@ export interface BoardSearchDeskProps {
 }
 
 const SEARCH_AUTO_LOAD_SCROLL_THRESHOLD_PX = 480;
+const NO_PREFERENCES: VariantPreferences = new Map();
 const SEARCH_AUTO_LOAD_FOCUS_TAIL_ROWS = 6;
 
 /**
@@ -64,6 +83,8 @@ export function BoardSearchDesk({
   generation,
   term,
   excludedGroups,
+  variantPreferences = NO_PREFERENCES,
+  onNow,
   open,
   onOpenChange,
   onTermChange,
@@ -119,6 +140,14 @@ export function BoardSearchDesk({
     includeExcluded,
   );
   const hiddenCount = Math.max(0, channels.length - visibleChannels.length);
+  // One row per guide row on the TV; one per Channel elsewhere.
+  const rows: readonly SearchChannelRow[] = useMemo(
+    () =>
+      television
+        ? foldSearchVariants(visibleChannels, variantPreferences)
+        : visibleChannels.map((channel) => ({ channel, variants: [channel] })),
+    [television, variantPreferences, visibleChannels],
+  );
   const generationMismatch = error?._tag === "stale-cursor";
   const waitingForDebounce = requestTerm !== searchTerm;
   const shouldAdvance =
@@ -237,7 +266,7 @@ export function BoardSearchDesk({
       presentation === "error" ||
       error !== null,
     scopeKey: `${searchTerm}:${includeExcluded ? "all" : "visible"}`,
-    rowCount: visibleChannels.length,
+    rowCount: rows.length,
     canAutoLoad,
     onRequestAutoLoad: requestAutoLoad,
     onManualLoadMore: loadMore,
@@ -352,8 +381,9 @@ export function BoardSearchDesk({
             <div>
               <Dialog.Title>Find a channel</Dialog.Title>
               <Dialog.Description>
-                Search every channel by name. Hidden groups are left out
-                unless you include them.
+                {television
+                  ? "Search every channel by name. Hidden groups are left out."
+                  : "Search every channel by name. Hidden groups are left out unless you include them."}
               </Dialog.Description>
             </div>
             <Dialog.Close
@@ -390,7 +420,7 @@ export function BoardSearchDesk({
               />
             </label>
             <p className="board-search-desk__tally">
-              <b>{visibleChannels.length}</b> found
+              <b>{rows.length}</b> found
               {hiddenCount > 0 ? (
                 <>
                   , <b>{hiddenCount}</b> hidden
@@ -453,13 +483,16 @@ export function BoardSearchDesk({
                 No channel matches that search.
               </p>
             ) : (
-              visibleChannels.map((channel) => {
+              rows.map(({ channel, variants }) => {
                 const excluded = excludedGroups.has(channel.group);
                 return (
                   <div
                     className="board-search-desk__row"
                     data-excluded={excluded}
-                    key={channel.id}
+                    // A folded row is its guide row: keyed by the Channel
+                    // Number, which a sibling found on a later page does not
+                    // change, so the focused row's button stays.
+                    key={television ? `number:${channel.number}` : channel.id}
                     role="listitem"
                   >
                     <Dialog.Close
@@ -473,14 +506,31 @@ export function BoardSearchDesk({
                         onTune(channel);
                       }}
                     >
-                      <span className="board-search__number">
-                        {channel.number}
-                      </span>
-                      <strong>{channelTitle(channel)}</strong>
-                      {channel.variant === null ? null : (
-                        <span className="board-search__quality">
-                          {qualityLabel(channel.variant.quality)}
-                        </span>
+                      {television ? (
+                        <>
+                          <ChannelIcon
+                            className="board-search__icon"
+                            icon={channel.icon}
+                            number={channel.number}
+                          />
+                          <DeskHitBody
+                            channel={channel}
+                            variants={variants}
+                            onNow={onNow}
+                          />
+                        </>
+                      ) : (
+                        <>
+                          <span className="board-search__number">
+                            {channel.number}
+                          </span>
+                          <strong>{channelTitle(channel)}</strong>
+                          {channel.variant === null ? null : (
+                            <span className="board-search__quality">
+                              {qualityLabel(channel.variant.quality)}
+                            </span>
+                          )}
+                        </>
                       )}
                       {excluded ? (
                         <span className="board-search-desk__hidden">Hidden</span>
@@ -491,6 +541,12 @@ export function BoardSearchDesk({
                 );
               })
             )}
+            {television && presentation === "ready" && !hasMore ? (
+              <p className="board-search-desk__end">
+                That is every channel found. To search again, go up to the
+                search field and press OK.
+              </p>
+            ) : null}
             {presentation === "ready" && hasMore ? (
               <button
                 className="board-search-desk__more"
@@ -505,6 +561,39 @@ export function BoardSearchDesk({
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>
+  );
+}
+
+/**
+ * A TV hit's words: its number, name and qualities, and under them, quietly,
+ * the Programme on now when the Guide has already read its row.
+ */
+function DeskHitBody({
+  channel,
+  variants,
+  onNow,
+}: {
+  readonly channel: ChannelSummary;
+  readonly variants: readonly ChannelSummary[];
+  readonly onNow: SearchOnNow | undefined;
+}) {
+  const programme = searchHitOnNow(channel, variants, onNow);
+  return (
+    <span className="board-search-desk__hit">
+      <span className="board-search-desk__hit-name">
+        <span className="board-search__channel-number">{channel.number}</span>
+        <strong>{channelTitle(channel)}</strong>
+        <SearchQualities variants={variants} current={channel} />
+      </span>
+      {programme === null || onNow === undefined ? null : (
+        <span className="board-search-desk__on-now">
+          <span className="board-search-desk__on-now-title">{programme.title}</span>
+          <span className="board-search-desk__on-now-left">
+            {minutesLeft(programme, onNow.now)} min left
+          </span>
+        </span>
+      )}
+    </span>
   );
 }
 

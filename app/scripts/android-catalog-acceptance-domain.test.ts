@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { READINESS_EXPRESSION } from "./android-catalog-acceptance.ts";
 import {
   evaluateAcceptanceGates,
   isUsableCatalog,
@@ -291,5 +292,50 @@ describe("Android catalog acceptance gates", () => {
       "recovery-run-vmhwm-over-524288kib",
       "restored-run-vmhwm-over-524288kib",
     ]);
+  });
+});
+
+/** The test page, typed without the DOM library the scripts compile without. */
+const page = globalThis as unknown as {
+  readonly document: {
+    readonly body: { innerHTML: string; replaceChildren(): void };
+  };
+};
+
+describe("Android catalog acceptance page readiness", () => {
+  afterEach(() => page.document.body.replaceChildren());
+
+  /** Runs the readiness expression in this page, as CDP runs it in the WebView. */
+  function readiness(): { readonly routineUrlCount: number } {
+    return (0, eval)(READINESS_EXPRESSION) as { readonly routineUrlCount: number };
+  }
+
+  it("leaves a rendered Channel Icon out of the routine URL count", () => {
+    page.document.body.innerHTML = `
+      <button data-acceptance-channel aria-label="Tune SVT1">
+        <span class="channel-icon" data-icon="loaded" aria-hidden="true">
+          <span class="channel-icon__number">1</span>
+          <img class="channel-icon__image" src="https://logos.example/svt1.png" alt="">
+        </span>
+      </button>
+    `;
+
+    expect(readiness().routineUrlCount).toBe(0);
+  });
+
+  it("still counts every other absolute location, an icon's included", () => {
+    page.document.body.innerHTML = `
+      <span class="channel-icon">
+        <img class="channel-icon__image" src="https://logos.example/svt1.png" alt="">
+      </span>
+      <img src="https://logos.example/svt1.png" alt="">
+      <span class="channel-icon"><img src="http://logos.example/svt2.png" alt=""></span>
+      <img class="channel-icon__image" src="http://logos.example/svt3.png" alt="">
+      <span class="channel-icon"><a class="channel-icon__image" href="https://logos.example/svt4.png">Icon</a></span>
+      <a href="http://provider.example/live/1.ts">Stream</a>
+      <input value="https://provider.example/playlist.m3u">
+    `;
+
+    expect(readiness().routineUrlCount).toBe(6);
   });
 });

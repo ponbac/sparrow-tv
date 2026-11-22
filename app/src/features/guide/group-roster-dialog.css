@@ -246,6 +246,11 @@
   font-weight: 600;
 }
 
+/* The eye is drawn on a TV only (television.css). */
+.group-roster__exclude > svg {
+  display: none;
+}
+
 .group-roster__exclude:hover {
   background: var(--cell-live);
 }

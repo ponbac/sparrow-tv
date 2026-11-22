@@ -127,6 +127,24 @@ describe("installed app repaint contract", () => {
     expect(blurred).toEqual([]);
   });
 
+  it("tones Channel Icon plates without a filter or a blend", async () => {
+    // A guide shows dozens of plates at once. A filter or a blend mode on
+    // one makes it its own layer, redrawn with the list; the TV tones light
+    // plates with a plain veil instead.
+    const filtered: string[] = [];
+
+    for (const [path, stylesheet] of await installedStylesheets()) {
+      stylesheet.walkRules((rule) => {
+        if (!rule.selectors.some((selector) => selector.includes(".channel-icon"))) return;
+        rule.walkDecls(/^(-webkit-)?filter$|^mix-blend-mode$/u, (declaration) => {
+          filtered.push(`${path}: ${rule.selector} { ${declaration} }`);
+        });
+      });
+    }
+
+    expect(filtered).toEqual([]);
+  });
+
   it.each([
     [THEATER_STYLESHEET, THEATER_SCOPE],
     [POCKET_STYLESHEET, POCKET_SCOPE],
@@ -332,6 +350,138 @@ describe("installed app repaint contract", () => {
         "display",
       ),
     ).toBe("none");
+  });
+
+  it("keeps what the TV draws clear of its docked picture's box, placed by the rectangle it is held at", async () => {
+    // Media3 draws the TV's docked picture above the page. A veil over the
+    // Guide or a sheet's backdrop must leave its box out, and the box, its
+    // caption, and the panel and the board beside and under it are placed by
+    // the held origin and size, so a narrower window moves nothing under a
+    // picture that stays where it is.
+    const tvStyles = requireStylesheet(
+      new Map(await installedStylesheets()),
+      "features/stage/television.css",
+    );
+    const root = "html[data-television]";
+    const pocket = `${root} .shell[data-layout="pocket"]`;
+    const playing = '.shell[data-layout="pocket"][data-playing="true"]';
+    const width = "var(--pocket-pinned-w, var(--tv-dock-w))";
+    const height = "var(--pocket-pinned-h, var(--tv-dock-h))";
+
+    expect(declaration(tvStyles, root, "--tv-dock-left")).toBe(
+      "var(--pocket-pinned-x, var(--tv-gutter))",
+    );
+    expect(declaration(tvStyles, root, "--tv-dock-top")).toBe(
+      "var(--pocket-pinned-y, var(--tv-band-top))",
+    );
+    expect(declaration(tvStyles, `${pocket} .stage__monitor`, "left")).toBe("var(--tv-dock-left)");
+    expect(declaration(tvStyles, `${pocket} .stage__monitor`, "top")).toBe("var(--tv-dock-top)");
+    expect(declaration(tvStyles, `${pocket} .stage__monitor`, "width")).toBe(width);
+    expect(declaration(tvStyles, `${pocket} .stage__monitor`, "height")).toBe(height);
+    expect(declaration(tvStyles, root, "--tv-dock-x0")).toBe("var(--tv-dock-left)");
+    expect(declaration(tvStyles, root, "--tv-dock-x1")).toBe(`calc(var(--tv-dock-left) + ${width})`);
+    expect(declaration(tvStyles, root, "--tv-dock-y0")).toBe("var(--tv-dock-top)");
+    expect(declaration(tvStyles, root, "--tv-dock-y1")).toBe(`calc(var(--tv-dock-top) + ${height})`);
+    for (const caption of [
+      `${pocket}[data-mode="guide"][data-dock="true"] .now-playing`,
+      `${pocket}[data-mode="guide"][data-playing="true"] .stage__undock`,
+    ]) {
+      expect(declaration(tvStyles, caption, "left")).toBe("var(--tv-dock-left)");
+      expect(declaration(tvStyles, caption, "top")).toBe(`calc(var(--tv-dock-top) + ${height})`);
+      expect(declaration(tvStyles, caption, "width")).toBe(width);
+    }
+    expect(declaration(tvStyles, root, "--tv-panel-left")).toBe(
+      `calc(var(--tv-dock-left) + ${width} + 1.8333rem)`,
+    );
+    expect(declaration(tvStyles, root, "--tv-band-h")).toContain(
+      `var(--tv-dock-top) + ${height}`,
+    );
+    expect(
+      declaration(
+        tvStyles,
+        `html[data-television]:has(.board-search input[aria-expanded="true"]) ${playing} .programme-guide::after`,
+        "clip-path",
+      ),
+    ).toBe("var(--tv-around-dock)");
+    expect(
+      declaration(
+        tvStyles,
+        `html[data-television]:has(${playing}) :is(.board-search-desk__backdrop, .group-roster__backdrop, .feeds-dialog__backdrop)`,
+        "clip-path",
+      ),
+    ).toBe("var(--tv-around-dock)");
+  });
+
+  it("puts the TV's opening-signal message and actions in the fullscreen band, under the picture's box", async () => {
+    // Media3's opaque native view may lie over the box before the stream
+    // prepares; what the viewer reads and presses then must be outside it.
+    const tvStyles = requireStylesheet(
+      new Map(await installedStylesheets()),
+      "features/stage/television.css",
+    );
+    const opening =
+      'html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="stopping"])';
+
+    expect(declaration(tvStyles, `${opening} .hosted-player__controls`, "top")).toBeUndefined();
+    expect(declaration(tvStyles, `${opening} .hosted-player__overlay`, "top")).toBe(
+      "calc(100vh - var(--fs-row-b-bottom) - var(--tv-control))",
+    );
+  });
+
+  it("fills a Now cell's elapsed time from its left edge, under the Channel's tile", async () => {
+    // A cell reads as one band, watched up to now and then the rest. A fill
+    // that starts after the tile's column reads as normal, watched, normal.
+    const tvStyles = requireStylesheet(
+      new Map(await installedStylesheets()),
+      "features/stage/television.css",
+    );
+    const cell = 'html[data-television] .shell[data-layout="pocket"]';
+    const offset: string[] = [];
+
+    tvStyles.walkRules((rule) => {
+      if (!rule.selectors.some((selector) => /\.programme-guide__elapsed\s*$/u.test(selector))) return;
+      const declarations = declarationsByProperty(rule);
+      const inset = declarations.get("inset");
+      if (
+        declarations.has("left") ||
+        (inset !== undefined && inset.split(" ").at(-1) !== "0") ||
+        [...declarations.values()].some((value) => value.includes("--grid-lead"))
+      ) {
+        offset.push(rule.selector.replace(/\s+/gu, " "));
+      }
+    });
+
+    expect(offset).toEqual([]);
+    expect(declaration(tvStyles, `${cell} .programme-guide__elapsed`, "inset")).toBe("0 auto 0 0");
+    expect(declaration(tvStyles, `${cell} .programme-guide__elapsed`, "width")).toBe("var(--progress)");
+    expect(
+      Number(
+        declaration(
+          tvStyles,
+          `${cell} .programme-guide__row[data-body="list"] > .programme-guide__icon`,
+          "z-index",
+        ),
+      ),
+    ).toBeGreaterThan(Number(declaration(tvStyles, `${cell} .programme-guide__elapsed`, "z-index")));
+  });
+
+  it("lets a square Channel Icon cover its plate, its own edge cut away by the plate", async () => {
+    // A cross-origin app tile is never read, so its frame cannot be found;
+    // zoomed past the plate's edge, the tile becomes the plate.
+    const tvStyles = requireStylesheet(
+      new Map(await installedStylesheets()),
+      "features/stage/television.css",
+    );
+    const square = 'html[data-television] .channel-icon[data-shape="square"]';
+    const zoom = Number(declaration(tvStyles, square, "--tile-zoom"));
+
+    expect(zoom).toBeGreaterThanOrEqual(1.12);
+    expect(zoom).toBeLessThanOrEqual(1.2);
+    expect(declaration(tvStyles, `${square} .channel-icon__image`, "object-fit")).toBe("cover");
+    expect(declaration(tvStyles, `${square} .channel-icon__image`, "width")).toBe(
+      "calc(100% * var(--tile-zoom))",
+    );
+    expect(declaration(tvStyles, `${square} .channel-icon__image`, "clip-path")).toBeUndefined();
   });
 
   it("never transitions or animates the picture's box", async () => {

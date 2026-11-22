@@ -35,6 +35,7 @@ import {
 } from "../guide/board-group-roster";
 import { FeedsDialog } from "../guide/feeds-dialog";
 import { familyProgrammes, lowerQualityVariant } from "../guide/guide-families";
+import { focusGuideAfterFullscreen } from "../guide/guide-navigation";
 import {
   clockLabel,
   clockWindow,
@@ -42,6 +43,8 @@ import {
   laterTimes,
   LATER_SPAN_MS,
 } from "../guide/guide-window";
+import type { GuideView } from "../guide/channel-group-lane";
+import type { GuidePreviewSource } from "../guide/guide-preview";
 import { ProgrammeGuide } from "../guide/programme-guide";
 import { useBoardGroupExclusions } from "../guide/use-board-group-exclusions";
 import { useGuideClock } from "../guide/use-guide-clock";
@@ -57,7 +60,11 @@ import {
   type StagePicture,
   type TelevisionFullscreenTune,
 } from "../stage/stage-chrome";
-import { focusPictureReturn, guideSearchInput } from "../stage/stage-dom";
+import {
+  focusPictureReturn,
+  guideSearchInput,
+  showTelevisionPicture,
+} from "../stage/stage-dom";
 import { useIdleChrome } from "../stage/use-idle-chrome";
 import { guideRowProgramme, useNowPlaying } from "../stage/use-now-playing";
 import { usePicturePin } from "../stage/use-picture-pin";
@@ -70,6 +77,7 @@ import {
 } from "../stage/use-stage-layout";
 import { useTurnFullscreen } from "../stage/use-turn-fullscreen";
 import { useTelevisionControls } from "../stage/use-television-controls";
+import { TelevisionNowProvider, type TelevisionNow } from "../stage/television-now-context";
 import { useZapStops } from "../stage/use-zap-stops";
 import {
   neighbouringZapStop,
@@ -81,6 +89,10 @@ import { ZapRail } from "../stage/zap-rail";
 import { useCatalogSynchronization } from "../status/catalog-synchronization";
 import { sourceFreshness } from "../status/source-freshness";
 import { useGuideCatalog } from "./use-guide-catalog";
+import {
+  guideProgrammesByChannel,
+  type SearchOnNow,
+} from "../guide/search-on-now";
 import "../stage/shell.css";
 import "../stage/pocket.css";
 import "../stage/theater.css";
@@ -186,8 +198,22 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     setTimeRow((current) => (current === "open" ? "closed" : "open"));
   }, []);
   const [chosenTime, setChosenTime] = useState<Date | null>(null);
+  // The TV Guide's two layouts. The timeline browses along time, so from the
+  // first time it opens the guide reads the longer window, as the time row does.
+  const [guideView, setGuideView] = useState<"now" | "timeline">("now");
+  const [timelineOpened, setTimelineOpened] = useState(false);
+  const toggleGuideView = useCallback(() => {
+    setTimelineOpened(true);
+    setGuideView((current) => (current === "now" ? "timeline" : "now"));
+  }, []);
+  const tvGuideView = useMemo<GuideView | null>(
+    () => (television ? { current: guideView, onToggle: toggleGuideView } : null),
+    [guideView, television, toggleGuideView],
+  );
   const guideSpan =
-    layout === "pocket" && timeRow !== "unused" ? LATER_SPAN_MS : GUIDE_SPAN_MS;
+    (layout === "pocket" && timeRow !== "unused") || (television && timelineOpened)
+      ? LATER_SPAN_MS
+      : GUIDE_SPAN_MS;
   const guideClock = useMemo(() => {
     const window = clockWindow(now, guideSpan);
     return {
@@ -197,7 +223,9 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     };
   }, [guideSpan, now]);
   // The viewer's choice between the full picture and the guide. The shell
-  // shows the guide regardless while there is no picture in the page.
+  // shows the guide regardless while there is no picture in the page, and
+  // always on a TV: there the picture plays docked in the Guide's band, and
+  // the full picture is the player's own fullscreen.
   const [mode, setMode] = useState<"watch" | "guide">("watch");
   const [picture, setPicture] = useState<StagePicture | null>(null);
   const reportPicture = useCallback((next: StagePicture | null) => {
@@ -211,7 +239,8 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
       controlsSlot,
       television,
       fullscreenTune,
-      controls: "compact",
+      // A TV row has room for every control; the focused one shows its label.
+      controls: television ? "bar" : "compact",
       // Only roomy Theater enters root fullscreen, which outlives Stop and a
       // change of Channel; pocket takes the player section alone.
       fullscreenTarget,
@@ -221,7 +250,8 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     }),
     [controlsSlot, fullscreenTarget, fullscreenTune, layout, reportPicture, television],
   );
-  const guideForced = playingChannel === null || picture?.external === true;
+  const guideForced =
+    television || playingChannel === null || picture?.external === true;
   const effectiveMode = guideForced ? "guide" : mode;
   // Whether pocket's picture is the small band beside the guide. It follows
   // the mode, but a picture that cannot follow its box keeps the size it has.
@@ -294,13 +324,14 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     onGenerationMismatch: synchronization.retryStatus,
   });
 
-  // `tune` and `stop` never change: Agent Control binds to them once.
+  // `tune` and `stop` never change: Agent Control binds to them once. A TV
+  // has no watch mode: a tune there plays in the Guide's docked picture.
   const tune = useCallback(
     (channel: ChannelSummary) => {
       setPlaying(channel);
-      setMode("watch");
+      if (!television) setMode("watch");
     },
-    [setPlaying],
+    [setPlaying, television],
   );
   const tuneVariant = useCallback(
     (channel: ChannelSummary) => {
@@ -309,24 +340,116 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     },
     [preferVariant, tune],
   );
+  // What the Guide's handlers compare a Center press with. A ref, so the
+  // Guide's rows keep one handler while Channels change.
+  const playingRef = useRef(playingChannel);
+  useLayoutEffect(() => {
+    playingRef.current = playingChannel;
+  });
+  // A held OK repeats its keydown, and each repeat presses the focused
+  // control again: the first press tunes a Channel, a repeat would take it
+  // fullscreen. Only a fresh press counts as the fullscreen gesture.
+  // Android's WebView never flags a held key's repeats, so a keydown of an
+  // activation key that is still down counts as a repeat whatever the flag
+  // says. The press that follows a keydown is judged by that keydown.
+  const heldPress = useRef(false);
+  useEffect(() => {
+    if (!television) return;
+    const down = new Set<string>();
+    const press = (event: KeyboardEvent) => {
+      const key = activationKey(event);
+      if (key === null) {
+        heldPress.current = false;
+        return;
+      }
+      heldPress.current = event.repeat || down.has(key);
+      down.add(key);
+    };
+    const lift = (event: KeyboardEvent) => {
+      const key = activationKey(event);
+      if (key !== null) down.delete(key);
+      heldPress.current = false;
+    };
+    // A keyup lost to another window or a hidden page must not leave a key
+    // held for good.
+    const forget = () => {
+      down.clear();
+      heldPress.current = false;
+    };
+    const release = () => {
+      heldPress.current = false;
+    };
+    document.addEventListener("keydown", press, true);
+    document.addEventListener("keyup", lift, true);
+    document.addEventListener("pointerdown", release, true);
+    document.addEventListener("visibilitychange", forget);
+    window.addEventListener("blur", forget);
+    return () => {
+      document.removeEventListener("keydown", press, true);
+      document.removeEventListener("keyup", lift, true);
+      document.removeEventListener("pointerdown", release, true);
+      document.removeEventListener("visibilitychange", forget);
+      window.removeEventListener("blur", forget);
+    };
+  }, [television]);
+  // The Guide control that took the picture fullscreen, where focus returns.
+  const fullscreenOrigin = useRef<HTMLElement | null>(null);
+  const enterTelevisionFullscreen = useCallback((channel: ChannelId) => {
+    if (document.fullscreenElement != null || heldPress.current) return;
+    // The viewer chose the picture that plays: a Channel change still
+    // queued from the Channel keys must not switch it underneath.
+    cancelZap();
+    fullscreenOrigin.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const shown = showTelevisionPicture();
+    if (shown === "fullscreen") return;
+    fullscreenOrigin.current = null;
+    if (shown === "load-notice") return;
+    // The player's code is still loading: it takes the request when it mounts,
+    // if the press still counts by then.
+    if (navigator.userActivation?.isActive !== true) return;
+    let pending = true;
+    const request: TelevisionFullscreenTune = {
+      channel,
+      take: () => {
+        if (!pending) return false;
+        pending = false;
+        setFullscreenTune((current) => (current === request ? null : current));
+        return true;
+      },
+    };
+    setFullscreenTune(request);
+  }, [cancelZap]);
+  // Leaving fullscreen on a TV returns to the Guide, with focus on the
+  // control that left it, or the playing Channel's row.
+  useEffect(() => {
+    if (!television) return;
+    const returnToGuide = () => {
+      if (document.fullscreenElement != null) return;
+      const origin = fullscreenOrigin.current;
+      fullscreenOrigin.current = null;
+      focusGuideAfterFullscreen(origin);
+    };
+    document.addEventListener("fullscreenchange", returnToGuide);
+    return () => document.removeEventListener("fullscreenchange", returnToGuide);
+  }, [television]);
+  // The TV's Center on a Channel: a Channel that is not playing starts in the
+  // docked picture; the exact Channel that plays goes fullscreen.
   const tuneFromGuide = useCallback(
     (channel: ChannelSummary) => {
+      if (television && playingRef.current?.id === channel.id) {
+        enterTelevisionFullscreen(channel.id);
+        return;
+      }
       tune(channel);
-      if (!television || navigator.userActivation?.isActive !== true) return;
-      let pending = true;
-      const request: TelevisionFullscreenTune = {
-        channel: channel.id,
-        take: () => {
-          if (!pending) return false;
-          pending = false;
-          setFullscreenTune((current) => (current === request ? null : current));
-          return true;
-        },
-      };
-      setFullscreenTune(request);
     },
-    [television, tune],
+    [enterTelevisionFullscreen, television, tune],
   );
+  // The band's caption, and a tap on the docked picture, on a TV.
+  const showTelevisionFullscreen = useCallback(() => {
+    const playing = playingRef.current;
+    if (playing !== null) enterTelevisionFullscreen(playing.id);
+  }, [enterTelevisionFullscreen]);
   const tuneVariantFromGuide = useCallback(
     (channel: ChannelSummary) => {
       preferVariant(channel);
@@ -443,7 +566,6 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   });
   useTelevisionControls({
     enabled: television,
-    mode: effectiveMode,
     onShowGuide: showGuide,
     onZap: zap,
   });
@@ -502,7 +624,8 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
 
   const guideTime = useMemo(
     () =>
-      layout === "pocket"
+      // The TV timeline replaces the row of times.
+      layout === "pocket" && !television
         ? {
             open: timeRow === "open",
             // A chosen time the clock has reached is now.
@@ -515,7 +638,11 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
             onChoose: setChosenTime,
           }
         : null,
-    [chosenTime, guideClock.window.endsAt, guideNow, layout, timeRow, toggleTimeRow],
+    [chosenTime, guideClock.window.endsAt, guideNow, layout, television, timeRow, toggleTimeRow],
+  );
+  const guidePreview = useMemo<GuidePreviewSource | null>(
+    () => (television ? { client, generation: authoritativeGeneration } : null),
+    [authoritativeGeneration, client, television],
   );
   const guideEmpty = useMemo(
     () => guideEmptyState(runtime, status, browseEnabled),
@@ -558,18 +685,32 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     ],
   );
 
+  // What the Guide has read, so the TV's Find a channel sheet can say what
+  // is on for a hit without a read of its own.
+  const guideProgrammes = useMemo(
+    () => guideProgrammesByChannel(guideCatalog.rows),
+    [guideCatalog.rows],
+  );
+  const searchOnNow = useMemo<SearchOnNow | undefined>(
+    () => (television ? { programmes: guideProgrammes, now: guideNow } : undefined),
+    [guideNow, guideProgrammes, television],
+  );
   // The one element whose parent depends on the layout: Theater shows it in
   // the masthead, pocket in the guide's toolbar.
   const search = useMemo(
     () => (
       <BoardSearch
         television={television}
+        onNow={searchOnNow}
         client={client}
         generation={authoritativeGeneration}
         excludedGroups={groupExclusions.excluded}
+        variantPreferences={variantPreferences}
         onGenerationMismatch={synchronization.retryStatus}
         onPreparePlayback={preparePlayback}
-        onTune={tuneVariantFromGuide}
+        // A TV result is a whole guide row: it tunes like the row does and
+        // leaves the quality preference to the Guide's quality chips.
+        onTune={television ? tuneFromGuide : tuneVariantFromGuide}
       />
     ),
     [
@@ -577,9 +718,12 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
       client,
       groupExclusions.excluded,
       preparePlayback,
+      searchOnNow,
       synchronization.retryStatus,
       television,
+      tuneFromGuide,
       tuneVariantFromGuide,
+      variantPreferences,
     ],
   );
   const guideStatus = useMemo(
@@ -622,6 +766,16 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
           }
         : zapSubject(pendingZap.channel, zapStopOf(stops, pendingZap.channel.id));
 
+  const televisionNow: TelevisionNow | null = television
+    ? {
+        subject,
+        playingChannel: playingChannel?.id ?? null,
+        now,
+        onPreparePlayback: preparePlayback,
+        onTuneVariant: tuneVariant,
+      }
+    : null;
+
   // Keep a held native picture at the same origin when the viewer changes mode.
   const inlineMasthead = television && layout === "pocket" && (playingChannel === null || dock);
   const mastheadInGuide = inlineMasthead && effectiveMode === "guide";
@@ -637,7 +791,16 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     <div
       className="shell"
       data-layout={layout}
-      data-pocket={layout === "pocket" ? (splitPocket ? "split" : "stacked") : undefined}
+      data-pocket={
+        layout !== "pocket"
+          ? undefined
+          : television
+            ? // The TV lays its own pocket out: television.css.
+              "television"
+            : splitPocket
+              ? "split"
+              : "stacked"
+      }
       data-mode={effectiveMode}
       data-chrome={chromeVisibility}
       data-playing={playingChannel !== null}
@@ -688,6 +851,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
         }}
       >
         <StageChromeProvider value={chrome}>
+          <TelevisionNowProvider value={televisionNow}>
           <Stage
             television={television}
             playingChannel={playingChannel?.id ?? null}
@@ -700,6 +864,8 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
                 layout={layout}
                 picture={picture}
                 controlsRef={setControlsSlot}
+                qualitySwitch={!television}
+                television={television}
                 onPreparePlayback={preparePlayback}
                 onTuneVariant={tuneVariant}
               />
@@ -724,8 +890,15 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
               ) : null
             }
             keyHints={watching}
-            onShowPicture={layout === "pocket" ? showPicture : null}
+            onShowPicture={
+              television
+                ? showTelevisionFullscreen
+                : layout === "pocket"
+                  ? showPicture
+                  : null
+            }
           />
+          </TelevisionNowProvider>
         </StageChromeProvider>
         <ProgrammeGuide
           television={television}
@@ -741,6 +914,8 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
           layout={layout}
           mode={effectiveMode}
           time={guideTime}
+          view={tvGuideView}
+          preview={guidePreview}
           loading={guideCatalog.loading}
           replacing={guideCatalog.replacing}
           error={guideError}
@@ -963,4 +1138,14 @@ function guideEmptyState(
 
 function reloadSparrow(): void {
   window.location.reload();
+}
+
+/**
+ * The key that presses a focused control, named the same for both Enters,
+ * or null for any other key.
+ */
+function activationKey(event: KeyboardEvent): "Enter" | " " | null {
+  if (event.key === "Enter" || event.code === "NumpadEnter") return "Enter";
+  if (event.key === " " || event.key === "Spacebar") return " ";
+  return null;
 }

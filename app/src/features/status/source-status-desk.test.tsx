@@ -31,6 +31,17 @@ const INDEPENDENT_GUIDE_FAILURE = clientSchemas.status.parse({
 });
 
 describe("SourceStatusDesk", () => {
+  it("marks a card sentence that only restates its label, so the TV can leave it out", () => {
+    renderDesk(INDEPENDENT_GUIDE_FAILURE);
+    const sentences = Array.from(document.querySelectorAll(".source-card p"));
+
+    expect(sentences.map((sentence) => sentence.hasAttribute("data-restates-label"))).toEqual([
+      true,
+      true,
+    ]);
+    expect(screen.getByText("The refresh failed. The saved copy stays in use.")).toBeInTheDocument();
+  });
+
   it("presents Channel freshness independently from a retained Guide failure", () => {
     renderDesk(INDEPENDENT_GUIDE_FAILURE);
 

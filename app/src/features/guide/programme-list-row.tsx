@@ -9,6 +9,7 @@ import {
   qualityLabel,
   type GuideFamily,
 } from "./guide-families";
+import { ChannelIcon } from "./channel-icon";
 import { listRowLines } from "./list-row-lines";
 import { QualitySwitch } from "./quality-switch";
 
@@ -24,6 +25,7 @@ export const ProgrammeListRow = memo(function ProgrammeListRow({
   pending,
   playingChannel,
   lastPlayed = false,
+  channelIcon = false,
   onPreparePlayback,
   onTune,
   onTuneVariant,
@@ -40,6 +42,11 @@ export const ProgrammeListRow = memo(function ProgrammeListRow({
   readonly playingChannel: ChannelId | null;
   /** True when this row's family was the last played Channel after Stop. */
   readonly lastPlayed?: boolean;
+  /**
+   * Shows the Channel's tile (its icon, or its number) at the start of the
+   * row, and its number as a small label before its name. Only the TV sets it.
+   */
+  readonly channelIcon?: boolean;
   readonly onPreparePlayback: () => void;
   readonly onTune: (channel: ChannelSummary) => void;
   readonly onTuneVariant: (channel: ChannelSummary) => void;
@@ -72,6 +79,7 @@ export const ProgrammeListRow = memo(function ProgrammeListRow({
       data-playing={playing}
       data-last-played={lastPlayed ? "true" : undefined}
       data-body="list"
+      data-number={family.number}
       // Titled by its Channel: there is no Programme to name.
       data-bare={lines._tag === "channel"}
       // The first line keeps clear of this many quality chips.
@@ -80,6 +88,13 @@ export const ProgrammeListRow = memo(function ProgrammeListRow({
       <span className="programme-guide__number" aria-hidden="true">
         {family.number}
       </span>
+      {channelIcon ? (
+        <ChannelIcon
+          className="programme-guide__icon"
+          icon={family.variants[0].channel.icon}
+          number={family.number}
+        />
+      ) : null}
       <button
         className="programme-guide__channel"
         // Each Channel carries the mark once: a row with a quality switch
@@ -96,6 +111,9 @@ export const ProgrammeListRow = memo(function ProgrammeListRow({
         onClick={() => onTune(preferred.channel)}
       >
         <span className="programme-guide__name">
+          {channelIcon ? (
+            <span className="programme-guide__name-number">{family.number}</span>
+          ) : null}
           {/* A row titled by its Channel does not name it twice. */}
           {lines._tag === "programme" ? family.title : null}
           {loneQuality === null ? null : (

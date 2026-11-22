@@ -52,6 +52,32 @@ export function focusIsInChannelBar(): boolean {
 }
 
 /**
+ * Takes a TV's docked picture to the whole screen: the player's section in
+ * the picture box goes element fullscreen. Call it inside the viewer's press,
+ * which is what lets the document go fullscreen. A player that could not load
+ * has no picture, only its Reload and Close actions in the box: focus goes to
+ * them instead. "no-player" while the player's code still loads.
+ */
+export function showTelevisionPicture(): "fullscreen" | "load-notice" | "no-player" {
+  const section = document.querySelector<HTMLElement>(
+    ".stage__monitor .hosted-player",
+  );
+  if (section !== null) {
+    // The players' fullscreenchange observers reconcile the native viewport.
+    void section.requestFullscreen?.().catch(() => undefined);
+    return "fullscreen";
+  }
+  const action = document.querySelector<HTMLElement>(
+    ".stage__monitor .playback-load-notice__actions button",
+  );
+  if (action !== null) {
+    action.focus({ preventScroll: true });
+    return "load-notice";
+  }
+  return "no-player";
+}
+
+/**
  * Moves focus to the band's button back to the picture: where focus goes
  * when the guide opens over a playing Channel. Where that button is not
  * shown it cannot take focus, and focus rests on the picture box instead.
@@ -65,10 +91,13 @@ export function focusPictureReturn(): void {
 }
 
 /**
- * Measures the picture box: its width and height in CSS pixels. Null where
- * there is no box, and for one that is not laid out and so has no size.
+ * Measures the picture box: where it lies in the viewport and its width and
+ * height, in CSS pixels. Null where there is no box, and for one that is not
+ * laid out and so has no size.
  */
-export function stageMonitorSize(): {
+export function stageMonitorBox(): {
+  readonly left: number;
+  readonly top: number;
   readonly width: number;
   readonly height: number;
 } | null {
@@ -77,7 +106,7 @@ export function stageMonitorSize(): {
     ?.getBoundingClientRect();
   return box === undefined || box.width <= 0 || box.height <= 0
     ? null
-    : { width: box.width, height: box.height };
+    : { left: box.left, top: box.top, width: box.width, height: box.height };
 }
 
 /**
@@ -155,11 +184,33 @@ export function visibleStageControls(
   );
 }
 
+/**
+ * Orders controls of one row as they are seen, left to right, where CSS
+ * orders them differently from the markup. Controls without a layout box
+ * (no layout at all, as in tests) keep their markup order.
+ */
+export function inVisualOrder(items: readonly HTMLElement[]): HTMLElement[] {
+  const boxes = items.map((item) => item.getBoundingClientRect());
+  if (boxes.some((box) => box.width === 0 && box.height === 0)) {
+    return [...items];
+  }
+  return items
+    .map((item, index) => ({ item, box: boxes[index], index }))
+    .sort(
+      (a, b) =>
+        a.box.left - b.box.left || a.box.top - b.box.top || a.index - b.index,
+    )
+    .map(({ item }) => item);
+}
+
 const DEFAULT_SCROLL_MARGIN_PX = 12;
 
 /**
  * Scrolls a container vertically to reveal `target` without invoking
  * `scrollIntoView`, which can scroll clipped ancestors holding native video.
+ * Without a bottom margin of its own it keeps clear of the container's
+ * `scroll-padding-bottom`, which a list with a fade over its last rows sets
+ * to the fade's height.
  */
 export function revealInScrollContainer(
   container: HTMLElement | null,
@@ -174,7 +225,8 @@ export function revealInScrollContainer(
     return;
   }
   const topMargin = options.marginPx ?? DEFAULT_SCROLL_MARGIN_PX;
-  const bottomMargin = options.bottomMarginPx ?? topMargin;
+  const bottomMargin =
+    options.bottomMarginPx ?? Math.max(topMargin, scrollPaddingBottom(container));
   const containerRect = container.getBoundingClientRect();
   const targetRect = target.getBoundingClientRect();
   const top = targetRect.top - containerRect.top + container.scrollTop;
@@ -186,6 +238,14 @@ export function revealInScrollContainer(
   } else if (bottom > viewBottom - bottomMargin) {
     container.scrollTop = bottom - container.clientHeight + bottomMargin;
   }
+}
+
+/** The bottom scroll padding a container's styles give it, in pixels. */
+function scrollPaddingBottom(container: HTMLElement): number {
+  const value = Number.parseFloat(
+    window.getComputedStyle(container).scrollPaddingBottom,
+  );
+  return Number.isFinite(value) ? value : 0;
 }
 
 /**

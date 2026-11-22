@@ -1,5 +1,5 @@
 import { Dialog } from "@base-ui/react/dialog";
-import { ListFilter, Search, X } from "lucide-react";
+import { Eye, EyeOff, ListFilter, Search, X } from "lucide-react";
 import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { ChannelGroup } from "../../client/contracts";
 import { groupDisplayName } from "./board-group-roster";
@@ -368,6 +368,7 @@ function RosterGroupRow({
         aria-label={excluded ? `Show ${label}` : `Hide ${label}`}
         onClick={() => onSetExcluded(group.name, !excluded)}
       >
+        {excluded ? <Eye aria-hidden="true" /> : <EyeOff aria-hidden="true" />}
         {excluded ? "Show" : "Hide"}
       </button>
     </div>

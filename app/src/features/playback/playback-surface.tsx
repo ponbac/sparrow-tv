@@ -11,6 +11,7 @@ import {
   Square,
   Volume2,
   VolumeX,
+  X,
 } from "lucide-react";
 import {
   useCallback,
@@ -30,7 +31,9 @@ import {
   useStageChrome,
   type WindowBox,
 } from "../stage/stage-chrome";
-import { visibleStageControls } from "../stage/stage-dom";
+import { inVisualOrder, visibleStageControls } from "../stage/stage-dom";
+import { TelevisionHead, TelevisionQuality } from "../stage/television-now";
+import { useTelevisionNow } from "../stage/television-now-context";
 import { playerPresentation, type PlayerState } from "./playback-presentation";
 import "./hosted-player.css";
 
@@ -151,6 +154,10 @@ export function PlaybackSurface({
 }: PlaybackSurfaceProps) {
   const chrome = useStageChrome();
   const { television, fullscreenTune } = chrome;
+  // The TV shell's lines about the playing Channel: the fullscreen scrims
+  // and the quality pill. Null outside a TV shell.
+  const televisionNow = useTelevisionNow();
+  const tvNow = television === true ? televisionNow : null;
   const surfaceRef = useRef<HTMLElement>(null);
   useLayoutEffect(() => {
     const section = surfaceRef.current;
@@ -171,7 +178,6 @@ export function PlaybackSurface({
   const hideControls = useRef<ReturnType<typeof setTimeout> | null>(null);
   const focusFrameRef = useRef<number | null>(null);
   const suppressRevealRef = useRef(false);
-  const returnToFullscreenButtonRef = useRef(false);
   const wasSectionFullscreenRef = useRef(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   // Where the More menu may open while it must keep clear of the picture;
@@ -297,7 +303,6 @@ export function PlaybackSurface({
       wasSectionFullscreenRef.current = active;
       setSectionFullscreen(active);
       if (television && active) {
-        returnToFullscreenButtonRef.current = false;
         section.focus({ preventScroll: true });
       } else if (television && wasActive && !active) {
         cancelPendingFocus();
@@ -305,11 +310,32 @@ export function PlaybackSurface({
     };
     document.addEventListener("fullscreenchange", update);
     update();
-    return () => {
-      document.removeEventListener("fullscreenchange", update);
-      returnToFullscreenButtonRef.current = false;
-    };
+    return () => document.removeEventListener("fullscreenchange", update);
   }, [cancelPendingFocus, television]);
+
+  // While the signal opens, the TV rests focus on the bar's way out of
+  // fullscreen (`useTelevisionControls`). Once the picture plays, focus still
+  // resting there goes back to the picture, so the bar hides as it does
+  // after any tune and OK shows it again instead of leaving fullscreen.
+  const previousStateRef = useRef(state._tag);
+  useEffect(() => {
+    const previous = previousStateRef.current;
+    previousStateRef.current = state._tag;
+    if (
+      previous !== "starting" ||
+      state._tag !== "playing" ||
+      !focusInFullscreenControls()
+    ) {
+      return;
+    }
+    const section = surfaceRef.current;
+    if (
+      document.activeElement instanceof HTMLElement &&
+      document.activeElement.matches(".hosted-player__fullscreen")
+    ) {
+      section?.focus({ preventScroll: true });
+    }
+  }, [focusInFullscreenControls, state._tag]);
 
   const presentation = playerPresentation(state);
   const { reportPicture } = chrome;
@@ -331,9 +357,8 @@ export function PlaybackSurface({
       section: surfaceRef.current,
     });
     if (target !== null) {
-      if (television && sectionFullscreen && target === surfaceRef.current) {
-        returnToFullscreenButtonRef.current = true;
-      }
+      // On a TV, leaving fullscreen returns to the Guide, which puts focus
+      // back on the playing Channel (the shell's fullscreenchange listener).
       onRequestFullscreen(target);
     }
   };
@@ -350,22 +375,6 @@ export function PlaybackSurface({
   // While the player section is the fullscreen element the controls are its
   // own inline bar; the shell's slot lies outside what fullscreen draws.
   const controlsPlacement = controlPresentation(chrome, sectionFullscreen);
-  useLayoutEffect(() => {
-    if (
-      !television ||
-      sectionFullscreen ||
-      !returnToFullscreenButtonRef.current
-    ) {
-      return;
-    }
-    const container = controlsPlacement.slot ?? surfaceRef.current;
-    const button = container?.querySelector<HTMLElement>(
-      '[data-stage-action="fullscreen"]',
-    );
-    if (button == null) return;
-    returnToFullscreenButtonRef.current = false;
-    button.focus({ preventScroll: true });
-  }, [controlsPlacement.slot, sectionFullscreen, television]);
   const compact = controlsPlacement.variant === "compact";
   // Compact buttons show only an icon; the label stays in the DOM (the
   // accessible name and the text scripts match on) and doubles as the hint.
@@ -449,6 +458,9 @@ export function PlaybackSurface({
         </>
       ) : null}
       {audio}
+      {tvNow !== null && showMediaControls ? (
+        <TelevisionQuality info={tvNow} />
+      ) : null}
       {pictureInPicture === undefined ? null : (
         <button
           type="button"
@@ -565,7 +577,14 @@ export function PlaybackSurface({
         onClick={onStop}
         {...hint(stopLabel)}
       >
-        <Square aria-hidden="true" />
+        {tvNow === null ? (
+          <Square aria-hidden="true" />
+        ) : showMediaControls ? (
+          // A filled square reads as Stop; the outline reads as a checkbox.
+          <Square aria-hidden="true" fill="currentColor" strokeWidth={0} />
+        ) : (
+          <X aria-hidden="true" />
+        )}
         <span>{stopLabel}</span>
       </button>
       {status === undefined ? null : (
@@ -583,25 +602,17 @@ export function PlaybackSurface({
       tabIndex={television ? -1 : 0}
       data-controls-visible={controlsVisible || !canHideControls}
       data-native-video={nativeVideo}
+      data-player-state={tvNow === null ? undefined : state._tag}
       onPointerMove={() => revealControls()}
       onPointerDown={() => revealControls()}
       onFocusCapture={() => revealControls()}
       onChangeCapture={() => revealControls()}
       onKeyDown={(event) => {
-        if (
-          television &&
-          sectionFullscreen &&
-          event.key === "Escape" &&
-          !event.defaultPrevented &&
-          !event.nativeEvent.isComposing
-        ) {
-          if (controlsVisible && canHideControls) {
-            event.preventDefault();
-            event.stopPropagation();
-            hideControlsCleanly();
-          }
-          // When controls are already hidden or cannot hide, let Escape bubble
-          // without revealing controls so TV Back/Escape exits fullscreen to Guide.
+        if (television && sectionFullscreen && event.key === "Escape") {
+          // One Back leaves fullscreen for the docked Guide, whether or not
+          // the bar shows, as Android's own fullscreen exit does. Escape
+          // bubbles to the TV's handler (`useTelevisionControls`) without
+          // showing the bar on the way out.
           return;
         }
         const target = event.target instanceof HTMLElement ? event.target : null;
@@ -723,6 +734,9 @@ export function PlaybackSurface({
           key={videoKey}
           ref={videoRef}
           aria-label={`${channel.name} live video`}
+          // Android WebView draws a grey play glyph on a video with no frame
+          // yet; a transparent poster keeps the starting and failed states clean.
+          {...(television === true ? { poster: TRANSPARENT_POSTER } : {})}
           autoPlay
           muted={muted}
           playsInline
@@ -741,6 +755,13 @@ export function PlaybackSurface({
         ) : null}
       </div>
 
+      {tvNow !== null && sectionFullscreen ? (
+        <TelevisionHead
+          info={tvNow}
+          state={state._tag === "playing" ? null : presentation.status}
+        />
+      ) : null}
+
       {controlsPlacement.slot === null
         ? controls
         : createPortal(controls, controlsPlacement.slot)}
@@ -748,10 +769,14 @@ export function PlaybackSurface({
   );
 }
 
+const TRANSPARENT_POSTER =
+  "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+
 function visibleControlBarItems(root: HTMLElement | null): HTMLElement[] {
   if (root === null) return [];
   const scope = root.classList.contains("hosted-player")
     ? root.querySelector<HTMLElement>(".hosted-player__controls")
     : root;
-  return visibleStageControls(scope, "button, select");
+  // The TV bar orders its controls by class; the remote follows what is seen.
+  return inVisualOrder(visibleStageControls(scope, "button, select"));
 }

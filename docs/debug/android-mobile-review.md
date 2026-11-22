@@ -17,18 +17,42 @@ for performance claims.
 ## Android TV and NVIDIA Shield
 
 Install the same universal Android APK. Sparrow appears in the TV launcher.
-The Guide uses the full app surface. Its live preview sits beside search
-and Channel Groups on wide TVs, with the Channel grid below. An inset amber
-outline marks the focused control even at the edges. Use the D-pad to browse.
-Press center or gamepad **A** to tune a Channel in fullscreen. The controls
-hide when idle. **Back** or gamepad **B** dismisses the keyboard, a panel, the
-open time row, or visible fullscreen playback controls; once fullscreen
-controls are hidden, **Back** returns to the Guide. From the Guide, **Back**
-returns you to Android TV. Picture-in-picture is disabled on Android TV, so
-**Home** stops playback. **Copy diagnostics** is omitted from Android TV player
-controls; safe source diagnostics remain readable in **Sources**.
+The TV has no watch screen: the Guide is always there, with the playing
+Channel's picture docked in its band at the top left, and the full picture is
+the player's own fullscreen ([ADR 0007](../adr/0007-use-a-pocket-layout-where-the-picture-cannot-be-covered.md#android-tv-no-watch-mode)).
+The Guide has two layouts, Now (a grid of what each Channel has on) and
+Timeline; the switch at the head of the Channel Group rail changes between
+them. A panel beside the band describes the Channel focus rests on. Use the
+D-pad to browse; the focused control takes an ice fill or ring.
 
-On the watch screen the channel bar offers the previous and next Channel.
+- Press center or gamepad **A** on a Channel that is not playing: it plays in
+  the docked picture, and the Guide and focus stay where they are. Holding
+  the button down tunes once; it never goes fullscreen.
+- Press it again on the Channel that plays, the same Quality Variant, or on
+  the docked picture's caption: the picture goes fullscreen. On another
+  Channel, or another Quality Variant of the playing one, it changes what
+  plays, docked.
+- A row's quality chips are reached with the D-pad: in Now, **Right** from a
+  cell enters its chips and **Right** from the last chip goes on to the next
+  cell; in Timeline, **Left** from a row's first cell enters its chips (the
+  last first) and **Left** from the first chip reaches the rail. Center on a
+  chip plays that Quality Variant and makes it the row's choice.
+- In fullscreen one **Back** or gamepad **B**, or **Exit fullscreen**,
+  returns to the Guide, whether or not the controls are showing, with focus
+  on the control that went fullscreen, or on the playing Channel's row. The
+  Channel keeps playing docked. **Stop stream** ends the Playback Session.
+- While the signal opens in fullscreen, its message and the **Exit
+  fullscreen** and **Stop stream** actions are in the band under the
+  picture, never inside the picture's box, which Media3 may already cover.
+- A failure in fullscreen offers **Try again** and **Back to Guide**; **Back
+  to Guide** does what **Back** does and keeps the failed session docked.
+- Outside fullscreen, **Back** dismisses the keyboard or an open panel
+  first; from the Guide it returns you to Android TV.
+
+Picture-in-picture is disabled on Android TV, so **Home** stops playback.
+**Copy diagnostics** is omitted from Android TV player controls; safe source
+diagnostics remain readable in **Sources**.
+
 In fullscreen, **Up** goes to the previous Channel and **Down** goes to the
 next when focus is on the picture. **Left**, **Right**, or **Center** while the
 controls are hidden reveal the playback controls and move focus into the bar
@@ -37,7 +61,8 @@ visible (or when playback cannot auto-hide controls), **Center** pauses,
 resumes, or triggers recovery. A dedicated **Play/Pause** key works wherever
 the Channel is playing. Gamepad **L1/R1** and dedicated **Channel down/up**
 keys work in and out of fullscreen unless a dialog, menu, or search popup is
-open. Volume keys control the TV's volume.
+open; picking the playing Channel within the moment before such a change
+commits cancels it. Volume keys control the TV's volume.
 
 For an emulator run, use an Android TV image and select its serial before
 installing a debug APK. Start the launcher activity and drive the app with
@@ -54,9 +79,13 @@ with the active HDMI mode. The Android TV interface can use a smaller buffer
 than its separate video surface. On a Shield with a 1920 × 1080 UI override
 and 4K HDMI output, expect a 1920 × 1080 Guide viewport. Check that the
 visual viewport matches its layout width before and after using the search
-keyboard or fullscreen. Pause in fullscreen and exit, then resume and dock
-the picture. The retired frame must clear the Watch controls. The live preview
-must align with the first Guide column and the listings must reach both edges.
+keyboard or fullscreen. Pause in fullscreen and press Back: the paused
+picture must stay docked at the size it holds, with nothing in the Guide
+under it; then resume. Open the inline search and a sheet while a picture
+plays: their veils must leave the docked picture's box clear. The panel beside
+the band must align with the first Guide column and the listings must reach
+both edges. Read `adb logcat` while the Guide shows Channel Icons: no line may
+carry an icon location.
 
 ## Local toolchain
 

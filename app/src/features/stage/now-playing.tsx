@@ -1,6 +1,7 @@
 import type { ChannelId, ChannelSummary } from "../../client/contracts";
+import { ChannelIcon } from "../guide/channel-icon";
 import { channelTitle } from "../guide/guide-families";
-import { clockLabel, programmeKey } from "../guide/guide-window";
+import { clockLabel, durationLabel, programmeKey } from "../guide/guide-window";
 import { elapsedFraction, minutesLeft, programmeAt } from "../guide/now-next";
 import { QualitySwitch } from "../guide/quality-switch";
 import type { StagePicture } from "./stage-chrome";
@@ -49,6 +50,16 @@ export interface NowPlayingProps {
   readonly picture: Pick<StagePicture, "state" | "status" | "silent"> | null;
   /** Receives the element the player puts its controls in. */
   readonly controlsRef: (element: HTMLDivElement | null) => void;
+  /**
+   * Shows the quality switch on the channel line. A TV player carries it in
+   * its control row instead.
+   */
+  readonly qualitySwitch?: boolean;
+  /**
+   * The TV's info block: the Channel's tile (its icon, or its number) before
+   * its name, and how long each Programme that follows runs.
+   */
+  readonly television?: boolean;
   readonly onPreparePlayback: () => void;
   readonly onTuneVariant: (channel: ChannelSummary) => void;
 }
@@ -61,6 +72,8 @@ export function NowPlaying({
   layout,
   picture,
   controlsRef,
+  qualitySwitch = true,
+  television = false,
   onPreparePlayback,
   onTuneVariant,
 }: NowPlayingProps) {
@@ -75,6 +88,13 @@ export function NowPlaying({
     <div className="now-playing">
       {subject === null ? null : (
         <div className="now-playing__number">{subject.channel.number}</div>
+      )}
+      {subject === null || !television ? null : (
+        <ChannelIcon
+          className="now-playing__icon"
+          icon={subject.channel.icon}
+          number={subject.channel.number}
+        />
       )}
       <div className="now-playing__body">
         {subject === null ? null : (
@@ -101,7 +121,7 @@ export function NowPlaying({
                 </span>
               ) : null
             ) : null}
-            {subject.variants.length > 1 ? (
+            {qualitySwitch && subject.variants.length > 1 ? (
               <QualitySwitch
                 variants={subject.variants}
                 currentChannel={subject.channel.id}
@@ -154,6 +174,11 @@ export function NowPlaying({
                     {clockLabel(programme.startsAt)}
                   </time>{" "}
                   <b>{programme.title}</b>
+                  {television ? (
+                    <span className="now-playing__duration">
+                      {durationLabel(programme)}
+                    </span>
+                  ) : null}
                 </li>
               ))}
             </ol>

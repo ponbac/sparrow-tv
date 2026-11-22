@@ -20,6 +20,7 @@ import {
 } from "../../client/contracts";
 import { channelFixture } from "../../test/channel-fixture";
 import { BoardSearch } from "./board-search";
+import type { SearchOnNow } from "./search-on-now";
 
 afterEach(cleanup);
 
@@ -244,6 +245,136 @@ describe("BoardSearch", () => {
     expect(
       await screen.findByRole("button", { name: "Tune SVT1 FHD" }),
     ).toHaveTextContent(/^101SVT1FHDSweden$/u);
+  });
+
+  it("folds a guide row's Quality Variants into one TV result that tunes the best", async () => {
+    const svt = (quality: "sd" | "hd" | "fhd") =>
+      channelFixture({
+        id: `svt1-${quality}`,
+        name: `SVT1 ${quality.toUpperCase()}`,
+        group: "Sweden",
+        number: 101,
+        variant: { quality, baseName: "SVT1" },
+        icon: "http://logos.example/svt1.png",
+      });
+    const page = {
+      generation: CHANNEL_RESULTS.generation,
+      items: [svt("hd"), svt("sd"), svt("fhd")],
+      next: null,
+    };
+    const onTune = vi.fn();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <BoardSearch
+          television
+          client={searchClient(
+            async () =>
+              success(
+                clientSchemas.searchResults.parse({
+                  generation: 7,
+                  channels: page,
+                  programmes: { generation: 7, items: [], next: null },
+                }),
+              ),
+            async () => success(page),
+          )}
+          generation={CHANNEL_RESULTS.generation}
+          excludedGroups={new Set()}
+          onGenerationMismatch={() => undefined}
+          onPreparePlayback={() => undefined}
+          onTune={onTune}
+        />
+      </QueryClientProvider>,
+    );
+    const user = userEvent.setup();
+
+    await user.type(
+      screen.getByRole("combobox", { name: "Search channels and programmes" }),
+      "svt",
+    );
+    const results = await screen.findAllByRole("option", { name: /SVT1/ });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toHaveTextContent(/^101101SVT1SDHDFHDSweden$/u);
+    await user.click(results[0] as HTMLElement);
+    expect(onTune).toHaveBeenCalledWith(svt("fhd"));
+  });
+
+  it("says under a TV desk hit what is on now, from the guide rows already read", async () => {
+    const svt = (quality: "hd" | "fhd") =>
+      channelFixture({
+        id: `svt1-${quality}`,
+        name: `SVT1 ${quality.toUpperCase()}`,
+        group: "Sweden",
+        number: 1,
+        variant: { quality, baseName: "SVT1" },
+      });
+    const unread = channelFixture({ id: "svt24", name: "SVT24", group: "News", number: 36 });
+    const page = {
+      generation: CHANNEL_RESULTS.generation,
+      items: [svt("hd"), svt("fhd"), unread],
+      next: null,
+    };
+    const onNow: SearchOnNow = {
+      // Only the HD variant's row has been read; the hit tunes FHD.
+      programmes: new Map([
+        [
+          svt("hd").id,
+          [
+            {
+              title: "Matresan: Norrland",
+              startsAt: clientSchemas.isoInstant.parse("2026-11-22T07:15:00Z"),
+              endsAt: clientSchemas.isoInstant.parse("2026-11-22T08:45:00Z"),
+            },
+          ],
+        ],
+      ]),
+      now: new Date("2026-11-22T08:04:00Z"),
+    };
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <BoardSearch
+          television
+          client={searchClient(
+            async () =>
+              success(
+                clientSchemas.searchResults.parse({
+                  generation: 7,
+                  channels: page,
+                  programmes: { generation: 7, items: [], next: null },
+                }),
+              ),
+            async () => success(page),
+          )}
+          generation={CHANNEL_RESULTS.generation}
+          excludedGroups={new Set()}
+          onNow={onNow}
+          onGenerationMismatch={() => undefined}
+          onPreparePlayback={() => undefined}
+          onTune={() => undefined}
+        />
+      </QueryClientProvider>,
+    );
+    const user = userEvent.setup();
+
+    await user.type(
+      screen.getByRole("combobox", { name: "Search channels and programmes" }),
+      "svt",
+    );
+    await user.keyboard("{Enter}");
+
+    expect(
+      await screen.findByRole("button", { name: "Tune SVT1 FHD" }),
+    ).toHaveTextContent(/Matresan: Norrland41 min left/u);
+    expect(screen.getByRole("button", { name: "Tune SVT24" })).toHaveTextContent(
+      /^3636SVT24News$/u,
+    );
   });
 
   it("opens the Channel search desk from Enter and the first dropdown option", async () => {

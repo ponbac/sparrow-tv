@@ -2,6 +2,49 @@ import type {
   ChannelSummary,
   ProgrammeSearchHit,
 } from "../../client/contracts";
+import {
+  byQuality,
+  preferredChannel,
+  type VariantPreferences,
+} from "./guide-families";
+
+/**
+ * One TV search result for a Channel: the guide row's Quality Variants that
+ * matched, folded into one row that tunes the preferred one. A Channel
+ * without variants is a row of one.
+ */
+export interface SearchChannelRow {
+  /** The variant the row tunes; see `preferredChannel`. */
+  readonly channel: ChannelSummary;
+  /** The matched variants from the lowest quality up; never empty. */
+  readonly variants: readonly [ChannelSummary, ...ChannelSummary[]];
+}
+
+/**
+ * Folds Channel hits that share a Channel Number, the Quality Variants of one
+ * guide row, into one row each, placed where the first of them ranked.
+ */
+export function foldSearchVariants(
+  channels: readonly ChannelSummary[],
+  preferences: VariantPreferences,
+): readonly SearchChannelRow[] {
+  const byNumber = new Map<number, ChannelSummary[]>();
+  for (const channel of channels) {
+    const variants = byNumber.get(channel.number);
+    if (variants === undefined) {
+      byNumber.set(channel.number, [channel]);
+    } else {
+      variants.push(channel);
+    }
+  }
+  return Array.from(byNumber.values(), (found) => {
+    const variants = [...found].sort(byQuality) as [
+      ChannelSummary,
+      ...ChannelSummary[],
+    ];
+    return { channel: preferredChannel(variants, preferences), variants };
+  });
+}
 
 /**
  * Channels that remain after board-group exclusions. Passing

@@ -5,7 +5,7 @@ import { isVisibleControl } from "./stage-dom";
 
 interface TelevisionControls {
   readonly enabled: boolean;
-  readonly mode: "watch" | "guide";
+  /** Fullscreen has ended through Back: the Guide is what remains. */
   readonly onShowGuide: () => void;
   readonly onZap: (direction: -1 | 1) => void;
 }
@@ -20,7 +20,10 @@ const ZAP_BLOCKING_POPUP =
 /**
  * Gives the Android TV remote a usable focus target, keeps open overlays
  * contained, and routes Escape, native Back, and Channel keys. Guide 2D
- * movement is owned by `guide-navigation.ts`.
+ * movement is owned by `guide-navigation.ts`. A TV has no watch mode: the
+ * Guide is always there, with the picture docked in its band or fullscreen
+ * over it, so Back leaves fullscreen for the Guide and, from the Guide,
+ * leaves the app.
  */
 export function useTelevisionControls(
   controls: TelevisionControls,
@@ -47,7 +50,7 @@ export function useTelevisionControls(
     });
     const releaseBack = bridge.subscribeTelevisionBack(() => {
       // Escape is Base UI's shared dismiss event for dialogs, menus, search,
-      // visible fullscreen controls, and Watch/fullscreen exit below.
+      // visible fullscreen controls, and fullscreen exit below.
       const target = document.activeElement ?? document.body;
       const unhandled = target.dispatchEvent(
         new KeyboardEvent("keydown", {
@@ -83,7 +86,7 @@ export function useTelevisionControls(
           scheduleFocus();
           return;
         }
-        const target = fallbackFocus(latest.current.mode);
+        const target = fallbackFocus();
         if (target !== undefined) {
           target.focus({ preventScroll: true });
           const board = target.closest<HTMLElement>(".programme-guide__board");
@@ -139,9 +142,6 @@ export function useTelevisionControls(
           () => latest.current.onShowGuide(),
           () => undefined,
         );
-      } else if (latest.current.mode === "watch") {
-        event.preventDefault();
-        latest.current.onShowGuide();
       }
     }
   }, [enabled]);
@@ -152,14 +152,26 @@ function openOverlay(): HTMLElement | null {
   return overlays[overlays.length - 1] ?? null;
 }
 
-function fullscreenFailureAction(surface: HTMLElement): HTMLElement | undefined {
-  if (surface.querySelector('.hosted-player__state[data-state="failed"]') === null) {
-    return undefined;
+/**
+ * Where focus rests in a fullscreen player with no picture to watch: a
+ * failure's recovery (else its way back), and while the signal opens the
+ * way out of fullscreen, so one action is always marked. Undefined while
+ * there is a picture: then the surface itself takes focus.
+ */
+function fullscreenRestingAction(surface: HTMLElement): HTMLElement | undefined {
+  if (surface.querySelector('.hosted-player__state[data-state="failed"]') !== null) {
+    return (
+      firstControl(surface, ".hosted-player__recovery") ??
+      firstControl(surface, ".hosted-player__stop")
+    );
   }
-  return (
-    firstControl(surface, ".hosted-player__recovery") ??
-    firstControl(surface, ".hosted-player__stop")
-  );
+  if (surface.querySelector('.hosted-player__state[data-state="starting"]') !== null) {
+    return (
+      firstControl(surface, ".hosted-player__fullscreen") ??
+      firstControl(surface, ".hosted-player__stop")
+    );
+  }
+  return undefined;
 }
 
 function usable(element: EventTarget | null): element is HTMLElement {
@@ -168,7 +180,7 @@ function usable(element: EventTarget | null): element is HTMLElement {
   }
   const isFullscreenSurface = element === document.fullscreenElement;
   if (isFullscreenSurface) {
-    if (fullscreenFailureAction(element) !== undefined) {
+    if (fullscreenRestingAction(element) !== undefined) {
       return false;
     }
     return isVisibleControl(element, {
@@ -183,8 +195,10 @@ function usable(element: EventTarget | null): element is HTMLElement {
     return false;
   }
   return isVisibleControl(element, {
+    // Roving widgets, and the Guide's quality chips, which the D-pad reaches
+    // though they are out of the Tab order.
     allowNegativeTabIndex: element.matches(
-      '[role="radio"], [role="menuitem"], [role="option"]',
+      '[role="radio"], [role="menuitem"], [role="option"], .programme-guide__variants button',
     ),
     requireLayoutBox: true,
   });
@@ -194,22 +208,13 @@ function firstControl(scope: ParentNode, selector: string): HTMLElement | undefi
   return Array.from(scope.querySelectorAll<HTMLElement>(selector)).find(usable);
 }
 
-function fallbackFocus(mode: TelevisionControls["mode"]): HTMLElement | undefined {
+function fallbackFocus(): HTMLElement | undefined {
   const overlay = openOverlay();
   if (overlay !== null) return firstControl(overlay, ACTION);
   if (document.fullscreenElement instanceof HTMLElement) {
     return (
-      fullscreenFailureAction(document.fullscreenElement) ??
+      fullscreenRestingAction(document.fullscreenElement) ??
       document.fullscreenElement
-    );
-  }
-  if (mode === "watch") {
-    return (
-      firstControl(document, ".playback-load-notice button") ??
-      firstControl(document, ".hosted-player__recovery") ??
-      firstControl(document, ".channel-bar__guide") ??
-      firstControl(document, ".channel-bar button") ??
-      firstControl(document, ".now-playing__controls button")
     );
   }
   return (

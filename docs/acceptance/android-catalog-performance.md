@@ -61,7 +61,8 @@ layout's list
 and the page is ready with no picture box above it. The tune enters watch
 mode, which takes the guide out of the layout but leaves it mounted: the
 pressed state is read from a button that is not shown, and the readiness
-markers still hold after the tune.
+markers still hold after the tune. On Android TV the tune plays in the
+Guide's docked picture instead, so the pressed button stays shown.
 
 During load and browse, the tool samples the main process's `VmHWM` and `VmRSS`
 through its own UID. `VmHWM` is gated at 524,288 KiB; total PSS and cgroup memory

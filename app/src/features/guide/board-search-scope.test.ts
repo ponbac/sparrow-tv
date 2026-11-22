@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import { clientSchemas } from "../../client/contracts";
 import { channelFixture } from "../../test/channel-fixture";
 import {
+  foldSearchVariants,
   shouldAdvancePastExcludedSearchHits,
   visibleSearchChannels,
   visibleSearchProgrammes,
 } from "./board-search-scope";
+import { familyKey } from "./guide-families";
 
 const WORLD_NEWS = channelFixture({
   id: "world-news",
@@ -106,5 +108,46 @@ describe("board-search-scope", () => {
         loading: false,
       }),
     ).toBe(false);
+  });
+});
+
+describe("foldSearchVariants", () => {
+  const svt = (quality: "sd" | "hd" | "fhd") =>
+    channelFixture({
+      id: `svt1-${quality}`,
+      name: `SVT1 ${quality.toUpperCase()}`,
+      group: "Sverige",
+      number: 101,
+      variant: { quality, baseName: "SVT1" },
+    });
+  const NEWS = channelFixture({
+    id: "svt24",
+    name: "SVT24",
+    group: "Nyheter",
+    number: 136,
+  });
+
+  it("folds a guide row's Quality Variants into one row where the first ranked", () => {
+    const rows = foldSearchVariants(
+      [svt("hd"), NEWS, svt("sd"), svt("fhd")],
+      new Map(),
+    );
+
+    expect(rows.map((row) => row.channel.id)).toEqual(["svt1-fhd", "svt24"]);
+    expect(rows[0]?.variants.map((variant) => variant.id)).toEqual([
+      "svt1-sd",
+      "svt1-hd",
+      "svt1-fhd",
+    ]);
+    expect(rows[1]?.variants).toEqual([NEWS]);
+  });
+
+  it("tunes the quality the viewer chose for that row", () => {
+    const rows = foldSearchVariants(
+      [svt("sd"), svt("hd"), svt("fhd")],
+      new Map([[familyKey({ group: "Sverige", title: "SVT1" }), "hd"]]),
+    );
+
+    expect(rows[0]?.channel.id).toBe("svt1-hd");
   });
 });

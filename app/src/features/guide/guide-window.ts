@@ -126,10 +126,90 @@ export function programmeKey(
   return `${programme.startsAt}:${programme.endsAt}:${programme.title}:${occurrence}`;
 }
 
+/**
+ * The stable identity of each of a row's Programmes, in order: the Programme
+ * itself, counted only among identical ones. Programmes that share a slot
+ * but not a title keep apart; earlier Programmes leaving the row change no
+ * later one's key.
+ */
+export function programmeKeys(programmes: readonly ProgrammeSlot[]): readonly string[] {
+  const occurrences = new Map<string, number>();
+  return programmes.map((programme) => {
+    const identity = programmeKey(programme, 0);
+    const occurrence = occurrences.get(identity) ?? 0;
+    occurrences.set(identity, occurrence + 1);
+    return programmeKey(programme, occurrence);
+  });
+}
+
+const WEEKDAY_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  weekday: "long",
+});
+
+/** A stretch of a guide window that lies on one local calendar day. */
+export interface WindowDay {
+  /** "Today", "Tomorrow", or the weekday's name. */
+  readonly label: string;
+  /** Minutes from the window's start to the day's first minute in it. */
+  readonly fromMinute: number;
+  /** Minutes from the window's start to the next day's, or to the window's end. */
+  readonly toMinute: number;
+}
+
+/**
+ * The local calendar days a guide window touches, in order, each named as
+ * the viewer would say it on `now`'s day.
+ */
+export function windowDays(window: ClockWindow, now: Date): readonly WindowDay[] {
+  const start = window.startsAt.getTime();
+  const end = window.endsAt.getTime();
+  const days: WindowDay[] = [];
+  let from = start;
+  while (from < end) {
+    const instant = new Date(from);
+    const next = new Date(
+      instant.getFullYear(),
+      instant.getMonth(),
+      instant.getDate() + 1,
+    ).getTime();
+    const to = Math.min(next, end);
+    days.push({
+      label: dayLabel(instant, now),
+      fromMinute: (from - start) / 60_000,
+      toMinute: (to - start) / 60_000,
+    });
+    from = to;
+  }
+  return days;
+}
+
+/** "Today", "Tomorrow" or the weekday of `day`, seen from `now`. */
+export function dayLabel(day: Date, now: Date): string {
+  const midnight = (date: Date) =>
+    new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const days = Math.round(
+    (midnight(day).getTime() - midnight(now).getTime()) / (24 * HOUR_MS),
+  );
+  if (days === 0) return "Today";
+  if (days === 1) return "Tomorrow";
+  return WEEKDAY_FORMATTER.format(day);
+}
+
 /** Formats one guide instant as a compact local clock time. */
 export function clockLabel(instant: Date | string): string {
   const date = typeof instant === "string" ? new Date(instant) : instant;
   return CLOCK_FORMATTER.format(date);
+}
+
+/** How long a Programme runs, such as "45 min", "1 h" or "1 h 30 min". */
+export function durationLabel(programme: ProgrammeSlot): string {
+  const minutes = Math.round(
+    (Date.parse(programme.endsAt) - Date.parse(programme.startsAt)) / 60_000,
+  );
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours} h` : `${hours} h ${rest} min`;
 }
 
 /** Reports whether a Programme is airing at the supplied instant. */
