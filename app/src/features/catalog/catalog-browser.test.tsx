@@ -50,10 +50,33 @@ import { stubViewport } from "../../test/theater-viewport";
 import type { InstalledPlaybackEngine } from "../playback/installed-playback-engine";
 import type { HostedPlaybackEngine } from "../playback/mpegts-engine";
 import { BOARD_GROUP_EXCLUSIONS_STORAGE_KEY } from "../guide/board-group-roster";
+import { VARIANT_PREFERENCES_STORAGE_KEY } from "../guide/use-variant-preferences";
+import { androidPortFixture } from "../../test/android-port-fixture";
+import {
+  createAndroidPlayerBridge,
+  type AndroidPlayerBridge,
+} from "../playback/android-player-bridge";
 import { CatalogBrowser } from "./catalog-browser";
+
+// The Android shell's bridge, which a test may stand in for. Null, as in
+// every target that is not Android, unless a test sets it.
+const androidBridge = vi.hoisted(() => ({
+  current: null as AndroidPlayerBridge | null,
+}));
+vi.mock("../playback/android-player-bridge", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../playback/android-player-bridge")>();
+  return {
+    ...actual,
+    get androidPlayerBridge() {
+      return androidBridge.current;
+    },
+  };
+});
 
 afterEach(() => {
   cleanup();
+  androidBridge.current = null;
   vi.useRealTimers();
   vi.unstubAllGlobals();
   localStorage.clear();
@@ -3110,13 +3133,6 @@ describe("CatalogBrowser on a TV", () => {
     await act(async () => {});
   }
 
-  /** Back until fullscreen ends: the first hides a playing picture's bar. */
-  async function backToGuide(): Promise<void> {
-    for (let press = 0; press < 2 && document.fullscreenElement != null; press += 1) {
-      await back();
-    }
-  }
-
   it("plays a Center press in the docked picture, takes the playing Channel fullscreen on the next, and Back returns to its row", async () => {
     const fullscreen = stubElementFullscreen();
     try {
@@ -3150,10 +3166,9 @@ describe("CatalogBrowser on a TV", () => {
       expect(screen.getByLabelText("World News live video")).toBe(video);
       expect(client.installedSessionCount).toBe(1);
 
-      // 4. Back (the first one hides the visible bar) leaves fullscreen for
-      // the Guide: the picture plays on, docked, and focus is on its row.
-      await back();
-      expect(document.fullscreenElement).toBe(player);
+      // 4. One Back leaves fullscreen for the Guide, though the bar shows:
+      // the picture plays on, docked, and focus is on its row.
+      expect(player).toHaveAttribute("data-controls-visible", "true");
       await back();
       expect(document.fullscreenElement).toBeNull();
       expect(row).toHaveFocus();
@@ -3246,28 +3261,39 @@ describe("CatalogBrowser on a TV", () => {
       const row = await guide.findByRole("button", { name: "Tune SVT1" });
       const sd = guide.getByRole("button", { name: "Tune SVT1 SD" });
       const hd = guide.getByRole("button", { name: "Tune SVT1 HD" });
-      layOut(row);
+      for (const control of [row, sd, hd]) layOut(control);
 
       await center(user, row);
       await screen.findByLabelText("SVT1 HD live video");
       expect(sessions).toHaveBeenNthCalledWith(1, { id: SVT1_HD.id });
 
       // Another variant of the playing Channel plays docked, like any change.
-      await center(user, sd);
+      // The D-pad reaches the chips: Right from the row.
+      await user.keyboard("{ArrowRight}");
+      expect(sd).toHaveFocus();
+      await user.keyboard("{Enter}");
       await screen.findByLabelText("SVT1 SD live video");
       expect(sessions).toHaveBeenNthCalledWith(2, { id: SVT1_SD.id });
       expect(fullscreen.requested).toEqual([]);
+      await nextFrame();
+      expect(sd).toHaveFocus();
 
       // The exact variant that plays is the fullscreen gesture.
-      await center(user, sd);
+      await user.keyboard("{Enter}");
       expect(document.fullscreenElement).toBe(
         screen.getByRole("region", { name: "SVT1 SD" }),
       );
       expect(sessions).toHaveBeenCalledTimes(2);
-      await backToGuide();
+      await back();
       expect(document.fullscreenElement).toBeNull();
+      // Back returns to the chip that went fullscreen, and it keeps focus.
+      expect(sd).toHaveFocus();
+      await nextFrame();
+      expect(sd).toHaveFocus();
 
-      await center(user, hd);
+      await user.keyboard("{ArrowRight}");
+      expect(hd).toHaveFocus();
+      await user.keyboard("{Enter}");
       await screen.findByLabelText("SVT1 HD live video");
       expect(sessions).toHaveBeenNthCalledWith(3, { id: SVT1_HD.id });
       expect(fullscreen.requested).toHaveLength(1);
@@ -3311,9 +3337,127 @@ describe("CatalogBrowser on a TV", () => {
       await back();
       expect(document.fullscreenElement).toBeNull();
       expect(row).toHaveFocus();
+
+      // "Back to Guide" does what Back does: the failed Playback Session
+      // stays docked, and Center on its row shows the failure again.
+      await center(user, row);
+      expect(document.fullscreenElement).toBe(player);
+      await user.click(within(player).getByRole("button", { name: "Back to Guide" }));
+      await waitFor(() => expect(document.fullscreenElement).toBeNull());
+      expect(row).toHaveFocus();
+      expect(row).toHaveAttribute("aria-pressed", "true");
+      expect(requireShell()).toHaveAttribute("data-playing", "true");
+      expect(player).toBeInTheDocument();
+      expect(
+        document.querySelector('.hosted-player__state[data-state="failed"]'),
+      ).not.toBeNull();
+      expect(sessions).toHaveBeenCalledTimes(1);
     } finally {
       fullscreen.restore();
     }
+  });
+
+  it("never takes a held OK fullscreen: only a fresh press on the playing Channel does", async () => {
+    const fullscreen = stubElementFullscreen();
+    try {
+      const { client, user, row } = await openTelevision();
+      const cinema = screen.getByRole("button", { name: "Tune Cinema One" });
+      layOut(cinema);
+      await center(user, cinema);
+      await screen.findByLabelText("Cinema One live video");
+      await screen.findByRole("button", { name: "Pause" });
+
+      // Holding OK on a Channel that does not play: the first press tunes
+      // it docked, and the key's repeats press the same row again.
+      act(() => row.focus());
+      await user.keyboard("{Enter>4/}");
+      await screen.findByLabelText("World News live video");
+      expect(row).toHaveAttribute("aria-pressed", "true");
+      expect(fullscreen.requested).toEqual([]);
+      expect(client.installedSessionCount).toBe(2);
+
+      // A fresh press on the playing Channel is the fullscreen gesture.
+      await user.keyboard("{Enter}");
+      expect(document.fullscreenElement).toBe(
+        screen.getByRole("region", { name: "World News" }),
+      );
+    } finally {
+      fullscreen.restore();
+    }
+  });
+
+  it("drops a queued Channel change when the viewer picks the playing Channel", async () => {
+    const fullscreen = stubElementFullscreen();
+    const port = androidPortFixture();
+    androidBridge.current = createAndroidPlayerBridge(port.value);
+    try {
+      const { client, user, row } = await openTelevision();
+      await center(user, row);
+      await screen.findByLabelText("World News live video");
+      await screen.findByRole("button", { name: "Pause" });
+      const sessions = vi.spyOn(client, "createPlaybackSession");
+
+      // Channel Up queues the next Channel; within the delay, Center on the
+      // row that plays takes it fullscreen and the queued change is dropped.
+      act(() => port.deliver("tv:channel-up"));
+      await center(user, row);
+      const player = screen.getByRole("region", { name: "World News" });
+      expect(document.fullscreenElement).toBe(player);
+      await act(
+        () => new Promise<void>((resolve) => setTimeout(resolve, 500)),
+      );
+      expect(document.fullscreenElement).toBe(player);
+      expect(sessions).not.toHaveBeenCalled();
+      expect(screen.getByLabelText("World News live video")).toBeInTheDocument();
+      expect(row).toHaveAttribute("aria-pressed", "true");
+
+      // The same holds for the band's caption.
+      await back();
+      expect(document.fullscreenElement).toBeNull();
+      act(() => port.deliver("tv:channel-down"));
+      await user.click(screen.getByRole("button", { name: "Watch full screen" }));
+      expect(document.fullscreenElement).toBe(player);
+      await act(
+        () => new Promise<void>((resolve) => setTimeout(resolve, 500)),
+      );
+      expect(sessions).not.toHaveBeenCalled();
+      expect(row).toHaveAttribute("aria-pressed", "true");
+    } finally {
+      fullscreen.restore();
+    }
+  });
+
+  it("tunes a folded search result as its guide row does, without choosing a quality for the row", async () => {
+    document.documentElement.setAttribute("data-television", "");
+    const client = new FakeSparrowClient({
+      pictureOverlay: false,
+      guide: variantGuide,
+      search: async () =>
+        success(
+          clientSchemas.searchResults.parse({
+            generation: 7,
+            channels: { generation: 7, items: [SVT1_SD, SVT1_HD], next: null },
+            programmes: { generation: 7, items: [], next: null },
+          }),
+        ),
+    });
+    const sessions = vi.spyOn(client, "createPlaybackSession");
+    const user = userEvent.setup();
+    renderInstalledBrowser(client);
+    const field = await screen.findByRole("combobox", {
+      name: "Search channels and programmes",
+    });
+    act(() => field.focus());
+    await user.keyboard("{Enter}");
+    await user.paste("svt");
+    const results = await screen.findAllByRole("option", { name: /SVT1/u });
+    expect(results).toHaveLength(1);
+
+    await user.click(results[0] as HTMLElement);
+    await screen.findByLabelText("SVT1 HD live video");
+    expect(sessions).toHaveBeenCalledWith({ id: SVT1_HD.id });
+    // Only a quality chip chooses the row's quality.
+    expect(localStorage.getItem(VARIANT_PREFERENCES_STORAGE_KEY)).toBeNull();
   });
 
   it("keeps a paused picture docked at the size it holds, through fullscreen and back", async () => {

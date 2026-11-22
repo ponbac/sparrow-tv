@@ -352,6 +352,55 @@ describe("installed app repaint contract", () => {
     ).toBe("none");
   });
 
+  it("keeps what the TV draws clear of its docked picture's box, placed by the size it is held at", async () => {
+    // Media3 draws the TV's docked picture above the page. A veil over the
+    // Guide or a sheet's backdrop must leave its box out, and the panel and
+    // the board beside and under it are placed by the held size, so a
+    // narrower window moves nothing under a picture that stays where it is.
+    const tvStyles = requireStylesheet(
+      new Map(await installedStylesheets()),
+      "features/stage/television.css",
+    );
+    const playing = '.shell[data-layout="pocket"][data-playing="true"]';
+
+    expect(declaration(tvStyles, "html[data-television]", "--tv-panel-left")).toBe(
+      "calc(var(--tv-gutter) + var(--pocket-pinned-w, var(--tv-dock-w)) + 1.8333rem)",
+    );
+    expect(declaration(tvStyles, "html[data-television]", "--tv-band-h")).toContain(
+      "var(--pocket-pinned-h, var(--tv-dock-h))",
+    );
+    expect(
+      declaration(
+        tvStyles,
+        `html[data-television]:has(.board-search input[aria-expanded="true"]) ${playing} .programme-guide::after`,
+        "clip-path",
+      ),
+    ).toBe("var(--tv-around-dock)");
+    expect(
+      declaration(
+        tvStyles,
+        `html[data-television]:has(${playing}) :is(.board-search-desk__backdrop, .group-roster__backdrop, .feeds-dialog__backdrop)`,
+        "clip-path",
+      ),
+    ).toBe("var(--tv-around-dock)");
+  });
+
+  it("puts the TV's opening-signal message and actions in the fullscreen band, under the picture's box", async () => {
+    // Media3's opaque native view may lie over the box before the stream
+    // prepares; what the viewer reads and presses then must be outside it.
+    const tvStyles = requireStylesheet(
+      new Map(await installedStylesheets()),
+      "features/stage/television.css",
+    );
+    const opening =
+      'html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="stopping"])';
+
+    expect(declaration(tvStyles, `${opening} .hosted-player__controls`, "top")).toBeUndefined();
+    expect(declaration(tvStyles, `${opening} .hosted-player__overlay`, "top")).toBe(
+      "calc(100vh - var(--fs-row-b-bottom) - var(--tv-control))",
+    );
+  });
+
   it("never transitions or animates the picture's box", async () => {
     const moving: string[] = [];
 

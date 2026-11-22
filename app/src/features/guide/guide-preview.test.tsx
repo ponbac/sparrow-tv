@@ -1,7 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
-import { clientSchemas, type GuideProgramme } from "../../client/contracts";
+import { cleanup, render, screen, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  clientSchemas,
+  type GuideProgramme,
+  type ScheduleInput,
+} from "../../client/contracts";
 import { channelFixture } from "../../test/channel-fixture";
 import type { GuideFamily } from "./guide-families";
 import { GuidePreview } from "./guide-preview";
@@ -77,5 +81,113 @@ describe("GuidePreview", () => {
     expect(meter(container)).toHaveTextContent(
       `Starts ${clockLabel(LATER.startsAt)}·in 3 h 41 min55 min`,
     );
+  });
+});
+
+describe("GuidePreview's description", () => {
+  const generation = clientSchemas.status.parse({
+    generation: 7,
+    configuration: { configured: true, epgConfigured: true },
+    m3u: { _tag: "fresh", validatedAt: "2026-11-22T07:00:00Z" },
+    epg: null,
+  }).generation!;
+  const summary = (
+    channelId: string,
+    item: GuideProgramme,
+    description: string,
+  ) => ({
+    channelId,
+    title: item.title,
+    description,
+    startsAt: item.startsAt,
+    endsAt: item.endsAt,
+  });
+
+  function renderWith(
+    family: GuideFamily,
+    schedule: (input: ScheduleInput) => Promise<unknown>,
+  ) {
+    const store = createPreviewStore();
+    store.set({ number: family.number, startsAt: null });
+    return render(
+      <QueryClientProvider client={new QueryClient()}>
+        <GuidePreview
+          source={{
+            client: { schedule: schedule as never },
+            generation,
+          }}
+          store={store}
+          families={[family]}
+          variantPreferences={new Map()}
+          playingChannel={null}
+          now={NOW}
+        />
+      </QueryClientProvider>,
+    );
+  }
+
+  it("reads it from the Quality Variant whose Programme is shown, and matches that Programme", async () => {
+    const sd = channelFixture({
+      id: "svt1-sd",
+      name: "SVT1 SD",
+      group: "Sverige",
+      number: 1,
+      variant: { quality: "sd", baseName: "SVT1" },
+    });
+    const hd = channelFixture({
+      id: "svt1-hd",
+      name: "SVT1 HD",
+      group: "Sverige",
+      number: 1,
+      variant: { quality: "hd", baseName: "SVT1" },
+    });
+    // The preferred variant (HD) has no guide data: the panel borrows SD's.
+    const family: GuideFamily = {
+      number: 1,
+      title: "SVT1",
+      group: "Sverige",
+      variants: [
+        { channel: sd, programmes: [LIVE, LATER], programmesTruncated: false },
+        { channel: hd, programmes: [], programmesTruncated: false },
+      ],
+    };
+    const earlier = programme("Natt", "2026-11-22T06:00:00Z", "2026-11-22T07:45:00Z");
+    const schedule = vi.fn(async (input: ScheduleInput) => {
+      void input;
+      return {
+        ok: true,
+        value: clientSchemas.schedulePage.parse({
+          generation: 7,
+          // A Programme still on at the shown one's start comes first.
+          items: [
+            summary("svt1-sd", earlier, "Not this one."),
+            summary("svt1-sd", LIVE, "Morning news from Sweden."),
+          ],
+          next: null,
+        }),
+      };
+    });
+
+    renderWith(family, schedule);
+
+    const details = await screen.findByRole("region", { name: "About Morgon" });
+    expect(
+      await within(details).findByText("Morning news from Sweden."),
+    ).toBeInTheDocument();
+    expect(schedule).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "svt1-sd", from: LIVE.startsAt }),
+    );
+    expect(schedule.mock.calls[0]?.[0].limit).toBeGreaterThan(1);
+  });
+
+  it("offers the description and what follows to a screen reader as a named region that is not live", () => {
+    renderPreview(null);
+
+    const details = screen.getByRole("region", { name: "About Morgon" });
+    expect(details).not.toHaveAttribute("aria-live");
+    expect(details.closest("[aria-hidden='true']")).toBeNull();
+    expect(
+      within(details).getByRole("list", { name: "Later" }),
+    ).toHaveTextContent("Fiskeläget");
   });
 });

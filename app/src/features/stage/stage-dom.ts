@@ -205,6 +205,9 @@ const DEFAULT_SCROLL_MARGIN_PX = 12;
 /**
  * Scrolls a container vertically to reveal `target` without invoking
  * `scrollIntoView`, which can scroll clipped ancestors holding native video.
+ * Without a bottom margin of its own it keeps clear of the container's
+ * `scroll-padding-bottom`, which a list with a fade over its last rows sets
+ * to the fade's height.
  */
 export function revealInScrollContainer(
   container: HTMLElement | null,
@@ -219,7 +222,8 @@ export function revealInScrollContainer(
     return;
   }
   const topMargin = options.marginPx ?? DEFAULT_SCROLL_MARGIN_PX;
-  const bottomMargin = options.bottomMarginPx ?? topMargin;
+  const bottomMargin =
+    options.bottomMarginPx ?? Math.max(topMargin, scrollPaddingBottom(container));
   const containerRect = container.getBoundingClientRect();
   const targetRect = target.getBoundingClientRect();
   const top = targetRect.top - containerRect.top + container.scrollTop;
@@ -231,6 +235,14 @@ export function revealInScrollContainer(
   } else if (bottom > viewBottom - bottomMargin) {
     container.scrollTop = bottom - container.clientHeight + bottomMargin;
   }
+}
+
+/** The bottom scroll padding a container's styles give it, in pixels. */
+function scrollPaddingBottom(container: HTMLElement): number {
+  const value = Number.parseFloat(
+    window.getComputedStyle(container).scrollPaddingBottom,
+  );
+  return Number.isFinite(value) ? value : 0;
 }
 
 /**

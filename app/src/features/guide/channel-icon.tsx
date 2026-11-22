@@ -1,6 +1,6 @@
 import { memo, useState, type CSSProperties } from "react";
 import type { ChannelIcon as ChannelIconLocation } from "../../client/contracts";
-import { iconFit, loadedIconInk, type IconFit, type IconInk } from "./icon-fit";
+import { iconFit, loadedIconInk, type IconFit } from "./icon-fit";
 import { iconShape, type IconShape } from "./icon-shape";
 
 type IconStatus = "none" | "loading" | "loaded" | "failed";
@@ -12,7 +12,8 @@ type IconStatus = "none" | "loading" | "loaded" | "failed";
  * one never shows the browser's broken-image glyph: the image is shown only
  * once it has loaded and leaves the tile when it fails. A loaded icon also
  * says its outline (`data-shape`), so the plate can fit it. On the TV, where
- * its pixels can be read, it is fitted by its ink instead (`data-fit`, see
+ * its pixels can be read without a cross-origin request (same-origin,
+ * `data:` or `blob:`), it is fitted by its ink instead (`data-fit`, see
  * `icon-fit.ts`), on a plate in its tile's own ground.
  *
  * The icon's location is never logged or reported; the WebView fetches it
@@ -67,26 +68,13 @@ export const ChannelIcon = memo(function ChannelIcon({
           onLoad={(event) => {
             const image = event.currentTarget;
             const { naturalWidth, naturalHeight } = image;
-            const fitted = (ink: IconInk | null) =>
-              ink === null ? null : iconFit(ink, naturalWidth, naturalHeight);
             const ink = televisionShown() ? loadedIconInk(icon, image) : null;
             setSettled({
               icon,
               status: "loaded",
               shape: iconShape(naturalWidth, naturalHeight),
-              fit: ink instanceof Promise ? null : fitted(ink),
+              fit: ink === null ? null : iconFit(ink, naturalWidth, naturalHeight),
             });
-            if (ink instanceof Promise) {
-              void ink.then((read) => {
-                const later = fitted(read);
-                if (later === null) return;
-                setSettled((now) =>
-                  now !== null && now.icon === icon && now.status === "loaded"
-                    ? { ...now, fit: later }
-                    : now,
-                );
-              });
-            }
           }}
           onError={() => setSettled({ icon, status: "failed" })}
         />

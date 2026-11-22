@@ -30,12 +30,32 @@ describe("searchHitOnNow", () => {
   ]);
 
   it("reads what is on now from any Quality Variant's guide row the Guide has read", () => {
-    expect(searchHitOnNow([fhd, hd], { programmes, now: NOW })).toBe(ON_NOW);
+    expect(searchHitOnNow(fhd, [fhd, hd], { programmes, now: NOW })).toBe(ON_NOW);
+  });
+
+  it("asks the Channel the hit tunes first, then a sibling that has something on now", () => {
+    const own = { ...ON_NOW, title: "Own row" };
+    const read = guideProgrammesByChannel([
+      // The first variant indexed has rows, but nothing on now.
+      { channel: hd, programmes: [LATER], programmesTruncated: false },
+      { channel: fhd, programmes: [ON_NOW], programmesTruncated: false },
+    ]);
+
+    expect(searchHitOnNow(hd, [hd, fhd], { programmes: read, now: NOW })).toBe(ON_NOW);
+    expect(
+      searchHitOnNow(fhd, [hd, fhd], {
+        programmes: guideProgrammesByChannel([
+          { channel: hd, programmes: [ON_NOW], programmesTruncated: false },
+          { channel: fhd, programmes: [own], programmesTruncated: false },
+        ]),
+        now: NOW,
+      }),
+    ).toBe(own);
   });
 
   it("says nothing when the row is unread or nothing airs now", () => {
-    expect(searchHitOnNow([fhd], { programmes, now: NOW })).toBeNull();
-    expect(searchHitOnNow([other], { programmes, now: NOW })).toBeNull();
-    expect(searchHitOnNow([hd], undefined)).toBeNull();
+    expect(searchHitOnNow(fhd, [fhd], { programmes, now: NOW })).toBeNull();
+    expect(searchHitOnNow(other, [other], { programmes, now: NOW })).toBeNull();
+    expect(searchHitOnNow(hd, [hd], undefined)).toBeNull();
   });
 });

@@ -8,6 +8,7 @@ import {
   playheadPercent,
   programmeKey,
   programmeLayout,
+  windowDays,
   type ClockWindow,
 } from "./guide-window";
 
@@ -15,6 +16,37 @@ const WINDOW: ClockWindow = {
   startsAt: new Date("2026-09-01T20:30:00.000Z"),
   endsAt: new Date("2026-09-01T23:30:00.000Z"),
 };
+
+describe("the days a guide window touches", () => {
+  it("names one day when the window stays inside it", () => {
+    const now = new Date(2026, 8, 1, 10, 15);
+    const window = clockWindow(now, LATER_SPAN_MS);
+
+    expect(windowDays(window, now)).toEqual([
+      { label: "Today", fromMinute: 0, toMinute: 480 },
+    ]);
+  });
+
+  it("splits a window that runs past midnight, naming the next day Tomorrow", () => {
+    const now = new Date(2026, 8, 1, 21, 40);
+    const window = clockWindow(now, LATER_SPAN_MS);
+
+    expect(windowDays(window, now)).toEqual([
+      { label: "Today", fromMinute: 0, toMinute: 150 },
+      { label: "Tomorrow", fromMinute: 150, toMinute: 480 },
+    ]);
+  });
+
+  it("names a later day by its weekday", () => {
+    const now = new Date(2026, 8, 1, 21, 40);
+    const window = clockWindow(new Date(2026, 8, 3, 12, 0), LATER_SPAN_MS);
+    const weekday = new Intl.DateTimeFormat(undefined, { weekday: "long" }).format(
+      new Date(2026, 8, 3),
+    );
+
+    expect(windowDays(window, now).map((day) => day.label)).toEqual([weekday]);
+  });
+});
 
 describe("guide window presentation", () => {
   it("anchors to a local half hour and keeps one stable three-hour window", () => {

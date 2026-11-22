@@ -346,10 +346,35 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   useLayoutEffect(() => {
     playingRef.current = playingChannel;
   });
+  // A held OK repeats its keydown, and each repeat presses the focused
+  // control again: the first press tunes a Channel, a repeat would take it
+  // fullscreen. Only a fresh press counts as the fullscreen gesture.
+  const heldPress = useRef(false);
+  useEffect(() => {
+    if (!television) return;
+    const press = (event: KeyboardEvent) => {
+      heldPress.current =
+        event.repeat && (event.key === "Enter" || event.key === " ");
+    };
+    const release = () => {
+      heldPress.current = false;
+    };
+    document.addEventListener("keydown", press, true);
+    document.addEventListener("keyup", release, true);
+    document.addEventListener("pointerdown", release, true);
+    return () => {
+      document.removeEventListener("keydown", press, true);
+      document.removeEventListener("keyup", release, true);
+      document.removeEventListener("pointerdown", release, true);
+    };
+  }, [television]);
   // The Guide control that took the picture fullscreen, where focus returns.
   const fullscreenOrigin = useRef<HTMLElement | null>(null);
   const enterTelevisionFullscreen = useCallback((channel: ChannelId) => {
-    if (document.fullscreenElement != null) return;
+    if (document.fullscreenElement != null || heldPress.current) return;
+    // The viewer chose the picture that plays: a Channel change still
+    // queued from the Channel keys must not switch it underneath.
+    cancelZap();
     fullscreenOrigin.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const shown = showTelevisionPicture();
@@ -370,7 +395,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
       },
     };
     setFullscreenTune(request);
-  }, []);
+  }, [cancelZap]);
   // Leaving fullscreen on a TV returns to the Guide, with focus on the
   // control that left it, or the playing Channel's row.
   useEffect(() => {
@@ -659,7 +684,9 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
         variantPreferences={variantPreferences}
         onGenerationMismatch={synchronization.retryStatus}
         onPreparePlayback={preparePlayback}
-        onTune={tuneVariantFromGuide}
+        // A TV result is a whole guide row: it tunes like the row does and
+        // leaves the quality preference to the Guide's quality chips.
+        onTune={television ? tuneFromGuide : tuneVariantFromGuide}
       />
     ),
     [
@@ -670,6 +697,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
       searchOnNow,
       synchronization.retryStatus,
       television,
+      tuneFromGuide,
       tuneVariantFromGuide,
       variantPreferences,
     ],

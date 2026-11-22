@@ -9,8 +9,11 @@
  * ink by one rule, and, when the icon is a tile with a solid ground, paints
  * the plate in that ground so tile and plate are one surface.
  *
- * Reading pixels needs a canvas the icon has not tainted. When it is tainted
- * (a cross-origin icon its host serves without CORS) the TV falls back to the
+ * Pixels are read only from an icon whose pixels the page may read without
+ * asking another origin: a same-origin, `data:` or `blob:` location. A
+ * cross-origin icon is never drawn to a canvas and never fetched again with
+ * CORS: the WebView logs a refused CORS request with the icon's full
+ * location, and Android forwards that line to Logcat. Those icons take the
  * outline-only fit in `television.css`. An icon's location is never logged.
  */
 
@@ -192,49 +195,40 @@ export function iconFit(
   };
 }
 
-const known = new Map<string, IconInk | null | Promise<IconInk | null>>();
+const known = new Map<string, IconInk | null>();
 
 /**
- * The ink of a loaded icon: at once when it has been read before or its
- * pixels can be read from the image shown, else by reading a CORS copy of it
- * (which the HTTP cache usually serves). Null when it cannot be read. Each
- * location is read once per session.
+ * The ink of a loaded icon, read from the image shown, or null when it
+ * cannot be read. Each location is read once per session. A location whose
+ * pixels belong to another origin is not read at all (see above).
  */
 export function loadedIconInk(
   location: string,
   image: HTMLImageElement,
-): IconInk | null | Promise<IconInk | null> {
+): IconInk | null {
   const seen = known.get(location);
   if (seen !== undefined) return seen;
-  const read = readImageInk(image);
-  if (read !== "tainted") {
-    known.set(location, read);
-    return read;
+  const ink = iconPixelsReadable(location) ? readImageInk(image) : null;
+  known.set(location, ink);
+  return ink;
+}
+
+/**
+ * Whether the page may read an icon's pixels without a cross-origin
+ * request: a `data:` or `blob:` location, or one on the page's own origin.
+ */
+export function iconPixelsReadable(location: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(location, document.baseURI);
+  } catch {
+    return false;
   }
-  const probed = probeIconInk(location).then((ink) => {
-    known.set(location, ink);
-    return ink;
-  });
-  known.set(location, probed);
-  return probed;
+  if (url.protocol === "data:" || url.protocol === "blob:") return true;
+  return url.origin !== "null" && url.origin === window.location.origin;
 }
 
-function probeIconInk(location: string): Promise<IconInk | null> {
-  return new Promise((resolve) => {
-    const probe = new Image();
-    probe.crossOrigin = "anonymous";
-    probe.referrerPolicy = "no-referrer";
-    probe.decoding = "async";
-    probe.onload = () => {
-      const read = readImageInk(probe);
-      resolve(read === "tainted" ? null : read);
-    };
-    probe.onerror = () => resolve(null);
-    probe.src = location;
-  });
-}
-
-function readImageInk(image: HTMLImageElement): IconInk | null | "tainted" {
+function readImageInk(image: HTMLImageElement): IconInk | null {
   const { naturalWidth, naturalHeight } = image;
   if (!(naturalWidth > 0) || !(naturalHeight > 0)) return null;
   const scale = Math.min(1, READ_SIZE / Math.max(naturalWidth, naturalHeight));
@@ -249,8 +243,8 @@ function readImageInk(image: HTMLImageElement): IconInk | null | "tainted" {
     context.drawImage(image, 0, 0, width, height);
     return iconInk(context.getImageData(0, 0, width, height).data, width, height);
   } catch {
-    // A cross-origin image without CORS taints the canvas.
-    return "tainted";
+    // A same-origin location that redirected elsewhere taints the canvas.
+    return null;
   }
 }
 

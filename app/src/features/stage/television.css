@@ -75,10 +75,33 @@ html[data-television] {
   --tv-dock-w: 26.6667rem;
   --tv-dock-h: 15rem;
   --tv-caption-h: 1.8333rem;
-  --tv-band-h: 18.5rem;
+  /* What lies beside and under the docked picture is placed by the size the
+     picture is held at (`--pocket-pinned-*`, px) while the native picture
+     cannot follow its box, so a narrower window moves nothing into it. */
+  --tv-band-h: calc(
+    var(--tv-band-top) + var(--pocket-pinned-h, var(--tv-dock-h)) + var(--tv-caption-h) + 0.5417rem
+  );
   --tv-lane-h: 3.25rem;
   --tv-plate-w: 14rem;
-  --tv-panel-left: calc(var(--tv-gutter) + var(--tv-dock-w) + 1.8333rem);
+  --tv-panel-left: calc(var(--tv-gutter) + var(--pocket-pinned-w, var(--tv-dock-w)) + 1.8333rem);
+  /* The docked picture's box on the canvas, which a veil leaves out. */
+  --tv-dock-x0: var(--tv-gutter);
+  --tv-dock-x1: calc(var(--tv-gutter) + var(--pocket-pinned-w, var(--tv-dock-w)));
+  --tv-dock-y0: var(--tv-band-top);
+  --tv-dock-y1: calc(var(--tv-band-top) + var(--pocket-pinned-h, var(--tv-dock-h)));
+  --tv-around-dock: polygon(
+    evenodd,
+    0 0,
+    100% 0,
+    100% 100%,
+    0 100%,
+    0 0,
+    var(--tv-dock-x0) var(--tv-dock-y0),
+    var(--tv-dock-x1) var(--tv-dock-y0),
+    var(--tv-dock-x1) var(--tv-dock-y1),
+    var(--tv-dock-x0) var(--tv-dock-y1),
+    var(--tv-dock-x0) var(--tv-dock-y0)
+  );
   background: var(--ink);
   font-variant-numeric: tabular-nums;
 }
@@ -657,21 +680,35 @@ html[data-television] .shell[data-layout="pocket"]
   display: none;
 }
 
+/* A quality fallback or audio message: in the band's control row, in the
+   room between the controls and the way out, so it never runs off the
+   screen's foot. */
 html[data-television] .shell[data-layout="pocket"]
   .hosted-player:fullscreen
   .hosted-player__controls
   > .hosted-player__status {
-  position: absolute;
-  top: calc(100% + 0.5rem);
-  left: 0;
+  position: static;
+  order: 7;
   width: auto;
-  max-width: 100%;
-  padding: 0;
+  min-width: 0;
+  max-width: none;
+  flex: 1 1 0;
+  justify-content: flex-end;
+  padding: 0 0.5rem;
   overflow: hidden;
   color: var(--tv-dim);
-  font-size: 0.625rem;
-  text-overflow: ellipsis;
+  font-size: 0.875rem;
   white-space: nowrap;
+}
+
+html[data-television] .shell[data-layout="pocket"]
+  .hosted-player:fullscreen
+  .hosted-player__controls
+  > .hosted-player__status
+  > * {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 html[data-television] .shell[data-layout="pocket"]
@@ -1680,10 +1717,13 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__variants {
   pointer-events: none;
 }
 
+/* The wrapper lets a press beside the chips reach the cell under it; the
+   chips themselves take presses and, on the D-pad, focus. */
 html[data-television] .shell[data-layout="pocket"] .programme-guide__variants button {
   width: auto;
   min-width: 0;
   min-height: 0;
+  pointer-events: auto;
 }
 
 html[data-television] .shell[data-layout="pocket"] .programme-guide__channel .programme-guide__on {
@@ -1816,6 +1856,23 @@ html[data-television]:has(.shell[data-layout="pocket"])
   color: var(--on-ice);
   background: rgb(6 18 28 / 10%);
   box-shadow: inset 0 0 0 0.0625rem var(--on-ice-dim);
+}
+
+/* A focused quality chip: the ice fill on the chip, and an ice rim on the
+   cell it belongs to, so the D-pad's place in the row stays plain. */
+html[data-television]:has(.shell[data-layout="pocket"])
+  .programme-guide__row
+  .programme-guide__variants
+  button:focus {
+  color: var(--on-ice);
+  outline: none;
+  background: var(--ice);
+  box-shadow: none;
+}
+
+html[data-television] .shell[data-layout="pocket"] .programme-guide__row[data-body="list"]:has(.programme-guide__variants button:focus),
+html[data-television] .shell[data-layout="pocket"] .programme-guide__channel-cell:has(.programme-guide__variants button:focus) {
+  box-shadow: inset 0 0 0 0.0833rem var(--ice);
 }
 
 html[data-television] .shell[data-layout="pocket"] .programme-guide__more,
@@ -1984,10 +2041,22 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__timeline-ru
 }
 
 html[data-television] .shell[data-layout="pocket"] .programme-guide__timeline-day {
+  display: grid;
   padding-left: 0.25rem;
   color: var(--tv-text);
   font-size: 0.75rem;
   font-weight: 600;
+}
+
+/* One label per day the window touches, stacked: the one whose minutes hold
+   the first minute shown (--tl-offset) is opaque, the others clear. Plain
+   arithmetic, so it follows every step along time without a script. */
+html[data-television] .shell[data-layout="pocket"] .programme-guide__timeline-day > span {
+  grid-area: 1 / 1;
+  opacity: calc(
+    clamp(0, (var(--tl-offset, 0) - var(--day-from)) * 1000 + 1, 1) *
+      clamp(0, (var(--day-to) - var(--tl-offset, 0)) * 1000, 1)
+  );
 }
 
 html[data-television] .shell[data-layout="pocket"] .programme-guide__ticks {
@@ -2367,6 +2436,14 @@ html[data-television]:has(.board-search input[aria-expanded="true"])
   content: "";
 }
 
+/* The native picture lies above the page there anyway; the page draws
+   nothing over the docked picture's box. */
+html[data-television]:has(.board-search input[aria-expanded="true"])
+  .shell[data-layout="pocket"][data-playing="true"]
+  .programme-guide::after {
+  clip-path: var(--tv-around-dock);
+}
+
 html[data-television]:has(.board-search input[aria-expanded="true"])
   .shell[data-layout="pocket"]
   .programme-guide__toolbar
@@ -2523,6 +2600,12 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
   background: rgb(5 9 16 / 70%);
 }
 
+/* A backdrop spans the window from its top left, as the Guide does: it
+   leaves out the docked picture's box. */
+html[data-television]:has(.shell[data-layout="pocket"][data-playing="true"]) :is(.board-search-desk__backdrop, .group-roster__backdrop, .feeds-dialog__backdrop) {
+  clip-path: var(--tv-around-dock);
+}
+
 html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__popup, .group-roster__popup, .feeds-dialog__popup) {
   top: 0;
   right: 0;
@@ -2665,6 +2748,9 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
   padding: 0 1.25rem 0;
   overflow: hidden auto;
   scrollbar-width: none;
+  /* What focus keeps clear of when it brings a row into view: the fade
+     below, and a little more (revealInScrollContainer reads it). */
+  scroll-padding-bottom: 4rem;
 }
 
 /* While there is more below, the last rows fade into the sheet; at the end
@@ -2685,6 +2771,10 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
    line and the shorter fade, so the last group clears the fade. */
 html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__header p {
   font-size: 0.7083rem;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__list {
+  scroll-padding-bottom: 3rem;
 }
 
 html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__list::after {
@@ -3521,9 +3611,12 @@ html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .ho
 }
 
 /* Opening the signal, and a failure: no picture. The box takes the
-   screen's own ink, so the screen is one ground with no pillarbox edge. It
-   holds the message, the controls that make sense sit directly under it,
-   and the band keeps the Channel's line in its middle. */
+   screen's own ink, so the screen is one ground with no pillarbox edge. A
+   failure's box holds its message with the controls that make sense
+   directly under it, and the band keeps the Channel's line in its middle.
+   While the signal opens, Media3's native view may already lie over the
+   box, opaque, before the stream prepares: the message and its actions are
+   then in the band, under the box, where nothing covers them. */
 html[data-television] .shell[data-layout="pocket"]
   .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="failed"], [data-player-state="stopping"])
   .hosted-player__screen {
@@ -3537,17 +3630,72 @@ html[data-television] .shell[data-layout="pocket"]
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="failed"], [data-player-state="stopping"])
+  .hosted-player:fullscreen[data-player-state="failed"]
   .hosted-player__tv-head {
   align-content: center;
   padding-top: 0;
 }
 
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="failed"], [data-player-state="stopping"]) .hosted-player__controls {
+html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen[data-player-state="failed"] .hosted-player__controls {
   top: calc(var(--fs-pic-h) / 2 + 2.5rem);
   bottom: auto;
   justify-content: center;
   gap: 0.6667rem;
+}
+
+/* While the signal opens: the band's second line, the message at the left
+   and its actions at the right. The message is drawn from the picture's
+   box, so it is placed by the section's size (the fullscreen viewport). */
+html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="stopping"]) .hosted-player__controls {
+  justify-content: flex-end;
+  gap: 0.6667rem;
+}
+
+html[data-television] .shell[data-layout="pocket"]
+  .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="stopping"])
+  .hosted-player__screen {
+  overflow: visible;
+}
+
+html[data-television] .shell[data-layout="pocket"]
+  .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="stopping"])
+  .hosted-player__overlay {
+  z-index: 3;
+  top: calc(100vh - var(--fs-row-b-bottom) - var(--tv-control));
+  right: auto;
+  bottom: auto;
+  left: calc(var(--fs-gutter) - (100vw - var(--fs-pic-w)) / 2);
+  display: flex;
+  max-width: calc(100vw - 2 * var(--fs-gutter) - 26rem);
+  height: var(--tv-control);
+  flex-direction: row;
+  place-content: normal;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.8333rem;
+  padding: 0;
+  overflow: hidden;
+  text-align: left;
+  white-space: nowrap;
+}
+
+html[data-television] .shell[data-layout="pocket"]
+  .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="stopping"])
+  .hosted-player__overlay
+  p {
+  flex: none;
+  font-size: 1.5rem;
+}
+
+html[data-television] .shell[data-layout="pocket"]
+  .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="stopping"])
+  .hosted-player__overlay
+  span {
+  min-width: 0;
+  max-width: none;
+  overflow: hidden;
+  font-size: 1.0833rem;
+  text-overflow: ellipsis;
 }
 
 html[data-television] .shell[data-layout="pocket"]
@@ -3615,9 +3763,9 @@ html[data-television] .shell[data-layout="pocket"] .now-playing .now-playing__st
    only, `tv-tuning` in hosted-player.css). It exists only while this state
    is drawn; nothing persistent animates. */
 html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen[data-player-state="starting"] .hosted-player__overlay::before {
-  width: 2.6667rem;
-  height: 2rem;
-  margin-bottom: 0.5rem;
+  width: 1.6667rem;
+  height: 1.25rem;
+  flex: none;
   background:
     linear-gradient(var(--ice), var(--ice)) 0 100% / 0.5rem 35% no-repeat,
     linear-gradient(var(--ice), var(--ice)) 50% 100% / 0.5rem 65% no-repeat,

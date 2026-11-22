@@ -195,8 +195,10 @@ function usable(element: EventTarget | null): element is HTMLElement {
     return false;
   }
   return isVisibleControl(element, {
+    // Roving widgets, and the Guide's quality chips, which the D-pad reaches
+    // though they are out of the Tab order.
     allowNegativeTabIndex: element.matches(
-      '[role="radio"], [role="menuitem"], [role="option"]',
+      '[role="radio"], [role="menuitem"], [role="option"], .programme-guide__variants button',
     ),
     requireLayoutBox: true,
   });

@@ -39,6 +39,7 @@ import { createPreviewStore, previewFocusOf } from "./guide-preview-store";
 import {
   clockLabel,
   clockMarks,
+  windowDays,
   playheadPercent,
   type ClockWindow,
 } from "./guide-window";
@@ -650,7 +651,21 @@ function TimelineRuler({
   const start = window.startsAt.getTime();
   return (
     <div className="programme-guide__timeline-ruler" aria-hidden="true">
-      <span className="programme-guide__timeline-day">Today</span>
+      {/* The day of the first minute shown. Each day the window touches has
+          its label; CSS shows the one under the board's --tl-offset. */}
+      <span className="programme-guide__timeline-day">
+        {windowDays(window, now).map((day, index, days) => (
+          <span
+            key={day.fromMinute}
+            style={{
+              "--day-from": index === 0 ? -1_000_000 : day.fromMinute,
+              "--day-to": index === days.length - 1 ? 1_000_000 : day.toMinute,
+            }}
+          >
+            {day.label}
+          </span>
+        ))}
+      </span>
       <div className="programme-guide__ticks">
         {clockMarks(window).map((mark) => (
           <time

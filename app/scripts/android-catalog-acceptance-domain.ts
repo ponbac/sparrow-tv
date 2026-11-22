@@ -1,5 +1,24 @@
 import { z } from "zod";
 
+/**
+ * A page expression: how many absolute `http` or `https` locations the page
+ * holds in a link, a source or a field's value. Routine use holds none, so
+ * a provider location never reaches the page unnoticed. A Channel Icon's
+ * image is the one exception: Sparrow passes the M3U Source's icon location
+ * to the page as given (`CONTEXT.md`), in an `<img>` the Channel Icon
+ * component marks with its classes. Anything else, an icon location in a
+ * link or another image included, still counts.
+ */
+export const ROUTINE_URL_COUNT_EXPRESSION = `Array.from(document.querySelectorAll("[href], [src], input, textarea"))
+    .filter((node) => !(node instanceof HTMLImageElement && node.matches(".channel-icon > img.channel-icon__image")))
+    .filter((node) => {
+      const liveValue = node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement
+        ? node.value
+        : "";
+      return [liveValue, node.getAttribute("value"), node.getAttribute("href"), node.getAttribute("src")]
+        .some((candidate) => /^https?:\\/\\//iu.test((candidate ?? "").trim()));
+    }).length`;
+
 const HEX_DIGEST = /^[0-9a-f]{64}$/;
 const SAFE_VERSION = /^[A-Za-z0-9._+-]{1,64}$/;
 

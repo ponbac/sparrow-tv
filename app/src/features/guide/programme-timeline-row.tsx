@@ -56,12 +56,19 @@ export const ProgrammeTimelineRow = memo(function ProgrammeTimelineRow({
   const loneQuality = switchable
     ? null
     : (family.variants[0].channel.variant?.quality ?? null);
-  const cells = source.programmes.flatMap((programme, index) => {
+  // A cell's key is the Programme itself, counted only among identical
+  // ones: when the window moves on and earlier Programmes leave the row,
+  // the cells that stay keep their keys, so a focused cell is not replaced.
+  const occurrences = new Map<string, number>();
+  const cells = source.programmes.flatMap((programme) => {
     const start = Date.parse(programme.startsAt);
     const end = Date.parse(programme.endsAt);
     if (end <= windowStart || start >= windowEnd || end <= start) return [];
+    const identity = `${programme.startsAt}:${programme.endsAt}:${programme.title}`;
+    const occurrence = occurrences.get(identity) ?? 0;
+    occurrences.set(identity, occurrence + 1);
     const live = start <= nowTime && nowTime < end;
-    return [{ programme, index, start, end, live }];
+    return [{ programme, key: programmeKey(programme, occurrence), start, end, live }];
   });
   return (
     <div
@@ -110,12 +117,12 @@ export const ProgrammeTimelineRow = memo(function ProgrammeTimelineRow({
         ) : null}
       </div>
       <div className="programme-guide__track">
-        {cells.map(({ programme, index, start, end, live }) => {
+        {cells.map(({ programme, key, start, end, live }) => {
           const title = `${programme.title}${programme.titleTruncated ? "…" : ""}`;
           const times = `${clockLabel(programme.startsAt)} to ${clockLabel(programme.endsAt)}`;
           return (
             <button
-              key={programmeKey(programme, index)}
+              key={key}
               className="programme-guide__programme"
               data-live={live}
               data-starts-at={programme.startsAt}

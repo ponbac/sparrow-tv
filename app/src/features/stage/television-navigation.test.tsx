@@ -67,6 +67,15 @@ function giveBox(element: Element, rect: DOMRect): void {
   });
 }
 
+/** The Timeline row whose Channel button is named `Tune ${name}`. */
+function requireTimelineRow(name: string): HTMLElement {
+  const row = screen
+    .getByRole("button", { name: `Tune ${name}` })
+    .closest<HTMLElement>(".programme-guide__row");
+  if (row === null) throw new Error(`no row for ${name}`);
+  return row;
+}
+
 afterEach(() => {
   cleanup();
   if (vi.isFakeTimers()) {
@@ -507,6 +516,308 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     }
   });
 
+  it("reaches a row's quality chips with the D-pad in the Now grid and the Timeline, keeping one mark per Channel", async () => {
+    document.documentElement.setAttribute("data-television", "");
+    const user = (await import("@testing-library/user-event")).default.setup();
+    const at = (minutes: number) =>
+      clientSchemas.isoInstant.parse(
+        new Date(WINDOW.startsAt.getTime() + minutes * 60_000).toISOString(),
+      );
+    const programme = (title: string, from: number, to: number) => ({
+      title,
+      startsAt: at(from),
+      endsAt: at(to),
+      titleTruncated: false,
+    });
+    const variant = (quality: "sd" | "hd") => ({
+      channel: channelFixture({
+        id: `svt-${quality}`,
+        name: `SVT ${quality.toUpperCase()}`,
+        group: "News",
+        number: 2,
+        variant: { quality, baseName: "SVT" },
+      }),
+      programmes: [programme("Bulletin", 0, 60), programme("Late", 60, 120)],
+      programmesTruncated: false,
+    });
+    const lone = (number: number) => ({
+      channel: channelFixture({ id: `chip-${number}`, name: `Channel ${number}`, group: "News", number }),
+      programmes: [programme(`Show ${number}`, 0, 120)],
+      programmesTruncated: false,
+    });
+    const rows: GuideWindowChannel[] = [lone(1), variant("sd"), variant("hd"), lone(3), lone(4)];
+    const onTune = vi.fn();
+    const onTuneVariant = vi.fn();
+    const guide = (view: "now" | "timeline") => (
+      <ProgrammeGuide
+        television
+        rows={rows}
+        groups={GROUPS}
+        activeGroup={null}
+        window={WINDOW}
+        now={NOW}
+        playingChannel={null}
+        variantPreferences={new Map()}
+        layout="pocket"
+        mode="guide"
+        time={null}
+        view={{ current: view, onToggle: () => undefined }}
+        loading={false}
+        replacing={false}
+        error={null}
+        hasMore={false}
+        loadingMore={false}
+        onSelectGroup={() => undefined}
+        onPrefetchGroup={() => undefined}
+        excludedGroups={new Set()}
+        onSetGroupExcluded={() => undefined}
+        onRestoreExcludedGroups={() => undefined}
+        onPreparePlayback={() => undefined}
+        onTune={onTune}
+        onTuneVariant={onTuneVariant}
+        onRetry={() => undefined}
+        onLoadMore={() => undefined}
+        search={null}
+        feeds={null}
+        status={null}
+      />
+    );
+    const marks = () =>
+      Array.from(document.querySelectorAll("[data-acceptance-channel]"), (el) =>
+        el.getAttribute("aria-label"),
+      );
+    const view = render(guide("now"));
+    expect(marks()).toEqual([
+      "Tune Channel 1",
+      "Tune SVT SD",
+      "Tune SVT HD",
+      "Tune Channel 3",
+      "Tune Channel 4",
+    ]);
+    // The Now grid, three cells wide.
+    const grid = document.querySelector<HTMLElement>(".programme-guide__rows")!;
+    grid.style.display = "grid";
+    grid.style.gridTemplateColumns = "200px 200px 200px";
+    const svt = screen.getByRole("button", { name: "Tune SVT" });
+    const sd = screen.getByRole("button", { name: "Tune SVT SD" });
+    const hd = screen.getByRole("button", { name: "Tune SVT HD" });
+    const channel = (number: number) =>
+      screen.getByRole("button", { name: `Tune Channel ${number}` });
+
+    // Right walks a cell, then its chips, then the next cell; Left comes back
+    // the same way. Left and Up and Down from a cell never stop on chips.
+    act(() => channel(1).focus());
+    fireEvent.keyDown(channel(1), { key: "ArrowRight" });
+    expect(svt).toHaveFocus();
+    fireEvent.keyDown(svt, { key: "ArrowRight" });
+    expect(sd).toHaveFocus();
+    fireEvent.keyDown(sd, { key: "ArrowRight" });
+    expect(hd).toHaveFocus();
+    fireEvent.keyDown(hd, { key: "ArrowRight" });
+    expect(channel(3)).toHaveFocus();
+    fireEvent.keyDown(channel(3), { key: "ArrowLeft" });
+    expect(svt).toHaveFocus();
+    fireEvent.keyDown(svt, { key: "ArrowRight" });
+    fireEvent.keyDown(sd, { key: "ArrowRight" });
+    fireEvent.keyDown(hd, { key: "ArrowLeft" });
+    expect(sd).toHaveFocus();
+    fireEvent.keyDown(sd, { key: "ArrowLeft" });
+    expect(svt).toHaveFocus();
+    // Down from a chip moves as Down from its cell.
+    fireEvent.keyDown(svt, { key: "ArrowRight" });
+    fireEvent.keyDown(sd, { key: "ArrowDown" });
+    expect(screen.getByRole("button", { name: "Tune Channel 4" })).toHaveFocus();
+
+    // OK on a chip tunes that Quality Variant, and focus stays on it.
+    fireEvent.keyDown(channel(4), { key: "ArrowUp" });
+    expect(channel(1)).toHaveFocus();
+    fireEvent.keyDown(channel(1), { key: "ArrowRight" });
+    fireEvent.keyDown(svt, { key: "ArrowRight" });
+    fireEvent.keyDown(sd, { key: "ArrowRight" });
+    expect(hd).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(onTuneVariant).toHaveBeenLastCalledWith(rows[2].channel);
+    expect(onTune).not.toHaveBeenCalled();
+    expect(hd).toHaveFocus();
+
+    // The Timeline: Left and Right step through time, and Left from the
+    // row's first cell reaches its chips (the last one first), then the rail.
+    view.rerender(guide("timeline"));
+    expect(marks()).toEqual([
+      "Tune Channel 1",
+      "Tune SVT SD",
+      "Tune SVT HD",
+      "Tune Channel 3",
+      "Tune Channel 4",
+    ]);
+    const cell = (name: string) =>
+      within(requireTimelineRow("SVT")).getByRole("button", {
+        name: new RegExp(`^${name}, `, "u"),
+      });
+    const timelineSd = screen.getByRole("button", { name: "Tune SVT SD" });
+    const timelineHd = screen.getByRole("button", { name: "Tune SVT HD" });
+    act(() => cell("Late").focus());
+    fireEvent.keyDown(cell("Late"), { key: "ArrowLeft" });
+    expect(cell("Bulletin")).toHaveFocus();
+    fireEvent.keyDown(cell("Bulletin"), { key: "ArrowLeft" });
+    expect(timelineHd).toHaveFocus();
+    fireEvent.keyDown(timelineHd, { key: "ArrowLeft" });
+    expect(timelineSd).toHaveFocus();
+    fireEvent.keyDown(timelineSd, { key: "ArrowLeft" });
+    expect(screen.getByRole("radio", { name: "All" })).toHaveFocus();
+    // Right from the rail returns to the last cell; from the chips, Right
+    // enters the cells at the time in view.
+    fireEvent.keyDown(screen.getByRole("radio", { name: "All" }), { key: "ArrowRight" });
+    expect(cell("Bulletin")).toHaveFocus();
+    fireEvent.keyDown(cell("Bulletin"), { key: "ArrowLeft" });
+    fireEvent.keyDown(timelineHd, { key: "ArrowLeft" });
+    fireEvent.keyDown(timelineSd, { key: "ArrowRight" });
+    expect(timelineHd).toHaveFocus();
+    fireEvent.keyDown(timelineHd, { key: "ArrowRight" });
+    expect(cell("Bulletin")).toHaveFocus();
+    // Up and Down from a chip change Channel at the time in view.
+    fireEvent.keyDown(cell("Bulletin"), { key: "ArrowLeft" });
+    fireEvent.keyDown(timelineHd, { key: "ArrowDown" });
+    expect(screen.getByRole("button", { name: /^Show 3, /u })).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole("button", { name: /^Show 3, /u }), { key: "ArrowUp" });
+    expect(cell("Bulletin")).toHaveFocus();
+    fireEvent.keyDown(cell("Bulletin"), { key: "ArrowLeft" });
+    fireEvent.keyDown(timelineHd, { key: "ArrowLeft" });
+    await user.keyboard("{Enter}");
+    expect(onTuneVariant).toHaveBeenLastCalledWith(rows[1].channel);
+  });
+
+  it("keeps a focused future Timeline cell through the window's move to the next half hour", () => {
+    document.documentElement.setAttribute("data-television", "");
+    const programme = (title: string, from: string, to: string) => ({
+      title,
+      startsAt: clientSchemas.isoInstant.parse(from),
+      endsAt: clientSchemas.isoInstant.parse(to),
+      titleTruncated: false,
+    });
+    const early = programme("Early", "2026-08-30T09:30:00Z", "2026-08-30T10:30:00Z");
+    const now = programme("Now", "2026-08-30T10:30:00Z", "2026-08-30T11:00:00Z");
+    const later = programme("Later", "2026-08-30T11:00:00Z", "2026-08-30T12:00:00Z");
+    const channel = channelFixture({ id: "roll-1", name: "Roll", group: "News", number: 1 });
+    const guide = (window: typeof WINDOW, programmes: GuideWindowChannel["programmes"], at: Date) => (
+      <ProgrammeGuide
+        television
+        rows={[{ channel, programmes, programmesTruncated: false }]}
+        groups={GROUPS}
+        activeGroup={null}
+        window={window}
+        now={at}
+        playingChannel={null}
+        variantPreferences={new Map()}
+        layout="pocket"
+        mode="guide"
+        time={null}
+        view={{ current: "timeline", onToggle: () => undefined }}
+        loading={false}
+        replacing={false}
+        error={null}
+        hasMore={false}
+        loadingMore={false}
+        onSelectGroup={() => undefined}
+        onPrefetchGroup={() => undefined}
+        excludedGroups={new Set()}
+        onSetGroupExcluded={() => undefined}
+        onRestoreExcludedGroups={() => undefined}
+        onPreparePlayback={() => undefined}
+        onTune={() => undefined}
+        onTuneVariant={() => undefined}
+        onRetry={() => undefined}
+        onLoadMore={() => undefined}
+        search={null}
+        feeds={null}
+        status={null}
+      />
+    );
+    const view = render(guide(WINDOW, [early, now, later], NOW));
+    const future = screen.getByRole("button", { name: /^Later, /u });
+    act(() => future.focus());
+
+    // Half an hour on, the window starts at 10:30 and the Programme that
+    // ended leaves the row: the focused cell is the same element.
+    view.rerender(
+      guide(
+        {
+          startsAt: new Date("2026-08-30T10:30:00Z"),
+          endsAt: new Date("2026-08-30T13:30:00Z"),
+        },
+        [now, later],
+        new Date("2026-08-30T10:45:00Z"),
+      ),
+    );
+    expect(future).toBeInTheDocument();
+    expect(future).toHaveFocus();
+    expect(future).toHaveAttribute("data-start", "30");
+  });
+
+  it("moves Up and Down the Timeline reading only the rows it passes", () => {
+    document.documentElement.setAttribute("data-television", "");
+    const rows = makeRows(60).map((row) => ({
+      ...row,
+      programmes: [
+        {
+          title: `${row.channel.name} show`,
+          startsAt: clientSchemas.isoInstant.parse("2026-08-30T10:00:00Z"),
+          endsAt: clientSchemas.isoInstant.parse("2026-08-30T11:00:00Z"),
+          titleTruncated: false,
+        },
+      ],
+    }));
+    render(
+      <ProgrammeGuide
+        television
+        rows={rows}
+        groups={GROUPS}
+        activeGroup={null}
+        window={WINDOW}
+        now={NOW}
+        playingChannel={null}
+        variantPreferences={new Map()}
+        layout="pocket"
+        mode="guide"
+        time={null}
+        view={{ current: "timeline", onToggle: () => undefined }}
+        loading={false}
+        replacing={false}
+        error={null}
+        hasMore={false}
+        loadingMore={false}
+        onSelectGroup={() => undefined}
+        onPrefetchGroup={() => undefined}
+        excludedGroups={new Set()}
+        onSetGroupExcluded={() => undefined}
+        onRestoreExcludedGroups={() => undefined}
+        onPreparePlayback={() => undefined}
+        onTune={() => undefined}
+        onTuneVariant={() => undefined}
+        onRetry={() => undefined}
+        onLoadMore={() => undefined}
+        search={null}
+        feeds={null}
+        status={null}
+      />,
+    );
+    const cells = document.querySelectorAll<HTMLElement>(".programme-guide__programme");
+    expect(cells).toHaveLength(60);
+    const styleSpy = vi.spyOn(window, "getComputedStyle");
+    try {
+      act(() => cells[30].focus());
+      styleSpy.mockClear();
+      fireEvent.keyDown(cells[30], { key: "ArrowDown" });
+      expect(cells[31]).toHaveFocus();
+      fireEvent.keyDown(cells[31], { key: "ArrowUp" });
+      expect(cells[30]).toHaveFocus();
+      // Two moves read the focused and the neighbouring rows, not all sixty.
+      expect(styleSpy.mock.calls.length).toBeLessThan(60);
+    } finally {
+      styleSpy.mockRestore();
+    }
+  });
+
   it("reaches retained error Try again from last row and returns to last row on ArrowUp", () => {
     document.documentElement.setAttribute("data-television", "");
     render(
@@ -604,7 +915,7 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     expect(screen.getByRole("button", { name: "Tune Channel 5" })).toHaveFocus();
   });
 
-  it("wakes fullscreen controls on Center when hidden, dismisses visible controls on Back, and exits fullscreen on hidden Escape or Back", async () => {
+  it("wakes fullscreen controls on Center when hidden, and leaves fullscreen on one Back whether or not the bar shows", async () => {
     vi.useFakeTimers();
     document.documentElement.setAttribute("data-television", "");
     const port = androidPortFixture();
@@ -690,16 +1001,6 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     expect(onZap).not.toHaveBeenCalled();
     expect(section).toHaveFocus();
 
-    // Reveal again, then A2: first Back hides visible controls instead of exiting fullscreen.
-    fireEvent.keyDown(section, { key: "ArrowRight" });
-    expect(section).toHaveAttribute("data-controls-visible", "true");
-    act(() => vi.advanceTimersByTime(50));
-    expect(pauseButton).toHaveFocus();
-    act(() => port.deliver("tv:back"));
-    expect(section).toHaveAttribute("data-controls-visible", "false");
-    expect(exitFullscreen).not.toHaveBeenCalled();
-    expect(section).toHaveFocus();
-
     // Extended idle timer: focus inside controls bar stays visible past 3s, then hides and focuses section.
     fireEvent.keyDown(section, { key: "Enter" });
     act(() => vi.advanceTimersByTime(50));
@@ -711,7 +1012,8 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     expect(section).toHaveAttribute("data-controls-visible", "false");
     expect(section).toHaveFocus();
 
-    // A2 (Blocker R1 #1): DOM Escape while controls are hidden exits fullscreen to Guide without revealing controls.
+    // DOM Escape while the bar is hidden leaves fullscreen for the Guide
+    // without showing the bar on the way out.
     fireEvent.keyDown(section, { key: "Escape" });
     expect(section).toHaveAttribute("data-controls-visible", "false");
     expect(exitFullscreen).toHaveBeenCalledTimes(1);
@@ -720,7 +1022,25 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     });
     expect(onShowGuide).toHaveBeenCalledTimes(1);
 
-    // Re-enter fullscreen and verify native tv:back while hidden also exits to Guide cleanly.
+    // Native Back while the bar shows, with focus in it, leaves at once too:
+    // one Back from fullscreen is the Guide, as on the Shield itself.
+    Object.defineProperty(document, "fullscreenElement", { configurable: true, value: section });
+    act(() => {
+      document.dispatchEvent(new Event("fullscreenchange"));
+    });
+    fireEvent.keyDown(section, { key: "ArrowRight" });
+    expect(section).toHaveAttribute("data-controls-visible", "true");
+    act(() => vi.advanceTimersByTime(50));
+    expect(pauseButton).toHaveFocus();
+    act(() => port.deliver("tv:back"));
+    expect(exitFullscreen).toHaveBeenCalledTimes(2);
+    expect(port.sent).not.toContain("tv:default-back");
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(onShowGuide).toHaveBeenCalledTimes(2);
+
+    // And so does native Back while the bar is hidden.
     Object.defineProperty(document, "fullscreenElement", { configurable: true, value: section });
     act(() => {
       document.dispatchEvent(new Event("fullscreenchange"));
@@ -729,11 +1049,11 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     expect(section).toHaveAttribute("data-controls-visible", "false");
     act(() => port.deliver("tv:back"));
     expect(section).toHaveAttribute("data-controls-visible", "false");
-    expect(exitFullscreen).toHaveBeenCalledTimes(2);
+    expect(exitFullscreen).toHaveBeenCalledTimes(3);
     await act(async () => {
       await Promise.resolve();
     });
-    expect(onShowGuide).toHaveBeenCalledTimes(2);
+    expect(onShowGuide).toHaveBeenCalledTimes(3);
   });
 
   it("moves fullscreen focus from section to Close player on non-retryable failure", () => {
@@ -1471,6 +1791,76 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     await act(async () => {
       resolveRestart?.();
     });
+  });
+
+  it("keeps a focused folded desk row when a sibling Quality Variant arrives on the next page", async () => {
+    document.documentElement.setAttribute("data-television", "");
+    const generation = clientSchemas.status.parse({
+      generation: 1,
+      configuration: { configured: true, epgConfigured: false },
+      m3u: { _tag: "fresh", validatedAt: "2026-08-30T10:00:00Z" },
+      epg: null,
+    }).generation!;
+    const svt = (quality: "sd" | "hd") =>
+      channelFixture({
+        id: `fold-svt-${quality}`,
+        name: `SVT1 ${quality.toUpperCase()}`,
+        group: "Sweden",
+        number: 5,
+        variant: { quality, baseName: "SVT1" },
+      });
+    const other = channelFixture({ id: "fold-svt2", name: "SVT2", group: "Sweden", number: 6 });
+    const page1 = clientSchemas.channelsPage.parse({
+      generation: 1,
+      items: [svt("hd"), other],
+      next: "cursor-2",
+    });
+    const page2 = clientSchemas.channelsPage.parse({
+      generation: 1,
+      items: [svt("sd")],
+      next: null,
+    });
+    const client = {
+      searchChannels: vi.fn(async () => ({ ok: true as const, value: page2 })),
+    };
+    const queryClient = createSparrowQueryClient("installed");
+    queryClient.setQueryData(
+      ["catalog", "search", "desk-channels", "svt", generation, 40],
+      { pages: [{ ok: true, value: page1 }], pageParams: [null] },
+    );
+    const onTune = vi.fn();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <BoardSearchDesk
+          television
+          client={client}
+          generation={generation}
+          term="svt"
+          excludedGroups={new Set()}
+          open
+          onOpenChange={() => undefined}
+          onTermChange={() => undefined}
+          onGenerationMismatch={() => undefined}
+          onPreparePlayback={() => undefined}
+          returnFocusElement={() => null}
+          onTune={onTune}
+        />
+      </QueryClientProvider>,
+    );
+    const row = await screen.findByRole("button", { name: "Tune SVT1 HD" });
+    await waitFor(() => expect(row).toHaveFocus());
+
+    // Focus near the end of the list reads the next page by itself.
+    await waitFor(() => expect(client.searchChannels).toHaveBeenCalledTimes(1));
+    // Another of the guide row's variants arrived, sorted first among them:
+    // the row is the same button, and it still tunes the best one.
+    await waitFor(() =>
+      expect(document.querySelector(".board-search__qualities")).toHaveTextContent(/SD.*HD/u),
+    );
+    expect(row).toBeInTheDocument();
+    expect(row).toHaveAccessibleName("Tune SVT1 HD");
+    expect(row).toHaveFocus();
+    expect(screen.getAllByRole("button", { name: /^Tune SVT1/u })).toHaveLength(1);
   });
 
   it("handles TV BoardSearchDesk initial/final focus, press-Center-to-edit, and Search again pagination outcome", async () => {

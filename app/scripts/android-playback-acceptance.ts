@@ -18,6 +18,7 @@ import {
   parseAdbSerial,
   parseCliArguments,
   parseInstalledPackageIdentity,
+  ROUTINE_URL_COUNT_EXPRESSION,
   verifyDeviceIdentity,
 } from "./android-catalog-acceptance-domain.ts";
 import {
@@ -47,14 +48,7 @@ const SAMPLE_INTERVAL_MS = 1_000;
 const WARM_MEDIA_REPLACEMENT_ITERATIONS = 5;
 
 const CATALOG_MARKER_EXPRESSION = `(() => {
-  const routineUrlCount = Array.from(document.querySelectorAll("[href], [src], input, textarea"))
-    .filter((node) => {
-      const liveValue = node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement
-        ? node.value
-        : "";
-      return [liveValue, node.getAttribute("value"), node.getAttribute("href"), node.getAttribute("src")]
-        .some((candidate) => /^https?:\\/\\//iu.test((candidate ?? "").trim()));
-    }).length;
+  const routineUrlCount = ${ROUTINE_URL_COUNT_EXPRESSION};
   return {
     channelCount: document.querySelectorAll("[data-acceptance-channel]").length,
     routineUrlCount,
@@ -87,7 +81,8 @@ const ENFORCE_PROCESS_SILENCE_EXPRESSION = `(() => {
   return video.muted && video.volume === 0;
 })()`;
 
-const PLAYBACK_MARKER_EXPRESSION = `(() => {
+/** CDP expression: the native player's aggregate status. */
+export const PLAYBACK_MARKER_EXPRESSION = `(() => {
   const video = document.querySelector(".hosted-player video");
   if (!(video instanceof HTMLVideoElement)) return null;
   const engine = video.getAttribute("data-playback-engine");
@@ -97,14 +92,7 @@ const PLAYBACK_MARKER_EXPRESSION = `(() => {
   const processSilent = video.getAttribute("data-process-silent");
   if (engine === null || state === null || dropped === null || buffered === null || processSilent === null) return null;
   const decoded = video.getAttribute("data-decoded-frames");
-  const routineUrlCount = Array.from(document.querySelectorAll("[href], [src], input, textarea"))
-    .filter((node) => {
-      const liveValue = node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement
-        ? node.value
-        : "";
-      return [liveValue, node.getAttribute("value"), node.getAttribute("href"), node.getAttribute("src")]
-        .some((candidate) => /^https?:\\/\\//iu.test((candidate ?? "").trim()));
-    }).length;
+  const routineUrlCount = ${ROUTINE_URL_COUNT_EXPRESSION};
   return {
     engine,
     state,

@@ -20,6 +20,8 @@ const TIMELINE_EDGE_SLIVER_MINUTES = 8.5;
 /** The cell focus last rested on in each timeline, where Right from the rail returns. */
 const lastTimelineCell = new WeakMap<HTMLElement, HTMLElement>();
 const BOARD_FOCUS_MARGIN_PX = 12;
+/** A guide row's Quality Variant chips. They are out of the Tab order (`tabindex="-1"`); the TV reaches them with the D-pad. */
+const QUALITY_CHIP_SELECTOR = ".programme-guide__variants button";
 
 type ArrowKeyEvent = {
   readonly key: string;
@@ -205,6 +207,7 @@ export function handleGuideArrowKey(
       sideBySideDock ? dockControl : null,
       hasMore,
       onRequestMore,
+      television,
     );
   }
 }
@@ -671,20 +674,60 @@ function handleBoardArrow(
   dockControl: HTMLElement | null,
   hasMore: boolean,
   onRequestMore: () => void,
+  television: boolean,
 ): void {
   const channels = Array.from(
     board.querySelectorAll<HTMLElement>(
       ".programme-guide__row .programme-guide__channel",
     ),
   );
+  const timeline = board.dataset.view === "timeline";
+
+  if (television && target.matches(QUALITY_CHIP_SELECTOR)) {
+    handleQualityChipArrow(event, target, {
+      channels,
+      layout,
+      lane,
+      times,
+      board,
+      dockControl,
+      hasMore,
+      onRequestMore,
+      timeline,
+    });
+    return;
+  }
 
   if (
-    board.dataset.view === "timeline" &&
+    timeline &&
     (target.classList.contains("programme-guide__channel") ||
       target.classList.contains("programme-guide__programme"))
   ) {
-    handleTimelineArrow(event, target, lane, board, hasMore, onRequestMore);
+    handleTimelineArrow(
+      event,
+      target,
+      lane,
+      board,
+      hasMore,
+      onRequestMore,
+      television,
+    );
     return;
+  }
+
+  // TV Now grid: Right from a cell first enters its own quality chips, which
+  // sit at the cell's right edge, and Right from the last chip goes on to the
+  // next cell. Left, Up and Down move from cell to cell as before.
+  if (
+    television &&
+    event.key === "ArrowRight" &&
+    target.classList.contains("programme-guide__channel")
+  ) {
+    const chip = rowQualityChips(target)[0];
+    if (chip !== undefined) {
+      consumeAndFocus(event, chip, board);
+      return;
+    }
   }
 
   if (target.classList.contains("programme-guide__channel")) {
@@ -799,6 +842,86 @@ function handleBoardArrow(
     return;
   }
   clampArrow(event);
+}
+
+/** The quality chips of the guide row holding `element`, in order. */
+function rowQualityChips(element: HTMLElement): HTMLElement[] {
+  const row = element.closest<HTMLElement>(".programme-guide__row");
+  return row === null ? [] : visibleFocusables(row, QUALITY_CHIP_SELECTOR);
+}
+
+/**
+ * The TV's D-pad on a row's quality chip. Left and Right step through the
+ * chips. In the Now grid Left from the first chip returns to its cell and
+ * Right from the last goes on as Right from the cell would; in the Timeline,
+ * where the chips sit under the Channel's name, Right from the last chip
+ * enters the row's cells at the time in view and Left from the first reaches
+ * the rail. Up and Down move to the neighbouring rows as from the row itself.
+ */
+function handleQualityChipArrow(
+  event: ArrowKeyEvent,
+  chip: HTMLElement,
+  context: {
+    readonly channels: readonly HTMLElement[];
+    readonly layout: StageLayout;
+    readonly lane: HTMLElement | null;
+    readonly times: HTMLElement | null;
+    readonly board: HTMLElement;
+    readonly dockControl: HTMLElement | null;
+    readonly hasMore: boolean;
+    readonly onRequestMore: () => void;
+    readonly timeline: boolean;
+  },
+): void {
+  const { channels, layout, lane, times, board, dockControl, hasMore, onRequestMore, timeline } =
+    context;
+  const row = chip.closest<HTMLElement>(".programme-guide__row");
+  const cell = row?.querySelector<HTMLElement>(".programme-guide__channel") ?? null;
+  if (row === null || cell === null) {
+    clampArrow(event);
+    return;
+  }
+  const chips = visibleFocusables(row, QUALITY_CHIP_SELECTOR);
+  const index = chips.indexOf(chip);
+  if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+    const sibling = chips[event.key === "ArrowRight" ? index + 1 : index - 1];
+    if (index !== -1 && sibling !== undefined) {
+      consumeAndFocus(event, sibling, board);
+      return;
+    }
+    if (timeline) {
+      const next =
+        event.key === "ArrowRight"
+          ? timelineCellAt(row, timelineAnchor(board, chip), timelineOffset(board), false)
+          : railTarget(lane);
+      if (next !== null) {
+        consumeAndFocus(event, next, board);
+      } else {
+        clampArrow(event);
+      }
+      return;
+    }
+    if (event.key === "ArrowLeft") {
+      consumeAndFocus(event, cell, board);
+      return;
+    }
+  }
+  if (timeline) {
+    handleTimelineArrow(event, chip, lane, board, hasMore, onRequestMore, true);
+    return;
+  }
+  handleChannelGridArrow(
+    event,
+    cell,
+    channels,
+    layout,
+    lane,
+    times,
+    board,
+    dockControl,
+    hasMore,
+    onRequestMore,
+  );
 }
 
 function visibleBoardFooterButton(
@@ -1228,7 +1351,9 @@ function visibleFocusables(
 
 function isVisibleFocusable(element: HTMLElement): boolean {
   return isVisibleControl(element, {
-    allowNegativeTabIndex: element.classList.contains("programme-guide__group"),
+    allowNegativeTabIndex:
+      element.classList.contains("programme-guide__group") ||
+      element.matches(QUALITY_CHIP_SELECTOR),
   });
 }
 
@@ -1308,10 +1433,13 @@ function timelineOffset(board: HTMLElement): number {
   return Number.isFinite(value) ? value : 0;
 }
 
-/** What a timeline row offers the D-pad: its cells, or its Channel when it has none. */
-function timelineStops(row: HTMLElement): HTMLElement[] {
+/**
+ * What a timeline row offers the D-pad: its cells, or its Channel when it
+ * has none (unless `channelStop` is false).
+ */
+function timelineStops(row: HTMLElement, channelStop = true): HTMLElement[] {
   const cells = visibleFocusables(row, ".programme-guide__programme");
-  if (cells.length > 0) return cells;
+  if (cells.length > 0 || !channelStop) return cells;
   const channel = row.querySelector<HTMLElement>(".programme-guide__channel");
   return channel !== null && isVisibleFocusable(channel) ? [channel] : [];
 }
@@ -1325,8 +1453,9 @@ function timelineCellAt(
   row: HTMLElement,
   minute: number,
   offset: number,
+  channelStop = true,
 ): HTMLElement | null {
-  const all = timelineStops(row);
+  const all = timelineStops(row, channelStop);
   const drawn = all.filter((stop) => !isEdgeSliver(stop, offset));
   const stops = drawn.length > 0 ? drawn : all;
   let best: HTMLElement | null = null;
@@ -1387,6 +1516,7 @@ function handleTimelineArrow(
   board: HTMLElement,
   hasMore: boolean,
   onRequestMore: () => void,
+  television: boolean,
 ): void {
   const row = target.closest<HTMLElement>(".programme-guide__row");
   if (row === null) return;
@@ -1397,11 +1527,17 @@ function handleTimelineArrow(
     (stop) => offset > 0 || stop === target || !isEdgeSliver(stop, offset),
   );
   const index = stops.indexOf(target);
+  // A TV row's quality chips lie under its name, between the rail and the
+  // cells: Left from the row's first cell reaches them, the last one first,
+  // so Left and Right still step through time everywhere else.
+  const chips = television ? rowQualityChips(row) : [];
   if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
     if (target.classList.contains("programme-guide__channel")) {
       const next =
         event.key === "ArrowRight"
-          ? (timelineCellAt(row, timelineAnchor(board, target), timelineOffset(board)) ?? null)
+          ? (timelineCellAt(row, timelineAnchor(board, target), timelineOffset(board), false) ??
+            chips[0] ??
+            null)
           : railTarget(lane);
       if (next !== null && next !== target) {
         consumeAndFocus(event, next, board);
@@ -1415,7 +1551,7 @@ function handleTimelineArrow(
         ? (stops[index + 1] ?? null)
         : index > 0
           ? stops[index - 1]
-          : railTarget(lane);
+          : (chips[chips.length - 1] ?? railTarget(lane));
     if (next !== null) {
       consumeAndFocus(event, next, board);
     } else {
@@ -1423,19 +1559,12 @@ function handleTimelineArrow(
     }
     return;
   }
-  const rows = Array.from(
-    board.querySelectorAll<HTMLElement>(".programme-guide__row"),
-  ).filter((candidate) => timelineStops(candidate).length > 0);
-  const rowIndex = rows.indexOf(row);
   const anchor = timelineAnchor(board, target);
   if (event.key === "ArrowDown") {
-    const below = rows[rowIndex + 1];
-    if (below !== undefined) {
-      const next = timelineCellAt(below, anchor, timelineOffset(board));
-      if (next !== null) {
-        consumeAndFocus(event, next, board);
-        return;
-      }
+    const next = neighbouringTimelineStop(row, 1, anchor, timelineOffset(board));
+    if (next !== null) {
+      consumeAndFocus(event, next, board);
+      return;
     }
     const footer =
       visibleBoardFooterButton(board, ".programme-guide__retained button") ??
@@ -1448,9 +1577,7 @@ function handleTimelineArrow(
     return;
   }
   if (event.key === "ArrowUp") {
-    const above = rows[rowIndex - 1];
-    const next =
-      above === undefined ? null : timelineCellAt(above, anchor, timelineOffset(board));
+    const next = neighbouringTimelineStop(row, -1, anchor, timelineOffset(board));
     if (next !== null) {
       consumeAndFocus(event, next, board);
     } else {
@@ -1463,6 +1590,31 @@ function handleTimelineArrow(
       }
     }
   }
+}
+
+/**
+ * The stop at `minute` in the nearest row above (`step` -1) or below (1)
+ * that offers one. It walks the row's siblings in that direction, so a move
+ * reads only the rows it passes, not every row loaded.
+ */
+function neighbouringTimelineStop(
+  row: HTMLElement,
+  step: -1 | 1,
+  minute: number,
+  offset: number,
+): HTMLElement | null {
+  for (
+    let candidate = step > 0 ? row.nextElementSibling : row.previousElementSibling;
+    candidate !== null;
+    candidate = step > 0 ? candidate.nextElementSibling : candidate.previousElementSibling
+  ) {
+    if (!(candidate instanceof HTMLElement) || !candidate.classList.contains("programme-guide__row")) {
+      continue;
+    }
+    const stop = timelineCellAt(candidate, minute, offset);
+    if (stop !== null) return stop;
+  }
+  return null;
 }
 
 /** The rail's stop for a move into it: the chosen Channel Group. */

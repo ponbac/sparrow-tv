@@ -76,11 +76,15 @@ On Android the engine moves the native picture to the `<video>` rectangle only w
 On Android TV (`html[data-television]`) the pocket layout keeps only guide mode. The TV Guide has the docked picture in its band, and the full picture is the player's own element fullscreen. This amends the Modes section for the TV only; phones, tablets and the desktop are unchanged.
 
 - Center on a Channel in the Guide (a Now grid row, a Timeline row or cell, a quality chip or a search result) that is not playing tunes it into the docked picture. The Guide stays, and so does focus. Center on the exact Channel that plays, the same Quality Variant, takes its player section fullscreen. Center on another variant of the playing Channel tunes that variant docked.
+- Only a fresh press is the fullscreen gesture. A held Center repeats its keydown, and each repeat presses the focused control again: the first press tunes, and the repeats never take the picture fullscreen.
+- A search result folds a guide row's Quality Variants into one result. It tunes as the row does and records no quality preference; only a quality chip in the Guide records one.
+- The quality chips stay out of the Tab order, and the D-pad reaches them. In Now, Right from a cell enters its chips and Right from the last chip goes on to the next cell, so Left, Up and Down still move from cell to cell. In Timeline, where Left and Right move through time, Left from a row's first cell enters its chips, the last one first, and Left from the first chip reaches the rail; Right from the last chip returns to the cells. The marks are unchanged: a row with a quality switch marks its chips.
 - A failed or paused Playback Session goes fullscreen like a playing one, where its failure, Resume and way out are. A player that could not load has no section to take fullscreen: Center focuses its Reload and Close actions in the docked box, and Back or Down return to the Guide.
-- The band's caption button goes fullscreen instead of returning to a watch screen.
-- Back, or Exit fullscreen, returns to the Guide with focus on the control that went fullscreen while its row still plays, else on the playing Channel's row. Playback continues docked. Stop stream ends the Playback Session and leaves the Guide with nothing playing.
+- The band's caption button goes fullscreen instead of returning to a watch screen. Choosing the Channel that plays, on its row or the caption, also drops a change of Channel the Channel keys have queued and not yet committed.
+- One Back, or Exit fullscreen, returns to the Guide, whether or not the fullscreen bar is showing, as Android's own fullscreen exit does on the Shield. Focus goes to the control that went fullscreen while its row still plays, else to the playing Channel's row. Playback continues docked. A failure's "Back to Guide" does the same and keeps the failed Playback Session docked. Stop stream ends the Playback Session and leaves the Guide with nothing playing.
+- While the signal opens in fullscreen, Media3's opaque native view may already lie over the picture's box. The message and its two actions, Exit fullscreen and Stop, are in the band under the box, never in it.
 - Agent Control's `tune` also plays docked.
-- Guide mode is forced, so the dock latch never undocks on a TV: a paused or failed picture keeps the band's box, held at its size.
+- Guide mode is forced, so the dock latch never undocks on a TV: a paused or failed picture keeps the band's box, held at its size. What lies beside and under the band (the panel, the lane and the board) is placed by that held size too, and the inline search's veil and the sheets' backdrops leave the box out.
 
 ## What stays a contract
 

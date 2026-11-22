@@ -126,6 +126,59 @@ export function programmeKey(
   return `${programme.startsAt}:${programme.endsAt}:${programme.title}:${occurrence}`;
 }
 
+const WEEKDAY_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  weekday: "long",
+});
+
+/** A stretch of a guide window that lies on one local calendar day. */
+export interface WindowDay {
+  /** "Today", "Tomorrow", or the weekday's name. */
+  readonly label: string;
+  /** Minutes from the window's start to the day's first minute in it. */
+  readonly fromMinute: number;
+  /** Minutes from the window's start to the next day's, or to the window's end. */
+  readonly toMinute: number;
+}
+
+/**
+ * The local calendar days a guide window touches, in order, each named as
+ * the viewer would say it on `now`'s day.
+ */
+export function windowDays(window: ClockWindow, now: Date): readonly WindowDay[] {
+  const start = window.startsAt.getTime();
+  const end = window.endsAt.getTime();
+  const days: WindowDay[] = [];
+  let from = start;
+  while (from < end) {
+    const instant = new Date(from);
+    const next = new Date(
+      instant.getFullYear(),
+      instant.getMonth(),
+      instant.getDate() + 1,
+    ).getTime();
+    const to = Math.min(next, end);
+    days.push({
+      label: dayLabel(instant, now),
+      fromMinute: (from - start) / 60_000,
+      toMinute: (to - start) / 60_000,
+    });
+    from = to;
+  }
+  return days;
+}
+
+/** "Today", "Tomorrow" or the weekday of `day`, seen from `now`. */
+export function dayLabel(day: Date, now: Date): string {
+  const midnight = (date: Date) =>
+    new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const days = Math.round(
+    (midnight(day).getTime() - midnight(now).getTime()) / (24 * HOUR_MS),
+  );
+  if (days === 0) return "Today";
+  if (days === 1) return "Tomorrow";
+  return WEEKDAY_FORMATTER.format(day);
+}
+
 /** Formats one guide instant as a compact local clock time. */
 export function clockLabel(instant: Date | string): string {
   const date = typeof instant === "string" ? new Date(instant) : instant;

@@ -1,8 +1,50 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { isPictureTap, stageMonitorSize } from "./stage-dom";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  isPictureTap,
+  revealInScrollContainer,
+  stageMonitorSize,
+} from "./stage-dom";
 
 afterEach(() => {
   document.body.replaceChildren();
+  vi.restoreAllMocks();
+});
+
+describe("revealInScrollContainer", () => {
+  /** A list 300 px tall scrolled to the top, and a row at `top` in it. */
+  function list(scrollPaddingBottom: string) {
+    document.body.innerHTML = `<div id="list"><div id="row"></div></div>`;
+    const container = byId("list");
+    const row = byId("row");
+    Object.defineProperty(container, "clientHeight", { value: 300 });
+    container.getBoundingClientRect = () => DOMRect.fromRect({ y: 0, height: 300 });
+    row.getBoundingClientRect = () => DOMRect.fromRect({ y: 250, height: 40 });
+    const real = window.getComputedStyle.bind(window);
+    vi.spyOn(window, "getComputedStyle").mockImplementation((element, pseudo) => {
+      const style = real(element, pseudo);
+      return element === container
+        ? ({ ...style, scrollPaddingBottom } as CSSStyleDeclaration)
+        : style;
+    });
+    return { container, row };
+  }
+
+  it("brings a row out from under the fade a sheet's list reserves at its foot", () => {
+    // The row ends 10 px from the list's foot, under a 56 px fade.
+    const { container, row } = list("56px");
+
+    revealInScrollContainer(container, row);
+
+    expect(container.scrollTop).toBe(290 - 300 + 56);
+  });
+
+  it("keeps its own margin where the list reserves nothing", () => {
+    const { container, row } = list("auto");
+
+    revealInScrollContainer(container, row);
+
+    expect(container.scrollTop).toBe(290 - 300 + 12);
+  });
 });
 
 describe("isPictureTap", () => {

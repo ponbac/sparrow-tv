@@ -489,7 +489,10 @@ export function BoardSearchDesk({
                   <div
                     className="board-search-desk__row"
                     data-excluded={excluded}
-                    key={variants[0].id}
+                    // A folded row is its guide row: keyed by the Channel
+                    // Number, which a sibling found on a later page does not
+                    // change, so the focused row's button stays.
+                    key={television ? `number:${channel.number}` : channel.id}
                     role="listitem"
                   >
                     <Dialog.Close
@@ -574,7 +577,7 @@ function DeskHitBody({
   readonly variants: readonly ChannelSummary[];
   readonly onNow: SearchOnNow | undefined;
 }) {
-  const programme = searchHitOnNow(variants, onNow);
+  const programme = searchHitOnNow(channel, variants, onNow);
   return (
     <span className="board-search-desk__hit">
       <span className="board-search-desk__hit-name">

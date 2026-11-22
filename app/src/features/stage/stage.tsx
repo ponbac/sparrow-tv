@@ -199,4 +199,3 @@ function stepHorizontal(
     preventScroll: true,
   });
 }
-

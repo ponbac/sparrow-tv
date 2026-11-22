@@ -286,6 +286,17 @@ export function InstalledPlayer({
       .catch(() => undefined);
   };
 
+  // On a TV a failure's way out is "Back to Guide", and it does what Back
+  // does: fullscreen ends and the failed Playback Session stays in the
+  // Guide's docked picture, where Center on its row shows the failure again.
+  const backToGuide = () => {
+    if (document.fullscreenElement != null) {
+      void document.exitFullscreen().catch(() => undefined);
+    } else {
+      stop();
+    }
+  };
+
   const secondaryActions: readonly PlaybackSecondaryAction[] = [
     ...(canRestart && recoveryAction === undefined
       ? [
@@ -469,7 +480,7 @@ export function InstalledPlayer({
             ? "Stop mpv"
             : "Stop stream"
       }
-      onStop={stop}
+      onStop={television && transportReleased ? backToGuide : stop}
       onAutoplayFailure={() => void runner.reportAutoplayFailure()}
     />
   );

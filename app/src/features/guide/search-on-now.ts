@@ -23,20 +23,23 @@ export function guideProgrammesByChannel(
 }
 
 /**
- * The Programme on now for a search hit, from any of its guide row's
- * Quality Variants the Guide has read, or null when the Guide has not read
- * that row or nothing airs now.
+ * The Programme on now for a search hit: from the Channel the hit tunes,
+ * else from the first of its guide row's other Quality Variants that has
+ * one, among those the Guide has read. Null when none of them has a
+ * Programme on now.
  */
 export function searchHitOnNow(
+  channel: ChannelSummary,
   variants: readonly ChannelSummary[],
   onNow: SearchOnNow | undefined,
 ): ProgrammeSlot | null {
   if (onNow === undefined) return null;
-  for (const variant of variants) {
+  const order = [channel, ...variants.filter((variant) => variant.id !== channel.id)];
+  for (const variant of order) {
     const programmes = onNow.programmes.get(variant.id);
-    if (programmes !== undefined) {
-      return programmeAt(programmes, onNow.now);
-    }
+    if (programmes === undefined) continue;
+    const programme = programmeAt(programmes, onNow.now);
+    if (programme !== null) return programme;
   }
   return null;
 }

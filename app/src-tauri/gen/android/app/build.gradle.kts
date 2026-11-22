@@ -72,11 +72,12 @@ android {
     ndkVersion = "29.0.14206865"
     namespace = "xyz.ponbac.sparrow"
     defaultConfig {
-        // Channel Icons are provider image URLs, mostly plain http:, which the
-        // WebView loads directly (CSP img-src allows http: and https: and
-        // nothing else). Android applies this flag to the WebView and the
-        // platform HTTP stacks only; playback never uses them (Rust sockets
-        // behind a JNI DataSource), so this widens image loads alone.
+        // Permits cleartext (plain http:) for the whole app's platform HTTP
+        // stacks and its WebView, not for images alone. It is here for
+        // Channel Icons, provider image URLs that are mostly plain http: and
+        // that the WebView loads directly (CSP img-src allows http: and
+        // https:). Playback does not go through those stacks (Rust sockets
+        // behind a JNI DataSource), so it is unaffected either way.
         manifestPlaceholders["usesCleartextTraffic"] = "true"
         applicationId = "xyz.ponbac.sparrow"
         minSdk = 24

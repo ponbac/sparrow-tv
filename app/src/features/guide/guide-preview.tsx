@@ -24,6 +24,9 @@ import { elapsedFraction, minutesLeft, programmeAt } from "./now-next";
 // reads nothing for the Channels it passes.
 const DESCRIPTION_SETTLE_MS = 300;
 const IMMUTABLE_CATALOG_STALE_TIME = Number.POSITIVE_INFINITY;
+// Enough Programmes from the shown one's start to hold it after any that
+// overlap that start.
+const DESCRIPTION_READ_LIMIT = 4;
 // What the panel lists after the shown Programme, from the rows it holds.
 const LATER_PROGRAMMES = 3;
 
@@ -41,7 +44,7 @@ export interface GuidePreviewSource {
  * picture's place, so the band is never empty.
  */
 export function GuidePreview({
-  source,
+  source: descriptions,
   store,
   families,
   variantPreferences,
@@ -67,10 +70,14 @@ export function GuidePreview({
     null;
   const preferred =
     family === null ? null : preferredVariant(family, variantPreferences);
-  const programmes =
+  // The row whose Programmes the panel shows: the preferred variant's, or a
+  // sibling's when the preferred one has none. Its description is read from
+  // that same Channel.
+  const source =
     family === null || preferred === null
-      ? []
-      : familyProgrammeSource(family, preferred).programmes;
+      ? null
+      : familyProgrammeSource(family, preferred);
+  const programmes = source?.programmes ?? [];
   const chosen =
     focus !== null && focus.startsAt !== null && family?.number === focus.number
       ? (programmes.find((programme) => programme.startsAt === focus.startsAt) ??
@@ -90,8 +97,8 @@ export function GuidePreview({
           )
           .slice(0, LATER_PROGRAMMES);
   const description = useProgrammeDescription(
-    source,
-    preferred?.channel.id ?? null,
+    descriptions,
+    source?.channel.id ?? null,
     shown,
   );
   const idle = playingChannel === null;
@@ -121,15 +128,17 @@ export function GuidePreview({
   );
 
   return (
-    // The rows already say all of this to a screen reader: the panel is for the eye.
+    // The rows already say the Channel, the Programme and its times to a
+    // screen reader, so those parts are for the eye. What the rows do not
+    // say, the description and what follows, is a named region that is
+    // read when reached, never announced as it changes.
     <div
       className="programme-guide__preview"
       data-idle={idle}
       data-playing={playing}
-      aria-hidden="true"
     >
       {idle ? (
-        <div className="programme-guide__poster">
+        <div className="programme-guide__poster" aria-hidden="true">
           <ChannelIcon
             className="programme-guide__poster-icon"
             icon={icon}
@@ -142,7 +151,7 @@ export function GuidePreview({
         </div>
       ) : null}
       <div className="programme-guide__preview-body">
-        <div className="programme-guide__preview-head">
+        <div className="programme-guide__preview-head" aria-hidden="true">
           <ChannelIcon
             className="programme-guide__preview-icon"
             icon={icon}
@@ -170,6 +179,7 @@ export function GuidePreview({
         </div>
         <div
           className="programme-guide__preview-meter"
+          aria-hidden="true"
           data-when={
             shown === null
               ? undefined
@@ -217,20 +227,26 @@ export function GuidePreview({
             </>
           )}
         </div>
-        <p className="programme-guide__preview-about">{description ?? ""}</p>
-        {later.length === 0 ? null : (
-          <ol className="programme-guide__preview-later">
-            {later.map((programme) => (
-              <li key={programme.startsAt}>
-                <time dateTime={programme.startsAt}>
-                  {clockLabel(programme.startsAt)}
-                </time>
-                <b>{programmeTitle(programme)}</b>
-                <span>{durationLabel(programme)}</span>
-              </li>
-            ))}
-          </ol>
-        )}
+        <div
+          className="programme-guide__preview-details"
+          role="region"
+          aria-label={`About ${shown === null ? family.title : programmeTitle(shown)}`}
+        >
+          <p className="programme-guide__preview-about">{description ?? ""}</p>
+          {later.length === 0 ? null : (
+            <ol className="programme-guide__preview-later" aria-label="Later">
+              {later.map((programme) => (
+                <li key={programme.startsAt}>
+                  <time dateTime={programme.startsAt}>
+                    {clockLabel(programme.startsAt)}
+                  </time>
+                  <b>{programmeTitle(programme)}</b>
+                  <span>{durationLabel(programme)}</span>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -292,7 +308,9 @@ function useProgrammeDescription(
               client.schedule({
                 id: read.channel,
                 from: read.from,
-                limit: 1,
+                // An earlier Programme still on at `from` may come first;
+                // the shown one is matched by its start below.
+                limit: DESCRIPTION_READ_LIMIT,
                 signal,
               }),
               generation,
@@ -302,7 +320,9 @@ function useProgrammeDescription(
   });
   if (read === null || programme === null) return null;
   const item = query.data?.value.items.find(
-    (candidate) => candidate.startsAt === programme.startsAt,
+    (candidate) =>
+      candidate.startsAt === programme.startsAt &&
+      candidate.endsAt === programme.endsAt,
   );
   return item?.description ?? null;
 }

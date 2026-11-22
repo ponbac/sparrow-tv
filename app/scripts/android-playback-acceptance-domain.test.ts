@@ -1,5 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
-import { ALTERNATE_AUDIO_SELECTION_EXPRESSION } from "./android-playback-acceptance.ts";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  ALTERNATE_AUDIO_SELECTION_EXPRESSION,
+  PLAYBACK_MARKER_EXPRESSION,
+} from "./android-playback-acceptance.ts";
 import {
   combineModernFrameStats,
   evaluatePlaybackGates,
@@ -202,5 +205,49 @@ describe("Android playback acceptance boundaries", () => {
       "channelSwitched",
       "modern-frame-deadlines",
     ]);
+  });
+});
+
+/** The test page, typed without the DOM library the scripts compile without. */
+const page = globalThis as unknown as {
+  readonly document: {
+    readonly body: { innerHTML: string; replaceChildren(): void };
+  };
+};
+
+describe("Android playback acceptance page marker", () => {
+  afterEach(() => page.document.body.replaceChildren());
+
+  /** A playing native player beside one Guide row with a Channel Icon. */
+  function render(extra: string): void {
+    page.document.body.innerHTML = `
+      <section class="hosted-player">
+        <video data-playback-engine="android-media3" data-playback-state="playing"
+          data-dropped-frames="0" data-buffered-duration-ms="12000" data-process-silent="true"></video>
+      </section>
+      <span class="channel-icon">
+        <img class="channel-icon__image" src="https://logos.example/svt1.png" alt="">
+      </span>
+      ${extra}
+    `;
+  }
+
+  function routineUrlCount(): number {
+    const marker = (0, eval)(PLAYBACK_MARKER_EXPRESSION) as { readonly routineUrlCount: number } | null;
+    if (marker === null) throw new Error("no playback marker");
+    return marker.routineUrlCount;
+  }
+
+  it("leaves a rendered Channel Icon out of the routine URL count", () => {
+    render("");
+
+    expect(routineUrlCount()).toBe(0);
+  });
+
+  it("still counts any other absolute location on the page", () => {
+    render(`<img src="https://logos.example/svt1.png" alt="">
+      <video src="http://provider.example/live/1.ts"></video>`);
+
+    expect(routineUrlCount()).toBe(2);
   });
 });

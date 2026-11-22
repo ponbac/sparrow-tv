@@ -608,20 +608,11 @@ export function PlaybackSurface({
       onFocusCapture={() => revealControls()}
       onChangeCapture={() => revealControls()}
       onKeyDown={(event) => {
-        if (
-          television &&
-          sectionFullscreen &&
-          event.key === "Escape" &&
-          !event.defaultPrevented &&
-          !event.nativeEvent.isComposing
-        ) {
-          if (controlsVisible && canHideControls) {
-            event.preventDefault();
-            event.stopPropagation();
-            hideControlsCleanly();
-          }
-          // When controls are already hidden or cannot hide, let Escape bubble
-          // without revealing controls so TV Back/Escape exits fullscreen to Guide.
+        if (television && sectionFullscreen && event.key === "Escape") {
+          // One Back leaves fullscreen for the docked Guide, whether or not
+          // the bar shows, as Android's own fullscreen exit does. Escape
+          // bubbles to the TV's handler (`useTelevisionControls`) without
+          // showing the bar on the way out.
           return;
         }
         const target = event.target instanceof HTMLElement ? event.target : null;

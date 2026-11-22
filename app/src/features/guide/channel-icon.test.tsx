@@ -1,9 +1,13 @@
 import { cleanup, fireEvent, render } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChannelIcon } from "./channel-icon";
 import { iconShape } from "./icon-shape";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  document.documentElement.removeAttribute("data-television");
+});
 
 const ICON = "http://logos.example/svt1.png";
 
@@ -72,6 +76,47 @@ describe("ChannelIcon", () => {
       "src",
       "https://logos.example/svt2.png",
     );
+  });
+});
+
+describe("ChannelIcon on a TV", () => {
+  it("never reads or re-requests a cross-origin icon's pixels", () => {
+    // A CORS retry of an icon its host serves without CORS makes the WebView
+    // log the icon's full location, which Android forwards to Logcat.
+    document.documentElement.setAttribute("data-television", "");
+    const crossOrigin = "https://logos.example/cross-origin.png";
+    const { container } = render(<ChannelIcon icon={crossOrigin} number={3} />);
+    const image = container.querySelector("img") as HTMLImageElement;
+    Object.defineProperty(image, "naturalWidth", { value: 400 });
+    Object.defineProperty(image, "naturalHeight", { value: 300 });
+    const createElement = vi.spyOn(document, "createElement");
+    const Image = vi.spyOn(window, "Image");
+
+    fireEvent.load(image);
+
+    expect(tile(container)).toHaveAttribute("data-icon", "loaded");
+    expect(tile(container)).toHaveAttribute("data-shape", "wide");
+    expect(tile(container)).not.toHaveAttribute("data-fit");
+    expect(Image).not.toHaveBeenCalled();
+    expect(createElement).not.toHaveBeenCalledWith("canvas");
+    expect(createElement).not.toHaveBeenCalledWith("img");
+    expect(container.querySelectorAll("img")).toHaveLength(1);
+    expect(image).not.toHaveAttribute("crossorigin");
+  });
+
+  it("reads the pixels of an icon the page holds itself", () => {
+    document.documentElement.setAttribute("data-television", "");
+    const { container } = render(
+      <ChannelIcon icon={`${window.location.origin}/logos/own.png`} number={4} />,
+    );
+    const image = container.querySelector("img") as HTMLImageElement;
+    Object.defineProperty(image, "naturalWidth", { value: 40 });
+    Object.defineProperty(image, "naturalHeight", { value: 30 });
+    const createElement = vi.spyOn(document, "createElement");
+
+    fireEvent.load(image);
+
+    expect(createElement).toHaveBeenCalledWith("canvas");
   });
 });
 
