@@ -132,6 +132,17 @@ export function clockLabel(instant: Date | string): string {
   return CLOCK_FORMATTER.format(date);
 }
 
+/** How long a Programme runs, such as "45 min", "1 h" or "1 h 30 min". */
+export function durationLabel(programme: ProgrammeSlot): string {
+  const minutes = Math.round(
+    (Date.parse(programme.endsAt) - Date.parse(programme.startsAt)) / 60_000,
+  );
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours} h` : `${hours} h ${rest} min`;
+}
+
 /** Reports whether a Programme is airing at the supplied instant. */
 export function isProgrammeLive(
   programme: ProgrammeSlot,

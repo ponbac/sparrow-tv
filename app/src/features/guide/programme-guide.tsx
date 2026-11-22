@@ -497,6 +497,7 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
                   <ProgrammeListRow
                     key={family.number}
                     {...rowProps(family)}
+                    channelIcon={television}
                     at={time?.chosen ?? null}
                     pending={replacing}
                   />

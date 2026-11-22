@@ -16,6 +16,7 @@ import { useDebounce } from "../../hooks/useDebounce";
 import { groupDisplayName } from "./board-group-roster";
 import { BoardSearchDesk } from "./board-search-desk";
 import {
+  foldSearchVariants,
   visibleSearchChannels,
   visibleSearchProgrammes,
 } from "./board-search-scope";
@@ -26,7 +27,13 @@ import {
 } from "./board-search-term";
 import { useTelevisionInputEdit } from "./dialog-navigation";
 import { revealInScrollContainer } from "../stage/stage-dom";
-import { channelTitle, qualityLabel } from "./guide-families";
+import { ChannelIcon } from "./channel-icon";
+import { SearchQualities } from "./search-qualities";
+import {
+  channelTitle,
+  qualityLabel,
+  type VariantPreferences,
+} from "./guide-families";
 import { focusGuideFallback } from "./guide-navigation";
 import { clockLabel } from "./guide-window";
 import "./board-search.css";
@@ -39,7 +46,16 @@ const RETRY_CHOICE_LABEL = "Search again";
 type SearchChoice =
   | { readonly _tag: "retry" }
   | { readonly _tag: "desk" }
-  | { readonly _tag: "channel"; readonly channel: ChannelSummary }
+  | {
+      readonly _tag: "channel";
+      /** The Channel the result tunes. */
+      readonly channel: ChannelSummary;
+      /**
+       * On the TV, the Quality Variants of its guide row that matched,
+       * folded into this one result; elsewhere the Channel alone.
+       */
+      readonly variants: readonly ChannelSummary[];
+    }
   | { readonly _tag: "programme"; readonly programme: ProgrammeSearchHit };
 
 type SearchPresentation =
@@ -59,10 +75,17 @@ export interface BoardSearchProps {
   readonly client: Pick<SparrowClient, "search" | "searchChannels">;
   readonly generation: CatalogGeneration | null;
   readonly excludedGroups: ReadonlySet<string>;
+  /**
+   * The viewer's chosen quality per guide row. The TV folds a guide row's
+   * Quality Variants into one result that tunes the chosen or best one.
+   */
+  readonly variantPreferences?: VariantPreferences;
   readonly onGenerationMismatch: () => void;
   readonly onPreparePlayback: () => void;
   readonly onTune: (channel: ChannelSummary) => void;
 }
+
+const NO_PREFERENCES: VariantPreferences = new Map();
 
 /** Searches the complete catalog while keeping results inside the guide pane. */
 export function BoardSearch({
@@ -70,6 +93,7 @@ export function BoardSearch({
   client,
   generation,
   excludedGroups,
+  variantPreferences = NO_PREFERENCES,
   onGenerationMismatch,
   onPreparePlayback,
   onTune,
@@ -159,11 +183,15 @@ export function BoardSearch({
   const error = clientErrorFromQuery(searchQuery.error);
   const generationMismatch = error?._tag === "stale-cursor";
   const choices = useMemo<readonly SearchChoice[]>(() => {
+    const channelRows = television
+      ? foldSearchVariants(visibleChannels, variantPreferences)
+      : visibleChannels.map((channel) => ({ channel, variants: [channel] }));
     const hits: SearchChoice[] = [
-      ...visibleChannels.slice(0, SEARCH_RESULT_LIMIT).map(
-        (channel): SearchChoice => ({
+      ...channelRows.slice(0, SEARCH_RESULT_LIMIT).map(
+        (row): SearchChoice => ({
           _tag: "channel",
-          channel,
+          channel: row.channel,
+          variants: row.variants,
         }),
       ),
       ...visibleProgrammes.slice(0, SEARCH_RESULT_LIMIT).map(
@@ -184,6 +212,8 @@ export function BoardSearch({
     generationMismatch,
     requestTerm.length,
     requestValid,
+    television,
+    variantPreferences,
     visibleChannels,
     visibleProgrammes,
   ]);
@@ -471,10 +501,29 @@ export function BoardSearch({
                           onFocus={prepareChoice}
                           onClick={() => choose(choice)}
                         >
-                          <span className="board-search__number">
-                            {choiceChannel(choice).number}
-                          </span>
-                          {choice._tag === "channel" ? (
+                          {television ? (
+                            <ChannelIcon
+                              className="board-search__icon"
+                              icon={choiceChannel(choice).icon}
+                              number={choiceChannel(choice).number}
+                            />
+                          ) : (
+                            <span className="board-search__number">
+                              {choiceChannel(choice).number}
+                            </span>
+                          )}
+                          {choice._tag === "channel" && television ? (
+                            <span className="board-search__name">
+                              <span className="board-search__channel-number">
+                                {choice.channel.number}
+                              </span>
+                              <strong>{channelTitle(choice.channel)}</strong>
+                              <SearchQualities
+                                variants={choice.variants}
+                                current={choice.channel}
+                              />
+                            </span>
+                          ) : choice._tag === "channel" ? (
                             <span className="board-search__name">
                               <strong>{channelTitle(choice.channel)}</strong>
                               {choice.channel.variant === null ? null : (
@@ -524,6 +573,7 @@ export function BoardSearch({
         generation={generation}
         term={query}
         excludedGroups={excludedGroups}
+        variantPreferences={variantPreferences}
         open={deskOpen}
         onOpenChange={setDeskOpen}
         onTermChange={setQuery}

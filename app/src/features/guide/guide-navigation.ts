@@ -13,6 +13,10 @@ const ROW_TOP_TOLERANCE_PX = 4;
 const LEAD_SELECTOR = ".programme-guide__when, .programme-guide__view";
 /** The minutes of the time axis the TV timeline shows at once. */
 const TIMELINE_VIEW_MINUTES = 120;
+// A cell cut at the timeline's left edge with less than this many minutes in
+// view is drawn under the cell after it (`--tl-snap` in television.css), so a
+// move up or down lands on that one instead.
+const TIMELINE_EDGE_SLIVER_MINUTES = 8.5;
 /** The cell focus last rested on in each timeline, where Right from the rail returns. */
 const lastTimelineCell = new WeakMap<HTMLElement, HTMLElement>();
 const BOARD_FOCUS_MARGIN_PX = 12;
@@ -1257,7 +1261,9 @@ export function revealTimelineCell(board: HTMLElement, cell: HTMLElement): void 
     // A cell starting near or past the right edge: show it with half an hour
     // of what came before it.
     offset = Math.floor(start / 30) * 30 - 30;
-  } else if (end <= current + 5) {
+  } else if (end <= current + TIMELINE_EDGE_SLIVER_MINUTES) {
+    // A cell all but gone past the left edge, or a sliver drawn under the
+    // next cell: show it from its start.
     offset = Math.floor(start / 30) * 30;
   }
   offset = Math.min(Math.max(offset, 0), Math.max(0, total - TIMELINE_VIEW_MINUTES));
@@ -1282,9 +1288,19 @@ function timelineStops(row: HTMLElement): HTMLElement[] {
   return channel !== null && isVisibleFocusable(channel) ? [channel] : [];
 }
 
-/** The cell of a row on at `minute`, else the one starting nearest to it. */
-function timelineCellAt(row: HTMLElement, minute: number): HTMLElement | null {
-  const stops = timelineStops(row);
+/**
+ * The cell of a row on at `minute`, else the one starting nearest to it. A
+ * sliver at the left edge of the time shown (`offset`) is passed over for the
+ * cell drawn across it.
+ */
+function timelineCellAt(
+  row: HTMLElement,
+  minute: number,
+  offset: number,
+): HTMLElement | null {
+  const all = timelineStops(row);
+  const drawn = all.filter((stop) => !isEdgeSliver(stop, offset));
+  const stops = drawn.length > 0 ? drawn : all;
   let best: HTMLElement | null = null;
   let bestDistance = Number.POSITIVE_INFINITY;
   for (const stop of stops) {
@@ -1299,6 +1315,13 @@ function timelineCellAt(row: HTMLElement, minute: number): HTMLElement | null {
     }
   }
   return best;
+}
+
+/** A cell cut at the left edge with too little in view to be drawn. */
+function isEdgeSliver(stop: HTMLElement, offset: number): boolean {
+  const start = Number(stop.dataset.start);
+  const end = Number(stop.dataset.end);
+  return start < offset && end - offset < TIMELINE_EDGE_SLIVER_MINUTES;
 }
 
 /** The minute a move up or down keeps to: the focused cell's, within view. */
@@ -1319,7 +1342,9 @@ function timelineEntry(board: HTMLElement | null, origin: HTMLElement): HTMLElem
   }
   const channel = firstVisibleBoardTarget(board, origin);
   const row = channel?.closest<HTMLElement>(".programme-guide__row") ?? null;
-  return row === null ? channel : (timelineCellAt(row, timelineAnchor(board, origin)) ?? channel);
+  return row === null
+    ? channel
+    : (timelineCellAt(row, timelineAnchor(board, origin), timelineOffset(board)) ?? channel);
 }
 
 /**
@@ -1337,13 +1362,18 @@ function handleTimelineArrow(
 ): void {
   const row = target.closest<HTMLElement>(".programme-guide__row");
   if (row === null) return;
-  const stops = timelineStops(row);
+  // Stepping onto a sliver at the left edge brings its time into view; at
+  // the first minute there is no earlier time, so it is not a stop.
+  const offset = timelineOffset(board);
+  const stops = timelineStops(row).filter(
+    (stop) => offset > 0 || stop === target || !isEdgeSliver(stop, offset),
+  );
   const index = stops.indexOf(target);
   if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
     if (target.classList.contains("programme-guide__channel")) {
       const next =
         event.key === "ArrowRight"
-          ? (timelineCellAt(row, timelineAnchor(board, target)) ?? null)
+          ? (timelineCellAt(row, timelineAnchor(board, target), timelineOffset(board)) ?? null)
           : railTarget(lane);
       if (next !== null && next !== target) {
         consumeAndFocus(event, next, board);
@@ -1373,7 +1403,7 @@ function handleTimelineArrow(
   if (event.key === "ArrowDown") {
     const below = rows[rowIndex + 1];
     if (below !== undefined) {
-      const next = timelineCellAt(below, anchor);
+      const next = timelineCellAt(below, anchor, timelineOffset(board));
       if (next !== null) {
         consumeAndFocus(event, next, board);
         return;
@@ -1392,7 +1422,7 @@ function handleTimelineArrow(
   if (event.key === "ArrowUp") {
     const above = rows[rowIndex - 1];
     const next =
-      above === undefined ? null : timelineCellAt(above, anchor);
+      above === undefined ? null : timelineCellAt(above, anchor, timelineOffset(board));
     if (next !== null) {
       consumeAndFocus(event, next, board);
     } else {

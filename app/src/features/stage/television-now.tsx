@@ -1,3 +1,4 @@
+import { ChannelIcon } from "../guide/channel-icon";
 import { channelTitle, qualityLabel } from "../guide/guide-families";
 import { clockLabel } from "../guide/guide-window";
 import { elapsedFraction, minutesLeft } from "../guide/now-next";
@@ -5,9 +6,10 @@ import { QualitySwitch } from "../guide/quality-switch";
 import { televisionProgrammes, type TelevisionNow } from "./television-now-context";
 
 /**
- * The fullscreen band under the picture: the Channel Number tile, the
- * Channel's name with its live marker and quality over the Programme, then
- * what is left of it and what follows over its meter, and the clock. Drawn
+ * The fullscreen band under the picture: the Channel's tile (its icon, or
+ * its number on the tally red), the Channel's name with its live marker and
+ * quality over the Programme, then what is left of it and what follows over
+ * its meter, and the clock. Drawn
  * inside the player's fullscreen section; the controls are its second line.
  */
 export function TelevisionHead({
@@ -24,7 +26,11 @@ export function TelevisionHead({
   const quality = subject.channel.variant?.quality;
   return (
     <div className="hosted-player__tv-head" aria-hidden="true">
-      <span className="hosted-player__tv-number">{subject.channel.number}</span>
+      <ChannelIcon
+        className="hosted-player__tv-number"
+        icon={subject.channel.icon}
+        number={subject.channel.number}
+      />
       <div className="hosted-player__tv-identity">
         <p className="hosted-player__tv-channel">
           <b>{channelTitle(subject.channel)}</b>

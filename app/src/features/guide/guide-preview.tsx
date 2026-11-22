@@ -16,7 +16,8 @@ import {
   type GuideFamily,
   type VariantPreferences,
 } from "./guide-families";
-import { clockLabel } from "./guide-window";
+import { ChannelIcon } from "./channel-icon";
+import { clockLabel, durationLabel } from "./guide-window";
 import { elapsedFraction, minutesLeft, programmeAt } from "./now-next";
 
 // The description read waits until focus rests: a run of D-pad presses
@@ -109,6 +110,8 @@ export function GuidePreview({
     variant.channel.variant === null ? [] : [variant.channel.variant.quality],
   );
   const current = preferred.channel.variant?.quality ?? null;
+  // Every Quality Variant of a row carries the same Channel Icon.
+  const icon = family.variants[0].channel.icon;
   const live =
     shown !== null &&
     Date.parse(shown.startsAt) <= now.getTime() &&
@@ -127,7 +130,11 @@ export function GuidePreview({
     >
       {idle ? (
         <div className="programme-guide__poster">
-          <span className="programme-guide__poster-number">{family.number}</span>
+          <ChannelIcon
+            className="programme-guide__poster-icon"
+            icon={icon}
+            number={family.number}
+          />
           <strong>{family.title}</strong>
           <span className="programme-guide__poster-hint">
             <kbd>OK</kbd> Watch
@@ -135,23 +142,32 @@ export function GuidePreview({
         </div>
       ) : null}
       <div className="programme-guide__preview-body">
-        <p className="programme-guide__preview-channel">
-          <span className="programme-guide__preview-number">{family.number}</span>
-          <b>{family.title}</b>
-          {qualities.length === 0 ? null : (
-            <span className="programme-guide__preview-qualities">
-              {qualities.map((quality) => (
-                <em key={quality} data-current={quality === current}>
-                  {qualityLabel(quality)}
-                </em>
-              ))}
-            </span>
-          )}
-          {family.group === "" ? null : <span>{family.group}</span>}
-        </p>
-        <h2 className="programme-guide__preview-title">
-          {shown === null ? family.title : programmeTitle(shown)}
-        </h2>
+        <div className="programme-guide__preview-head">
+          <ChannelIcon
+            className="programme-guide__preview-icon"
+            icon={icon}
+            number={family.number}
+          />
+          <div className="programme-guide__preview-heading">
+            <p className="programme-guide__preview-channel">
+              <span className="programme-guide__preview-number">{family.number}</span>
+              <b>{family.title}</b>
+              {qualities.length === 0 ? null : (
+                <span className="programme-guide__preview-qualities">
+                  {qualities.map((quality) => (
+                    <em key={quality} data-current={quality === current}>
+                      {qualityLabel(quality)}
+                    </em>
+                  ))}
+                </span>
+              )}
+              {family.group === "" ? null : <span>{family.group}</span>}
+            </p>
+            <h2 className="programme-guide__preview-title">
+              {shown === null ? family.title : programmeTitle(shown)}
+            </h2>
+          </div>
+        </div>
         <div className="programme-guide__preview-meter">
           {shown === null ? (
             <span>No guide data. The channel still plays.</span>
@@ -192,16 +208,6 @@ export function GuidePreview({
       </div>
     </div>
   );
-}
-
-function durationLabel(programme: GuideProgramme): string {
-  const minutes = Math.round(
-    (Date.parse(programme.endsAt) - Date.parse(programme.startsAt)) / 60_000,
-  );
-  if (minutes < 60) return `${minutes} min`;
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  return rest === 0 ? `${hours} h` : `${hours} h ${rest} min`;
 }
 
 function programmeTitle(programme: GuideProgramme): string {

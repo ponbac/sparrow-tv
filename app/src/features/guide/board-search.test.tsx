@@ -246,6 +246,62 @@ describe("BoardSearch", () => {
     ).toHaveTextContent(/^101SVT1FHDSweden$/u);
   });
 
+  it("folds a guide row's Quality Variants into one TV result that tunes the best", async () => {
+    const svt = (quality: "sd" | "hd" | "fhd") =>
+      channelFixture({
+        id: `svt1-${quality}`,
+        name: `SVT1 ${quality.toUpperCase()}`,
+        group: "Sweden",
+        number: 101,
+        variant: { quality, baseName: "SVT1" },
+        icon: "http://logos.example/svt1.png",
+      });
+    const page = {
+      generation: CHANNEL_RESULTS.generation,
+      items: [svt("hd"), svt("sd"), svt("fhd")],
+      next: null,
+    };
+    const onTune = vi.fn();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <BoardSearch
+          television
+          client={searchClient(
+            async () =>
+              success(
+                clientSchemas.searchResults.parse({
+                  generation: 7,
+                  channels: page,
+                  programmes: { generation: 7, items: [], next: null },
+                }),
+              ),
+            async () => success(page),
+          )}
+          generation={CHANNEL_RESULTS.generation}
+          excludedGroups={new Set()}
+          onGenerationMismatch={() => undefined}
+          onPreparePlayback={() => undefined}
+          onTune={onTune}
+        />
+      </QueryClientProvider>,
+    );
+    const user = userEvent.setup();
+
+    await user.type(
+      screen.getByRole("combobox", { name: "Search channels and programmes" }),
+      "svt",
+    );
+    const results = await screen.findAllByRole("option", { name: /SVT1/ });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toHaveTextContent(/^101101SVT1SDHDFHDSweden$/u);
+    await user.click(results[0] as HTMLElement);
+    expect(onTune).toHaveBeenCalledWith(svt("fhd"));
+  });
+
   it("opens the Channel search desk from Enter and the first dropdown option", async () => {
     const searchChannels = vi.fn(async (input: SearchPageInput) => {
       void input;

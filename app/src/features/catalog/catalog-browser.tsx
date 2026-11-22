@@ -590,6 +590,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
         client={client}
         generation={authoritativeGeneration}
         excludedGroups={groupExclusions.excluded}
+        variantPreferences={variantPreferences}
         onGenerationMismatch={synchronization.retryStatus}
         onPreparePlayback={preparePlayback}
         onTune={tuneVariantFromGuide}
@@ -603,6 +604,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
       synchronization.retryStatus,
       television,
       tuneVariantFromGuide,
+      variantPreferences,
     ],
   );
   const guideStatus = useMemo(
@@ -744,6 +746,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
                 picture={picture}
                 controlsRef={setControlsSlot}
                 qualitySwitch={!television}
+                television={television}
                 onPreparePlayback={preparePlayback}
                 onTuneVariant={tuneVariant}
               />

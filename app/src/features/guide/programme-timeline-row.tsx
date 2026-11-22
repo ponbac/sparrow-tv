@@ -9,6 +9,7 @@ import {
   qualityLabel,
   type GuideFamily,
 } from "./guide-families";
+import { ChannelIcon } from "./channel-icon";
 import { clockLabel, programmeKey, type ClockWindow } from "./guide-window";
 import { QualitySwitch } from "./quality-switch";
 
@@ -87,6 +88,11 @@ export const ProgrammeTimelineRow = memo(function ProgrammeTimelineRow({
           onFocus={onPreparePlayback}
           onClick={() => onTune(preferred.channel)}
         >
+          <ChannelIcon
+            className="programme-guide__icon"
+            icon={family.variants[0].channel.icon}
+            number={family.number}
+          />
           <strong>{family.title}</strong>
           {loneQuality === null ? null : <small>{qualityLabel(loneQuality)}</small>}
         </button>

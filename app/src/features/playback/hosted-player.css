@@ -516,3 +516,11 @@
   flex: none;
   color: var(--dim);
 }
+
+/* The TV's tuning glyph while a signal opens (television.css): opacity only,
+   on an element drawn only in that state. */
+@keyframes tv-tuning {
+  50% {
+    opacity: 0.35;
+  }
+}

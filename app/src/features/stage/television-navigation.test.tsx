@@ -378,6 +378,78 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     expect(onToggle).toHaveBeenCalledTimes(1);
   });
 
+  it("passes over a sliver at the timeline's left edge for the cell drawn across it", () => {
+    document.documentElement.setAttribute("data-television", "");
+    const at = (minutes: number) =>
+      clientSchemas.isoInstant.parse(
+        new Date(WINDOW.startsAt.getTime() + minutes * 60_000).toISOString(),
+      );
+    const programme = (title: string, from: number, to: number) => ({
+      title,
+      startsAt: at(from),
+      endsAt: at(to),
+      titleTruncated: false,
+    });
+    const rows: GuideWindowChannel[] = [
+      {
+        channel: channelFixture({ id: "edge-1", name: "Edge 1", group: "News", number: 1 }),
+        programmes: [programme("Morning", 0, 60)],
+        programmesTruncated: false,
+      },
+      {
+        channel: channelFixture({ id: "edge-2", name: "Edge 2", group: "News", number: 2 }),
+        // Five minutes of "Lead-out" are in view: the CSS draws "Feature"
+        // from the edge over it.
+        programmes: [programme("Lead-out", -55, 5), programme("Feature", 5, 60)],
+        programmesTruncated: false,
+      },
+    ];
+    render(
+      <ProgrammeGuide
+        television
+        rows={rows}
+        groups={GROUPS}
+        activeGroup={null}
+        window={WINDOW}
+        now={NOW}
+        playingChannel={null}
+        variantPreferences={new Map()}
+        layout="pocket"
+        mode="guide"
+        time={null}
+        view={{ current: "timeline", onToggle: () => undefined }}
+        loading={false}
+        replacing={false}
+        error={null}
+        hasMore={false}
+        loadingMore={false}
+        onSelectGroup={() => undefined}
+        onPrefetchGroup={() => undefined}
+        excludedGroups={new Set()}
+        onSetGroupExcluded={() => undefined}
+        onRestoreExcludedGroups={() => undefined}
+        onPreparePlayback={() => undefined}
+        onTune={() => undefined}
+        onTuneVariant={() => undefined}
+        onRetry={() => undefined}
+        onLoadMore={() => undefined}
+        search={null}
+        feeds={null}
+        status={null}
+      />,
+    );
+    const cell = (name: string) =>
+      screen.getByRole("button", { name: new RegExp(`^${name}, `, "u") });
+
+    act(() => cell("Morning").focus());
+    fireEvent.keyDown(cell("Morning"), { key: "ArrowDown" });
+    expect(cell("Feature")).toHaveFocus();
+    // At the first minute shown there is no earlier time to bring into view,
+    // so Left from the cell drawn across the sliver reaches the rail.
+    fireEvent.keyDown(cell("Feature"), { key: "ArrowLeft" });
+    expect(screen.getByRole("radio", { name: "All" })).toHaveFocus();
+  });
+
   it("changes Channel with Up and Down on the TV Watch control row, and keeps Left and Right for the row", () => {
     document.documentElement.setAttribute("data-television", "");
     const onZap = vi.fn();
