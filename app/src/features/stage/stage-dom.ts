@@ -52,6 +52,32 @@ export function focusIsInChannelBar(): boolean {
 }
 
 /**
+ * Takes a TV's docked picture to the whole screen: the player's section in
+ * the picture box goes element fullscreen. Call it inside the viewer's press,
+ * which is what lets the document go fullscreen. A player that could not load
+ * has no picture, only its Reload and Close actions in the box: focus goes to
+ * them instead. "no-player" while the player's code still loads.
+ */
+export function showTelevisionPicture(): "fullscreen" | "load-notice" | "no-player" {
+  const section = document.querySelector<HTMLElement>(
+    ".stage__monitor .hosted-player",
+  );
+  if (section !== null) {
+    // The players' fullscreenchange observers reconcile the native viewport.
+    void section.requestFullscreen?.().catch(() => undefined);
+    return "fullscreen";
+  }
+  const action = document.querySelector<HTMLElement>(
+    ".stage__monitor .playback-load-notice__actions button",
+  );
+  if (action !== null) {
+    action.focus({ preventScroll: true });
+    return "load-notice";
+  }
+  return "no-player";
+}
+
+/**
  * Moves focus to the band's button back to the picture: where focus goes
  * when the guide opens over a playing Channel. Where that button is not
  * shown it cannot take focus, and focus rests on the picture box instead.

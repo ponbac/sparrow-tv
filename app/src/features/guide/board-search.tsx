@@ -29,6 +29,7 @@ import { useTelevisionInputEdit } from "./dialog-navigation";
 import { revealInScrollContainer } from "../stage/stage-dom";
 import { ChannelIcon } from "./channel-icon";
 import { SearchQualities } from "./search-qualities";
+import type { SearchOnNow } from "./search-on-now";
 import {
   channelTitle,
   qualityLabel,
@@ -83,6 +84,11 @@ export interface BoardSearchProps {
   readonly onGenerationMismatch: () => void;
   readonly onPreparePlayback: () => void;
   readonly onTune: (channel: ChannelSummary) => void;
+  /**
+   * The Programmes the Guide has already read, so the TV's Find a channel
+   * sheet can say what is on for a hit without a read of its own.
+   */
+  readonly onNow?: SearchOnNow;
 }
 
 const NO_PREFERENCES: VariantPreferences = new Map();
@@ -97,6 +103,7 @@ export function BoardSearch({
   onGenerationMismatch,
   onPreparePlayback,
   onTune,
+  onNow,
 }: BoardSearchProps) {
   const queryClient = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -574,6 +581,7 @@ export function BoardSearch({
         term={query}
         excludedGroups={excludedGroups}
         variantPreferences={variantPreferences}
+        onNow={onNow}
         open={deskOpen}
         onOpenChange={setDeskOpen}
         onTermChange={setQuery}

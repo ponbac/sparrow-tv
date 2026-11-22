@@ -369,9 +369,7 @@ function RosterGroupRow({
         onClick={() => onSetExcluded(group.name, !excluded)}
       >
         {excluded ? <Eye aria-hidden="true" /> : <EyeOff aria-hidden="true" />}
-        <span className="group-roster__exclude-label">
-          {excluded ? "Show" : "Hide"}
-        </span>
+        {excluded ? "Show" : "Hide"}
       </button>
     </div>
   );

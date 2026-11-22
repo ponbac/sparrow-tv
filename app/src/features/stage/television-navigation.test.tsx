@@ -25,6 +25,7 @@ import { ChannelBar } from "./channel-bar";
 import { NowPlaying } from "./now-playing";
 import { Stage } from "./stage";
 import { StageChromeProvider, type StageChrome } from "./stage-chrome";
+import { showTelevisionPicture } from "./stage-dom";
 import { useStageKeys } from "./use-stage-keys";
 import { useTelevisionControls } from "./use-television-controls";
 
@@ -149,7 +150,7 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
 
     const stage = document.querySelector<HTMLElement>(".stage")!;
     giveBox(stage, new DOMRect(0, 0, 200, 80));
-    const undock = screen.getByRole("button", { name: "Back to the picture" });
+    const undock = screen.getByRole("button", { name: "Watch full screen" });
     giveBox(undock, new DOMRect(160, 0, 40, 80));
     const when = screen.getByRole("button", { name: "Now", expanded: true });
     giveBox(when, new DOMRect(210, 40, 80, 40));
@@ -450,41 +451,6 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     expect(screen.getByRole("radio", { name: "All" })).toHaveFocus();
   });
 
-  it("changes Channel with Up and Down on the TV Watch control row, and keeps Left and Right for the row", () => {
-    document.documentElement.setAttribute("data-television", "");
-    const onZap = vi.fn();
-    render(
-      <Stage
-        television
-        playingChannel={channelFixture({ id: "ch-1", name: "Channel 1", group: "News" }).id}
-        player={null}
-        info={
-          <div className="now-playing">
-            <div className="now-playing__controls">
-              <button type="button">Pause</button>
-              <button type="button">Full screen</button>
-            </div>
-          </div>
-        }
-        rail={null}
-        keyHints={false}
-        onShowPicture={() => undefined}
-        onZap={onZap}
-      />,
-    );
-    const pause = screen.getByRole("button", { name: "Pause" });
-    const fullscreen = screen.getByRole("button", { name: "Full screen" });
-    act(() => fullscreen.focus());
-    fireEvent.keyDown(fullscreen, { key: "ArrowUp" });
-    expect(onZap).toHaveBeenLastCalledWith(-1);
-    fireEvent.keyDown(fullscreen, { key: "ArrowDown" });
-    expect(onZap).toHaveBeenLastCalledWith(1);
-    expect(fullscreen).toHaveFocus();
-    fireEvent.keyDown(fullscreen, { key: "ArrowLeft" });
-    expect(pause).toHaveFocus();
-    expect(onZap).toHaveBeenCalledTimes(2);
-  });
-
   it("checks visibility lazily on large Guide boards without reading styles for every loaded Channel", () => {
     document.documentElement.setAttribute("data-television", "");
     render(
@@ -664,7 +630,7 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
         onZap,
       });
       useTelevisionControls(
-        { enabled: true, mode: "watch", onShowGuide, onZap },
+        { enabled: true, onShowGuide, onZap },
         bridge,
       );
       const chrome: StageChrome = {
@@ -777,7 +743,7 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     function FailingFullscreen({ failed }: { readonly failed: boolean }) {
       const videoRef = createRef<HTMLVideoElement>();
       useTelevisionControls(
-        { enabled: true, mode: "watch", onShowGuide: () => undefined, onZap: () => undefined },
+        { enabled: true, onShowGuide: () => undefined, onZap: () => undefined },
         null,
       );
       const chrome: StageChrome = {
@@ -841,7 +807,7 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     function OpeningFullscreen({ playing }: { readonly playing: boolean }) {
       const videoRef = createRef<HTMLVideoElement>();
       useTelevisionControls(
-        { enabled: true, mode: "watch", onShowGuide: () => undefined, onZap: () => undefined },
+        { enabled: true, onShowGuide: () => undefined, onZap: () => undefined },
         null,
       );
       const chrome: StageChrome = {
@@ -895,109 +861,13 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     expect(section).toHaveAttribute("data-controls-visible", "false");
   });
 
-  it("restores focus to Watch Full screen when Exit fullscreen is clicked while playing and fullscreen prop updates", () => {
-    vi.useFakeTimers();
-    document.documentElement.setAttribute("data-television", "");
-
-    function ExplicitExitWatchHarness() {
-      const [controlsSlot, setControlsSlot] = useState<HTMLElement | null>(null);
-      const [fullscreen, setFullscreen] = useState(true);
-      const videoRef = createRef<HTMLVideoElement>();
-      const ch = channelFixture({ id: "ch-exit", name: "Exit Channel", group: "News" });
-      useTelevisionControls(
-        { enabled: true, mode: "watch", onShowGuide: () => undefined, onZap: () => undefined },
-        null,
-      );
-      const chrome: StageChrome = {
-        television: true,
-        controls: "compact",
-        controlsSlot,
-        fullscreenTarget: null,
-        menuSide: "bottom",
-        reportPicture: () => undefined,
-      };
-      return (
-        <StageChromeProvider value={chrome}>
-          <Stage
-            television
-            playingChannel={ch.id}
-            player={
-              <PlaybackSurface
-                channel={ch}
-                state={{ _tag: "playing" }}
-                videoKey={ch.id}
-                videoRef={videoRef}
-                privacyCopy="Private"
-                onPlaying={() => undefined}
-                pause={{ onPause: () => undefined }}
-                volume={1}
-                muted={false}
-                fullscreen={fullscreen}
-                nativeVideo
-                onVolumeChange={() => undefined}
-                onToggleMuted={() => undefined}
-                onRequestFullscreen={() => {
-                  Reflect.deleteProperty(document, "fullscreenElement");
-                  setFullscreen(false);
-                  document.dispatchEvent(new Event("fullscreenchange"));
-                }}
-                onStop={() => undefined}
-                onAutoplayFailure={() => undefined}
-              />
-            }
-            info={
-              <NowPlaying
-                subject={{
-                  channel: ch,
-                  variants: [ch],
-                  programmes: [],
-                  reading: "done",
-                }}
-                playingChannel={ch.id}
-                now={NOW}
-                layout="pocket"
-                picture={{ state: "playing", status: "On air", silent: false }}
-                controlsRef={setControlsSlot}
-                onPreparePlayback={() => undefined}
-                onTuneVariant={() => undefined}
-              />
-            }
-            rail={null}
-            keyHints={false}
-            onShowPicture={() => undefined}
-          />
-        </StageChromeProvider>
-      );
-    }
-
-    render(<ExplicitExitWatchHarness />);
-    const section = document.querySelector<HTMLElement>("section.hosted-player")!;
-    giveBox(section, new DOMRect(0, 0, 960, 540));
-    Object.defineProperty(document, "fullscreenElement", { configurable: true, value: section });
-    act(() => document.dispatchEvent(new Event("fullscreenchange")));
-
-    const exitButton = screen.getByRole("button", { name: "Exit fullscreen" });
-    act(() => exitButton.focus());
-    fireEvent.click(exitButton);
-
-    const watchFullscreenButton = screen.getByRole("button", { name: "Full screen" });
-    giveBox(watchFullscreenButton, new DOMRect(120, 420, 40, 40));
-    expect(watchFullscreenButton.closest(".now-playing__controls")).not.toBeNull();
-    expect(watchFullscreenButton).toHaveFocus();
-    // Stays focused after scheduled rAFs and hide-timer cleanups settle.
-    act(() => {
-      vi.advanceTimersByTime(100);
-    });
-    expect(watchFullscreenButton).toHaveFocus();
-  });
-
   it("scrolls an offscreen playing row into view during global TV Guide focus recovery", () => {
     vi.useFakeTimers();
     document.documentElement.setAttribute("data-television", "");
 
     function OffscreenRecoveryHarness() {
       useTelevisionControls(
-        { enabled: true, mode: "guide", onShowGuide: () => undefined, onZap: () => undefined },
+        { enabled: true, onShowGuide: () => undefined, onZap: () => undefined },
         null,
       );
       return (
@@ -1085,7 +955,7 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     function Harness() {
       const [timeOpen, setTimeOpen] = useState(true);
       useTelevisionControls(
-        { enabled: true, mode: "guide", onShowGuide: () => undefined, onZap },
+        { enabled: true, onShowGuide: () => undefined, onZap },
         bridge,
       );
       return (
@@ -1203,81 +1073,6 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     expect(onZap).not.toHaveBeenCalled();
   });
 
-  it("routes stacked paused/failed Guide (data-dock=false) through lane and toolbar instead of jumping over them", () => {
-    document.documentElement.setAttribute("data-television", "");
-    const ch1 = channelFixture({ id: "ch-1", name: "Channel 1", group: "News", number: 1 });
-    render(
-      <div className="shell" data-layout="pocket" data-mode="guide" data-dock="false" data-playing="true">
-        <main className="shell__workspace">
-          <Stage
-            television
-            playingChannel={ch1.id}
-            player={null}
-            info={null}
-            rail={null}
-            keyHints={false}
-            onShowPicture={() => undefined}
-          />
-          <ProgrammeGuide
-            television
-            rows={makeRows(3)}
-            groups={GROUPS}
-            activeGroup={null}
-            window={WINDOW}
-            now={NOW}
-            playingChannel={ch1.id}
-            variantPreferences={new Map()}
-            layout="pocket"
-            mode="guide"
-            time={null}
-            loading={false}
-            replacing={false}
-            error={null}
-            hasMore={false}
-            loadingMore={false}
-            onSelectGroup={() => undefined}
-            onPrefetchGroup={() => undefined}
-            excludedGroups={new Set()}
-            onSetGroupExcluded={() => undefined}
-            onRestoreExcludedGroups={() => undefined}
-            onPreparePlayback={() => undefined}
-            onTune={() => undefined}
-            onTuneVariant={() => undefined}
-            onRetry={() => undefined}
-            onLoadMore={() => undefined}
-            search={null}
-            feeds={<button type="button" className="feeds-trigger">Sources</button>}
-            status={null}
-          />
-        </main>
-      </div>,
-    );
-
-    const workspace = document.querySelector<HTMLElement>(".shell__workspace")!;
-    const stage = document.querySelector<HTMLElement>(".stage")!;
-    const undock = screen.getByRole("button", { name: "Back to the picture" });
-    const sources = screen.getByRole("button", { name: "Sources" });
-    const allRadio = screen.getByRole("radio", { name: "All" });
-    const tile1 = screen.getByRole("button", { name: "Tune Channel 1" });
-    giveBox(workspace, new DOMRect(0, 0, 1200, 800));
-    giveBox(stage, new DOMRect(0, 0, 1200, 300));
-    giveBox(undock, new DOMRect(10, 250, 120, 40));
-    giveBox(sources, new DOMRect(1000, 310, 120, 40));
-    giveBox(allRadio, new DOMRect(10, 360, 80, 40));
-    giveBox(tile1, new DOMRect(0, 410, 400, 80));
-
-    // Row 0 -> ArrowUp -> Channel Group lane -> ArrowUp -> Toolbar -> ArrowUp -> stacked preview -> ArrowDown -> Toolbar.
-    act(() => tile1.focus());
-    fireEvent.keyDown(tile1, { key: "ArrowUp" });
-    expect(allRadio).toHaveFocus();
-    fireEvent.keyDown(allRadio, { key: "ArrowUp" });
-    expect(sources).toHaveFocus();
-    fireEvent.keyDown(sources, { key: "ArrowUp" });
-    expect(undock).toHaveFocus();
-    fireEvent.keyDown(undock, { key: "ArrowDown" });
-    expect(sources).toHaveFocus();
-  });
-
   it("handles TV pagination error, variant-only pages, and navigated-away guard without stealing focus", () => {
     document.documentElement.setAttribute("data-television", "");
     const baseProps = {
@@ -1361,15 +1156,13 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     expect(ch1).toHaveFocus();
   });
 
-  it("keeps Pause/Resume button identity across suspending, supports TV Watch controls, skips hidden-ancestor Audio select, and reaches load recovery", () => {
+  it("keeps Pause/Resume button identity across suspending, and reaches load recovery in the docked box", () => {
     document.documentElement.setAttribute("data-television", "");
 
     function PlayerWatchAndFullscreen({
       phase,
-      hideAudioWrapper = false,
     }: {
       readonly phase: "playing" | "suspending" | "paused";
-      readonly hideAudioWrapper?: boolean;
     }) {
       const [controlsSlot, setControlsSlot] = useState<HTMLElement | null>(null);
       const videoRef = createRef<HTMLVideoElement>();
@@ -1420,7 +1213,6 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
                 audio={
                   <label
                     className="hosted-player__audio-track"
-                    style={hideAudioWrapper ? { display: "none" } : undefined}
                   >
                     <span>Audio</span>
                     <select aria-label="Audio track" defaultValue="en">
@@ -1494,26 +1286,17 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     expect(screen.getByRole("button", { name: "Resume" })).toBe(primaryButton);
     expect(primaryButton).toHaveFocus();
 
-    // Watch-mode TV arrows navigate across QualitySwitch <-> controls (incl. closed Audio select) <-> ChannelBar.
-    const audio = screen.getByRole("combobox", { name: "Audio track" }) as HTMLSelectElement;
-    act(() => audio.focus());
-    fireEvent.keyDown(audio, { key: "ArrowDown" });
-    expect(screen.getByRole("button", { name: "Guide" })).toHaveFocus();
-    expect(audio.value).toBe("en");
-    fireEvent.keyDown(screen.getByRole("button", { name: "Guide" }), { key: "ArrowUp" });
+    // A TV has no watch screen: the docked picture's box claims no arrows
+    // for controls the Guide hides.
+    act(() => primaryButton.focus());
+    const up = fireEvent.keyDown(primaryButton, { key: "ArrowUp" });
+    expect(up).toBe(true);
     expect(primaryButton).toHaveFocus();
-    fireEvent.keyDown(primaryButton, { key: "ArrowUp" });
-    expect(screen.getByRole("button", { name: "Tune SVT1 HD" })).toHaveFocus();
-
-    // Narrow Watch mode: when .hosted-player__audio-track is display:none, ArrowRight from Mute skips select to Full screen.
-    view.rerender(<PlayerWatchAndFullscreen phase="paused" hideAudioWrapper />);
-    const mute = screen.getByRole("button", { name: "Mute" });
-    act(() => mute.focus());
-    fireEvent.keyDown(mute, { key: "ArrowRight" });
-    expect(screen.getByRole("button", { name: "Full screen" })).toHaveFocus();
     view.unmount();
 
-    // Player load-boundary failure: ChannelBar ArrowUp reaches Reload Sparrow / Close player.
+    // Player load-boundary failure: its Reload and Close actions stay in the
+    // docked box. Left and Right step between them; Down and Back return to
+    // the playing Channel's row instead of leaving the app.
     function ThrowingPlayer(): never {
       throw new Error("chunk failed");
     }
@@ -1521,42 +1304,54 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
       render(
-        <Stage
-          television
-          playingChannel={ch.id}
-          player={
-            <PlaybackLoadBoundary
-              resetKey={ch.id}
-              onReload={() => undefined}
-              onStop={() => undefined}
-            >
-              <ThrowingPlayer />
-            </PlaybackLoadBoundary>
-          }
-          info={null}
-          rail={
-            <ChannelBar
-              stops={[]}
-              current={ch.id}
-              now={NOW}
-              onZap={() => undefined}
-              onShowGuide={() => undefined}
-            />
-          }
-          keyHints={false}
-          onShowPicture={() => undefined}
-        />,
+        <>
+          <Stage
+            television
+            playingChannel={ch.id}
+            player={
+              <PlaybackLoadBoundary
+                resetKey={ch.id}
+                onReload={() => undefined}
+                onStop={() => undefined}
+              >
+                <ThrowingPlayer />
+              </PlaybackLoadBoundary>
+            }
+            info={null}
+            rail={null}
+            keyHints={false}
+            onShowPicture={() => undefined}
+          />
+          <section className="programme-guide">
+            <div className="programme-guide__row" data-playing="true">
+              <button type="button" className="programme-guide__channel">
+                Tune Load One
+              </button>
+            </div>
+          </section>
+        </>,
       );
-      const guideBtn = screen.getByRole("button", { name: "Guide" });
-      act(() => guideBtn.focus());
-      fireEvent.keyDown(guideBtn, { key: "ArrowUp" });
+      const row = screen.getByRole("button", { name: "Tune Load One" });
+      giveBox(row, new DOMRect(0, 400, 300, 80));
       const reloadBtn = screen.getByRole("button", { name: "Reload Sparrow" });
+      const closeBtn = screen.getByRole("button", { name: "Close player" });
+      // Center on the Channel, or on the band's caption, finds no picture to
+      // take fullscreen: focus goes to the notice's actions instead.
+      act(() => row.focus());
+      expect(showTelevisionPicture()).toBe("load-notice");
       expect(reloadBtn).toHaveFocus();
       fireEvent.keyDown(reloadBtn, { key: "ArrowRight" });
-      const closeBtn = screen.getByRole("button", { name: "Close player" });
       expect(closeBtn).toHaveFocus();
-      fireEvent.keyDown(closeBtn, { key: "ArrowDown" });
-      expect(guideBtn).toHaveFocus();
+      fireEvent.keyDown(closeBtn, { key: "ArrowLeft" });
+      expect(reloadBtn).toHaveFocus();
+      fireEvent.keyDown(reloadBtn, { key: "ArrowUp" });
+      expect(reloadBtn).toHaveFocus();
+      fireEvent.keyDown(reloadBtn, { key: "ArrowDown" });
+      expect(row).toHaveFocus();
+      act(() => closeBtn.focus());
+      // Back: the shell's dispatch is cancelled, so Android keeps the app.
+      expect(fireEvent.keyDown(closeBtn, { key: "Escape" })).toBe(false);
+      expect(row).toHaveFocus();
     } finally {
       spy.mockRestore();
     }

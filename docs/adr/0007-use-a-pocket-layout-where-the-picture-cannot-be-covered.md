@@ -13,7 +13,7 @@ Every window that is not Theater uses the pocket layout. It has Theater's two mo
 - Guide mode docks the picture to a band at the top left, 9.375rem by 5.25rem, with the Channel Number, name, title, progress and minutes left beside it. The guide fills the rest. A button over those lines and a tap on the picture both return to watch mode.
 - While nothing plays there is no picture box. The guide has the window under the masthead.
 - A player that could not load says so in the picture's box, with a button to reload and one to close it. In the band there is room for the heading only, in small type from the top left; a tap on the band returns to watch mode, where the sentence and the buttons are. Where the box is lower than the notice, the notice starts at its top and scrolls.
-- Tuning a Channel enters watch mode, whether from a list row, a quality chip, a search result or Agent Control. Guide mode is forced while nothing plays and while the picture is in the external mpv window, as in Theater. With mpv the controls take a row of their own under the band, because there is no watch mode to reach them from.
+- Tuning a Channel enters watch mode, whether from a list row, a quality chip, a search result or Agent Control (except on Android TV; see below). Guide mode is forced while nothing plays and while the picture is in the external mpv window, as in Theater. With mpv the controls take a row of their own under the band, because there is no watch mode to reach them from.
 - The masthead's search button opens the guide and puts focus in its search field.
 - The bar's previous and next buttons are the arrow keys of Theater: the lower third shows the target at once and the Channel is tuned 350 ms after the last press. They move through the 21 rows read around the playing Channel and skip hidden Channel Groups. A row at the edge of those rows may lack some of its Quality Variants, so it is not offered. Where the Channel shown has nothing to move to on one side and the Channel Catalog goes on there, the client reads a hundred rows around the edge row and adds what lies beyond, again and again up to eight reads. So a run of presses carries on past the rows first read, and a hidden Channel Group of a few hundred Channels does not end the bar. Theater's arrow keys do the same from their 61 rows.
 - Pocket has no keys of its own. F still toggles fullscreen on the focused player.
@@ -70,6 +70,17 @@ On Android the engine moves the native picture to the `<video>` rectangle only w
 - Wider pocket windows, such as a tablet or a narrow desktop window, have the same two modes. The list lays its rows out in columns of at least 21rem.
 - The search field's results run the width of the window, at most 35rem, with each name over its detail.
 - Search, Choose groups and Sources open as sheets under the picture: under the band, under the full-width picture when the latch holds it, or under the masthead when nothing plays. They span a narrow window and are a 36rem panel at the right edge of a wide one. A press on the band or on the picture while a sheet is open closes the sheet and changes nothing else. The sheets and the picture read their sizes from the same custom properties on the root, the held size included, so they cannot drift apart. In short landscape the sheets cover the right column.
+
+## Android TV: no watch mode
+
+On Android TV (`html[data-television]`) the pocket layout keeps only guide mode. The TV Guide has the docked picture in its band, and the full picture is the player's own element fullscreen. This amends the Modes section for the TV only; phones, tablets and the desktop are unchanged.
+
+- Center on a Channel in the Guide (a Now grid row, a Timeline row or cell, a quality chip or a search result) that is not playing tunes it into the docked picture. The Guide stays, and so does focus. Center on the exact Channel that plays, the same Quality Variant, takes its player section fullscreen. Center on another variant of the playing Channel tunes that variant docked.
+- A failed or paused Playback Session goes fullscreen like a playing one, where its failure, Resume and way out are. A player that could not load has no section to take fullscreen: Center focuses its Reload and Close actions in the docked box, and Back or Down return to the Guide.
+- The band's caption button goes fullscreen instead of returning to a watch screen.
+- Back, or Exit fullscreen, returns to the Guide with focus on the control that went fullscreen while its row still plays, else on the playing Channel's row. Playback continues docked. Stop stream ends the Playback Session and leaves the Guide with nothing playing.
+- Agent Control's `tune` also plays docked.
+- Guide mode is forced, so the dock latch never undocks on a TV: a paused or failed picture keeps the band's box, held at its size.
 
 ## What stays a contract
 

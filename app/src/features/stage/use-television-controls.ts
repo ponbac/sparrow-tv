@@ -5,7 +5,7 @@ import { isVisibleControl } from "./stage-dom";
 
 interface TelevisionControls {
   readonly enabled: boolean;
-  readonly mode: "watch" | "guide";
+  /** Fullscreen has ended through Back: the Guide is what remains. */
   readonly onShowGuide: () => void;
   readonly onZap: (direction: -1 | 1) => void;
 }
@@ -20,7 +20,10 @@ const ZAP_BLOCKING_POPUP =
 /**
  * Gives the Android TV remote a usable focus target, keeps open overlays
  * contained, and routes Escape, native Back, and Channel keys. Guide 2D
- * movement is owned by `guide-navigation.ts`.
+ * movement is owned by `guide-navigation.ts`. A TV has no watch mode: the
+ * Guide is always there, with the picture docked in its band or fullscreen
+ * over it, so Back leaves fullscreen for the Guide and, from the Guide,
+ * leaves the app.
  */
 export function useTelevisionControls(
   controls: TelevisionControls,
@@ -47,7 +50,7 @@ export function useTelevisionControls(
     });
     const releaseBack = bridge.subscribeTelevisionBack(() => {
       // Escape is Base UI's shared dismiss event for dialogs, menus, search,
-      // visible fullscreen controls, and Watch/fullscreen exit below.
+      // visible fullscreen controls, and fullscreen exit below.
       const target = document.activeElement ?? document.body;
       const unhandled = target.dispatchEvent(
         new KeyboardEvent("keydown", {
@@ -83,7 +86,7 @@ export function useTelevisionControls(
           scheduleFocus();
           return;
         }
-        const target = fallbackFocus(latest.current.mode);
+        const target = fallbackFocus();
         if (target !== undefined) {
           target.focus({ preventScroll: true });
           const board = target.closest<HTMLElement>(".programme-guide__board");
@@ -139,9 +142,6 @@ export function useTelevisionControls(
           () => latest.current.onShowGuide(),
           () => undefined,
         );
-      } else if (latest.current.mode === "watch") {
-        event.preventDefault();
-        latest.current.onShowGuide();
       }
     }
   }, [enabled]);
@@ -206,24 +206,13 @@ function firstControl(scope: ParentNode, selector: string): HTMLElement | undefi
   return Array.from(scope.querySelectorAll<HTMLElement>(selector)).find(usable);
 }
 
-function fallbackFocus(mode: TelevisionControls["mode"]): HTMLElement | undefined {
+function fallbackFocus(): HTMLElement | undefined {
   const overlay = openOverlay();
   if (overlay !== null) return firstControl(overlay, ACTION);
   if (document.fullscreenElement instanceof HTMLElement) {
     return (
       fullscreenRestingAction(document.fullscreenElement) ??
       document.fullscreenElement
-    );
-  }
-  if (mode === "watch") {
-    return (
-      firstControl(document, ".playback-load-notice button") ??
-      firstControl(document, ".hosted-player__recovery") ??
-      // Watch rests on Full screen: OK takes the picture to the whole screen.
-      firstControl(document, '.now-playing__controls [data-stage-action="fullscreen"]') ??
-      firstControl(document, ".channel-bar__guide") ??
-      firstControl(document, ".channel-bar button") ??
-      firstControl(document, ".now-playing__controls button")
     );
   }
   return (

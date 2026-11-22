@@ -35,6 +35,8 @@ import {
   type SearchChannelRow,
 } from "./board-search-scope";
 import { SearchQualities } from "./search-qualities";
+import { searchHitOnNow, type SearchOnNow } from "./search-on-now";
+import { minutesLeft } from "./now-next";
 import {
   canonicalSearchTerm,
   SEARCH_DEBOUNCE_MS,
@@ -55,6 +57,8 @@ export interface BoardSearchDeskProps {
    * Quality Variants into one row that tunes the chosen or best one.
    */
   readonly variantPreferences?: VariantPreferences;
+  /** What the Guide has read, so a TV hit can say what is on now. */
+  readonly onNow?: SearchOnNow;
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly onTermChange: (term: string) => void;
@@ -80,6 +84,7 @@ export function BoardSearchDesk({
   term,
   excludedGroups,
   variantPreferences = NO_PREFERENCES,
+  onNow,
   open,
   onOpenChange,
   onTermChange,
@@ -505,11 +510,11 @@ export function BoardSearchDesk({
                             icon={channel.icon}
                             number={channel.number}
                           />
-                          <span className="board-search__channel-number">
-                            {channel.number}
-                          </span>
-                          <strong>{channelTitle(channel)}</strong>
-                          <SearchQualities variants={variants} current={channel} />
+                          <DeskHitBody
+                            channel={channel}
+                            variants={variants}
+                            onNow={onNow}
+                          />
                         </>
                       ) : (
                         <>
@@ -547,6 +552,39 @@ export function BoardSearchDesk({
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>
+  );
+}
+
+/**
+ * A TV hit's words: its number, name and qualities, and under them, quietly,
+ * the Programme on now when the Guide has already read its row.
+ */
+function DeskHitBody({
+  channel,
+  variants,
+  onNow,
+}: {
+  readonly channel: ChannelSummary;
+  readonly variants: readonly ChannelSummary[];
+  readonly onNow: SearchOnNow | undefined;
+}) {
+  const programme = searchHitOnNow(variants, onNow);
+  return (
+    <span className="board-search-desk__hit">
+      <span className="board-search-desk__hit-name">
+        <span className="board-search__channel-number">{channel.number}</span>
+        <strong>{channelTitle(channel)}</strong>
+        <SearchQualities variants={variants} current={channel} />
+      </span>
+      {programme === null || onNow === undefined ? null : (
+        <span className="board-search-desk__on-now">
+          <span className="board-search-desk__on-now-title">{programme.title}</span>
+          <span className="board-search-desk__on-now-left">
+            {minutesLeft(programme, onNow.now)} min left
+          </span>
+        </span>
+      )}
+    </span>
   );
 }
 

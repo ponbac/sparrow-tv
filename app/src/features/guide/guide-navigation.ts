@@ -330,6 +330,34 @@ export function focusGuideFallback(
   return true;
 }
 
+/**
+ * Where focus goes when a TV leaves fullscreen: back to the Guide control
+ * that took the picture there (a row, a quality chip or a Timeline cell)
+ * while its row still plays, otherwise to the playing Channel's row, as
+ * `findGuideFallback` orders it. Reports whether something took focus.
+ */
+export function focusGuideAfterFullscreen(origin: HTMLElement | null): boolean {
+  const guide = document.querySelector<HTMLElement>(".programme-guide");
+  if (guide === null) return false;
+  if (
+    origin !== null &&
+    guide.contains(origin) &&
+    origin.closest('.programme-guide__row[data-playing="true"]') !== null &&
+    isVisibleControl(origin, { allowNegativeTabIndex: true, requireLayoutBox: true })
+  ) {
+    origin.focus({ preventScroll: true });
+    const board = origin.closest<HTMLElement>(".programme-guide__board");
+    if (board !== null) {
+      scrollBoardToReveal(board, origin);
+      if (origin.matches(".programme-guide__programme")) {
+        revealTimelineCell(board, origin);
+      }
+    }
+    return true;
+  }
+  return focusGuideFallback(guide, { requireLayoutBox: true });
+}
+
 function firstVisibleIn(
   root: ParentNode,
   selector: string,

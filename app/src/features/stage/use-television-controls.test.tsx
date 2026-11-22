@@ -12,12 +12,12 @@ afterEach(() => {
   Reflect.deleteProperty(document, "exitFullscreen");
 });
 
-it("gives dialogs first refusal of Back, tolerates rejected fullscreen exit, then shows Guide, then lets Android leave", async () => {
+it("gives dialogs first refusal of Back, tolerates rejected fullscreen exit, then shows Guide, then lets Android leave from the Guide", async () => {
   const port = androidPortFixture();
   const bridge = createAndroidPlayerBridge(port.value);
   const onShowGuide = vi.fn();
-  function Television({ mode }: { readonly mode: "guide" | "watch" }) {
-    useTelevisionControls({ enabled: true, mode, onShowGuide, onZap: () => undefined }, bridge);
+  function Television() {
+    useTelevisionControls({ enabled: true, onShowGuide, onZap: () => undefined }, bridge);
     return (
       <Dialog.Root defaultOpen>
         <Dialog.Portal>
@@ -29,7 +29,7 @@ it("gives dialogs first refusal of Back, tolerates rejected fullscreen exit, the
       </Dialog.Root>
     );
   }
-  const view = render(<Television mode="watch" />);
+  render(<Television />);
   expect(screen.getByRole("dialog")).toBeInTheDocument();
   act(() => port.deliver("tv:back"));
   expect(screen.queryByRole("dialog")).toBeNull();
@@ -57,10 +57,10 @@ it("gives dialogs first refusal of Back, tolerates rejected fullscreen exit, the
   expect(onShowGuide).toHaveBeenCalledTimes(1);
   expect(port.sent).toEqual(["ready"]);
 
+  // A TV has no watch mode: with nothing fullscreen and no overlay open,
+  // the Guide is on screen and Back leaves the app.
   act(() => port.deliver("tv:back"));
-  expect(onShowGuide).toHaveBeenCalledTimes(2);
-  view.rerender(<Television mode="guide" />);
-  act(() => port.deliver("tv:back"));
+  expect(onShowGuide).toHaveBeenCalledTimes(1);
   expect(port.sent).toEqual(["ready", "tv:default-back"]);
 });
 
@@ -77,7 +77,7 @@ it("contains focus inside open menus, clamps horizontal menu arrows, and guards 
     readonly searchExpanded: boolean;
   }) {
     useTelevisionControls(
-      { enabled: true, mode: "watch", onShowGuide: () => undefined, onZap },
+      { enabled: true, onShowGuide: () => undefined, onZap },
       bridge,
     );
     return (
@@ -130,18 +130,16 @@ it("restores focus to last-played row, Stop on non-retryable fullscreen failure,
   vi.useFakeTimers();
 
   function FallbackHarness({
-    mode,
     busy,
     hasRows,
     fullscreenFailed,
   }: {
-    readonly mode: "guide" | "watch";
     readonly busy: boolean;
     readonly hasRows: boolean;
     readonly fullscreenFailed: boolean;
   }) {
     useTelevisionControls(
-      { enabled: true, mode, onShowGuide: () => undefined, onZap: () => undefined },
+      { enabled: true, onShowGuide: () => undefined, onZap: () => undefined },
       null,
     );
     return (
@@ -180,7 +178,7 @@ it("restores focus to last-played row, Stop on non-retryable fullscreen failure,
   }
 
   const view = render(
-    <FallbackHarness mode="guide" busy hasRows={false} fullscreenFailed={false} />,
+    <FallbackHarness busy hasRows={false} fullscreenFailed={false} />,
   );
   const sources = screen.getByRole("button", { name: "Sources" });
   giveLayout(sources);
@@ -194,7 +192,7 @@ it("restores focus to last-played row, Stop on non-retryable fullscreen failure,
 
   // Once rows arrive, last-played row receives focus over row 0.
   view.rerender(
-    <FallbackHarness mode="guide" busy={false} hasRows fullscreenFailed={false} />,
+    <FallbackHarness busy={false} hasRows fullscreenFailed={false} />,
   );
   const ch1 = screen.getByRole("button", { name: "Channel 1" });
   const ch2 = screen.getByRole("button", { name: "Channel 2" });
@@ -207,7 +205,7 @@ it("restores focus to last-played row, Stop on non-retryable fullscreen failure,
 
   // Fullscreen non-retryable failure focuses Stop/Close player.
   view.rerender(
-    <FallbackHarness mode="watch" busy={false} hasRows={false} fullscreenFailed />,
+    <FallbackHarness busy={false} hasRows={false} fullscreenFailed />,
   );
   const player = document.querySelector<HTMLElement>(".hosted-player")!;
   const closePlayer = screen.getByRole("button", { name: "Close player" });

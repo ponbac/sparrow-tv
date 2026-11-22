@@ -178,7 +178,6 @@ export function PlaybackSurface({
   const hideControls = useRef<ReturnType<typeof setTimeout> | null>(null);
   const focusFrameRef = useRef<number | null>(null);
   const suppressRevealRef = useRef(false);
-  const returnToFullscreenButtonRef = useRef(false);
   const wasSectionFullscreenRef = useRef(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   // Where the More menu may open while it must keep clear of the picture;
@@ -304,7 +303,6 @@ export function PlaybackSurface({
       wasSectionFullscreenRef.current = active;
       setSectionFullscreen(active);
       if (television && active) {
-        returnToFullscreenButtonRef.current = false;
         section.focus({ preventScroll: true });
       } else if (television && wasActive && !active) {
         cancelPendingFocus();
@@ -312,10 +310,7 @@ export function PlaybackSurface({
     };
     document.addEventListener("fullscreenchange", update);
     update();
-    return () => {
-      document.removeEventListener("fullscreenchange", update);
-      returnToFullscreenButtonRef.current = false;
-    };
+    return () => document.removeEventListener("fullscreenchange", update);
   }, [cancelPendingFocus, television]);
 
   // While the signal opens, the TV rests focus on the bar's way out of
@@ -362,9 +357,8 @@ export function PlaybackSurface({
       section: surfaceRef.current,
     });
     if (target !== null) {
-      if (television && sectionFullscreen && target === surfaceRef.current) {
-        returnToFullscreenButtonRef.current = true;
-      }
+      // On a TV, leaving fullscreen returns to the Guide, which puts focus
+      // back on the playing Channel (the shell's fullscreenchange listener).
       onRequestFullscreen(target);
     }
   };
@@ -381,22 +375,6 @@ export function PlaybackSurface({
   // While the player section is the fullscreen element the controls are its
   // own inline bar; the shell's slot lies outside what fullscreen draws.
   const controlsPlacement = controlPresentation(chrome, sectionFullscreen);
-  useLayoutEffect(() => {
-    if (
-      !television ||
-      sectionFullscreen ||
-      !returnToFullscreenButtonRef.current
-    ) {
-      return;
-    }
-    const container = controlsPlacement.slot ?? surfaceRef.current;
-    const button = container?.querySelector<HTMLElement>(
-      '[data-stage-action="fullscreen"]',
-    );
-    if (button == null) return;
-    returnToFullscreenButtonRef.current = false;
-    button.focus({ preventScroll: true });
-  }, [controlsPlacement.slot, sectionFullscreen, television]);
   const compact = controlsPlacement.variant === "compact";
   // Compact buttons show only an icon; the label stays in the DOM (the
   // accessible name and the text scripts match on) and doubles as the hint.

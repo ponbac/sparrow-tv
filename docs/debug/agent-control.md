@@ -148,7 +148,7 @@ just agent snapshot
 
 If the second snapshot shows new `standstills` or `msSinceTimeAdvance` stuck above a few seconds while `presentedFrames` is unchanged, the picture is frozen. Paste that JSON (not provider URLs) when asking for a player change.
 
-Omarchy `omarchy capture screenshot fullscreen save` can sit beside this as visual proof. It does not replace `snapshot`. In a desktop-size window `tune` leaves the picture filling the window (the Theater layout's watch mode, [ADR 0006](../adr/0006-use-a-theater-layout-on-desktop-and-number-channels-in-core.md)); the Channel info and controls over it hide after three seconds without input, so a later capture shows the picture alone. In a smaller window `tune` leaves the pocket layout's watch mode ([ADR 0007](../adr/0007-use-a-pocket-layout-where-the-picture-cannot-be-covered.md)): the picture with the Channel info and controls under it. Nothing is drawn over the picture there and nothing hides.
+Omarchy `omarchy capture screenshot fullscreen save` can sit beside this as visual proof. It does not replace `snapshot`. In a desktop-size window `tune` leaves the picture filling the window (the Theater layout's watch mode, [ADR 0006](../adr/0006-use-a-theater-layout-on-desktop-and-number-channels-in-core.md)); the Channel info and controls over it hide after three seconds without input, so a later capture shows the picture alone. In a smaller window `tune` leaves the pocket layout's watch mode ([ADR 0007](../adr/0007-use-a-pocket-layout-where-the-picture-cannot-be-covered.md)): the picture with the Channel info and controls under it. Nothing is drawn over the picture there and nothing hides. On Android TV, which has no watch mode, `tune` plays in the Guide's docked picture at the top left.
 
 ## Privacy
 

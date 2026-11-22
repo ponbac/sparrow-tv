@@ -20,15 +20,19 @@ Install the same universal Android APK. Sparrow appears in the TV launcher.
 The Guide uses the full app surface. Its live preview sits beside search
 and Channel Groups on wide TVs, with the Channel grid below. An inset amber
 outline marks the focused control even at the edges. Use the D-pad to browse.
-Press center or gamepad **A** to tune a Channel in fullscreen. The controls
-hide when idle. **Back** or gamepad **B** dismisses the keyboard, a panel, the
-open time row, or visible fullscreen playback controls; once fullscreen
-controls are hidden, **Back** returns to the Guide. From the Guide, **Back**
-returns you to Android TV. Picture-in-picture is disabled on Android TV, so
-**Home** stops playback. **Copy diagnostics** is omitted from Android TV player
-controls; safe source diagnostics remain readable in **Sources**.
+Press center or gamepad **A** on a Channel to play it in the docked picture
+at the top left; the Guide stays and so does focus. Press it again on the
+Channel that plays, or on the docked picture's caption, for fullscreen; on
+another Channel to change what plays. There is no separate watch screen. The
+fullscreen controls hide when idle. **Back** or gamepad **B** dismisses the
+keyboard, a panel, the open time row, or visible fullscreen playback
+controls; once fullscreen controls are hidden, **Back** (or **Exit
+fullscreen**) returns to the Guide with focus on the playing Channel, which
+keeps playing docked. From the Guide, **Back** returns you to Android TV.
+Picture-in-picture is disabled on Android TV, so **Home** stops playback.
+**Copy diagnostics** is omitted from Android TV player controls; safe source
+diagnostics remain readable in **Sources**.
 
-On the watch screen the channel bar offers the previous and next Channel.
 In fullscreen, **Up** goes to the previous Channel and **Down** goes to the
 next when focus is on the picture. **Left**, **Right**, or **Center** while the
 controls are hidden reveal the playback controls and move focus into the bar
