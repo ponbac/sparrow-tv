@@ -44,9 +44,15 @@ html[data-television] {
      its own light ground) fills a light plate, so tile and plate are one
      box; a wide or tall wordmark, drawn for a dark ground, sits on a navy
      a step above the cells. On an ice focus the navy turns to a see-through
-     ink, so it never punches a dark hole in the fill. */
+     ink, so it never punches a dark hole in the fill. A light plate is
+     toned to a cool off-white by a veil laid over plate and logo alike, so
+     the tile's own white and the plate stay one colour; every plate takes
+     the same hairline rim, a step toward its own contrast. */
   --tv-plate: #22324f;
   --tv-plate-light: #fff;
+  --tv-plate-veil: rgb(40 70 120 / 13%);
+  --tv-plate-rim-light: rgb(10 17 30 / 14%);
+  --tv-plate-rim-dark: rgb(238 243 248 / 11%);
   --tv-plate-on-ice: rgb(6 18 28 / 55%);
   /* The app's own tokens, so every component takes the palette. */
   --black: var(--ink);
@@ -163,6 +169,25 @@ html[data-television] .channel-icon[data-icon="loaded"] .channel-icon__image {
 
 html[data-television] .channel-icon[data-icon="loaded"] .channel-icon__number {
   visibility: hidden;
+}
+
+/* One family of plates: over a loaded icon lies one still layer, the rim
+   on every plate and, on a light plate, the veil that tones its white and
+   the logo on it together. Plain alpha over a small box, painted once with
+   the plate: no filter, no blend mode, nothing that repaints with the
+   list. */
+html[data-television] .channel-icon[data-icon="loaded"]::after {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 max(1px, 0.0417rem) var(--tv-plate-rim-dark);
+  pointer-events: none;
+  content: "";
+}
+
+html[data-television] .channel-icon[data-icon="loaded"]:is([data-shape="square"], [data-ground])::after {
+  background: var(--tv-plate-veil);
+  box-shadow: inset 0 0 0 max(1px, 0.0417rem) var(--tv-plate-rim-light);
 }
 
 /* On an ice focus fill the navy plate turns to ink seen through. */
@@ -2239,6 +2264,21 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-
   html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-view="timeline"] .programme-guide__programme:not(:focus) > .programme-guide__fill {
     opacity: var(--tl-cut);
   }
+
+  /* The tail carries a chevron back toward the channel, so it reads as the
+     end of a Programme that began earlier, never as an empty cell. A sliver
+     that is not a tail has no fill, and so no chevron. */
+  html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-view="timeline"] .programme-guide__programme > .programme-guide__fill::after {
+    position: absolute;
+    inset: 0;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23eef3f8' stroke-opacity='.72' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m14 6-6 6 6 6'/%3E%3C/svg%3E")
+      calc(50% + 0.1667rem) 50% / 0.875rem no-repeat;
+    content: "";
+  }
+
+  html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-view="timeline"] .programme-guide__programme:focus > .programme-guide__fill::after {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2306121c' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m14 6-6 6 6 6'/%3E%3C/svg%3E");
+  }
 }
 
 html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-view="timeline"] .programme-guide__programme small {
@@ -2699,16 +2739,29 @@ html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__pick
   flex: none;
 }
 
+/* A hit's plate is the Guide's own size, so the logo reads as it does in
+   the grid. */
 html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__pick .board-search__icon {
-  --icon-w: 2.7083rem;
-  --icon-h: 2.0313rem;
-  margin: 0 0.1667rem 0 0.3333rem;
+  --icon-w: 3rem;
+  --icon-h: 2.25rem;
+  margin: 0 0.1667rem 0 0.4167rem;
 }
 
 /* A hit's words: the name line, and under it, quietly, what is on now
    (when the Guide has read that row). */
 html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__row {
-  height: 3rem;
+  height: 3.25rem;
+}
+
+/* Under the last hit, a quiet line says the list is whole and how to
+   search again. */
+html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__end {
+  flex: none;
+  margin: 0.5rem 0 0;
+  padding: 0 0.4167rem;
+  color: var(--tv-mute);
+  font-size: 0.6667rem;
+  line-height: 1.4;
 }
 
 html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__hit {
@@ -2982,6 +3035,13 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.source-card time, .
   margin-top: 0.1667rem;
   font-size: 0.7917rem;
   line-height: 1.4;
+}
+
+/* Why a source failed, in the coral for what has gone wrong: well above AA
+   on the card, and never the live tally. */
+html[data-television]:has(.shell[data-layout="pocket"]) .source-card code {
+  color: var(--tv-error);
+  font-weight: 600;
 }
 
 /* Its two times share one line where they fit. */

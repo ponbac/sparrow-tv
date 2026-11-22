@@ -127,6 +127,24 @@ describe("installed app repaint contract", () => {
     expect(blurred).toEqual([]);
   });
 
+  it("tones Channel Icon plates without a filter or a blend", async () => {
+    // A guide shows dozens of plates at once. A filter or a blend mode on
+    // one makes it its own layer, redrawn with the list; the TV tones light
+    // plates with a plain veil instead.
+    const filtered: string[] = [];
+
+    for (const [path, stylesheet] of await installedStylesheets()) {
+      stylesheet.walkRules((rule) => {
+        if (!rule.selectors.some((selector) => selector.includes(".channel-icon"))) return;
+        rule.walkDecls(/^(-webkit-)?filter$|^mix-blend-mode$/u, (declaration) => {
+          filtered.push(`${path}: ${rule.selector} { ${declaration} }`);
+        });
+      });
+    }
+
+    expect(filtered).toEqual([]);
+  });
+
   it.each([
     [THEATER_STYLESHEET, THEATER_SCOPE],
     [POCKET_STYLESHEET, POCKET_SCOPE],

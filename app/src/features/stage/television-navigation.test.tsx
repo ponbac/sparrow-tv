@@ -1550,6 +1550,8 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
       expect(searchInput).toHaveAttribute("readonly");
       const firstPick = await screen.findByRole("button", { name: "Tune Sports 1" });
       await waitFor(() => expect(firstPick).toHaveFocus());
+      // More results are coming, so the list does not say it is whole.
+      expect(screen.queryByText(/every channel found/u)).toBeNull();
 
       // Press Center on search input enters edit mode, Escape exits edit mode without closing dialog.
       act(() => searchInput.focus());
@@ -1684,6 +1686,62 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     } finally {
       trigger.remove();
     }
+  });
+
+  it("ends a whole TV search list with a hint that Up and OK lead to a new search", async () => {
+    document.documentElement.setAttribute("data-television", "");
+    const generation = clientSchemas.status.parse({
+      generation: 1,
+      configuration: { configured: true, epgConfigured: false },
+      m3u: { _tag: "fresh", validatedAt: "2026-08-30T10:00:00Z" },
+      epg: null,
+    }).generation!;
+    const page = clientSchemas.channelsPage.parse({
+      generation: 1,
+      items: [
+        channelFixture({ id: "s-1", name: "Sports 1", group: "Sports", number: 1 }),
+        channelFixture({ id: "s-2", name: "Sports 2", group: "Sports", number: 2 }),
+      ],
+      next: null,
+    });
+    const queryClient = createSparrowQueryClient("installed");
+    queryClient.setQueryData(
+      ["catalog", "search", "desk-channels", "sports", generation, 40],
+      { pages: [{ ok: true, value: page }], pageParams: [null] },
+    );
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <BoardSearchDesk
+          television
+          client={{ searchChannels: vi.fn() }}
+          generation={generation}
+          term="sports"
+          excludedGroups={new Set()}
+          open
+          onOpenChange={() => undefined}
+          onTermChange={() => undefined}
+          onGenerationMismatch={() => undefined}
+          onPreparePlayback={() => undefined}
+          onTune={() => undefined}
+        />
+      </QueryClientProvider>,
+    );
+
+    const firstPick = await screen.findByRole("button", { name: "Tune Sports 1" });
+    await waitFor(() => expect(firstPick).toHaveFocus());
+    expect(
+      screen.getByText(
+        "That is every channel found. To search again, go up to the search field and press OK.",
+      ),
+    ).toBeVisible();
+
+    // What the hint says: Up reaches the field, and OK there starts typing.
+    fireEvent.keyDown(firstPick, { key: "ArrowUp" });
+    const field = screen.getByRole("searchbox", { name: "Search channels" });
+    expect(field).toHaveFocus();
+    fireEvent.keyDown(field, { key: "Enter" });
+    expect(field).not.toHaveAttribute("readonly");
   });
 
   it("preserves the highlighted suggestion during IME composition in populated inline search", async () => {

@@ -538,6 +538,12 @@ export function BoardSearchDesk({
                 );
               })
             )}
+            {television && presentation === "ready" && !hasMore ? (
+              <p className="board-search-desk__end">
+                That is every channel found. To search again, go up to the
+                search field and press OK.
+              </p>
+            ) : null}
             {presentation === "ready" && hasMore ? (
               <button
                 className="board-search-desk__more"
