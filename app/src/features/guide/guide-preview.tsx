@@ -168,26 +168,52 @@ export function GuidePreview({
             </h2>
           </div>
         </div>
-        <div className="programme-guide__preview-meter">
+        <div
+          className="programme-guide__preview-meter"
+          data-when={
+            shown === null
+              ? undefined
+              : live
+                ? "live"
+                : Date.parse(shown.startsAt) > now.getTime()
+                  ? "later"
+                  : "ended"
+          }
+        >
           {shown === null ? (
             <span>No guide data. The channel still plays.</span>
-          ) : (
+          ) : live ? (
             <>
               <time dateTime={shown.startsAt}>{clockLabel(shown.startsAt)}</time>
               <span
                 className="programme-guide__preview-progress"
-                style={{
-                  "--progress": `${live ? elapsedFraction(shown, now) * 100 : 0}%`,
-                }}
+                style={{ "--progress": `${elapsedFraction(shown, now) * 100}%` }}
               />
               <time dateTime={shown.endsAt}>{clockLabel(shown.endsAt)}</time>
-              <strong>
-                {live
-                  ? `${minutesLeft(shown, now)} min left`
-                  : Date.parse(shown.startsAt) > now.getTime()
-                    ? `In ${startsIn(shown, now)}`
-                    : "Ended"}
-              </strong>
+              <strong>{`${minutesLeft(shown, now)} min left`}</strong>
+            </>
+          ) : Date.parse(shown.startsAt) > now.getTime() ? (
+            // Not on yet: when it starts and how soon, with nothing to fill.
+            <>
+              <span>
+                Starts{" "}
+                <time dateTime={shown.startsAt}>{clockLabel(shown.startsAt)}</time>
+              </span>
+              <span aria-hidden="true">·</span>
+              <strong>in {startsIn(shown, now)}</strong>
+              <span className="programme-guide__preview-length">
+                {durationLabel(shown)}
+              </span>
+            </>
+          ) : (
+            <>
+              <span>
+                Ended{" "}
+                <time dateTime={shown.endsAt}>{clockLabel(shown.endsAt)}</time>
+              </span>
+              <span className="programme-guide__preview-length">
+                {durationLabel(shown)}
+              </span>
             </>
           )}
         </div>

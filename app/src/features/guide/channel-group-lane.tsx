@@ -20,6 +20,7 @@ import {
 } from "../stage/stage-dom";
 import { GroupRosterDialog } from "./group-roster-dialog";
 import { clockLabel } from "./guide-window";
+import { railFit, railScrollTop } from "./rail-fit";
 
 const ALL_GROUPS = "all";
 const GROUP_PREFIX = "group:";
@@ -89,6 +90,7 @@ export const ChannelGroupLane = memo(function ChannelGroupLane({
     [groups, excluded],
   );
   const overflow = useLaneOverflow(scrollerRef, visibleGroups.length);
+  useRailFit(scrollerRef, vertical, visibleGroups.length);
   const activeFilter = filterValue(activeGroup);
 
   const cancelFocusPrefetch = useCallback(() => {
@@ -121,14 +123,14 @@ export const ChannelGroupLane = memo(function ChannelGroupLane({
       return;
     }
     if (vertical) {
-      revealInScrollContainer(scroller, checked);
+      revealRailRow(scroller, checked);
     } else {
       revealInHorizontalScroller(scroller, checked);
     }
   }, [activeGroup, vertical, visibleGroups.length]);
   const reveal = (target: HTMLElement) => {
     if (vertical) {
-      revealInScrollContainer(scrollerRef.current, target);
+      revealRailRow(scrollerRef.current, target);
     } else {
       revealInHorizontalScroller(scrollerRef.current, target);
     }
@@ -362,6 +364,87 @@ function useLaneOverflow(
   }, [itemCount, scrollerRef]);
 
   return overflow;
+}
+
+/** The rail's rows, and how far apart they lie. */
+function railRows(
+  scroller: HTMLElement,
+): { readonly rows: HTMLElement[]; readonly height: number; readonly pitch: number } | null {
+  const rows = Array.from(
+    scroller.querySelectorAll<HTMLElement>(".programme-guide__group"),
+  );
+  const first = rows[0]?.getBoundingClientRect();
+  if (first === undefined || first.height <= 0) return null;
+  const second = rows[1]?.getBoundingClientRect();
+  const pitch = second === undefined ? first.height : second.top - first.top;
+  return pitch >= first.height ? { rows, height: first.height, pitch } : null;
+}
+
+/**
+ * Keeps a vertical rail's view on whole rows: the room under the last whole
+ * row goes to `--rail-rest`, which the TV covers, so no group is ever half
+ * shown or faded, and `data-more` says whether groups lie below. Measured
+ * again whenever the rail changes size or scrolls.
+ */
+function useRailFit(
+  scrollerRef: RefObject<HTMLDivElement | null>,
+  enabled: boolean,
+  itemCount: number,
+): void {
+  useLayoutEffect(() => {
+    const node = scrollerRef.current;
+    if (node === null || !enabled) {
+      return;
+    }
+    const measure = () => {
+      const rail = railRows(node);
+      const rest =
+        rail === null ? 0 : railFit(node.clientHeight, rail.height, rail.pitch).rest;
+      node.style.setProperty("--rail-rest", `${rest}px`);
+      markMore();
+    };
+    // Whether groups lie below the view, for the cue in the covered room.
+    const markMore = () => {
+      const more = node.scrollTop + node.clientHeight < node.scrollHeight - 1;
+      if (node.dataset.more !== String(more)) {
+        node.dataset.more = String(more);
+      }
+    };
+    measure();
+    const observer =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(node);
+    node.addEventListener("scroll", markMore, { passive: true });
+    return () => {
+      observer?.disconnect();
+      node.removeEventListener("scroll", markMore);
+      node.style.removeProperty("--rail-rest");
+      delete node.dataset.more;
+    };
+  }, [enabled, itemCount, scrollerRef]);
+}
+
+/** Scrolls a vertical rail by whole rows until `target` is wholly in view. */
+function revealRailRow(scroller: HTMLElement | null, target: HTMLElement): void {
+  if (scroller === null || scroller.clientHeight === 0) {
+    return;
+  }
+  const rail = railRows(scroller);
+  const index = rail?.rows.indexOf(target) ?? -1;
+  if (rail === null || index === -1) {
+    revealInScrollContainer(scroller, target);
+    return;
+  }
+  const next = railScrollTop(
+    index,
+    rail.rows.length,
+    scroller.scrollTop,
+    railFit(scroller.clientHeight, rail.height, rail.pitch),
+    rail.pitch,
+  );
+  if (next !== scroller.scrollTop) {
+    scroller.scrollTop = next;
+  }
 }
 
 function onLaneWheel(event: WheelEvent): void {

@@ -40,10 +40,14 @@ html[data-television] {
   --tv-warn: #ffc76a;
   /* What has gone wrong: a coral that never reads as the live tally. */
   --tv-error: #ff8a75;
-  /* The plate under a Channel Icon: one navy a step above the cells, so
-     white, coloured and boxed logos all read, and it stays dark on an ice
-     focus fill. */
+  /* The plate under a Channel Icon. A square icon (an app-style tile with
+     its own light ground) fills a light plate, so tile and plate are one
+     box; a wide or tall wordmark, drawn for a dark ground, sits on a navy
+     a step above the cells. On an ice focus the navy turns to a see-through
+     ink, so it never punches a dark hole in the fill. */
   --tv-plate: #22324f;
+  --tv-plate-light: #fff;
+  --tv-plate-on-ice: rgb(6 18 28 / 55%);
   /* The app's own tokens, so every component takes the palette. */
   --black: var(--ink);
   --panel: var(--tv-panel);
@@ -81,21 +85,21 @@ html[data-television] body {
   background: var(--ink);
 }
 
-/* A Channel's tile: its icon on a plate, fitted inside with room around
-   it, or its Channel Number in the same box. Each place sets the size. */
+/* A Channel's tile: one rounded plate of one shape (4:3 wherever it is),
+   its icon fitted inside, or its Channel Number in the same box. No frame
+   is drawn around it. Each place sets the size. */
 
 html[data-television] .channel-icon {
   position: relative;
   display: grid;
-  width: var(--icon-w, 4.5rem);
-  height: var(--icon-h, 2.8125rem);
+  width: var(--icon-w, 3rem);
+  height: var(--icon-h, 2.25rem);
   flex: none;
   place-items: center;
   overflow: hidden;
   color: var(--tv-dim);
   border-radius: var(--icon-radius, 0.3333rem);
   background: var(--tv-plate);
-  box-shadow: inset 0 0 0 0.0417rem rgb(238 243 248 / 10%);
   font-size: var(--icon-number, 1.25rem);
   font-stretch: 110%;
   font-weight: 400;
@@ -103,14 +107,37 @@ html[data-television] .channel-icon {
   pointer-events: none;
 }
 
+/* A wordmark gets the plate's width and a band of its height, so wide and
+   square icons read at one weight. */
 html[data-television] .channel-icon__image {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  padding: var(--icon-pad, 7% 10%);
+  padding: 17% 9%;
   object-fit: contain;
   opacity: 0;
+}
+
+html[data-television] .channel-icon[data-shape="tall"] .channel-icon__image {
+  padding: 8% 24%;
+}
+
+/* A square icon fills the light plate from edge to edge: its own ground
+   becomes the plate, and the hairline frame many tiles carry at their rim
+   is cut away. */
+html[data-television] .channel-icon[data-shape="square"] {
+  background: var(--tv-plate-light);
+}
+
+html[data-television] .channel-icon[data-shape="square"] .channel-icon__image {
+  inset: -4% auto auto 50%;
+  width: auto;
+  height: 108%;
+  padding: 0;
+  aspect-ratio: 1;
+  clip-path: inset(3.5% round 18%);
+  translate: -50% 0;
 }
 
 html[data-television] .channel-icon[data-icon="loaded"] .channel-icon__image {
@@ -119,6 +146,19 @@ html[data-television] .channel-icon[data-icon="loaded"] .channel-icon__image {
 
 html[data-television] .channel-icon[data-icon="loaded"] .channel-icon__number {
   visibility: hidden;
+}
+
+/* On an ice focus fill the navy plate turns to ink seen through. */
+html[data-television]:has(.shell[data-layout="pocket"])
+  :is(
+    .programme-guide__row:has(.programme-guide__channel:focus),
+    .programme-guide__channel:focus,
+    .board-search__result:focus,
+    .board-search-desk__pick:focus
+  )
+  .channel-icon:not([data-shape="square"]) {
+  color: var(--tv-text);
+  background: var(--tv-plate-on-ice);
 }
 
 /* Every quality tag: one size, one box, the chosen one filled. */
@@ -356,14 +396,40 @@ html[data-television] .shell[data-layout="pocket"][data-mode="guide"][data-dock=
   line-height: 1;
 }
 
-/* The playing Channel's tile leads the caption. */
+/* The playing Channel's icon leads the caption and stands for its name, so
+   the Programme keeps the caption's width. Without an icon the caption is
+   the dot, the number and the name, as before. The name stays for a screen
+   reader. */
 html[data-television] .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"] .now-playing__icon {
-  --icon-w: 2.5rem;
+  --icon-w: 2rem;
   --icon-h: 1.5rem;
   --icon-radius: 0.25rem;
   --icon-number: 0.75rem;
-  --icon-pad: 6% 9%;
   order: -1;
+}
+
+html[data-television]
+  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
+  .now-playing__icon:not([data-icon="loaded"]) {
+  display: none;
+}
+
+html[data-television]
+  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
+  .now-playing:not(:has(.now-playing__icon[data-icon="loaded"])) {
+  padding-left: 0.4167rem;
+}
+
+html[data-television]
+  .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"]
+  .now-playing:has(.now-playing__icon[data-icon="loaded"])
+  .now-playing__channel
+  strong {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
 }
 
 html[data-television]
@@ -547,7 +613,7 @@ html[data-television] .shell[data-layout="pocket"][data-mode="watch"] .now-playi
 }
 
 html[data-television] .shell[data-layout="pocket"][data-mode="watch"] .now-playing__icon {
-  --icon-w: 6.6667rem;
+  --icon-w: 5.5556rem;
   --icon-h: 4.1667rem;
   --icon-radius: 0.4167rem;
   --icon-number: 2rem;
@@ -1306,7 +1372,7 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__preview-hea
 }
 
 html[data-television] .shell[data-layout="pocket"] .programme-guide__preview-icon {
-  --icon-w: 6rem;
+  --icon-w: 5rem;
   --icon-h: 3.75rem;
   --icon-radius: 0.4167rem;
   --icon-number: 1.75rem;
@@ -1389,6 +1455,22 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__preview-met
   font-weight: 600;
 }
 
+/* A Programme not on now has no bar: when it starts (or ended), how soon,
+   and how long it runs. */
+html[data-television] .shell[data-layout="pocket"] .programme-guide__preview-meter:not([data-when="live"]) time {
+  color: var(--tv-text);
+}
+
+html[data-television] .shell[data-layout="pocket"] .programme-guide__preview-length {
+  color: var(--tv-mute);
+}
+
+html[data-television] .shell[data-layout="pocket"] .programme-guide__preview-length::before {
+  margin-right: 0.5833rem;
+  color: var(--tv-mute);
+  content: "·";
+}
+
 html[data-television] .shell[data-layout="pocket"] .programme-guide__preview-about {
   display: -webkit-box;
   max-width: 64ch;
@@ -1468,11 +1550,10 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__poster {
 }
 
 html[data-television] .shell[data-layout="pocket"] .programme-guide__poster-icon {
-  --icon-w: 100%;
-  --icon-h: 7.1875rem;
+  --icon-w: 8.3333rem;
+  --icon-h: 6.25rem;
   --icon-radius: 0.4167rem;
   --icon-number: 5.5rem;
-  --icon-pad: 8% 12%;
   margin-bottom: 0.6667rem;
   color: var(--ice);
   font-weight: 250;
@@ -1820,13 +1901,34 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__row[data-bo
   display: none;
 }
 
+/* A narrow column, so the Programme keeps the width it had beside the
+   bare number: the words start 4 rem in, the tile centred in that lead. */
+html[data-television] .shell[data-layout="pocket"] .programme-guide__row[data-body="list"] {
+  --grid-lead: 4rem;
+}
+
 html[data-television] .shell[data-layout="pocket"] .programme-guide__row[data-body="list"] > .programme-guide__icon {
-  --icon-w: 4.5rem;
-  --icon-h: 2.8125rem;
+  --icon-w: 3rem;
+  --icon-h: 2.25rem;
   position: absolute;
   z-index: 2;
   top: calc((100% - var(--icon-h)) / 2);
-  left: 0.6667rem;
+  left: calc((var(--grid-lead) - var(--icon-w)) / 2 + 0.0833rem);
+}
+
+/* Elapsed time fills the words' part of the cell, from the edge of the
+   tile's column: nothing peeks out beside the tile. */
+html[data-television] .shell[data-layout="pocket"] .programme-guide__row[data-body="list"] > .programme-guide__elapsed {
+  inset: 0 0 0 var(--grid-lead);
+  width: auto;
+  background: linear-gradient(90deg, var(--tv-cell2) var(--progress), transparent 0);
+}
+
+html[data-television]
+  .shell[data-layout="pocket"]
+  .programme-guide__row[data-body="list"]:has(.programme-guide__channel:focus)
+  > .programme-guide__elapsed {
+  background: linear-gradient(90deg, var(--ice-elapsed) var(--progress), transparent 0);
 }
 
 html[data-television] .shell[data-layout="pocket"] .programme-guide__name-number {
@@ -1865,7 +1967,7 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__row .progra
   grid-template-rows: auto auto auto;
   align-content: center;
   row-gap: 0.1667rem;
-  padding: 0 0.875rem 0 5.8333rem;
+  padding: 0 0.875rem 0 var(--grid-lead, 3.25rem);
   color: var(--tv-text);
   border: 0;
   border-radius: 0;
@@ -2139,12 +2241,13 @@ html[data-television]
   min-height: 0;
   flex: 1 1 auto;
   overflow: hidden auto;
-  scroll-padding-bottom: 2.25rem;
   scrollbar-width: none;
 }
 
-/* While more groups lie below, the last ones fade into the canvas; at the
-   end the fade lies over empty room under the last group. */
+/* The rail ends on a whole group: the room under it (--rail-rest, measured
+   by the lane) is covered, so a group is never half shown and no whole one
+   is faded. While more groups lie below, a small chevron in that room says
+   so; at the end it covers empty room. */
 html[data-television]
   .shell[data-layout="pocket"]
   .programme-guide__lane[data-orientation="vertical"]
@@ -2152,10 +2255,20 @@ html[data-television]
   position: sticky;
   bottom: 0;
   display: block;
-  height: 2.25rem;
+  height: var(--rail-rest, 0px);
   pointer-events: none;
-  background: linear-gradient(180deg, rgb(10 17 30 / 0%), var(--ink) 80%);
+  background: var(--ink);
   content: "";
+}
+
+html[data-television]
+  .shell[data-layout="pocket"]
+  .programme-guide__lane[data-orientation="vertical"]
+  .programme-guide__groups-scroller[data-more="true"]::after {
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23eef3f8' stroke-opacity='.58' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")
+      0.875rem 50% / 0.875rem 0.875rem no-repeat,
+    var(--ink);
 }
 
 html[data-television]
@@ -2356,7 +2469,7 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-
 }
 
 html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-view="timeline"] .programme-guide__channel > .programme-guide__icon {
-  --icon-w: 3.75rem;
+  --icon-w: 3.1667rem;
   --icon-h: 2.375rem;
   --icon-number: 1rem;
   grid-row: 1 / -1;
@@ -2384,7 +2497,7 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-
 html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-view="timeline"] .programme-guide__variants {
   top: calc(50% + 0.0833rem);
   right: auto;
-  left: calc(1.75rem + 0.4167rem + 0.25rem + 3.75rem + 0.5rem);
+  left: calc(1.75rem + 0.4167rem + 0.25rem + 3.1667rem + 0.5rem);
 }
 
 /* A name without tags sits in the middle of its row. */
@@ -2412,16 +2525,13 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-
 }
 
 html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-view="timeline"] .programme-guide__programme {
-  /* Minutes from the first minute shown to the cell's start, or 0. */
-  --tl-lead: max(0, var(--start) - var(--tl-offset, 0));
-  /* 0 for a cell that starts within 8 minutes of that edge, else 1. The
-     sliver before such a cell is too narrow for words and drops out, so
-     the cell reaches back to the edge instead of leaving an empty stub;
-     its time still says when it starts. Plain arithmetic, so it holds in
-     every engine and at every scroll along time. */
-  --tl-snap: clamp(0, (var(--tl-lead) - 8.5) * 1000, 1);
-  /* The minute the cell is drawn from. */
-  --tl-from: calc(var(--tl-offset, 0) + var(--tl-lead) * var(--tl-snap));
+  /* The minute the cell is drawn from: its start, or the first minute
+     shown when it began earlier. Every cell is drawn at its real time. */
+  --tl-from: max(var(--start), var(--tl-offset, 0));
+  /* 1 for a Programme that began before the first minute shown, else 0.
+     Plain arithmetic, so it holds in every engine and at every scroll
+     along time. */
+  --tl-cut: clamp(0, (var(--tl-offset, 0) - var(--start)) * 1000, 1);
   position: absolute;
   top: 0.1667rem;
   bottom: 0.1667rem;
@@ -2442,6 +2552,7 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-
   border: 0;
   border-radius: 0.3333rem;
   background: none;
+  box-shadow: none;
   text-align: left;
   white-space: nowrap;
   isolation: isolate;
@@ -2453,7 +2564,9 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-
 }
 
 /* The fill lies under the words, so a container query on the cell can
-   drop it with them. */
+   drop it with them. A Programme that began before the first minute shown
+   ends on the left in a point, the tail of something that continues from
+   earlier; any other cell is a plain rounded box. */
 html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-view="timeline"] .programme-guide__programme > .programme-guide__fill {
   position: absolute;
   z-index: -1;
@@ -2461,19 +2574,31 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-
   padding: 0;
   border-radius: inherit;
   background: var(--tv-cell);
+  clip-path: polygon(
+    calc(var(--tl-cut) * 0.5rem) 0,
+    100% 0,
+    100% 100%,
+    calc(var(--tl-cut) * 0.5rem) 100%,
+    0 50%
+  );
 }
 
-/* A sliver of a Programme too narrow for its words, at either edge of the
-   time shown or between two others, drops its words and its fill: it is an
-   empty gap in the row, never a blank stub. Focused, it still fills. */
+/* A sliver of a Programme too narrow for its words drops them. Cut at the
+   left edge it keeps its pointed fill, a tail that reads as continuing from
+   earlier; anywhere else (between two others, or at the right edge under
+   the fade) it drops its fill too and is an empty gap, never a blank stub.
+   Focused, it always fills. */
 html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-view="timeline"] .programme-guide__programme {
   container-type: inline-size;
 }
 
 @container (max-width: 3.75rem) {
-  html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-view="timeline"] .programme-guide__programme > :not(.programme-guide__fill),
-  html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-view="timeline"] .programme-guide__programme:not(:focus) > .programme-guide__fill {
+  html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-view="timeline"] .programme-guide__programme > :not(.programme-guide__fill) {
     visibility: hidden;
+  }
+
+  html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-view="timeline"] .programme-guide__programme:not(:focus) > .programme-guide__fill {
+    opacity: var(--tl-cut);
   }
 }
 
@@ -2605,7 +2730,7 @@ html[data-television]:has(.shell[data-layout="pocket"]) .board-search__result {
   display: grid;
   min-height: 0;
   height: 2.3333rem;
-  grid-template-columns: 2.75rem minmax(0, 1fr) auto;
+  grid-template-columns: 2.3333rem minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.6667rem;
   padding: 0 0.75rem 0 0.2917rem;
@@ -2645,11 +2770,10 @@ html[data-television]:has(.shell[data-layout="pocket"]) .board-search__number sv
 
 /* A result's tile, and its number as a small label before the name. */
 html[data-television]:has(.shell[data-layout="pocket"]) .board-search__icon {
-  --icon-w: 2.75rem;
+  --icon-w: 2.3333rem;
   --icon-h: 1.75rem;
   --icon-radius: 0.25rem;
   --icon-number: 0.875rem;
-  --icon-pad: 6% 9%;
 }
 
 html[data-television]:has(.shell[data-layout="pocket"]) .board-search__channel-number {
@@ -2878,6 +3002,17 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
   content: "";
 }
 
+/* Choose groups keeps its compact sheet: shorter rows, the smaller helper
+   line and the shorter fade, so the last group clears the fade. */
+html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__header p {
+  font-size: 0.7083rem;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__list::after {
+  min-height: 2.5rem;
+  background: linear-gradient(180deg, rgb(15 24 40 / 0%), var(--tv-panel) 85%);
+}
+
 /* Rows: one height, one radius, one fill. */
 html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__row, .group-roster__row) {
   display: flex;
@@ -2892,6 +3027,10 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
   background: var(--tv-cell);
   box-shadow: none;
   content-visibility: visible;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__row {
+  height: 2.5rem;
 }
 
 html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__pick, .group-roster__pick) {
@@ -2922,7 +3061,7 @@ html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__pick
 }
 
 html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__pick .board-search__icon {
-  --icon-w: 3.25rem;
+  --icon-w: 2.7083rem;
   --icon-h: 2.0313rem;
   margin: 0 0.1667rem 0 0.3333rem;
 }
@@ -2977,15 +3116,19 @@ html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__row[data-
   color: var(--tv-mute);
 }
 
-/* Hide and Show: a real button, an eye and its word. */
+/* Hide: a quiet round button with a crossed-out eye, eleven times over, that
+   opens into a labelled pill when focused. Show (on a hidden group) keeps
+   its word, so what is hidden is plain. Each keeps its accessible name. */
 html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__exclude {
   display: inline-flex;
-  min-width: 0;
+  min-width: 1.8333rem;
   height: 1.8333rem;
   min-height: 0;
   flex: none;
   align-items: center;
+  justify-content: center;
   gap: 0.3333rem;
+  position: relative;
   margin: 0 0.3333rem 0 0.25rem;
   padding: 0 0.75rem 0 0.625rem;
   color: var(--tv-text);
@@ -2995,6 +3138,23 @@ html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__exclude {
   font-size: 0.6667rem;
   font-weight: 600;
   line-height: 1;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__exclude:not([aria-pressed="true"]):not(:focus) {
+  width: 1.8333rem;
+  padding: 0;
+  color: var(--tv-dim);
+  background: none;
+  box-shadow: inset 0 0 0 0.0625rem var(--tv-faint);
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__exclude:not([aria-pressed="true"]):not(:focus) > .group-roster__exclude-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__exclude > svg {
@@ -3141,10 +3301,34 @@ html[data-television]:has(.shell[data-layout="pocket"]) .installed-settings__bri
   line-height: 1.4;
 }
 
+/* A card says its state once: a sentence that only restates the label is
+   left out, so the sheet's own action shows without scrolling. */
+html[data-television]:has(.shell[data-layout="pocket"]) .source-card p[data-restates-label] {
+  display: none;
+}
+
 html[data-television]:has(.shell[data-layout="pocket"]) :is(.source-card time, .source-card code) {
   margin-top: 0.1667rem;
   font-size: 0.7917rem;
   line-height: 1.4;
+}
+
+/* Its two times share one line where they fit. */
+html[data-television]:has(.shell[data-layout="pocket"]) .source-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 0.5rem;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .source-card > :not(time) {
+  flex: 1 0 100%;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .source-card time + time::before {
+  margin-right: 0.5rem;
+  color: var(--tv-mute);
+  content: "·";
 }
 
 html[data-television]:has(.shell[data-layout="pocket"]) .refresh-feedback {
@@ -3362,7 +3546,7 @@ html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .ho
 
 /* The Channel's tile; without an icon, its number on the tally red. */
 html[data-television] .hosted-player__tv-number {
-  --icon-w: 4.5rem;
+  --icon-w: calc(var(--fs-row-a) * 4 / 3);
   --icon-h: var(--fs-row-a);
   --icon-radius: 0.4167rem;
   --icon-number: 1.4167rem;

@@ -14,8 +14,8 @@ const LEAD_SELECTOR = ".programme-guide__when, .programme-guide__view";
 /** The minutes of the time axis the TV timeline shows at once. */
 const TIMELINE_VIEW_MINUTES = 120;
 // A cell cut at the timeline's left edge with less than this many minutes in
-// view is drawn under the cell after it (`--tl-snap` in television.css), so a
-// move up or down lands on that one instead.
+// view is only a tail too narrow for words (television.css draws it as a
+// pointed sliver), so a move up or down lands on the cell after it instead.
 const TIMELINE_EDGE_SLIVER_MINUTES = 8.5;
 /** The cell focus last rested on in each timeline, where Right from the rail returns. */
 const lastTimelineCell = new WeakMap<HTMLElement, HTMLElement>();
@@ -1262,8 +1262,8 @@ export function revealTimelineCell(board: HTMLElement, cell: HTMLElement): void 
     // of what came before it.
     offset = Math.floor(start / 30) * 30 - 30;
   } else if (end <= current + TIMELINE_EDGE_SLIVER_MINUTES) {
-    // A cell all but gone past the left edge, or a sliver drawn under the
-    // next cell: show it from its start.
+    // A cell all but gone past the left edge, or a tail too narrow for its
+    // words: show it from its start.
     offset = Math.floor(start / 30) * 30;
   }
   offset = Math.min(Math.max(offset, 0), Math.max(0, total - TIMELINE_VIEW_MINUTES));
@@ -1317,7 +1317,7 @@ function timelineCellAt(
   return best;
 }
 
-/** A cell cut at the left edge with too little in view to be drawn. */
+/** A cell cut at the left edge with too little in view for its words. */
 function isEdgeSliver(stop: HTMLElement, offset: number): boolean {
   const start = Number(stop.dataset.start);
   const end = Number(stop.dataset.end);
