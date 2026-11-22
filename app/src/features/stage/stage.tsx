@@ -1,3 +1,4 @@
+import { fullscreenElement } from "./playback-fullscreen";
 import { Maximize2 } from "lucide-react";
 import { useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
 import type { ChannelId } from "../../client/contracts";
@@ -71,7 +72,7 @@ export function Stage({
       event.ctrlKey ||
       event.metaKey ||
       event.nativeEvent.isComposing ||
-      document.fullscreenElement != null ||
+      fullscreenElement() != null ||
       document.querySelector('[role="menu"][data-open]') !== null ||
       !(event.target instanceof HTMLElement)
     ) {

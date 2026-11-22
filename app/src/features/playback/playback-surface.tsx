@@ -1,3 +1,4 @@
+import { enterPlaybackFullscreen, fullscreenElement, releaseTelevisionFullscreen, subscribeToFullscreen } from "../stage/playback-fullscreen";
 import { Menu } from "@base-ui/react/menu";
 import {
   Ellipsis,
@@ -166,15 +167,19 @@ export function PlaybackSurface({
       section === null ||
       fullscreenTune?.channel !== channel.id ||
       !fullscreenTune.take() ||
-      document.fullscreenElement != null ||
+      fullscreenElement() != null ||
       navigator.userActivation?.isActive !== true
     ) {
       return;
     }
     // The viewer's activation may expire while the player chunk loads. The
     // existing fullscreenchange observers reconcile the native viewport.
-    void section.requestFullscreen?.().catch(() => undefined);
+    void enterPlaybackFullscreen(section).catch(() => undefined);
   }, [channel.id, fullscreenTune, television]);
+  useLayoutEffect(() => {
+    const surface = surfaceRef.current;
+    return () => releaseTelevisionFullscreen(surface);
+  }, []);
   const hideControls = useRef<ReturnType<typeof setTimeout> | null>(null);
   const focusFrameRef = useRef<number | null>(null);
   const suppressRevealRef = useRef(false);
@@ -198,7 +203,7 @@ export function PlaybackSurface({
     return (
       television === true &&
       section !== null &&
-      document.fullscreenElement === section &&
+      fullscreenElement() === section &&
       controlsEl != null &&
       document.activeElement !== null &&
       controlsEl.contains(document.activeElement)
@@ -212,7 +217,7 @@ export function PlaybackSurface({
     }
     const section = surfaceRef.current;
     suppressRevealRef.current = true;
-    if (television && section !== null && document.fullscreenElement === section) {
+    if (television && section !== null && fullscreenElement() === section) {
       section.focus({ preventScroll: true });
     }
     setControlsVisible(false);
@@ -270,7 +275,7 @@ export function PlaybackSurface({
       focusFrameRef.current = requestAnimationFrame(() => {
         focusFrameRef.current = null;
         const section = surfaceRef.current;
-        if (section === null || document.fullscreenElement !== section) return;
+        if (section === null || fullscreenElement() !== section) return;
         const items = visibleControlBarItems(section);
         const destination =
           pick === "last" ? items[items.length - 1] : items[0];
@@ -298,7 +303,7 @@ export function PlaybackSurface({
   useEffect(() => {
     const update = () => {
       const section = surfaceRef.current;
-      const active = section !== null && document.fullscreenElement === section;
+      const active = section !== null && fullscreenElement() === section;
       const wasActive = wasSectionFullscreenRef.current;
       wasSectionFullscreenRef.current = active;
       setSectionFullscreen(active);
@@ -308,9 +313,9 @@ export function PlaybackSurface({
         cancelPendingFocus();
       }
     };
-    document.addEventListener("fullscreenchange", update);
+    const unsubscribeFullscreen = subscribeToFullscreen(update);
     update();
-    return () => document.removeEventListener("fullscreenchange", update);
+    return unsubscribeFullscreen;
   }, [cancelPendingFocus, television]);
 
   // While the signal opens, the TV rests focus on the bar's way out of
@@ -352,7 +357,7 @@ export function PlaybackSurface({
   const toggleFullscreen = () => {
     const target = fullscreenToggleTarget({
       fullscreen,
-      fullscreenElement: document.fullscreenElement,
+      fullscreenElement: fullscreenElement(),
       target: chrome.fullscreenTarget,
       section: surfaceRef.current,
     });
@@ -594,9 +599,13 @@ export function PlaybackSurface({
     </div>
   );
 
+  const tvDialog = television && sectionFullscreen &&
+    surfaceRef.current?.getAttribute("popover") === "manual";
   return (
     <section
       className="hosted-player"
+      role={tvDialog ? "dialog" : undefined}
+      aria-modal={tvDialog || undefined}
       aria-labelledby="playback-player-heading"
       ref={surfaceRef}
       tabIndex={television ? -1 : 0}
@@ -616,6 +625,21 @@ export function PlaybackSurface({
           return;
         }
         const target = event.target instanceof HTMLElement ? event.target : null;
+        if (tvDialog && event.key === "Tab" && !event.defaultPrevented) {
+          event.preventDefault();
+          revealControls(true);
+          if (!controlsVisible && canHideControls) {
+            scheduleFullscreenBarFocus(event.shiftKey ? "last" : "first");
+            return;
+          }
+          const items = visibleControlBarItems(event.currentTarget);
+          const index = target === null ? -1 : items.indexOf(target);
+          const next = event.shiftKey
+            ? items[index - 1] ?? items.at(-1)
+            : items[index + 1] ?? items[0];
+          (next ?? event.currentTarget).focus({ preventScroll: true });
+          return;
+        }
         if (television && sectionFullscreen && target === event.currentTarget) {
           if (event.key === "Enter") {
             event.preventDefault();

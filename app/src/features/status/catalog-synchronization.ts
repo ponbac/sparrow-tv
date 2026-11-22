@@ -1,4 +1,5 @@
 import {
+  queryOptions,
   useMutation,
   useQuery,
   useQueryClient,
@@ -19,7 +20,17 @@ import {
   successfulQueryResult,
 } from "../../client/query-result";
 
+const TV_STARTUP_FRESH_MS = 1_000;
 const STATUS_QUERY_KEY = ["catalog", "status"] as const;
+
+/** The status read shared by TV startup and the mounted catalog. */
+export function catalogStatusQueryOptions(client: SparrowClient) {
+  return queryOptions({
+    queryKey: STATUS_QUERY_KEY,
+    queryFn: ({ signal }) => successfulQueryResult(client.status({ signal })),
+    retry: false,
+  });
+}
 
 /** Status, event, and optional refresh state owned by catalog synchronization. */
 export interface CatalogSynchronization {
@@ -41,6 +52,7 @@ export interface CatalogSynchronization {
  */
 export function useCatalogSynchronization(
   client: SparrowClient,
+  television: boolean,
 ): CatalogSynchronization {
   const queryClient = useQueryClient();
   const controllerRef = useRef<AbortController | null>(null);
@@ -52,9 +64,10 @@ export function useCatalogSynchronization(
     CatalogGeneration | null | undefined
   >(undefined);
   const statusQuery = useQuery({
-    queryKey: STATUS_QUERY_KEY,
-    queryFn: ({ signal }) => successfulQueryResult(client.status({ signal })),
-    retry: false,
+    ...catalogStatusQueryOptions(client),
+    // Join a just-completed TV startup read. The native subscription delivers
+    // its current status on connection, including changes during this handoff.
+    staleTime: television ? TV_STARTUP_FRESH_MS : 0,
   });
   const { refetch: refetchStatusQuery } = statusQuery;
   const retryStatus = useCallback(() => {

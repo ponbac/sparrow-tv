@@ -14,7 +14,6 @@ const FeedsDialogContent = lazy(async () => {
 
 /** Opens source configuration and safe status without exposing private locations. */
 export function FeedsDialog(props: FeedsDialogContentProps) {
-  const configured = props.status?.configuration.configured === true;
   const popupRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -44,7 +43,7 @@ export function FeedsDialog(props: FeedsDialogContentProps) {
       )}
       <Dialog.Trigger
         className="feeds-trigger"
-        data-attention={props.runtime === "installed" && !configured}
+        data-attention={props.runtime === "installed" && props.status?.configuration.configured === false}
         onMouseEnter={loadFeedsDialogContent}
         onFocus={loadFeedsDialogContent}
       >

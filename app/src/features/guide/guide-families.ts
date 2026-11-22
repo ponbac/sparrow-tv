@@ -45,27 +45,35 @@ export function qualityLabel(quality: ChannelQuality): string {
 
 /**
  * Folds guide rows into families. Adjacent rows with the same Channel Number
- * become one family; the input order is kept.
+ * become one family; the input order is kept. A page append reuses existing
+ * families so only new or changed rows render.
  */
 export function guideFamilies(
   rows: readonly GuideWindowChannel[],
+  previous: readonly GuideFamily[] = [],
 ): readonly GuideFamily[] {
   const families: GuideFamily[] = [];
-  for (const row of rows) {
-    const last = families[families.length - 1];
-    if (last !== undefined && last.number === row.channel.number) {
-      families[families.length - 1] = {
-        ...last,
-        variants: [...last.variants, row],
-      };
-      continue;
+  for (let start = 0; start < rows.length;) {
+    const first = rows[start];
+    let end = start + 1;
+    while (end < rows.length && rows[end].channel.number === first.channel.number) {
+      end++;
     }
-    families.push({
-      number: row.channel.number,
-      title: channelTitle(row.channel),
-      group: row.channel.group,
-      variants: [row],
-    });
+    const cached = previous[families.length];
+    if (
+      cached?.variants.length === end - start &&
+      cached.variants.every((variant, index) => variant === rows[start + index])
+    ) {
+      families.push(cached);
+    } else {
+      families.push({
+        number: first.channel.number,
+        title: channelTitle(first.channel),
+        group: first.channel.group,
+        variants: [first, ...rows.slice(start + 1, end)],
+      });
+    }
+    start = end;
   }
   return families;
 }

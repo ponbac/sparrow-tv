@@ -25,6 +25,7 @@ const MINUTE_MS = 60_000;
  */
 export const ProgrammeTimelineRow = memo(function ProgrammeTimelineRow({
   family,
+  guideIndex,
   preferred,
   window,
   now,
@@ -35,6 +36,7 @@ export const ProgrammeTimelineRow = memo(function ProgrammeTimelineRow({
   onTuneVariant,
 }: {
   readonly family: GuideFamily;
+  readonly guideIndex?: number;
   /** The variant the row and its cells tune. */
   readonly preferred: GuideWindowChannel;
   readonly window: ClockWindow;
@@ -73,9 +75,13 @@ export const ProgrammeTimelineRow = memo(function ProgrammeTimelineRow({
       className="programme-guide__row"
       data-body="timeline"
       data-number={family.number}
+      data-guide-index={guideIndex}
       data-playing={playing}
       data-last-played={lastPlayed ? "true" : undefined}
-      style={switchable ? { "--variants": family.variants.length } : undefined}
+      style={{
+        "--variants": switchable ? family.variants.length : undefined,
+        "--guide-line": guideIndex === undefined ? undefined : guideIndex,
+      }}
     >
       <div className="programme-guide__channel-cell">
         <span className="programme-guide__number" aria-hidden="true">

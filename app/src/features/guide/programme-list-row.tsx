@@ -19,6 +19,7 @@ import { QualitySwitch } from "./quality-switch";
  */
 export const ProgrammeListRow = memo(function ProgrammeListRow({
   family,
+  guideIndex,
   preferred,
   now,
   at,
@@ -31,6 +32,7 @@ export const ProgrammeListRow = memo(function ProgrammeListRow({
   onTuneVariant,
 }: {
   readonly family: GuideFamily;
+  readonly guideIndex?: number;
   /** The variant the row tunes. */
   readonly preferred: GuideWindowChannel;
   readonly now: Date;
@@ -80,10 +82,15 @@ export const ProgrammeListRow = memo(function ProgrammeListRow({
       data-last-played={lastPlayed ? "true" : undefined}
       data-body="list"
       data-number={family.number}
+      data-guide-index={guideIndex}
       // Titled by its Channel: there is no Programme to name.
       data-bare={lines._tag === "channel"}
       // The first line keeps clear of this many quality chips.
-      style={switchable ? { "--variants": family.variants.length } : undefined}
+      style={{
+        "--variants": switchable ? family.variants.length : undefined,
+        "--guide-line": guideIndex === undefined ? undefined : Math.floor(guideIndex / 3),
+        "--guide-column": guideIndex === undefined ? undefined : guideIndex % 3,
+      }}
     >
       <span className="programme-guide__number" aria-hidden="true">
         {family.number}

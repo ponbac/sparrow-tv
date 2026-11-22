@@ -2,6 +2,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import { prefetchTelevisionGuide } from "./features/catalog/use-guide-catalog";
 import { createSparrowRuntime } from "./client/runtime";
 import { createSparrowQueryClient } from "./client/query-client";
 import "@fontsource-variable/saira/wdth.css";
@@ -12,16 +13,12 @@ const rootElement = requireApplicationRoot();
 startApplication().catch(renderStartupFailure);
 
 async function startApplication(): Promise<void> {
-  if (document.documentElement.hasAttribute("data-television")) {
-    const viewport = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
-    if (viewport) {
-      // Lay out the Guide at the resolution of Android's app surface.
-      const scale = 1 / window.devicePixelRatio;
-      viewport.content = `width=device-width, initial-scale=${scale}`;
-    }
-  }
+  const television = document.documentElement.hasAttribute("data-television");
   const runtime = await createSparrowRuntime();
   const queryClient = createSparrowQueryClient(runtime._tag);
+  if (television && runtime._tag === "installed") {
+    void prefetchTelevisionGuide(queryClient, runtime.client);
+  }
   createRoot(rootElement).render(
     <StrictMode>
       <QueryClientProvider client={queryClient}>

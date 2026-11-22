@@ -19,6 +19,13 @@ fallback. The cache is disposable and never bundled into the app or exported.
 - A cache miss opens saved Channels first. Saved EPG recovery runs on a blocking
   worker after initial status, publishes a new generation when ready, and then
   starts normal network revalidation. Source changes invalidate delayed recovery.
+  Measure the first usable Guide and the first Guide with restored Programmes
+  separately on an incompatible upgrade. A subsequent launch with the same
+  processed cache can display both together.
+- The Guide reads the first page of each new catalog generation. On a TV, if
+  the viewer has paged down before the saved EPG arrives, that publication can
+  return the board and focus to the first page. Existing playback stays pinned
+  to its selected Channel. Its now-and-next information follows the new generation.
 - Cache writes run off the startup/refresh critical path. One worker coalesces
   pending writes to the latest view; closing the core stops pending work.
 - The flat format is `sparrow-processed-catalog-v4` (magic `SPARROWCAT\x04`).

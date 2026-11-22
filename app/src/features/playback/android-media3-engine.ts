@@ -1,3 +1,4 @@
+import { fullscreenElement, subscribeToFullscreen } from "../stage/playback-fullscreen";
 import type {
   AndroidPlaybackAudio,
   AndroidPlaybackPresentation,
@@ -423,7 +424,7 @@ export function createBrowserAndroidMedia3Runtime(
         capture: true,
         passive: true,
       });
-      document.addEventListener("fullscreenchange", update);
+      const unsubscribeFullscreen = subscribeToFullscreen(update);
       const visualViewport = window.visualViewport;
       visualViewport?.addEventListener("resize", update);
       visualViewport?.addEventListener("scroll", update);
@@ -437,7 +438,7 @@ export function createBrowserAndroidMedia3Runtime(
         observer?.disconnect();
         window.removeEventListener("resize", update);
         document.removeEventListener("scroll", onScroll, { capture: true });
-        document.removeEventListener("fullscreenchange", update);
+        unsubscribeFullscreen();
         visualViewport?.removeEventListener("resize", update);
         visualViewport?.removeEventListener("scroll", update);
       };
@@ -502,7 +503,7 @@ function measureViewport(
   }
   return {
     ...physical,
-    fullscreen: document.fullscreenElement?.contains(video) ?? false,
+    fullscreen: fullscreenElement()?.contains(video) ?? false,
   };
 }
 

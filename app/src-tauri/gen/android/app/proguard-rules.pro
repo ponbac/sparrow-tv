@@ -23,3 +23,9 @@
 # The bundled FFmpeg decoder is entered from, and calls back into, native code.
 -keep class io.github.anilbeesetti.nextlib.media3ext.ffdecoder.** { *; }
 -keep class androidx.media3.decoder.SimpleDecoderOutputBuffer { *; }
+# WebView detects fullscreen support by checking for both overrides. Wry's
+# onHideCustomView only calls super, so R8 would otherwise remove it.
+-keepclassmembers class xyz.ponbac.sparrow.RustWebChromeClient {
+    public void onShowCustomView(android.view.View, android.webkit.WebChromeClient$CustomViewCallback);
+    public void onHideCustomView();
+}

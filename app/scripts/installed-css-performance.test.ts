@@ -420,7 +420,7 @@ describe("installed app repaint contract", () => {
       "features/stage/television.css",
     );
     const opening =
-      'html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="stopping"])';
+      'html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"]):is([data-player-state="starting"], [data-player-state="stopping"])';
 
     expect(declaration(tvStyles, `${opening} .hosted-player__controls`, "top")).toBeUndefined();
     expect(declaration(tvStyles, `${opening} .hosted-player__overlay`, "top")).toBe(

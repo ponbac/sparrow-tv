@@ -57,6 +57,7 @@ import {
   type AndroidPlayerBridge,
 } from "../playback/android-player-bridge";
 import { CatalogBrowser } from "./catalog-browser";
+import { prefetchTelevisionGuide } from "./use-guide-catalog";
 
 // The Android shell's bridge, which a test may stand in for. Null, as in
 // every target that is not Android, unless a test sets it.
@@ -430,6 +431,52 @@ describe("CatalogBrowser shell", () => {
     expect(
       screen.queryByRole("heading", { name: "Opening your channels" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("opens the TV Guide in its final shell while the saved catalog is opening", async () => {
+    document.documentElement.setAttribute("data-television", "");
+    const status = deferred<ClientResult<CatalogStatus>>();
+    const client = new FakeSparrowClient({
+      pictureOverlay: false,
+      status: () => status.promise,
+    });
+    const queries = createSparrowQueryClient("installed");
+    const opening = prefetchTelevisionGuide(queries, client);
+    render(
+      <QueryClientProvider client={queries}>
+        <CatalogBrowser client={client} runtime="installed" />
+      </QueryClientProvider>,
+    );
+
+    const guide = screen.getByLabelText("Programme guide");
+    const board = guide.querySelector(".programme-guide__board");
+    expect(board).toHaveAttribute("aria-busy", "true");
+    expect(screen.queryByText("Add your sources")).not.toBeInTheDocument();
+
+    await act(async () => {
+      status.resolve(success(FRESH_STATUS));
+      await opening;
+    });
+
+    expect(await within(guide).findByRole("button", { name: "Tune World News" })).toBeVisible();
+    expect(client.guideInputs).toHaveLength(1);
+    expect(client.groupInputs).toHaveLength(1);
+    expect(board).toHaveAttribute("aria-busy", "false");
+  });
+
+  it("uses the completed TV startup status when the Guide mounts", async () => {
+    document.documentElement.setAttribute("data-television", "");
+    const client = new FakeSparrowClient({ pictureOverlay: false });
+    const status = vi.spyOn(client, "status");
+    const queries = createSparrowQueryClient("installed");
+    await prefetchTelevisionGuide(queries, client);
+    render(
+      <QueryClientProvider client={queries}>
+        <CatalogBrowser client={client} runtime="installed" />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByRole("button", { name: "Tune World News" })).toBeVisible();
+    expect(status).toHaveBeenCalledTimes(1);
   });
 
   it("replaces a parallel bootstrap guide from an older generation", async () => {
@@ -3186,6 +3233,59 @@ describe("CatalogBrowser on a TV", () => {
     } finally {
       fullscreen.restore();
     }
+  });
+
+  it("holds focus inside the TV player and releases native fullscreen on Back, dismissal and Stop", async () => {
+    const messages: string[] = [];
+    vi.stubGlobal("sparrowFullscreen", {
+      postMessage: (message: string) => messages.push(message),
+    });
+    const { user, row } = await openTelevision();
+    await center(user, row);
+    const player = await screen.findByRole("region", { name: "World News" });
+    await screen.findByRole("button", { name: "Pause" });
+    // jsdom has no top layer. Model the WebView's reflected open state on
+    // this surface only; the remote, focus and native bridge are exercised below.
+    const matches = player.matches.bind(player);
+    let popoverOpen = false;
+    Object.defineProperty(player, "showPopover", {
+      value: () => {
+        player.style.display = "block";
+        popoverOpen = true;
+      },
+    });
+    vi.spyOn(player, "matches").mockImplementation((selector) =>
+      selector === ":popover-open" ? popoverOpen : matches(selector),
+    );
+
+    await center(user, row);
+    expect(player).toHaveAttribute("aria-modal", "true");
+    expect(player).toHaveFocus();
+    player.querySelectorAll<HTMLElement>("button, select").forEach(layOut);
+    await user.tab({ shift: true });
+    const last = document.activeElement;
+    expect(player.contains(last)).toBe(true);
+    expect(last).not.toBe(player);
+    await user.tab();
+    expect(player.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).not.toBe(last);
+    act(() => row.focus());
+    expect(player).toHaveFocus();
+    await back();
+    expect(row).toHaveFocus();
+    expect(player).not.toHaveAttribute("popover");
+
+    await center(user, row);
+    popoverOpen = false;
+    fireEvent(player, new Event("toggle"));
+    expect(row).toHaveFocus();
+    expect(player).not.toHaveAttribute("popover");
+
+    await center(user, row);
+    const stop = within(player).getByRole("button", { name: "Stop stream" });
+    await user.click(stop);
+    await waitFor(() => expect(player).not.toBeInTheDocument());
+    expect(messages).toEqual(["enter", "exit", "enter", "exit", "enter", "exit"]);
   });
 
   it("switches the docked picture to another Channel, and Exit fullscreen returns to that Channel's row", async () => {

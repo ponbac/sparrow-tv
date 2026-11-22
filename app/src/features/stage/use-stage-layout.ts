@@ -1,3 +1,4 @@
+import { fullscreenElement, subscribeToFullscreen } from "./playback-fullscreen";
 import { skipToken, useQuery } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
 import type { SparrowClient } from "../../client/contracts";
@@ -50,13 +51,12 @@ export function usePictureOverlay(
  */
 export function useStageLayout(pictureOverlay: boolean): StageLayout {
   const roomy = useSyncExternalStore(subscribeToViewport, hasTheaterViewport);
-  const fullscreen = useSyncExternalStore(
-    subscribeToFullscreen,
-    fullscreenElement,
-  );
-  const shellVisible =
-    fullscreen === null || fullscreen === document.documentElement;
-  return pictureOverlay && roomy && shellVisible ? "theater" : "pocket";
+  return useSyncExternalStore(subscribeToFullscreen, () => {
+    if (!pictureOverlay || !roomy) return "pocket";
+    const fullscreen = fullscreenElement();
+    return fullscreen === null || fullscreen === document.documentElement
+      ? "theater" : "pocket";
+  });
 }
 
 /**
@@ -67,22 +67,11 @@ export function useStageLayout(pictureOverlay: boolean): StageLayout {
 export function useStageFullscreenTarget(
   layout: StageLayout,
 ): HTMLElement | null {
-  const fullscreen = useSyncExternalStore(
-    subscribeToFullscreen,
-    fullscreenElement,
+  return useSyncExternalStore(subscribeToFullscreen, () =>
+    layout === "theater" || fullscreenElement() === document.documentElement
+      ? document.documentElement
+      : null,
   );
-  return fullscreen === document.documentElement || layout === "theater"
-    ? document.documentElement
-    : null;
-}
-
-function subscribeToFullscreen(onChange: () => void): () => void {
-  document.addEventListener("fullscreenchange", onChange);
-  return () => document.removeEventListener("fullscreenchange", onChange);
-}
-
-function fullscreenElement(): Element | null {
-  return document.fullscreenElement ?? null;
 }
 
 function subscribeToViewport(onChange: () => void): () => void {

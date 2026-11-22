@@ -76,10 +76,11 @@ with representative Channels at the display's resolution. A generated 4K
 HEVC feed with one-pixel bars can expose unwanted scaling. Compare the native
 video buffer, source crop and display frame in `adb shell dumpsys SurfaceFlinger`
 with the active HDMI mode. The Android TV interface can use a smaller buffer
-than its separate video surface. On a Shield with a 1920 × 1080 UI override
-and 4K HDMI output, expect a 1920 × 1080 Guide viewport. Check that the
-visual viewport matches its layout width before and after using the search
-keyboard or fullscreen. Pause in fullscreen and press Back: the paused
+than its separate video surface. A 1920 × 1080 UI at a pixel ratio of two
+gives the Guide and fullscreen player the same 960 × 540 CSS viewport at
+page scale one, including with 4K HDMI output. Check that their layout
+width stays stable across fullscreen and after closing the search keyboard.
+Pause in fullscreen and press Back: the paused
 picture must stay docked at the size it holds, with nothing in the Guide
 under it; then resume. Open the inline search and a sheet while a picture
 plays: their veils must leave the docked picture's box clear. The panel beside

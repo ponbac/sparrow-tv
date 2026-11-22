@@ -174,13 +174,13 @@
 
 /* The player is all picture: its controls sit in the info block. Fullscreen
    on Android is the player's own section, which keeps its heading and bar. */
-.shell[data-layout="pocket"] .hosted-player:not(:fullscreen) {
+.shell[data-layout="pocket"] .hosted-player:not(:fullscreen, [popover="manual"]) {
   grid-template-rows: minmax(0, 1fr);
 }
 
 /* Clipped, not removed: the heading names the player and its state is read out. */
 .shell[data-layout="pocket"]
-  .hosted-player:not(:fullscreen)
+  .hosted-player:not(:fullscreen, [popover="manual"])
   .hosted-player__heading {
   position: absolute;
   width: 1px;
@@ -198,7 +198,7 @@
    non-overlay control rows (hosted-player.css). */
 @media (max-width: 1050px), (max-height: 600px) {
   .shell[data-layout="pocket"]
-    .hosted-player:fullscreen:not([data-native-video="true"])
+    .hosted-player:is(:fullscreen, [popover="manual"]):not([data-native-video="true"])
     .hosted-player__heading {
     padding:
       max(0.75rem, env(safe-area-inset-top))
@@ -208,7 +208,7 @@
   }
 
   .shell[data-layout="pocket"]
-    .hosted-player:fullscreen:not([data-native-video="true"])
+    .hosted-player:is(:fullscreen, [popover="manual"]):not([data-native-video="true"])
     .hosted-player__controls {
     flex-wrap: nowrap;
     overflow-x: auto;
@@ -221,20 +221,20 @@
   }
 
   .shell[data-layout="pocket"]
-    .hosted-player:fullscreen:not([data-native-video="true"])
+    .hosted-player:is(:fullscreen, [popover="manual"]):not([data-native-video="true"])
     .hosted-player__controls > * {
     flex-shrink: 0;
   }
 
   .shell[data-layout="pocket"]
-    .hosted-player:fullscreen:not([data-native-video="true"])
+    .hosted-player:is(:fullscreen, [popover="manual"]):not([data-native-video="true"])
     .hosted-player__controls button {
     min-width: 2.75rem;
     min-height: 2.75rem;
   }
 
   .shell[data-layout="pocket"]
-    .hosted-player:fullscreen:not([data-native-video="true"])
+    .hosted-player:is(:fullscreen, [popover="manual"]):not([data-native-video="true"])
     .hosted-player__primary-control {
     position: relative;
     order: -1;
@@ -242,7 +242,7 @@
 
   /* Keep accessible names and acceptance labels, without widening the strip. */
   .shell[data-layout="pocket"]
-    .hosted-player:fullscreen:not([data-native-video="true"])
+    .hosted-player:is(:fullscreen, [popover="manual"]):not([data-native-video="true"])
     .hosted-player__primary-control > span {
     position: absolute;
     width: 1px;

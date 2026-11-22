@@ -4,23 +4,26 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-const acceptanceScripts = [
+const deviceScripts = [
   "android-catalog-acceptance.ts",
   "android-playback-acceptance.ts",
   "release-acceptance.ts",
+  "../../scripts/debug/shield-benchmark.mjs",
+  "../../scripts/debug/shield-startup.mjs",
+  "../../scripts/debug/shield-startup.py",
 ] as const;
 
 describe("Android device selector privacy", () => {
   it("keeps the private serial in ANDROID_SERIAL and out of every process argv", async () => {
-    for (const name of acceptanceScripts) {
+    for (const name of deviceScripts) {
       const source = await readFile(
         fileURLToPath(new URL(name, import.meta.url)),
         "utf8",
       );
-      expect(source).toContain("process.env.ANDROID_SERIAL");
+      expect(source).toMatch(/process\.env\.ANDROID_SERIAL|os\.environ\.get\(["']ANDROID_SERIAL["']\)/u);
       expect(source).not.toMatch(/["']--serial["']/u);
       expect(source).not.toMatch(
-        /\[\s*["']-s["']\s*,\s*(?:this\.)?serial/gu,
+        /["']-s["']\s*,\s*(?:this\.)?serial\b/u,
       );
     }
 

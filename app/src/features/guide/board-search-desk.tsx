@@ -257,7 +257,7 @@ export function BoardSearchDesk({
     [canAutoLoad, requestAutoLoad],
   );
 
-  const moreButtonHandlers = useMoreButtonFocusHandoff({
+  const { buttonProps: moreButtonHandlers } = useMoreButtonFocusHandoff({
     television,
     active: open,
     busy: loadingMore,

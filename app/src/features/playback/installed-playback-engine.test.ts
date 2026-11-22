@@ -227,6 +227,25 @@ describe("installed playback platform router", () => {
     });
     expect(androidStart).toHaveBeenCalledTimes(1);
   });
+
+  it("ignores a WebView tune stopped while its presentation code is loading", async () => {
+    const engine = createInstalledPlaybackEngine();
+    const stoppedFailure = vi.fn();
+    const currentFailure = vi.fn();
+    const tune = (onFailure: InstalledPlaybackRequest["onFailure"]) => {
+      const request = requestFixture(WEBVIEW_TRANSPORT, sessionFixture(), { onFailure });
+      return requireHandle(engine.start(request));
+    };
+
+    tune(stoppedFailure).stop();
+    const current = tune(currentFailure);
+    await vi.dynamicImportSettled();
+
+    // jsdom has no MSE. Only the still-current tune reports that failure.
+    expect(currentFailure).toHaveBeenCalledTimes(1);
+    expect(stoppedFailure).not.toHaveBeenCalled();
+    current.stop();
+  });
 });
 
 function requestFixture(

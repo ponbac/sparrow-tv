@@ -1,3 +1,4 @@
+import { exitPlaybackFullscreen, fullscreenElement, subscribeToFullscreen } from "./playback-fullscreen";
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { findGuideFallback, scrollBoardToReveal } from "../guide/guide-navigation";
 import { androidPlayerBridge, type AndroidPlayerBridge } from "../playback/android-player-bridge";
@@ -112,7 +113,7 @@ export function useTelevisionControls(
       ],
     });
     document.addEventListener("focusout", restoreAfterBlur);
-    document.addEventListener("fullscreenchange", scheduleFocus);
+    const unsubscribeFullscreen = subscribeToFullscreen(scheduleFocus);
     document.addEventListener("focusin", keepOverlayFocus);
     document.addEventListener("keydown", clampMenuHorizontalArrows, true);
     document.addEventListener("keydown", handleUnhandledEscape);
@@ -121,7 +122,7 @@ export function useTelevisionControls(
       observer.disconnect();
       if (frame !== null) cancelAnimationFrame(frame);
       document.removeEventListener("focusout", restoreAfterBlur);
-      document.removeEventListener("fullscreenchange", scheduleFocus);
+      unsubscribeFullscreen();
       document.removeEventListener("focusin", keepOverlayFocus);
       document.removeEventListener("keydown", clampMenuHorizontalArrows, true);
       document.removeEventListener("keydown", handleUnhandledEscape);
@@ -136,9 +137,9 @@ export function useTelevisionControls(
         return;
       }
       if (openOverlay() !== null) return;
-      if (document.fullscreenElement != null) {
+      if (fullscreenElement() != null) {
         event.preventDefault();
-        void document.exitFullscreen().then(
+        void exitPlaybackFullscreen().then(
           () => latest.current.onShowGuide(),
           () => undefined,
         );
@@ -178,7 +179,7 @@ function usable(element: EventTarget | null): element is HTMLElement {
   if (!(element instanceof HTMLElement)) {
     return false;
   }
-  const isFullscreenSurface = element === document.fullscreenElement;
+  const isFullscreenSurface = element === fullscreenElement();
   if (isFullscreenSurface) {
     if (fullscreenRestingAction(element) !== undefined) {
       return false;
@@ -191,7 +192,7 @@ function usable(element: EventTarget | null): element is HTMLElement {
   if (!element.matches(ACTION)) {
     return false;
   }
-  if (!(document.fullscreenElement?.contains(element) ?? true)) {
+  if (!(fullscreenElement()?.contains(element) ?? true)) {
     return false;
   }
   return isVisibleControl(element, {
@@ -211,10 +212,10 @@ function firstControl(scope: ParentNode, selector: string): HTMLElement | undefi
 function fallbackFocus(): HTMLElement | undefined {
   const overlay = openOverlay();
   if (overlay !== null) return firstControl(overlay, ACTION);
-  if (document.fullscreenElement instanceof HTMLElement) {
+  const fullscreen = fullscreenElement();
+  if (fullscreen instanceof HTMLElement) {
     return (
-      fullscreenRestingAction(document.fullscreenElement) ??
-      document.fullscreenElement
+      fullscreenRestingAction(fullscreen) ?? fullscreen
     );
   }
   return (
@@ -227,6 +228,12 @@ function fallbackFocus(): HTMLElement | undefined {
 }
 
 function keepOverlayFocus(event: FocusEvent): void {
+  const player = fullscreenElement();
+  if (player instanceof HTMLElement && player.getAttribute("popover") === "manual" &&
+      event.target instanceof Node && !player.contains(event.target)) {
+    player.focus({ preventScroll: true });
+    return;
+  }
   const overlay = openOverlay();
   if (overlay === null || !(event.target instanceof Node) || overlay.contains(event.target)) {
     return;
