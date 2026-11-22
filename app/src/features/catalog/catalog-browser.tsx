@@ -42,6 +42,8 @@ import {
   laterTimes,
   LATER_SPAN_MS,
 } from "../guide/guide-window";
+import type { GuideView } from "../guide/channel-group-lane";
+import type { GuidePreviewSource } from "../guide/guide-preview";
 import { ProgrammeGuide } from "../guide/programme-guide";
 import { useBoardGroupExclusions } from "../guide/use-board-group-exclusions";
 import { useGuideClock } from "../guide/use-guide-clock";
@@ -70,6 +72,7 @@ import {
 } from "../stage/use-stage-layout";
 import { useTurnFullscreen } from "../stage/use-turn-fullscreen";
 import { useTelevisionControls } from "../stage/use-television-controls";
+import { TelevisionNowProvider, type TelevisionNow } from "../stage/television-now-context";
 import { useZapStops } from "../stage/use-zap-stops";
 import {
   neighbouringZapStop,
@@ -186,8 +189,22 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     setTimeRow((current) => (current === "open" ? "closed" : "open"));
   }, []);
   const [chosenTime, setChosenTime] = useState<Date | null>(null);
+  // The TV Guide's two layouts. The timeline browses along time, so from the
+  // first time it opens the guide reads the longer window, as the time row does.
+  const [guideView, setGuideView] = useState<"now" | "timeline">("now");
+  const [timelineOpened, setTimelineOpened] = useState(false);
+  const toggleGuideView = useCallback(() => {
+    setTimelineOpened(true);
+    setGuideView((current) => (current === "now" ? "timeline" : "now"));
+  }, []);
+  const tvGuideView = useMemo<GuideView | null>(
+    () => (television ? { current: guideView, onToggle: toggleGuideView } : null),
+    [guideView, television, toggleGuideView],
+  );
   const guideSpan =
-    layout === "pocket" && timeRow !== "unused" ? LATER_SPAN_MS : GUIDE_SPAN_MS;
+    (layout === "pocket" && timeRow !== "unused") || (television && timelineOpened)
+      ? LATER_SPAN_MS
+      : GUIDE_SPAN_MS;
   const guideClock = useMemo(() => {
     const window = clockWindow(now, guideSpan);
     return {
@@ -211,7 +228,8 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
       controlsSlot,
       television,
       fullscreenTune,
-      controls: "compact",
+      // A TV row has room for every control; the focused one shows its label.
+      controls: television ? "bar" : "compact",
       // Only roomy Theater enters root fullscreen, which outlives Stop and a
       // change of Channel; pocket takes the player section alone.
       fullscreenTarget,
@@ -502,7 +520,8 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
 
   const guideTime = useMemo(
     () =>
-      layout === "pocket"
+      // The TV timeline replaces the row of times.
+      layout === "pocket" && !television
         ? {
             open: timeRow === "open",
             // A chosen time the clock has reached is now.
@@ -515,7 +534,11 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
             onChoose: setChosenTime,
           }
         : null,
-    [chosenTime, guideClock.window.endsAt, guideNow, layout, timeRow, toggleTimeRow],
+    [chosenTime, guideClock.window.endsAt, guideNow, layout, television, timeRow, toggleTimeRow],
+  );
+  const guidePreview = useMemo<GuidePreviewSource | null>(
+    () => (television ? { client, generation: authoritativeGeneration } : null),
+    [authoritativeGeneration, client, television],
   );
   const guideEmpty = useMemo(
     () => guideEmptyState(runtime, status, browseEnabled),
@@ -622,6 +645,16 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
           }
         : zapSubject(pendingZap.channel, zapStopOf(stops, pendingZap.channel.id));
 
+  const televisionNow: TelevisionNow | null = television
+    ? {
+        subject,
+        playingChannel: playingChannel?.id ?? null,
+        now,
+        onPreparePlayback: preparePlayback,
+        onTuneVariant: tuneVariant,
+      }
+    : null;
+
   // Keep a held native picture at the same origin when the viewer changes mode.
   const inlineMasthead = television && layout === "pocket" && (playingChannel === null || dock);
   const mastheadInGuide = inlineMasthead && effectiveMode === "guide";
@@ -637,7 +670,16 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     <div
       className="shell"
       data-layout={layout}
-      data-pocket={layout === "pocket" ? (splitPocket ? "split" : "stacked") : undefined}
+      data-pocket={
+        layout !== "pocket"
+          ? undefined
+          : television
+            ? // The TV lays its own pocket out: television.css.
+              "television"
+            : splitPocket
+              ? "split"
+              : "stacked"
+      }
       data-mode={effectiveMode}
       data-chrome={chromeVisibility}
       data-playing={playingChannel !== null}
@@ -688,6 +730,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
         }}
       >
         <StageChromeProvider value={chrome}>
+          <TelevisionNowProvider value={televisionNow}>
           <Stage
             television={television}
             playingChannel={playingChannel?.id ?? null}
@@ -700,6 +743,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
                 layout={layout}
                 picture={picture}
                 controlsRef={setControlsSlot}
+                qualitySwitch={!television}
                 onPreparePlayback={preparePlayback}
                 onTuneVariant={tuneVariant}
               />
@@ -725,7 +769,9 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
             }
             keyHints={watching}
             onShowPicture={layout === "pocket" ? showPicture : null}
+            {...(television ? { onZap: zap } : {})}
           />
+          </TelevisionNowProvider>
         </StageChromeProvider>
         <ProgrammeGuide
           television={television}
@@ -741,6 +787,8 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
           layout={layout}
           mode={effectiveMode}
           time={guideTime}
+          view={tvGuideView}
+          preview={guidePreview}
           loading={guideCatalog.loading}
           replacing={guideCatalog.replacing}
           error={guideError}

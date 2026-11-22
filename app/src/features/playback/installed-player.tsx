@@ -237,7 +237,10 @@ export function InstalledPlayer({
   const phase = state.phase;
   const transportReleased = phase._tag === "failed";
   const usesMpv = state.presentation === "linux-mpv";
-  const recoveryAction = recoveryActionFor(phase, runner);
+  const recoveryAction = televisionRecovery(
+    recoveryActionFor(phase, runner),
+    television && phase._tag === "failed",
+  );
   const canPause = canPausePlayback(phase);
   const canRestart =
     phase._tag !== "idle" &&
@@ -459,7 +462,9 @@ export function InstalledPlayer({
       showMediaControls={!transportReleased}
       stopLabel={
         transportReleased
-          ? "Close player"
+          ? television
+            ? "Back to Guide"
+            : "Close player"
           : usesMpv
             ? "Stop mpv"
             : "Stop stream"
@@ -490,6 +495,17 @@ function recoveryActionFor(
     return { label: "Restart", onAction: () => void runner.restart() };
   }
   return undefined;
+}
+
+/**
+ * On a TV the failure's recovery is worded as the answer to its message:
+ * "Try again", beside "Back to Guide".
+ */
+function televisionRecovery(
+  action: { readonly label: string; readonly onAction: () => void } | undefined,
+  failed: boolean,
+): { readonly label: string; readonly onAction: () => void } | undefined {
+  return action === undefined || !failed ? action : { ...action, label: "Try again" };
 }
 
 function audioTrackLabel(track: AudioTrack, index: number): string {

@@ -2557,7 +2557,7 @@ describe("CatalogBrowser pocket layout", () => {
     expect(client.installedSessionCount).toBe(1);
   });
 
-  it("dismisses an open Guide time row on Escape from the sibling docked preview on television", async () => {
+  it("swaps the TV Guide between Now and Timeline without touching the player or the acceptance marks", async () => {
     document.documentElement.setAttribute("data-television", "");
     const client = new FakeSparrowClient({ pictureOverlay: false });
     const user = userEvent.setup();
@@ -2566,46 +2566,43 @@ describe("CatalogBrowser pocket layout", () => {
       await screen.findByRole("button", { name: "Tune World News" }),
     );
     const shell = requireShell();
+    const video = await screen.findByLabelText("World News live video");
     const bar = within(await screen.findByRole("group", { name: "Channels" }));
     await screen.findByRole("button", { name: "Pause" });
     await user.click(bar.getByRole("button", { name: "Guide" }));
     expect(shell).toHaveAttribute("data-mode", "guide");
     expect(shell).toHaveAttribute("data-dock", "true");
+    // The TV lays its own pocket out, and drops the row of times.
+    expect(shell).toHaveAttribute("data-pocket", "television");
+    expect(screen.queryByRole("button", { name: "Now", expanded: false })).toBeNull();
+    const marksInNow = acceptanceChannels();
+    expect(marksInNow.length).toBeGreaterThan(0);
 
-    await user.click(screen.getByRole("button", { name: "Now" }));
-    expect(screen.getByRole("group", { name: "Time" })).toBeInTheDocument();
-
-    const undock = screen.getByRole("button", { name: "Back to the picture" });
-    act(() => undock.focus());
-    expect(undock).toHaveFocus();
-
-    // Composing Escape must leave the open Time row intact.
-    const composingEscape = new KeyboardEvent("keydown", {
-      key: "Escape",
-      isComposing: true,
-      bubbles: true,
-      cancelable: true,
-    });
-    act(() => {
-      undock.dispatchEvent(composingEscape);
-    });
-    expect(composingEscape.defaultPrevented).toBe(false);
-    expect(screen.getByRole("group", { name: "Time" })).toBeInTheDocument();
-
-    // Real Escape on the sibling Stage preview closes ONLY the Time row and stays in Guide.
-    const escape = new KeyboardEvent("keydown", {
-      key: "Escape",
-      bubbles: true,
-      cancelable: true,
-    });
-    act(() => {
-      undock.dispatchEvent(escape);
-    });
-    expect(escape.defaultPrevented).toBe(true);
-    expect(screen.queryByRole("group", { name: "Time" })).toBeNull();
-    expect(shell).toHaveAttribute("data-mode", "guide");
+    const view = screen.getByRole("button", { name: "Timeline" });
+    expect(view).toHaveAttribute("aria-pressed", "false");
+    await user.click(view);
+    expect(view).toHaveAttribute("aria-pressed", "true");
+    const board = document.querySelector<HTMLElement>(".programme-guide__board");
+    expect(board).toHaveAttribute("data-view", "timeline");
+    // Each Channel still carries its mark once, in catalog order, and its
+    // Programmes are cells that tune it without claiming its name.
+    expect(acceptanceChannels()).toEqual(marksInNow);
+    const cells = document.querySelectorAll(".programme-guide__programme");
+    expect(cells.length).toBeGreaterThan(0);
+    for (const cell of cells) {
+      expect(cell.getAttribute("aria-label")).not.toMatch(/^Tune /u);
+      expect(cell).not.toHaveAttribute("data-acceptance-channel");
+    }
+    // The player never noticed.
+    expect(screen.getByLabelText("World News live video")).toBe(video);
+    expect(client.installedSessionCount).toBe(1);
     expect(shell).toHaveAttribute("data-playing", "true");
-    expect(undock).toHaveFocus();
+
+    await user.click(view);
+    expect(board).not.toHaveAttribute("data-view");
+    expect(acceptanceChannels()).toEqual(marksInNow);
+    expect(screen.getByLabelText("World News live video")).toBe(video);
+    expect(client.installedSessionCount).toBe(1);
   });
 
   it("holds the picture's box at its size while native video cannot follow it, and lets go when it can", async () => {

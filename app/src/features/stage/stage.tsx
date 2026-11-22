@@ -4,6 +4,7 @@ import type { ChannelId } from "../../client/contracts";
 import { handleGuideDockArrowKey } from "../guide/guide-navigation";
 import {
   focusIsInChannelBar,
+  inVisualOrder,
   isPictureTap,
   visibleStageControls,
 } from "./stage-dom";
@@ -32,6 +33,11 @@ export interface StageProps {
    * Null in Theater, where the masthead and the keys do it.
    */
   readonly onShowPicture: (() => void) | null;
+  /**
+   * On a TV, Up and Down on the control row change Channel: the move a
+   * remote's D-pad makes while watching. Without it they move focus.
+   */
+  readonly onZap?: (direction: -1 | 1) => void;
 }
 
 /** Presents live playback above its information so native Android video never obscures controls. */
@@ -43,6 +49,7 @@ export function Stage({
   rail,
   keyHints,
   onShowPicture,
+  onZap,
 }: StageProps) {
   const stageRef = useRef<HTMLElement>(null);
   const monitorRef = useRef<HTMLDivElement>(null);
@@ -90,6 +97,36 @@ export function Stage({
     }
     if (!television) return;
 
+    // The control row comes first: on a TV its quality pill is part of it.
+    const playbackControls = target.closest<HTMLElement>(".now-playing__controls");
+    if (playbackControls !== null) {
+      if (key === "ArrowLeft" || key === "ArrowRight") {
+        stepHorizontal(
+          event,
+          inVisualOrder(visibleStageControls(playbackControls, "button, select")),
+          target,
+        );
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const notice = firstLoadNoticeControl(stage);
+      if (key === "ArrowUp") {
+        if (notice === undefined && onZap !== undefined) {
+          onZap(-1);
+          return;
+        }
+        (notice ?? preferredQualityChip(stage))?.focus({
+          preventScroll: true,
+        });
+      } else if (onZap !== undefined) {
+        onZap(1);
+      } else {
+        preferredChannelBarButton(stage)?.focus({ preventScroll: true });
+      }
+      return;
+    }
+
     const qualitySwitch = target.closest<HTMLElement>(".now-playing .quality-switch");
     if (qualitySwitch !== null) {
       if (key === "ArrowLeft" || key === "ArrowRight") {
@@ -122,24 +159,6 @@ export function Stage({
         (firstPlaybackControl(stage) ?? preferredChannelBarButton(stage))?.focus({
           preventScroll: true,
         });
-      }
-      return;
-    }
-
-    const playbackControls = target.closest<HTMLElement>(".now-playing__controls");
-    if (playbackControls !== null) {
-      if (key === "ArrowLeft" || key === "ArrowRight") {
-        stepHorizontal(event, visibleStageControls(playbackControls, "button, select"), target);
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      if (key === "ArrowUp") {
-        (firstLoadNoticeControl(stage) ?? preferredQualityChip(stage))?.focus({
-          preventScroll: true,
-        });
-      } else {
-        preferredChannelBarButton(stage)?.focus({ preventScroll: true });
       }
       return;
     }
@@ -207,6 +226,24 @@ export function Stage({
         </button>
       )}
       {rail}
+      {television ? (
+        // What the remote does while watching; the bar's own buttons say
+        // which Channels lie on either side.
+        <p className="stage__tv-keys" aria-hidden="true">
+          <span>
+            <kbd>OK</kbd>
+            Select
+          </span>
+          <span>
+            <kbd>▲▼</kbd>
+            Change channel
+          </span>
+          <span>
+            <kbd>BACK</kbd>
+            Guide
+          </span>
+        </p>
+      ) : null}
       {keyHints ? (
         <p className="stage__keys" aria-hidden="true">
           <span>
@@ -269,7 +306,10 @@ function preferredChannelBarButton(stage: HTMLElement): HTMLElement | undefined 
 }
 
 function preferredQualityChip(stage: HTMLElement): HTMLElement | undefined {
-  const switchGroup = stage.querySelector<HTMLElement>(".now-playing .quality-switch");
+  // The info block's own switch; a TV player's quality pill sits in the row.
+  const switchGroup = stage.querySelector<HTMLElement>(
+    ".now-playing__channel .quality-switch",
+  );
   if (switchGroup === null) return undefined;
   const chips = visibleStageControls(switchGroup, "button");
   return chips.find((chip) => chip.getAttribute("data-current") === "true") ?? chips[0];

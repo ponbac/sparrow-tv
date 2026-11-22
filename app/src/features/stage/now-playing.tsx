@@ -49,6 +49,11 @@ export interface NowPlayingProps {
   readonly picture: Pick<StagePicture, "state" | "status" | "silent"> | null;
   /** Receives the element the player puts its controls in. */
   readonly controlsRef: (element: HTMLDivElement | null) => void;
+  /**
+   * Shows the quality switch on the channel line. A TV player carries it in
+   * its control row instead.
+   */
+  readonly qualitySwitch?: boolean;
   readonly onPreparePlayback: () => void;
   readonly onTuneVariant: (channel: ChannelSummary) => void;
 }
@@ -61,6 +66,7 @@ export function NowPlaying({
   layout,
   picture,
   controlsRef,
+  qualitySwitch = true,
   onPreparePlayback,
   onTuneVariant,
 }: NowPlayingProps) {
@@ -101,7 +107,7 @@ export function NowPlaying({
                 </span>
               ) : null
             ) : null}
-            {subject.variants.length > 1 ? (
+            {qualitySwitch && subject.variants.length > 1 ? (
               <QualitySwitch
                 variants={subject.variants}
                 currentChannel={subject.channel.id}

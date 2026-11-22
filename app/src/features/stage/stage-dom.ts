@@ -155,6 +155,25 @@ export function visibleStageControls(
   );
 }
 
+/**
+ * Orders controls of one row as they are seen, left to right, where CSS
+ * orders them differently from the markup. Controls without a layout box
+ * (no layout at all, as in tests) keep their markup order.
+ */
+export function inVisualOrder(items: readonly HTMLElement[]): HTMLElement[] {
+  const boxes = items.map((item) => item.getBoundingClientRect());
+  if (boxes.some((box) => box.width === 0 && box.height === 0)) {
+    return [...items];
+  }
+  return items
+    .map((item, index) => ({ item, box: boxes[index], index }))
+    .sort(
+      (a, b) =>
+        a.box.left - b.box.left || a.box.top - b.box.top || a.index - b.index,
+    )
+    .map(({ item }) => item);
+}
+
 const DEFAULT_SCROLL_MARGIN_PX = 12;
 
 /**

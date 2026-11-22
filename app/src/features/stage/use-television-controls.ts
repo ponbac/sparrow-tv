@@ -207,6 +207,8 @@ function fallbackFocus(mode: TelevisionControls["mode"]): HTMLElement | undefine
     return (
       firstControl(document, ".playback-load-notice button") ??
       firstControl(document, ".hosted-player__recovery") ??
+      // Watch rests on Full screen: OK takes the picture to the whole screen.
+      firstControl(document, '.now-playing__controls [data-stage-action="fullscreen"]') ??
       firstControl(document, ".channel-bar__guide") ??
       firstControl(document, ".channel-bar button") ??
       firstControl(document, ".now-playing__controls button")

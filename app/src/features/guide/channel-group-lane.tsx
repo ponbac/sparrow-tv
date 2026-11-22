@@ -1,6 +1,6 @@
 import { Radio } from "@base-ui/react/radio";
 import { RadioGroup } from "@base-ui/react/radio-group";
-import { ChevronLeft, ChevronRight, Clock } from "lucide-react";
+import { CalendarRange, ChevronLeft, ChevronRight, Clock, LayoutGrid } from "lucide-react";
 import {
   memo,
   useCallback,
@@ -14,7 +14,10 @@ import {
 } from "react";
 import type { ChannelGroup } from "../../client/contracts";
 import { groupDisplayName, visibleChannelGroups } from "./board-group-roster";
-import { revealInHorizontalScroller } from "../stage/stage-dom";
+import {
+  revealInHorizontalScroller,
+  revealInScrollContainer,
+} from "../stage/stage-dom";
 import { GroupRosterDialog } from "./group-roster-dialog";
 import { clockLabel } from "./guide-window";
 
@@ -34,6 +37,12 @@ export interface GuideTime {
   readonly onChoose: (time: Date | null) => void;
 }
 
+/** The TV Guide's two layouts and the chip at the head of the lane that swaps them. */
+export interface GuideView {
+  readonly current: "now" | "timeline";
+  readonly onToggle: () => void;
+}
+
 /** Inputs for the scrollable Channel Group lane and roster. */
 export interface ChannelGroupLaneProps {
   /** Decouples D-pad arrow focus from group selection until Enter/Space on TV. */
@@ -42,6 +51,10 @@ export interface ChannelGroupLaneProps {
   readonly activeGroup: string | null;
   /** Null where the guide is a timeline, which shows every time at once. */
   readonly time: GuideTime | null;
+  /** The TV Guide's layout switch, or null where there is one layout. */
+  readonly view?: GuideView | null;
+  /** The TV timeline stands the lane on its side as a rail of groups. */
+  readonly orientation?: "horizontal" | "vertical";
   readonly excluded: ReadonlySet<string>;
   readonly onSelectGroup: (group: string | null) => void;
   readonly onPrefetchGroup: (group: string | null) => void;
@@ -59,12 +72,15 @@ export const ChannelGroupLane = memo(function ChannelGroupLane({
   groups,
   activeGroup,
   time,
+  view = null,
+  orientation = "horizontal",
   excluded,
   onSelectGroup,
   onPrefetchGroup,
   onSetExcluded,
   onRestoreAll,
 }: ChannelGroupLaneProps) {
+  const vertical = orientation === "vertical";
   const scrollerRef = useRef<HTMLDivElement>(null);
   const focusPrefetchTimerRef = useRef<number | null>(null);
   const timesId = useId();
@@ -104,8 +120,19 @@ export const ChannelGroupLane = memo(function ChannelGroupLane({
     if (checked === null) {
       return;
     }
-    revealInHorizontalScroller(scroller, checked);
-  }, [activeGroup, visibleGroups.length]);
+    if (vertical) {
+      revealInScrollContainer(scroller, checked);
+    } else {
+      revealInHorizontalScroller(scroller, checked);
+    }
+  }, [activeGroup, vertical, visibleGroups.length]);
+  const reveal = (target: HTMLElement) => {
+    if (vertical) {
+      revealInScrollContainer(scrollerRef.current, target);
+    } else {
+      revealInHorizontalScroller(scrollerRef.current, target);
+    }
+  };
 
   const step = (direction: -1 | 1) => {
     const scroller = scrollerRef.current;
@@ -123,7 +150,26 @@ export const ChannelGroupLane = memo(function ChannelGroupLane({
         data-overflow={overflow.canBack || overflow.canAhead ? "true" : "false"}
         data-can-back={overflow.canBack ? "true" : "false"}
         data-can-ahead={overflow.canAhead ? "true" : "false"}
+        data-orientation={orientation}
       >
+        {view === null ? null : (
+          <button
+            className="programme-guide__view"
+            type="button"
+            aria-label="Timeline"
+            aria-pressed={view.current === "timeline"}
+            onClick={view.onToggle}
+          >
+            <span data-on={view.current === "now"}>
+              <LayoutGrid aria-hidden="true" />
+              Now
+            </span>
+            <span data-on={view.current === "timeline"}>
+              <CalendarRange aria-hidden="true" />
+              Timeline
+            </span>
+          </button>
+        )}
         {time === null ? null : (
           <button
             className="programme-guide__when"
@@ -166,7 +212,7 @@ export const ChannelGroupLane = memo(function ChannelGroupLane({
               value={ALL_GROUPS}
               onMouseEnter={() => onPrefetchGroup(null)}
               onFocus={(event) => {
-                revealInHorizontalScroller(scrollerRef.current, event.currentTarget);
+                reveal(event.currentTarget);
                 scheduleFocusPrefetch(null);
               }}
               onBlur={cancelFocusPrefetch}
@@ -190,10 +236,7 @@ export const ChannelGroupLane = memo(function ChannelGroupLane({
                   value={groupValue}
                   onMouseEnter={() => onPrefetchGroup(group.name)}
                   onFocus={(event) => {
-                    revealInHorizontalScroller(
-                      scrollerRef.current,
-                      event.currentTarget,
-                    );
+                    reveal(event.currentTarget);
                     scheduleFocusPrefetch(group.name);
                   }}
                   onBlur={cancelFocusPrefetch}

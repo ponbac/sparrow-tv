@@ -31,25 +31,37 @@ export type FeedsDialogContentProps = {
 
 /** Heavy source diagnostics loaded only when the Sources sheet is requested. */
 export function FeedsDialogContent(props: FeedsDialogContentProps) {
-  return (
-    <>
-      {props.runtime === "installed" ? (
-        <InstalledSourceSettings
-          television={props.television ?? false}
-          client={props.client}
-          status={props.status}
-          onApplied={props.onApplied}
-        />
-      ) : null}
-      <SourceStatusDesk
+  const settings =
+    props.runtime === "installed" ? (
+      <InstalledSourceSettings
         television={props.television ?? false}
+        client={props.client}
         status={props.status}
-        refreshing={props.refreshing}
-        refreshResult={props.refreshResult}
-        latestEvent={props.latestEvent}
-        onRefresh={props.onRefresh}
-        sourceScope={props.runtime === "installed" ? "device" : "deployment"}
+        onApplied={props.onApplied}
       />
+    ) : null;
+  const desk = (
+    <SourceStatusDesk
+      television={props.television ?? false}
+      status={props.status}
+      refreshing={props.refreshing}
+      refreshResult={props.refreshResult}
+      latestEvent={props.latestEvent}
+      onRefresh={props.onRefresh}
+      sourceScope={props.runtime === "installed" ? "device" : "deployment"}
+    />
+  );
+  // On a TV the sheet opens on how the sources are doing; changing them is
+  // the rarer errand, further down.
+  return props.television === true ? (
+    <>
+      {desk}
+      {settings}
+    </>
+  ) : (
+    <>
+      {settings}
+      {desk}
     </>
   );
 }

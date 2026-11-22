@@ -72,6 +72,7 @@ export const ProgrammeListRow = memo(function ProgrammeListRow({
       data-playing={playing}
       data-last-played={lastPlayed ? "true" : undefined}
       data-body="list"
+      data-number={family.number}
       // Titled by its Channel: there is no Programme to name.
       data-bare={lines._tag === "channel"}
       // The first line keeps clear of this many quality chips.

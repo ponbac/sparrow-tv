@@ -9,6 +9,12 @@ const IGNORE_NAVIGATION_SELECTOR =
   'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="combobox"], [role="dialog"], [role="listbox"], [role="menu"]';
 
 const ROW_TOP_TOLERANCE_PX = 4;
+/** The chip at the head of the lane: pocket's time chip or the TV layout switch. */
+const LEAD_SELECTOR = ".programme-guide__when, .programme-guide__view";
+/** The minutes of the time axis the TV timeline shows at once. */
+const TIMELINE_VIEW_MINUTES = 120;
+/** The cell focus last rested on in each timeline, where Right from the rail returns. */
+const lastTimelineCell = new WeakMap<HTMLElement, HTMLElement>();
 const BOARD_FOCUS_MARGIN_PX = 12;
 
 type ArrowKeyEvent = {
@@ -362,9 +368,12 @@ function handleDockArrow(
     clampArrow(event);
     return;
   }
+  // The TV band: the docked picture beside the toolbar, the lane under both.
+  const laneBelow = liesBelow(preferredLaneTarget(lane, dockControl), dockControl);
   if (event.key === "ArrowRight") {
-    const whenButton = lane?.querySelector<HTMLElement>(".programme-guide__when") ?? null;
+    const whenButton = lane?.querySelector<HTMLElement>(LEAD_SELECTOR) ?? null;
     const next =
+      (laneBelow ? firstToolbarTarget(toolbar) : null) ??
       (whenButton !== null && isVisibleFocusable(whenButton) ? whenButton : null) ??
       checkedGroupInLane(lane) ??
       nearestToolbarTarget(toolbar, dockControl);
@@ -377,7 +386,9 @@ function handleDockArrow(
   }
   if (event.key === "ArrowDown") {
     const next =
-      preferredTimesTarget(times) ?? firstVisibleBoardTarget(board, dockControl);
+      preferredTimesTarget(times) ??
+      (laneBelow ? preferredLaneTarget(lane, dockControl) : null) ??
+      firstVisibleBoardTarget(board, dockControl);
     if (next !== null) {
       consumeAndFocus(event, next, board);
     } else {
@@ -408,6 +419,8 @@ function handleToolbarArrow(
   }
   if (event.key === "ArrowDown") {
     const next =
+      // Under the toolbar of the TV timeline lies the timeline, the rail beside it.
+      (lane?.dataset.orientation === "vertical" ? timelineEntry(board, target) : null) ??
       preferredLaneTarget(lane, target) ??
       preferredTimesTarget(times) ??
       firstVisibleBoardTarget(board, target);
@@ -455,6 +468,10 @@ function handleLaneArrow(
   dockControl: HTMLElement | null,
   television: boolean,
 ): void {
+  if (lane.dataset.orientation === "vertical") {
+    handleRailArrow(event, target, toolbar, lane, board, dockControl);
+    return;
+  }
   if (event.key === "ArrowDown") {
     const next =
       preferredTimesTarget(times) ?? firstVisibleBoardTarget(board, target);
@@ -466,7 +483,13 @@ function handleLaneArrow(
     return;
   }
   if (event.key === "ArrowUp") {
-    const next = nearestToolbarTarget(toolbar, target);
+    // Under the docked picture of the TV band, Up returns to it.
+    const next =
+      (dockControl !== null &&
+      overlapsDockBand(dockControl, target) &&
+      liesBelow(target, dockControl)
+        ? dockControl
+        : null) ?? nearestToolbarTarget(toolbar, target);
     if (next !== null) {
       consumeAndFocus(event, next, board);
     } else {
@@ -475,7 +498,7 @@ function handleLaneArrow(
     return;
   }
 
-  const whenButton = lane.querySelector<HTMLElement>(".programme-guide__when");
+  const whenButton = lane.querySelector<HTMLElement>(LEAD_SELECTOR);
   const rosterButton = lane.querySelector<HTMLElement>(".group-roster-trigger");
   const groups = visibleFocusables(lane, ".programme-guide__group");
   const activeGroup =
@@ -581,7 +604,7 @@ function handleTimesArrow(
       (dockControl !== null && overlapsDockBand(dockControl, target)
         ? dockControl
         : null) ??
-      lane?.querySelector<HTMLElement>(".programme-guide__when") ??
+      lane?.querySelector<HTMLElement>(LEAD_SELECTOR) ??
       preferredLaneTarget(lane, target);
     if (next !== null && isVisibleFocusable(next)) {
       consumeAndFocus(event, next, board);
@@ -622,6 +645,15 @@ function handleBoardArrow(
       ".programme-guide__row .programme-guide__channel",
     ),
   );
+
+  if (
+    board.dataset.view === "timeline" &&
+    (target.classList.contains("programme-guide__channel") ||
+      target.classList.contains("programme-guide__programme"))
+  ) {
+    handleTimelineArrow(event, target, lane, board, hasMore, onRequestMore);
+    return;
+  }
 
   if (target.classList.contains("programme-guide__channel")) {
     handleChannelGridArrow(
@@ -887,12 +919,16 @@ function handleChannelGridArrow(
       consumeAndFocus(event, prev, board);
       return;
     }
+    const laneTarget = preferredLaneTarget(lane, current);
     const next =
       preferredTimesTarget(times) ??
-      (dockControl !== null && overlapsDockBand(dockControl, current)
+      (dockControl !== null &&
+      overlapsDockBand(dockControl, current) &&
+      // The TV band's lane lies between the rows and the picture.
+      !liesBelow(laneTarget, dockControl)
         ? dockControl
         : null) ??
-      preferredLaneTarget(lane, current);
+      laneTarget;
     if (next !== null) {
       consumeAndFocus(event, next, board);
     } else {
@@ -967,7 +1003,7 @@ function preferredLaneTarget(
     return null;
   }
   const checkedGroup = checkedGroupInLane(lane);
-  const whenButton = lane.querySelector<HTMLElement>(".programme-guide__when");
+  const whenButton = lane.querySelector<HTMLElement>(LEAD_SELECTOR);
   const rosterButton = lane.querySelector<HTMLElement>(".group-roster-trigger");
   const candidates = [checkedGroup, whenButton, rosterButton].filter(
     (item): item is HTMLElement => item !== null && isVisibleFocusable(item),
@@ -1196,8 +1232,260 @@ export function scrollBoardToReveal(board: HTMLElement, target: HTMLElement): vo
   const retained = board.querySelector<HTMLElement>(".programme-guide__retained");
   const retainedHeight =
     retained !== null && !retained.contains(target) ? retained.offsetHeight : 0;
+  const ruler = board.querySelector<HTMLElement>(".programme-guide__timeline-ruler");
   revealInScrollContainer(board, row, {
-    marginPx: BOARD_FOCUS_MARGIN_PX,
+    marginPx: BOARD_FOCUS_MARGIN_PX + (ruler?.offsetHeight ?? 0),
     bottomMarginPx: BOARD_FOCUS_MARGIN_PX + retainedHeight,
   });
+}
+
+/**
+ * Brings a TV timeline cell into the stretch of time the timeline shows, in
+ * half-hour steps, and remembers it as the cell to return to from the rail.
+ * Only the board's `--tl-offset`, the first minute shown, changes.
+ */
+export function revealTimelineCell(board: HTMLElement, cell: HTMLElement): void {
+  if (board.dataset.view !== "timeline") return;
+  lastTimelineCell.set(board, cell);
+  const start = Number(cell.dataset.start);
+  const end = Number(cell.dataset.end);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return;
+  const total = Number(board.dataset.windowMinutes) || TIMELINE_VIEW_MINUTES;
+  const current = timelineOffset(board);
+  let offset = current;
+  if (start >= current + TIMELINE_VIEW_MINUTES - 15) {
+    // A cell starting near or past the right edge: show it with half an hour
+    // of what came before it.
+    offset = Math.floor(start / 30) * 30 - 30;
+  } else if (end <= current + 5) {
+    offset = Math.floor(start / 30) * 30;
+  }
+  offset = Math.min(Math.max(offset, 0), Math.max(0, total - TIMELINE_VIEW_MINUTES));
+  if (offset === current) return;
+  board.style.setProperty("--tl-offset", String(offset));
+  const nowMinutes = Number(board.dataset.nowMinutes);
+  board.dataset.nowHidden = String(
+    Number.isFinite(nowMinutes) && (nowMinutes < offset || nowMinutes > offset + TIMELINE_VIEW_MINUTES),
+  );
+}
+
+function timelineOffset(board: HTMLElement): number {
+  const value = Number(board.style.getPropertyValue("--tl-offset"));
+  return Number.isFinite(value) ? value : 0;
+}
+
+/** What a timeline row offers the D-pad: its cells, or its Channel when it has none. */
+function timelineStops(row: HTMLElement): HTMLElement[] {
+  const cells = visibleFocusables(row, ".programme-guide__programme");
+  if (cells.length > 0) return cells;
+  const channel = row.querySelector<HTMLElement>(".programme-guide__channel");
+  return channel !== null && isVisibleFocusable(channel) ? [channel] : [];
+}
+
+/** The cell of a row on at `minute`, else the one starting nearest to it. */
+function timelineCellAt(row: HTMLElement, minute: number): HTMLElement | null {
+  const stops = timelineStops(row);
+  let best: HTMLElement | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const stop of stops) {
+    const start = Number(stop.dataset.start);
+    const end = Number(stop.dataset.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return stop;
+    if (start <= minute && minute < end) return stop;
+    const distance = Math.min(Math.abs(start - minute), Math.abs(end - minute));
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = stop;
+    }
+  }
+  return best;
+}
+
+/** The minute a move up or down keeps to: the focused cell's, within view. */
+function timelineAnchor(board: HTMLElement, target: HTMLElement): number {
+  const offset = timelineOffset(board);
+  const start = Number(target.dataset.start);
+  if (Number.isFinite(start)) return Math.max(start, offset);
+  const now = Number(board.dataset.nowMinutes);
+  return Math.max(Number.isFinite(now) ? now : 0, offset);
+}
+
+/** Where Right from the rail lands: the cell last focused, else what is on now in view. */
+function timelineEntry(board: HTMLElement | null, origin: HTMLElement): HTMLElement | null {
+  if (board === null || board.dataset.view !== "timeline") return null;
+  const last = lastTimelineCell.get(board);
+  if (last !== undefined && last.isConnected && isVisibleFocusable(last)) {
+    return last;
+  }
+  const channel = firstVisibleBoardTarget(board, origin);
+  const row = channel?.closest<HTMLElement>(".programme-guide__row") ?? null;
+  return row === null ? channel : (timelineCellAt(row, timelineAnchor(board, origin)) ?? channel);
+}
+
+/**
+ * The TV timeline: Up and Down change Channel and keep to the time in view,
+ * Left and Right step one cell through time, and Left from a row's first
+ * cell reaches the rail of Channel Groups.
+ */
+function handleTimelineArrow(
+  event: ArrowKeyEvent,
+  target: HTMLElement,
+  lane: HTMLElement | null,
+  board: HTMLElement,
+  hasMore: boolean,
+  onRequestMore: () => void,
+): void {
+  const row = target.closest<HTMLElement>(".programme-guide__row");
+  if (row === null) return;
+  const stops = timelineStops(row);
+  const index = stops.indexOf(target);
+  if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+    if (target.classList.contains("programme-guide__channel")) {
+      const next =
+        event.key === "ArrowRight"
+          ? (timelineCellAt(row, timelineAnchor(board, target)) ?? null)
+          : railTarget(lane);
+      if (next !== null && next !== target) {
+        consumeAndFocus(event, next, board);
+      } else {
+        clampArrow(event);
+      }
+      return;
+    }
+    const next =
+      event.key === "ArrowRight"
+        ? (stops[index + 1] ?? null)
+        : index > 0
+          ? stops[index - 1]
+          : railTarget(lane);
+    if (next !== null) {
+      consumeAndFocus(event, next, board);
+    } else {
+      clampArrow(event);
+    }
+    return;
+  }
+  const rows = Array.from(
+    board.querySelectorAll<HTMLElement>(".programme-guide__row"),
+  ).filter((candidate) => timelineStops(candidate).length > 0);
+  const rowIndex = rows.indexOf(row);
+  const anchor = timelineAnchor(board, target);
+  if (event.key === "ArrowDown") {
+    const below = rows[rowIndex + 1];
+    if (below !== undefined) {
+      const next = timelineCellAt(below, anchor);
+      if (next !== null) {
+        consumeAndFocus(event, next, board);
+        return;
+      }
+    }
+    const footer =
+      visibleBoardFooterButton(board, ".programme-guide__retained button") ??
+      (hasMore ? (onRequestMore(), visibleBoardFooterButton(board, ".programme-guide__more")) : null);
+    if (footer !== null) {
+      consumeAndFocus(event, footer, board);
+    } else {
+      clampArrow(event);
+    }
+    return;
+  }
+  if (event.key === "ArrowUp") {
+    const above = rows[rowIndex - 1];
+    const next =
+      above === undefined ? null : timelineCellAt(above, anchor);
+    if (next !== null) {
+      consumeAndFocus(event, next, board);
+    } else {
+      // The top row: the lead of the rail, where the band is one press up.
+      const lead = lane?.querySelector<HTMLElement>(LEAD_SELECTOR) ?? null;
+      if (lead !== null && isVisibleFocusable(lead)) {
+        consumeAndFocus(event, lead, board);
+      } else {
+        clampArrow(event);
+      }
+    }
+  }
+}
+
+/** The rail's stop for a move into it: the chosen Channel Group. */
+function railTarget(lane: HTMLElement | null): HTMLElement | null {
+  return (
+    checkedGroupInLane(lane) ??
+    (lane === null ? null : visibleFocusables(lane, LEAD_SELECTOR)[0] ?? null)
+  );
+}
+
+/**
+ * The lane stood on its side beside the TV timeline: Up and Down step
+ * through the layout switch, the Channel Groups and Choose groups; Right
+ * returns to the timeline; Up from the top reaches the band.
+ */
+function handleRailArrow(
+  event: ArrowKeyEvent,
+  target: HTMLElement,
+  toolbar: HTMLElement | null,
+  lane: HTMLElement,
+  board: HTMLElement | null,
+  dockControl: HTMLElement | null,
+): void {
+  const stops = visibleFocusables(
+    lane,
+    `${LEAD_SELECTOR}, .programme-guide__group, .group-roster-trigger`,
+  );
+  const index = stops.indexOf(target);
+  if (index === -1) return;
+  if (event.key === "ArrowRight") {
+    const next = timelineEntry(board, target) ?? firstVisibleBoardTarget(board, target);
+    if (next !== null) {
+      consumeAndFocus(event, next, board);
+    } else {
+      clampArrow(event);
+    }
+    return;
+  }
+  if (event.key === "ArrowLeft") {
+    clampArrow(event);
+    return;
+  }
+  if (event.key === "ArrowDown") {
+    const next = stops[index + 1] ?? null;
+    if (next !== null) {
+      consumeAndFocus(event, next, board);
+    } else {
+      clampArrow(event);
+    }
+    return;
+  }
+  if (index > 0) {
+    consumeAndFocus(event, stops[index - 1], board);
+    return;
+  }
+  const next =
+    (dockControl !== null && overlapsDockBand(dockControl, target) ? dockControl : null) ??
+    nearestToolbarTarget(toolbar, target);
+  if (next !== null) {
+    consumeAndFocus(event, next, board);
+  } else {
+    clampArrow(event);
+  }
+}
+
+/** Whether `element` lies wholly under `above`, as the TV lane lies under the band. */
+function liesBelow(element: HTMLElement | null, above: HTMLElement): boolean {
+  if (element === null) return false;
+  const box = element.getBoundingClientRect();
+  const over = above.getBoundingClientRect();
+  if (box.height === 0 || over.height === 0) return false;
+  return box.top >= over.bottom - ROW_TOP_TOLERANCE_PX;
+}
+
+/** The toolbar's first control from the left: where Right from the TV band's picture goes. */
+function firstToolbarTarget(toolbar: HTMLElement | null): HTMLElement | null {
+  if (toolbar === null) return null;
+  return (
+    visibleFocusables(
+      toolbar,
+      'button, input, a[href], [tabindex]:not([tabindex="-1"])',
+    )[0] ?? null
+  );
 }

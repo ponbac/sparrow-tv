@@ -11,6 +11,7 @@ import {
   Square,
   Volume2,
   VolumeX,
+  X,
 } from "lucide-react";
 import {
   useCallback,
@@ -30,7 +31,13 @@ import {
   useStageChrome,
   type WindowBox,
 } from "../stage/stage-chrome";
-import { visibleStageControls } from "../stage/stage-dom";
+import { inVisualOrder, visibleStageControls } from "../stage/stage-dom";
+import {
+  TelevisionHead,
+  TelevisionProgress,
+  TelevisionQuality,
+} from "../stage/television-now";
+import { useTelevisionNow } from "../stage/television-now-context";
 import { playerPresentation, type PlayerState } from "./playback-presentation";
 import "./hosted-player.css";
 
@@ -151,6 +158,10 @@ export function PlaybackSurface({
 }: PlaybackSurfaceProps) {
   const chrome = useStageChrome();
   const { television, fullscreenTune } = chrome;
+  // The TV shell's lines about the playing Channel: the fullscreen scrims
+  // and the quality pill. Null outside a TV shell.
+  const televisionNow = useTelevisionNow();
+  const tvNow = television === true ? televisionNow : null;
   const surfaceRef = useRef<HTMLElement>(null);
   useLayoutEffect(() => {
     const section = surfaceRef.current;
@@ -449,6 +460,9 @@ export function PlaybackSurface({
         </>
       ) : null}
       {audio}
+      {tvNow !== null && showMediaControls ? (
+        <TelevisionQuality info={tvNow} />
+      ) : null}
       {pictureInPicture === undefined ? null : (
         <button
           type="button"
@@ -565,7 +579,14 @@ export function PlaybackSurface({
         onClick={onStop}
         {...hint(stopLabel)}
       >
-        <Square aria-hidden="true" />
+        {tvNow === null ? (
+          <Square aria-hidden="true" />
+        ) : showMediaControls ? (
+          // A filled square reads as Stop; the outline reads as a checkbox.
+          <Square aria-hidden="true" fill="currentColor" strokeWidth={0} />
+        ) : (
+          <X aria-hidden="true" />
+        )}
         <span>{stopLabel}</span>
       </button>
       {status === undefined ? null : (
@@ -583,6 +604,7 @@ export function PlaybackSurface({
       tabIndex={television ? -1 : 0}
       data-controls-visible={controlsVisible || !canHideControls}
       data-native-video={nativeVideo}
+      data-player-state={tvNow === null ? undefined : state._tag}
       onPointerMove={() => revealControls()}
       onPointerDown={() => revealControls()}
       onFocusCapture={() => revealControls()}
@@ -723,6 +745,9 @@ export function PlaybackSurface({
           key={videoKey}
           ref={videoRef}
           aria-label={`${channel.name} live video`}
+          // Android WebView draws a grey play glyph on a video with no frame
+          // yet; a transparent poster keeps the starting and failed states clean.
+          {...(television === true ? { poster: TRANSPARENT_POSTER } : {})}
           autoPlay
           muted={muted}
           playsInline
@@ -741,6 +766,16 @@ export function PlaybackSurface({
         ) : null}
       </div>
 
+      {tvNow !== null && sectionFullscreen ? (
+        <>
+          <TelevisionHead
+            info={tvNow}
+            state={state._tag === "playing" ? null : presentation.status}
+          />
+          {playing ? <TelevisionProgress info={tvNow} /> : null}
+        </>
+      ) : null}
+
       {controlsPlacement.slot === null
         ? controls
         : createPortal(controls, controlsPlacement.slot)}
@@ -748,10 +783,14 @@ export function PlaybackSurface({
   );
 }
 
+const TRANSPARENT_POSTER =
+  "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+
 function visibleControlBarItems(root: HTMLElement | null): HTMLElement[] {
   if (root === null) return [];
   const scope = root.classList.contains("hosted-player")
     ? root.querySelector<HTMLElement>(".hosted-player__controls")
     : root;
-  return visibleStageControls(scope, "button, select");
+  // The TV bar orders its controls by class; the remote follows what is seen.
+  return inVisualOrder(visibleStageControls(scope, "button, select"));
 }

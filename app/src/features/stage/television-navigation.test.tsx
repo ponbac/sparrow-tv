@@ -234,6 +234,185 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     expect(when).toHaveFocus();
   });
 
+  it("walks the TV timeline by Channel and by time, reaches the group rail, and brings later cells into view", () => {
+    document.documentElement.setAttribute("data-television", "");
+    const at = (minutes: number) =>
+      clientSchemas.isoInstant.parse(
+        new Date(WINDOW.startsAt.getTime() + minutes * 60_000).toISOString(),
+      );
+    const programme = (title: string, from: number, to: number) => ({
+      title,
+      startsAt: at(from),
+      endsAt: at(to),
+      titleTruncated: false,
+    });
+    const rows: GuideWindowChannel[] = [
+      {
+        channel: channelFixture({ id: "ch-1", name: "Channel 1", group: "News", number: 1 }),
+        programmes: [
+          programme("Morning", 0, 60),
+          programme("Midday", 60, 120),
+          programme("Afternoon", 120, 180),
+        ],
+        programmesTruncated: false,
+      },
+      {
+        channel: channelFixture({ id: "ch-2", name: "Channel 2", group: "Sports", number: 2 }),
+        programmes: [programme("Short", 0, 30), programme("Long", 30, 120)],
+        programmesTruncated: false,
+      },
+      {
+        channel: channelFixture({ id: "ch-3", name: "Channel 3", group: "Movies", number: 3 }),
+        programmes: [],
+        programmesTruncated: false,
+      },
+    ];
+    const onTune = vi.fn();
+    const onToggle = vi.fn();
+    render(
+      <ProgrammeGuide
+        television
+        rows={rows}
+        groups={GROUPS}
+        activeGroup={null}
+        window={WINDOW}
+        now={NOW}
+        playingChannel={null}
+        variantPreferences={new Map()}
+        layout="pocket"
+        mode="guide"
+        time={null}
+        view={{ current: "timeline", onToggle }}
+        loading={false}
+        replacing={false}
+        error={null}
+        hasMore={false}
+        loadingMore={false}
+        onSelectGroup={() => undefined}
+        onPrefetchGroup={() => undefined}
+        excludedGroups={new Set()}
+        onSetGroupExcluded={() => undefined}
+        onRestoreExcludedGroups={() => undefined}
+        onPreparePlayback={() => undefined}
+        onTune={onTune}
+        onTuneVariant={() => undefined}
+        onRetry={() => undefined}
+        onLoadMore={() => undefined}
+        search={null}
+        feeds={null}
+        status={null}
+      />,
+    );
+    const board = document.querySelector<HTMLElement>(".programme-guide__board")!;
+    expect(board).toHaveAttribute("data-view", "timeline");
+    // One mark per Channel, on its own button, in catalog order; the cells
+    // tune the Channel without claiming its name or its mark.
+    expect(
+      Array.from(document.querySelectorAll("[data-acceptance-channel]"), (el) =>
+        el.getAttribute("aria-label"),
+      ),
+    ).toEqual(["Tune Channel 1", "Tune Channel 2", "Tune Channel 3"]);
+    const cell = (name: string) =>
+      screen.getByRole("button", { name: new RegExp(`^${name}, `, "u") });
+    for (const button of document.querySelectorAll(".programme-guide__programme")) {
+      expect(button).not.toHaveAttribute("data-acceptance-channel");
+      expect(button.getAttribute("aria-label")).not.toMatch(/^Tune /u);
+    }
+    const lead = screen.getByRole("button", { name: "Timeline" });
+    expect(lead).toHaveAttribute("aria-pressed", "true");
+    const allRadio = screen.getByRole("radio", { name: "All" });
+    const newsRadio = screen.getByRole("radio", { name: /News/u });
+
+    // Left and Right step one cell through time; Left from the first cell
+    // reaches the rail, and Right from the rail returns to that cell.
+    act(() => cell("Morning").focus());
+    fireEvent.keyDown(cell("Morning"), { key: "ArrowRight" });
+    expect(cell("Midday")).toHaveFocus();
+    fireEvent.keyDown(cell("Midday"), { key: "ArrowLeft" });
+    expect(cell("Morning")).toHaveFocus();
+    fireEvent.keyDown(cell("Morning"), { key: "ArrowLeft" });
+    expect(allRadio).toHaveFocus();
+    fireEvent.keyDown(allRadio, { key: "ArrowRight" });
+    expect(cell("Morning")).toHaveFocus();
+
+    // Up and Down change Channel and keep to the time of the focused cell; a
+    // Channel without Programmes offers its own button.
+    fireEvent.keyDown(cell("Morning"), { key: "ArrowDown" });
+    expect(cell("Short")).toHaveFocus();
+    fireEvent.keyDown(cell("Short"), { key: "ArrowDown" });
+    const channel3 = screen.getByRole("button", { name: "Tune Channel 3" });
+    expect(channel3).toHaveFocus();
+    fireEvent.keyDown(channel3, { key: "ArrowUp" });
+    expect(cell("Short")).toHaveFocus();
+    fireEvent.keyDown(cell("Short"), { key: "ArrowRight" });
+    expect(cell("Long")).toHaveFocus();
+    fireEvent.keyDown(cell("Long"), { key: "ArrowUp" });
+    expect(cell("Morning")).toHaveFocus();
+    fireEvent.keyDown(cell("Morning"), { key: "ArrowUp" });
+    expect(lead).toHaveFocus();
+
+    // The rail stands on its side: Up and Down walk it.
+    fireEvent.keyDown(lead, { key: "ArrowDown" });
+    expect(allRadio).toHaveFocus();
+    fireEvent.keyDown(allRadio, { key: "ArrowDown" });
+    expect(newsRadio).toHaveFocus();
+    fireEvent.keyDown(newsRadio, { key: "ArrowUp" });
+    expect(allRadio).toHaveFocus();
+    fireEvent.keyDown(allRadio, { key: "ArrowUp" });
+    expect(lead).toHaveFocus();
+
+    // A cell near the right edge brings later time into view in half hours,
+    // no further than the window allows; the last cell holds.
+    expect(board.style.getPropertyValue("--tl-offset")).toBe("0");
+    act(() => cell("Afternoon").focus());
+    expect(board.style.getPropertyValue("--tl-offset")).toBe("60");
+    fireEvent.keyDown(cell("Afternoon"), { key: "ArrowRight" });
+    expect(cell("Afternoon")).toHaveFocus();
+    act(() => cell("Morning").focus());
+    expect(board.style.getPropertyValue("--tl-offset")).toBe("0");
+
+    // Center on a cell tunes its Channel now.
+    fireEvent.click(cell("Midday"));
+    expect(onTune).toHaveBeenCalledWith(rows[0].channel);
+    fireEvent.click(lead);
+    expect(onToggle).toHaveBeenCalledTimes(1);
+  });
+
+  it("changes Channel with Up and Down on the TV Watch control row, and keeps Left and Right for the row", () => {
+    document.documentElement.setAttribute("data-television", "");
+    const onZap = vi.fn();
+    render(
+      <Stage
+        television
+        playingChannel={channelFixture({ id: "ch-1", name: "Channel 1", group: "News" }).id}
+        player={null}
+        info={
+          <div className="now-playing">
+            <div className="now-playing__controls">
+              <button type="button">Pause</button>
+              <button type="button">Full screen</button>
+            </div>
+          </div>
+        }
+        rail={null}
+        keyHints={false}
+        onShowPicture={() => undefined}
+        onZap={onZap}
+      />,
+    );
+    const pause = screen.getByRole("button", { name: "Pause" });
+    const fullscreen = screen.getByRole("button", { name: "Full screen" });
+    act(() => fullscreen.focus());
+    fireEvent.keyDown(fullscreen, { key: "ArrowUp" });
+    expect(onZap).toHaveBeenLastCalledWith(-1);
+    fireEvent.keyDown(fullscreen, { key: "ArrowDown" });
+    expect(onZap).toHaveBeenLastCalledWith(1);
+    expect(fullscreen).toHaveFocus();
+    fireEvent.keyDown(fullscreen, { key: "ArrowLeft" });
+    expect(pause).toHaveFocus();
+    expect(onZap).toHaveBeenCalledTimes(2);
+  });
+
   it("checks visibility lazily on large Guide boards without reading styles for every loaded Channel", () => {
     document.documentElement.setAttribute("data-television", "");
     render(

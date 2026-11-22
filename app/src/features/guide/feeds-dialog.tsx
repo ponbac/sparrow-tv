@@ -1,6 +1,7 @@
 import { Dialog } from "@base-ui/react/dialog";
-import { RadioTower, X } from "lucide-react";
-import { lazy, Suspense, useRef } from "react";
+import { LoaderCircle, RadioTower, TriangleAlert, X } from "lucide-react";
+import { lazy, Suspense, useRef, useState } from "react";
+import type { CatalogStatus } from "../../client/contracts";
 import { handleLinearDialogArrows } from "./dialog-navigation";
 import type { FeedsDialogContentProps } from "./feeds-dialog-content";
 import "./feeds-dialog.css";
@@ -16,8 +17,31 @@ export function FeedsDialog(props: FeedsDialogContentProps) {
   const configured = props.status?.configuration.configured === true;
   const popupRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const pill =
+    props.television === true ? sourcePill(props.status, props.refreshing) : null;
   return (
-    <Dialog.Root>
+    <Dialog.Root open={open} onOpenChange={setOpen}>
+      {pill === null ? null : (
+        // The TV's one line about the sources, in place of the banner and the
+        // readouts; it opens Sources, where the details are.
+        <button
+          className="feeds-status"
+          type="button"
+          data-tone={pill.tone}
+          aria-label={`${pill.label}. Open Sources`}
+          title={pill.detail}
+          onFocus={loadFeedsDialogContent}
+          onClick={() => setOpen(true)}
+        >
+          {pill.tone === "busy" ? (
+            <LoaderCircle aria-hidden="true" />
+          ) : (
+            <TriangleAlert aria-hidden="true" />
+          )}
+          {pill.label}
+        </button>
+      )}
       <Dialog.Trigger
         className="feeds-trigger"
         data-attention={props.runtime === "installed" && !configured}
@@ -73,4 +97,35 @@ export function FeedsDialog(props: FeedsDialogContentProps) {
       </Dialog.Portal>
     </Dialog.Root>
   );
+}
+
+/** What the TV's status pill says about the sources, or null when all is well. */
+function sourcePill(
+  status: CatalogStatus | null,
+  refreshing: boolean,
+): {
+  readonly tone: "warning" | "busy" | "attention";
+  readonly label: string;
+  readonly detail: string;
+} | null {
+  if (status === null) return null;
+  if (!status.configuration.configured) {
+    return {
+      tone: "attention",
+      label: "Set up sources",
+      detail: "Open Sources to set up this device.",
+    };
+  }
+  const states = [status.m3u._tag, status.epg?._tag];
+  if (refreshing || states.includes("refreshing")) {
+    return { tone: "busy", label: "Updating", detail: "Sparrow is checking the sources." };
+  }
+  if (status.generation !== null && (states.includes("failed") || states.includes("stale"))) {
+    return {
+      tone: "warning",
+      label: states.includes("failed") ? "Saved catalog · update failed" : "Saved catalog",
+      detail: "Showing the saved catalog. A fresh source check is pending.",
+    };
+  }
+  return null;
 }
