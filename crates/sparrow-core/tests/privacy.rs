@@ -13,7 +13,7 @@ assert_not_impl_any!(SourceResponse: std::fmt::Debug, std::fmt::Display);
 assert_not_impl_any!(ChannelId: std::fmt::Display);
 assert_not_impl_any!(SearchTerm: std::fmt::Display);
 
-const PRIVATE_MARKERS: [&str; 11] = [
+const PRIVATE_MARKERS: [&str; 12] = [
     "configuration-user",
     "configuration-secret",
     "private-provider.fixture.invalid",
@@ -25,12 +25,13 @@ const PRIVATE_MARKERS: [&str; 11] = [
     "guide-user",
     "guide-secret",
     "private-guide.fixture.invalid",
+    "private-icons.fixture.invalid",
 ];
 
 #[tokio::test]
 async fn public_diagnostics_and_read_models_do_not_expose_private_source_data() {
     let valid_m3u = br#"#EXTM3U
-#EXTINF:-1 tvg-id="safe.one" group-title="News",Safe Channel
+#EXTINF:-1 tvg-id="safe.one" tvg-logo="https://private-icons.fixture.invalid/logo.png" group-title="News",Safe Channel
 https://playback-user:playback-secret@private-media.fixture.invalid/live?token=payload-canary
 "#;
     let valid_epg = br#"<tv>
@@ -58,6 +59,11 @@ https://playback-user:playback-secret@private-media.fixture.invalid/live?token=p
             PageLimit::new(10).expect("valid page limit"),
         )))
         .expect("catalog is available");
+    // The Channel Icon is projected, but `Debug` output never carries it.
+    assert_eq!(
+        page.items()[0].icon().map(|icon| icon.as_str()),
+        Some("https://private-icons.fixture.invalid/logo.png")
+    );
 
     assert_private_markers_absent(&format!("{:?}", core.status()));
     assert_private_markers_absent(

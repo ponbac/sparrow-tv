@@ -118,13 +118,32 @@ else
   require_200 "$work/playback.headers"
   [[ -s "$work/playback.bin" ]]
   grep -Eiq '^content-type:[[:space:]]*(video/mp2t|application/octet-stream)' "$work/playback.headers"
+  # A Channel's "icon" is the one URL a routine reply may carry, and only in the
+  # channels reply and at the two Channel positions in search. Check it there,
+  # strip it, then scan every reply. Status, groups and schedule stay intact.
   jq -s -e '
     def forbidden:
       paths as $p
       | ($p[-1] | tostring | ascii_downcase)
       | test("(?i)(url|location|headers?|fingerprint|raw_?body)$");
     def unsafe_value: .. | strings | test("(?i)(https?://|[^[:space:]]+:[^[:space:]]+@|authorization|bearer[[:space:]]|password)");
-    all(forbidden; not) and (any(unsafe_value) | not)
+    def channel_icon_ok:
+      . == null or (type == "string"
+        and test("^https?://[^/\\\\?#@[:space:]]+([/\\\\?#][^[:space:]]*)?$"; "i")
+        and (test("authorization|bearer[[:space:]]|password"; "i") | not));
+    def is_channel: type == "object" and (.id | type) == "string" and (.name | type) == "string";
+    def checked_icon: if has("icon") then (.icon | channel_icon_ok) else true end;
+    def strip_icon: if is_channel then del(.icon) else . end;
+    def strip_icons(items): if (items | type) == "array" then items |= map(strip_icon) else . end;
+    . as [$status, $groups, $channels, $search, $schedule]
+    | all(($channels.items[]?, $search.channels.items[]?, $search.programmes.items[]?.channel?) | select(is_channel); checked_icon)
+    and ([
+      $status,
+      $groups,
+      ($channels | strip_icons(.items)),
+      ($search | strip_icons(.channels.items) | if (.programmes.items | type) == "array" then .programmes.items |= map(if type == "object" and has("channel") then .channel |= strip_icon else . end) else . end),
+      $schedule
+    ] | all(forbidden; not) and (any(unsafe_value) | not))
   ' "$work/status.json" "$work/groups.json" "$work/channels.json" \
     "$work/search.json" "$work/schedule.json" >/dev/null
   gates='["health","ui-authentication","api-authentication","refresh-state","browse","search","guide","playback-by-channel-id","privacy-projection"]'

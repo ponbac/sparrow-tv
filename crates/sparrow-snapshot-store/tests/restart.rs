@@ -21,9 +21,10 @@ use tempfile::TempDir;
 const M3U_URL: &str = "https://private.fixture.invalid/channels.m3u";
 const EPG_URL: &str = "https://private.fixture.invalid/guide.xml";
 const M3U: &[u8] = br#"#EXTM3U
-#EXTINF:-1 tvg-id="alpha.id" group-title="News",Alpha
+#EXTINF:-1 tvg-id="alpha.id" tvg-logo="https://icons.example/alpha.png" group-title="News",Alpha
 https://media.fixture.invalid/alpha?token=private-playback
 "#;
+const ALPHA_ICON: &str = "https://icons.example/alpha.png";
 const EPG: &[u8] = br#"<tv>
 <channel id="alpha.id"><display-name>Alpha</display-name></channel>
 <programme start="20260829120000 +0000" stop="20260829130000 +0000" channel="alpha.id">
@@ -691,6 +692,15 @@ fn channel_names(core: &SparrowCore) -> Vec<String> {
         .collect()
 }
 
+fn channel_icons(core: &SparrowCore) -> Vec<Option<String>> {
+    core.list_channels(ChannelQuery::all(PageRequest::first(limit(10))))
+        .expect("catalog is queryable")
+        .items()
+        .iter()
+        .map(|channel| channel.icon().map(|icon| icon.as_str().to_owned()))
+        .collect()
+}
+
 fn programme_titles(core: &SparrowCore) -> Vec<String> {
     let channels = core
         .list_channels(ChannelQuery::all(PageRequest::first(limit(10))))
@@ -810,6 +820,7 @@ async fn processed_catalog_reopens_without_reading_source_payloads_and_recovers_
         "warm startup must not parse raw sources"
     );
     assert_eq!(warm.channel(&channel).unwrap().name(), "Alpha");
+    assert_eq!(channel_icons(&warm), [Some(ALPHA_ICON.to_owned())]);
     let results = warm
         .search_channels(
             sparrow_core::SearchTerm::parse("alpha").unwrap(),
@@ -832,9 +843,22 @@ async fn processed_catalog_reopens_without_reading_source_payloads_and_recovers_
     let mut malformed = cache[..32].to_vec();
     malformed.extend_from_slice(blake3::hash(b"{}").as_bytes());
     malformed.extend_from_slice(b"{}");
-    for (index, invalid) in [wrong_key, damaged, cache[..40].to_vec(), malformed]
-        .into_iter()
-        .enumerate()
+    // A previous processed-catalog format under the current key and a valid
+    // checksum: the store accepts the envelope and core rejects the layout.
+    let mut previous_format = cache[64..].to_vec();
+    previous_format[10] = 3;
+    let mut previous_format_envelope = cache[..32].to_vec();
+    previous_format_envelope.extend_from_slice(blake3::hash(&previous_format).as_bytes());
+    previous_format_envelope.extend_from_slice(&previous_format);
+    for (index, invalid) in [
+        wrong_key,
+        damaged,
+        cache[..40].to_vec(),
+        malformed,
+        previous_format_envelope,
+    ]
+    .into_iter()
+    .enumerate()
     {
         // Replace atomically rather than truncating in place so no background
         // worker holding a mapping to the prior inode can observe truncation.
@@ -846,7 +870,15 @@ async fn processed_catalog_reopens_without_reading_source_payloads_and_recovers_
         let recovered = snapshot_restart(Arc::clone(&store), false).await;
         wait_for_cache_write(&store, writes).await;
         assert_eq!(programme_titles(&recovered), ["Persisted Programme"]);
+        assert_eq!(channel_icons(&recovered), [Some(ALPHA_ICON.to_owned())]);
         assert_eq!(store.candidate_opens.load(Ordering::SeqCst), 2);
+        drop(recovered);
+
+        // The rebuilt cache serves the icon again without reading raw sources.
+        store.candidate_opens.store(0, Ordering::SeqCst);
+        let rewarmed = snapshot_restart(Arc::clone(&store), true).await;
+        assert_eq!(channel_icons(&rewarmed), [Some(ALPHA_ICON.to_owned())]);
+        assert_eq!(store.candidate_opens.load(Ordering::SeqCst), 0);
     }
     // Switching Source Configuration must never load the prior owner's catalog.
     let other = SparrowCore::bootstrap_installed(

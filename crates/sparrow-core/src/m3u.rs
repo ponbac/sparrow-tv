@@ -5,6 +5,7 @@ use url::Url;
 
 use crate::domain::{
     ChannelGroupFilter, M3uFailureKind, SafeFailure, SnapshotOperation, SourceKind, StoreError,
+    is_channel_icon_location,
 };
 
 pub(crate) struct ParsedChannel {
@@ -13,6 +14,9 @@ pub(crate) struct ParsedChannel {
     pub(crate) group: Arc<str>,
     /// Validated HTTP(S) playback location; parsed into `url::Url` lazily on tune.
     pub(crate) playback: Arc<str>,
+    /// The `tvg-logo` location exactly as given, when it is a usable absolute
+    /// HTTP(S) URL. Equal icons share one interned allocation.
+    pub(crate) icon: Option<Arc<str>>,
 }
 
 struct PendingEntry {
@@ -20,6 +24,7 @@ struct PendingEntry {
     tvg_id: String,
     name: String,
     group: String,
+    icon: Option<String>,
 }
 
 #[derive(Default)]
@@ -27,6 +32,7 @@ struct MetadataAttributes {
     tvg_id: Option<String>,
     tvg_name: Option<String>,
     group_title: Option<String>,
+    tvg_logo: Option<String>,
 }
 
 pub(crate) fn parse(reader: &mut dyn BufRead) -> Result<Vec<ParsedChannel>, SafeFailure> {
@@ -34,6 +40,7 @@ pub(crate) fn parse(reader: &mut dyn BufRead) -> Result<Vec<ParsedChannel>, Safe
     let empty: Arc<str> = Arc::from("");
     let mut interned_groups: HashSet<Arc<str>> = HashSet::new();
     interned_groups.insert(Arc::clone(&empty));
+    let mut interned_icons: HashSet<Arc<str>> = HashSet::new();
     let mut pending: Option<PendingEntry> = None;
     let mut header_seen = false;
     let mut first_line = true;
@@ -121,11 +128,21 @@ pub(crate) fn parse(reader: &mut dyn BufRead) -> Result<Vec<ParsedChannel>, Safe
             interned_groups.insert(Arc::clone(&group));
             group
         };
+        let icon = entry.icon.map(|icon| {
+            if let Some(existing) = interned_icons.get(icon.as_str()) {
+                Arc::clone(existing)
+            } else {
+                let icon: Arc<str> = Arc::from(icon);
+                interned_icons.insert(Arc::clone(&icon));
+                icon
+            }
+        });
         channels.push(ParsedChannel {
             tvg_id,
             name: Arc::from(entry.name),
             group,
             playback: Arc::from(playback.as_str()),
+            icon,
         });
     }
 
@@ -211,6 +228,10 @@ fn parse_metadata(metadata: &str, entry: u32) -> Result<PendingEntry, SafeFailur
             .as_deref()
             .map(normalize_queryable_group)
             .unwrap_or_default(),
+        icon: attributes.tvg_logo.and_then(|logo| {
+            let logo = logo.trim();
+            is_channel_icon_location(logo).then(|| logo.to_owned())
+        }),
     })
 }
 
@@ -300,6 +321,8 @@ fn parse_attributes(attributes: &str, entry: u32) -> Result<MetadataAttributes, 
             parsed.tvg_name = Some(value);
         } else if key.eq_ignore_ascii_case("group-title") {
             parsed.group_title = Some(value);
+        } else if key.eq_ignore_ascii_case("tvg-logo") {
+            parsed.tvg_logo = Some(value);
         }
     }
 

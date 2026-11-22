@@ -12,7 +12,7 @@ const numbersById = new Map<string, number>();
  * The guide folds adjacent rows that share a Channel Number, so every distinct
  * id gets its own number, counted in the order a test file first names it and
  * repeated for the same id. Pass `number` and `variant` only to build the
- * Quality Variants of one guide row.
+ * Quality Variants of one guide row. `icon` defaults to `null`.
  */
 export function channelFixture(input: {
   readonly id: string;
@@ -20,6 +20,7 @@ export function channelFixture(input: {
   readonly group: string;
   readonly number?: number;
   readonly variant?: ChannelVariant | null;
+  readonly icon?: string | null;
 }): ChannelSummary {
   return clientSchemas.channel.parse({
     id: input.id,
@@ -27,6 +28,7 @@ export function channelFixture(input: {
     group: input.group,
     number: input.number ?? numberFor(input.id),
     variant: input.variant ?? null,
+    icon: input.icon ?? null,
   });
 }
 

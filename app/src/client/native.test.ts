@@ -54,6 +54,7 @@ const CHANNEL = channelFixture({
   id: "world-news",
   name: "World News",
   group: "News",
+  icon: "https://icons.example/world-news.png",
 });
 
 const CHANNELS_PAGE = clientSchemas.channelsPage.parse({

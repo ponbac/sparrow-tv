@@ -13,6 +13,7 @@ const EUROSPORT = channelFixture({
   id: "eurosport-1-fhd-se",
   name: "Eurosport 1 FHD SE",
   group: "Sport",
+  icon: "https://icons.example/eurosport.png",
 });
 
 const EUROSPORT_2 = channelFixture({
@@ -83,6 +84,25 @@ describe("executeAgentControl", () => {
         _tag: "snapshot",
         channelName: "Eurosport 1 FHD SE",
         diagnostics: { phase: "playing" },
+      },
+    });
+  });
+
+  it("returns only name and group for search hits, never a Channel Icon", async () => {
+    await expect(
+      executeAgentControl(
+        { _tag: "search", term: "Eurosport" },
+        catalogWith([EUROSPORT, EUROSPORT_2]),
+        null,
+      ),
+    ).resolves.toEqual({
+      ok: true,
+      result: {
+        _tag: "channels",
+        channels: [
+          { name: "Eurosport 1 FHD SE", group: "Sport" },
+          { name: "Eurosport 2 FHD SE", group: "Sport" },
+        ],
       },
     });
   });

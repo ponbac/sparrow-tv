@@ -2,6 +2,7 @@ use std::{
     cell::Cell,
     collections::{BTreeMap, HashSet, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
+    mem::size_of,
     sync::Arc,
 };
 
@@ -19,7 +20,10 @@ use crate::{
     xmltv::{ParsedGuide, ParsedGuideChannel, ParsedProgramme},
 };
 
-use super::ChannelCatalog;
+use super::{
+    ChannelCatalog,
+    flat::{ChannelHot, FlatHeader, SECTION_COUNT, Section},
+};
 
 assert_not_impl_any!(ChannelCatalog: Clone);
 
@@ -334,12 +338,21 @@ fn incremental_epg_and_m3u_rebuilds_are_byte_identical_to_full_from_parsed() {
     let config = configuration();
     let initial_channels = vec![
         parsed_channel_with_tvg("tvg.a", "Alpha HD", "News"),
-        parsed_channel_with_tvg("tvg.a", "Alpha FHD", "News"),
+        with_icon(
+            parsed_channel_with_tvg("tvg.a", "Alpha FHD", "News"),
+            "https://icons.example/alpha.png",
+        ),
         parsed_channel_with_tvg("", "World News", "News"),
     ];
     let updated_channels = vec![
-        parsed_channel_with_tvg("tvg.a", "Alpha HD", "News"),
-        parsed_channel_with_tvg("tvg.unmatched", "New Match", "Sports"),
+        with_icon(
+            parsed_channel_with_tvg("tvg.a", "Alpha HD", "News"),
+            "https://icons.example/alpha.png",
+        ),
+        with_icon(
+            parsed_channel_with_tvg("tvg.unmatched", "New Match", "Sports"),
+            "http://icons.example/new.jpg",
+        ),
     ];
     let guide = ParsedGuide {
         channels: vec![
@@ -599,12 +612,13 @@ fn structural_validator_rejects_short_tables_flag_mismatch_bad_urls_and_corrupt_
     let base = built.as_bytes().to_vec();
 
     // 1. Short parallel table with contiguous sections (remove 1 `Span` = 8 bytes
-    //    from ChannelSearchSpans section 18 and shift all remaining sections
+    //    from ChannelSearchSpans and shift all remaining sections
     //    through `SECTION_COUNT` so the file stays contiguous through EOF and
     //    reaches the exact record-count check).
     let mut short_table = base.clone();
     let section_count = super::flat::SECTION_COUNT;
-    let sec18_off_pos = 60 + 18 * 16;
+    let search_spans = Section::ChannelSearchSpans as usize;
+    let sec18_off_pos = section_entry(search_spans);
     let sec18_off = u64::from_le_bytes(
         short_table[sec18_off_pos..sec18_off_pos + 8]
             .try_into()
@@ -619,16 +633,16 @@ fn structural_validator_rejects_short_tables_flag_mismatch_bad_urls_and_corrupt_
     short_table.drain(sec18_off + sec18_len - 8..sec18_off + sec18_len);
     short_table[sec18_off_pos + 8..sec18_off_pos + 16]
         .copy_from_slice(&((sec18_len - 8) as u64).to_le_bytes());
-    for section_index in 19..section_count {
-        let pos = 60 + section_index * 16;
+    for section_index in search_spans + 1..section_count {
+        let pos = section_entry(section_index);
         let off = u64::from_le_bytes(short_table[pos..pos + 8].try_into().unwrap());
         short_table[pos..pos + 8].copy_from_slice(&(off - 8).to_le_bytes());
     }
     // Verify the mutated fixture passes section contiguity all the way to EOF
-    // so failure must come from the record-count check on section 18.
-    let mut expected_cursor = (60 + section_count * 16) as u64;
+    // so failure must come from the record-count check on ChannelSearchSpans.
+    let mut expected_cursor = size_of::<FlatHeader>() as u64;
     for section_index in 0..section_count {
-        let pos = 60 + section_index * 16;
+        let pos = section_entry(section_index);
         let off = u64::from_le_bytes(short_table[pos..pos + 8].try_into().unwrap());
         let len = u64::from_le_bytes(short_table[pos + 8..pos + 16].try_into().unwrap());
         assert_eq!(
@@ -684,10 +698,9 @@ fn structural_validator_rejects_short_tables_flag_mismatch_bad_urls_and_corrupt_
         .is_none()
     );
 
-    // 5. Duplicate index in channels_by_id (section 6).
+    // 5. Duplicate index in channels_by_id.
     let mut dup_by_id = base.clone();
-    let sec6_off =
-        u64::from_le_bytes(dup_by_id[60 + 6 * 16..60 + 6 * 16 + 8].try_into().unwrap()) as usize;
+    let sec6_off = section_offset(&dup_by_id, Section::ChannelsById);
     let first_idx = dup_by_id[sec6_off..sec6_off + 4].to_vec();
     dup_by_id[sec6_off + 4..sec6_off + 8].copy_from_slice(&first_idx);
     assert!(
@@ -698,13 +711,9 @@ fn structural_validator_rejects_short_tables_flag_mismatch_bad_urls_and_corrupt_
         .is_none()
     );
 
-    // 6. Underestimated schedule_overlap (section 9) hiding an earlier long programme.
+    // 6. Underestimated schedule_overlap hiding an earlier long programme.
     let mut bad_overlap = base.clone();
-    let sec9_off = u64::from_le_bytes(
-        bad_overlap[60 + 9 * 16..60 + 9 * 16 + 8]
-            .try_into()
-            .unwrap(),
-    ) as usize;
+    let sec9_off = section_offset(&bad_overlap, Section::ScheduleOverlap);
     // rich_catalog has programme 0 [0..100] followed by programme 1 [10..20];
     // setting overlap[1] = 1 instead of 0 underestimates the running max end.
     bad_overlap[sec9_off + 4..sec9_off + 8].copy_from_slice(&1_u32.to_le_bytes());
@@ -716,14 +725,10 @@ fn structural_validator_rejects_short_tables_flag_mismatch_bad_urls_and_corrupt_
         .is_none()
     );
 
-    // 7. Overlapping/aliased PlaybackSpans (section 12): aliasing channel 1 to
+    // 7. Overlapping/aliased PlaybackSpans: aliasing channel 1 to
     // channel 0's playback span must be rejected to prevent parsing amplification.
     let mut aliased_playback = base.clone();
-    let sec12_off = u64::from_le_bytes(
-        aliased_playback[60 + 12 * 16..60 + 12 * 16 + 8]
-            .try_into()
-            .unwrap(),
-    ) as usize;
+    let sec12_off = section_offset(&aliased_playback, Section::PlaybackSpans);
     let span0 = aliased_playback[sec12_off..sec12_off + 8].to_vec();
     aliased_playback[sec12_off + 8..sec12_off + 16].copy_from_slice(&span0);
     assert!(
@@ -734,17 +739,14 @@ fn structural_validator_rejects_short_tables_flag_mismatch_bad_urls_and_corrupt_
         .is_none()
     );
 
-    // 8. Overlapping/aliased ChannelNames (section 4 -> ChannelHot.name_off/len):
+    // 8. Overlapping/aliased ChannelNames (ChannelsHot -> ChannelHot.name_off/len):
     // aliasing channel 1's name span to channel 0 must be rejected.
     let mut aliased_name = base.clone();
-    let sec4_off = u64::from_le_bytes(
-        aliased_name[60 + 4 * 16..60 + 4 * 16 + 8]
-            .try_into()
-            .unwrap(),
-    ) as usize;
-    // ChannelHot stride = 52; name_off/name_len live at bytes 32..40.
+    let sec4_off = section_offset(&aliased_name, Section::ChannelsHot);
+    // name_off/name_len live at bytes 32..40 of each ChannelHot record.
+    let stride = size_of::<ChannelHot>();
     let name0 = aliased_name[sec4_off + 32..sec4_off + 40].to_vec();
-    aliased_name[sec4_off + 52 + 32..sec4_off + 52 + 40].copy_from_slice(&name0);
+    aliased_name[sec4_off + stride + 32..sec4_off + stride + 40].copy_from_slice(&name0);
     assert!(
         ChannelCatalog::from_cache_mapping(
             crate::ports::CatalogCacheMapping::new(aliased_name),
@@ -1074,6 +1076,206 @@ fn schedule_overlap_index_locates_deep_history_in_logarithmic_probes() {
     }
 }
 
+#[test]
+fn quality_variants_share_the_first_icon_their_guide_row_names() {
+    let built = catalog(
+        vec![
+            parsed_channel("Arena SD", "Sport"),
+            with_icon(
+                parsed_channel("Arena HD", "Sport"),
+                "https://icons.example/arena-hd.png",
+            ),
+            with_icon(
+                parsed_channel("Arena FHD", "Sport"),
+                "https://icons.example/arena-fhd.png",
+            ),
+            with_icon(
+                parsed_channel("Solo", "Sport"),
+                "http://icons.example/shared.jpg",
+            ),
+            with_icon(
+                parsed_channel("Other", "Sport"),
+                "http://icons.example/shared.jpg",
+            ),
+            parsed_channel("Bare", "Sport"),
+        ],
+        generation(1),
+    );
+    let page = built
+        .channels_page(&ChannelQuery::all(PageRequest::first(
+            PageLimit::new(10).unwrap(),
+        )))
+        .unwrap();
+    let icons: Vec<(&str, Option<&str>)> = page
+        .items()
+        .iter()
+        .map(|channel| (channel.name(), channel.icon().map(|icon| icon.as_str())))
+        .collect();
+    assert_eq!(
+        icons,
+        vec![
+            ("Arena SD", Some("https://icons.example/arena-hd.png")),
+            ("Arena HD", Some("https://icons.example/arena-hd.png")),
+            ("Arena FHD", Some("https://icons.example/arena-hd.png")),
+            ("Solo", Some("http://icons.example/shared.jpg")),
+            ("Other", Some("http://icons.example/shared.jpg")),
+            ("Bare", None),
+        ]
+    );
+
+    // A single variant fetched on its own reports its row's icon too.
+    let details = built.channel(page.items()[2].id()).unwrap();
+    assert_eq!(
+        details.icon().map(|icon| icon.as_str()),
+        Some("https://icons.example/arena-hd.png")
+    );
+
+    // Only the icons a row resolves to are stored, each once.
+    assert_eq!(
+        built.flat.as_bytes().len()
+            - catalog(
+                vec![
+                    parsed_channel("Arena SD", "Sport"),
+                    parsed_channel("Arena HD", "Sport"),
+                    parsed_channel("Arena FHD", "Sport"),
+                    parsed_channel("Solo", "Sport"),
+                    parsed_channel("Other", "Sport"),
+                    parsed_channel("Bare", "Sport"),
+                ],
+                generation(1),
+            )
+            .flat
+            .as_bytes()
+            .len(),
+        2 * size_of::<super::flat::Span>()
+            + "https://icons.example/arena-hd.png".len()
+            + "http://icons.example/shared.jpg".len()
+    );
+}
+
+#[test]
+fn channel_icons_survive_a_mapped_reopen_and_reach_search_and_guide_rows() {
+    let channels = vec![
+        with_icon(
+            parsed_channel_with_tvg("arena.tv", "Arena HD", "Sport"),
+            "https://icons.example/arena.png",
+        ),
+        parsed_channel_with_tvg("news.tv", "News", "Sport"),
+    ];
+    let guide = ParsedGuide {
+        channels: vec![ParsedGuideChannel {
+            id: Arc::from("arena.tv"),
+            display_names: vec![Arc::from("Arena")],
+        }],
+        programmes: vec![ParsedProgramme {
+            title: Arc::from("Arena Live"),
+            ..parsed_programme_for("arena.tv", 0, 100)
+        }],
+    };
+    let built =
+        ChannelCatalog::from_parsed(&configuration(), &channels, Some(&guide), generation(1));
+    let reopened = ChannelCatalog::from_cache_mapping(
+        crate::ports::CatalogCacheMapping::new(built.as_bytes().to_vec()),
+        generation(1),
+    )
+    .expect("a built catalog with icons validates");
+    let limit = PageLimit::new(10).unwrap();
+
+    let search = reopened
+        .search(&SearchRequest::new(
+            SearchTerm::parse("arena").unwrap(),
+            PageRequest::first(limit),
+            PageRequest::first(limit),
+        ))
+        .unwrap();
+    assert_eq!(
+        search.channels().items()[0]
+            .icon()
+            .map(|icon| icon.as_str()),
+        Some("https://icons.example/arena.png")
+    );
+    let hit = &search.programmes().items()[0];
+    assert_eq!(
+        hit.channel().icon().map(|icon| icon.as_str()),
+        Some("https://icons.example/arena.png")
+    );
+
+    let rows = reopened
+        .guide_window(
+            &GuideWindowQuery::new(
+                instant(0),
+                instant(3_600),
+                ChannelQuery::all(PageRequest::first(limit)),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let icons: Vec<Option<&str>> = rows
+        .items()
+        .iter()
+        .map(|row| row.channel().icon().map(|icon| icon.as_str()))
+        .collect();
+    assert_eq!(icons, vec![Some("https://icons.example/arena.png"), None]);
+}
+
+#[test]
+fn structural_validator_rejects_corrupt_channel_icons() {
+    let built = catalog(
+        vec![
+            with_icon(
+                parsed_channel("Alpha", "News"),
+                "https://icons.example/alpha.png",
+            ),
+            with_icon(
+                parsed_channel("Beta", "News"),
+                "https://icons.example/beta.png",
+            ),
+        ],
+        generation(1),
+    );
+    let base = built.as_bytes().to_vec();
+    let reopen = |bytes: Vec<u8>| {
+        ChannelCatalog::from_cache_mapping(
+            crate::ports::CatalogCacheMapping::new(bytes),
+            generation(1),
+        )
+    };
+    assert!(reopen(base.clone()).is_some());
+
+    // icon_index lives at bytes 48..52 of each ChannelHot record.
+    let channels_hot = section_offset(&base, Section::ChannelsHot);
+    let mut out_of_range = base.clone();
+    out_of_range[channels_hot + 48..channels_hot + 52].copy_from_slice(&2_u32.to_le_bytes());
+    assert!(reopen(out_of_range).is_none());
+
+    // An icon that is no longer an absolute HTTP(S) location.
+    let mut bad_scheme = base.clone();
+    let needle = b"https://icons.example/beta.png";
+    let pos = bad_scheme
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .expect("icon exists in flat buffer");
+    bad_scheme[pos..pos + 8].copy_from_slice(b"ftp://ab");
+    assert!(reopen(bad_scheme).is_none());
+
+    // Aliasing the second icon span onto the first.
+    let icon_spans = section_offset(&base, Section::IconSpans);
+    let mut aliased = base.clone();
+    let span0 = aliased[icon_spans..icon_spans + 8].to_vec();
+    aliased[icon_spans + 8..icon_spans + 16].copy_from_slice(&span0);
+    assert!(reopen(aliased).is_none());
+}
+
+/// Byte position of a section's directory entry in the flat header.
+fn section_entry(section_index: usize) -> usize {
+    size_of::<FlatHeader>() - SECTION_COUNT * 16 + section_index * 16
+}
+
+fn section_offset(bytes: &[u8], section: Section) -> usize {
+    let pos = section_entry(section as usize);
+    u64::from_le_bytes(bytes[pos..pos + 8].try_into().unwrap()) as usize
+}
+
 fn catalog(parsed: Vec<ParsedChannel>, generation: CatalogGeneration) -> ChannelCatalog {
     ChannelCatalog::from_parsed(&configuration(), &parsed, None, generation)
 }
@@ -1160,6 +1362,14 @@ fn parsed_channel_with_tvg(tvg_id: &str, name: &str, group: &str) -> ParsedChann
         name: Arc::from(name),
         group: Arc::from(group),
         playback: Arc::from("https://media.fixture.invalid/channel"),
+        icon: None,
+    }
+}
+
+fn with_icon(channel: ParsedChannel, icon: &str) -> ParsedChannel {
+    ParsedChannel {
+        icon: Some(Arc::from(icon)),
+        ..channel
     }
 }
 
@@ -1177,6 +1387,7 @@ fn unique_channels(count: usize, reversed: bool) -> Vec<ParsedChannel> {
             playback: Arc::from(format!(
                 "https://media.fixture.invalid/channel/{index}?token=private-{index}"
             )),
+            icon: None,
         })
         .collect()
 }
@@ -1195,6 +1406,7 @@ fn duplicate_channels(count: usize, reversed: bool) -> Vec<ParsedChannel> {
             playback: Arc::from(format!(
                 "https://media.fixture.invalid/backup/{index}?token=private-{index}"
             )),
+            icon: None,
         })
         .collect()
 }

@@ -21,6 +21,12 @@ fallback. The cache is disposable and never bundled into the app or exported.
   starts normal network revalidation. Source changes invalidate delayed recovery.
 - Cache writes run off the startup/refresh critical path. One worker coalesces
   pending writes to the latest view; closing the core stops pending work.
+- The flat format is `sparrow-processed-catalog-v4` (magic `SPARROWCAT\x04`).
+  Each `ChannelHot` record holds an index into one deduplicated Channel Icon
+  table (`IconSpans`/`IconStrings`, hot tier, first-use order). A file in an
+  older format misses on its key or fails the magic check, so the next launch
+  rebuilds from raw Source Snapshots and overwrites it; there is no migration
+  step.
 - `catalog-cache-v1` lives beside private snapshots. It is bounded to 256 MiB,
   created with mode 0600, checksummed and atomically replaced. Missing, damaged,
   incompatible, or unwritable caches do not prevent snapshot recovery.

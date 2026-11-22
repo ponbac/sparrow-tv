@@ -390,6 +390,7 @@ async fn capabilities_status_and_browse_match_the_real_core_fixture() {
                     "group": channel.group(),
                     "number": channel.number(),
                     "variant": null,
+                    "icon": null,
                 }))
                 .collect()
         )
@@ -417,6 +418,7 @@ async fn capabilities_status_and_browse_match_the_real_core_fixture() {
             "group": direct_details.group(),
             "number": direct_details.number(),
             "variant": null,
+            "icon": null,
         })
     );
 }
@@ -436,6 +438,7 @@ async fn channel_json_carries_the_channel_number_and_quality_variant() {
                 "group": "Sport",
                 "number": 4,
                 "variant": { "quality": "hd", "baseName": "Arena" },
+                "icon": "https://icons.example/arena.png",
             },
             {
                 "id": id(1),
@@ -443,6 +446,7 @@ async fn channel_json_carries_the_channel_number_and_quality_variant() {
                 "group": "Sport",
                 "number": 4,
                 "variant": { "quality": "uhd", "baseName": "Arena" },
+                "icon": "https://icons.example/arena.png",
             },
             {
                 "id": id(2),
@@ -450,6 +454,7 @@ async fn channel_json_carries_the_channel_number_and_quality_variant() {
                 "group": "Sport",
                 "number": 5,
                 "variant": { "quality": "hd", "baseName": "Arena" },
+                "icon": null,
             },
             {
                 "id": id(3),
@@ -457,6 +462,7 @@ async fn channel_json_carries_the_channel_number_and_quality_variant() {
                 "group": "Sport",
                 "number": 6,
                 "variant": null,
+                "icon": null,
             },
         ])
     );

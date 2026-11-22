@@ -5,12 +5,12 @@ use url::Url;
 
 use crate::{
     domain::{
-        CHANNEL_ID_PREFIX, CatalogGeneration, ChannelDetails, ChannelGroupView, ChannelId,
-        ChannelQuality, ChannelQuery, ChannelSummary, ChannelVariant, CoreError, CursorQueryHash,
-        GuideProgramme, GuideWindowChannel, GuideWindowQuery, Page, PageLimit, PageRequest,
-        PageTextArena, ProgrammeSearchHit, ProgrammeSummary, ResolvedPlaybackSource, ScheduleQuery,
-        SearchRequest, SearchResults, SearchTerm, SecretPlaybackLocation, SelectionPrefix,
-        SourceConfiguration, TextSlot,
+        CHANNEL_ID_PREFIX, CatalogGeneration, ChannelDetails, ChannelGroupView, ChannelIcon,
+        ChannelId, ChannelQuality, ChannelQuery, ChannelSummary, ChannelVariant, CoreError,
+        CursorQueryHash, GuideProgramme, GuideWindowChannel, GuideWindowQuery, Page, PageLimit,
+        PageRequest, PageTextArena, ProgrammeSearchHit, ProgrammeSummary, ResolvedPlaybackSource,
+        ScheduleQuery, SearchRequest, SearchResults, SearchTerm, SecretPlaybackLocation,
+        SelectionPrefix, SourceConfiguration, TextSlot,
     },
     m3u::ParsedChannel,
     ports::{CatalogCacheMapping, SnapshotCandidate, SnapshotStore},
@@ -400,7 +400,11 @@ impl ChannelCatalog {
             return Arc::from([]);
         }
         debug_assert!(indices.len() <= MAX_PAGE_ITEMS);
-        let mut arena = PageTextArena::with_capacity(indices.len().saturating_mul(96));
+        let icon_bytes: usize = indices
+            .iter()
+            .map(|&idx| self.flat.channel_icon_len(idx))
+            .sum();
+        let mut arena = PageTextArena::with_capacity(indices.len().saturating_mul(96) + icon_bytes);
         let mut group_slots = [(0_u32, empty_slot()); MAX_PAGE_ITEMS];
         let mut group_slot_count = 0_usize;
         let mut pending = [ChannelSlots::empty(); MAX_PAGE_ITEMS];
@@ -443,12 +447,17 @@ impl ChannelCatalog {
             let (_, base_name) = variants::split(name)?;
             Some((q, arena.push_str(&base_name)))
         });
+        let icon = self
+            .flat
+            .channel_icon(ch_idx)
+            .map(|icon| arena.push_str(icon));
         ChannelSlots {
             id,
             name: name_slot,
             group: group_slot,
             number: ch.number.get(),
             variant,
+            icon,
         }
     }
 
@@ -458,15 +467,18 @@ impl ChannelCatalog {
         let group = self.flat.group_name(ch.group_index.get() as usize);
         let quality = decode_quality(ch.quality).expect("validated channel quality");
         let base_name = quality.and_then(|q| variants::split(name).map(|(_, base)| (q, base)));
+        let icon = self.flat.channel_icon(ch_idx);
         let total_bytes = CHANNEL_ID_HEX_LEN
             + name.len()
             + group.len()
-            + base_name.as_ref().map_or(0, |(_, b)| b.len());
+            + base_name.as_ref().map_or(0, |(_, b)| b.len())
+            + icon.map_or(0, str::len);
         let mut arena = PageTextArena::with_capacity(total_bytes);
         let id_slot = arena.push_channel_id_digest(&ch.id_digest);
         let name_slot = arena.push_str(name);
         let group_slot = arena.push_str(group);
         let variant_slot = base_name.map(|(q, base)| (q, arena.push_str(&base)));
+        let icon_slot = icon.map(|icon| arena.push_str(icon));
         let frozen = arena.finish();
         ChannelDetails::new(
             ChannelId::from_shared(frozen.resolve(id_slot)),
@@ -474,6 +486,7 @@ impl ChannelCatalog {
             frozen.resolve(group_slot),
             ch.number.get(),
             variant_slot.map(|(q, slot)| ChannelVariant::new(q, frozen.resolve(slot))),
+            icon_slot.map(|slot| ChannelIcon::new(frozen.resolve(slot))),
         )
     }
 
@@ -759,6 +772,7 @@ struct ChannelSlots {
     group: TextSlot,
     number: u32,
     variant: Option<(ChannelQuality, TextSlot)>,
+    icon: Option<TextSlot>,
 }
 
 impl ChannelSlots {
@@ -769,6 +783,7 @@ impl ChannelSlots {
             group: empty_slot(),
             number: 0,
             variant: None,
+            icon: None,
         }
     }
 }
@@ -784,6 +799,7 @@ fn resolve_channel_summary(
         item.number,
         item.variant
             .map(|(quality, base)| ChannelVariant::new(quality, frozen.resolve(base))),
+        item.icon.map(|icon| ChannelIcon::new(frozen.resolve(icon))),
     )
 }
 
