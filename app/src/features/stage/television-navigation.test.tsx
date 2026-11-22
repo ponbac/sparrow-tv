@@ -762,6 +762,67 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     expect(closeBtn).toHaveFocus();
   });
 
+  it("marks Exit fullscreen while the signal opens, then gives focus back to the picture once it plays", () => {
+    vi.useFakeTimers();
+    document.documentElement.setAttribute("data-television", "");
+
+    function OpeningFullscreen({ playing }: { readonly playing: boolean }) {
+      const videoRef = createRef<HTMLVideoElement>();
+      useTelevisionControls(
+        { enabled: true, mode: "watch", onShowGuide: () => undefined, onZap: () => undefined },
+        null,
+      );
+      const chrome: StageChrome = {
+        television: true,
+        controls: "bar",
+        controlsSlot: null,
+        fullscreenTarget: null,
+        menuSide: "bottom",
+        reportPicture: () => undefined,
+      };
+      return (
+        <StageChromeProvider value={chrome}>
+          <PlaybackSurface
+            channel={channelFixture({ id: "ch-open", name: "Opening Channel", group: "News" })}
+            state={playing ? { _tag: "playing" } : { _tag: "starting" }}
+            videoKey="ch-open"
+            videoRef={videoRef}
+            privacyCopy="Private"
+            onPlaying={() => undefined}
+            volume={1}
+            muted={false}
+            fullscreen
+            nativeVideo
+            onVolumeChange={() => undefined}
+            onToggleMuted={() => undefined}
+            onRequestFullscreen={() => undefined}
+            onStop={() => undefined}
+            onAutoplayFailure={() => undefined}
+          />
+        </StageChromeProvider>
+      );
+    }
+
+    const view = render(<OpeningFullscreen playing={false} />);
+    const section = screen.getByRole("region", { name: "Opening Channel" });
+    giveBox(section, new DOMRect(0, 0, 960, 540));
+    const exit = screen.getByRole("button", { name: "Exit fullscreen" });
+    giveBox(exit, new DOMRect(340, 300, 140, 38));
+    Object.defineProperty(document, "fullscreenElement", { configurable: true, value: section });
+    act(() => document.dispatchEvent(new Event("fullscreenchange")));
+    act(() => {
+      vi.advanceTimersByTime(50);
+    });
+    // No picture yet: one action is marked, the way out of fullscreen.
+    expect(exit).toHaveFocus();
+
+    view.rerender(<OpeningFullscreen playing />);
+    // The picture plays: OK shows the bar again instead of leaving fullscreen.
+    expect(section).toHaveFocus();
+    act(() => vi.advanceTimersByTime(3_000));
+    expect(section).toHaveAttribute("data-controls-visible", "false");
+  });
+
   it("restores focus to Watch Full screen when Exit fullscreen is clicked while playing and fullscreen prop updates", () => {
     vi.useFakeTimers();
     document.documentElement.setAttribute("data-television", "");

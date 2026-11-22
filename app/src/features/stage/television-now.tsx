@@ -5,9 +5,10 @@ import { QualitySwitch } from "../guide/quality-switch";
 import { televisionProgrammes, type TelevisionNow } from "./television-now-context";
 
 /**
- * The fullscreen top scrim's identity block: the Channel Number tile, the
- * Channel's name with its live marker and quality, the Programme and a line
- * about it, and the clock. Drawn inside the player's fullscreen section.
+ * The fullscreen band under the picture: the Channel Number tile, the
+ * Channel's name with its live marker and quality over the Programme, then
+ * what is left of it and what follows over its meter, and the clock. Drawn
+ * inside the player's fullscreen section; the controls are its second line.
  */
 export function TelevisionHead({
   info,
@@ -19,7 +20,7 @@ export function TelevisionHead({
 }) {
   const subject = info.subject;
   if (subject === null) return null;
-  const { live } = televisionProgrammes(info);
+  const { live, next } = televisionProgrammes(info);
   const quality = subject.channel.variant?.quality;
   return (
     <div className="hosted-player__tv-head" aria-hidden="true">
@@ -37,38 +38,36 @@ export function TelevisionHead({
         <p className="hosted-player__tv-title">
           {live?.title ?? channelTitle(subject.channel)}
         </p>
-        {live?.description == null || live.description === "" ? null : (
-          <p className="hosted-player__tv-about">{live.description}</p>
-        )}
       </div>
+      {live === null && next === null ? (
+        <span />
+      ) : (
+        <div className="hosted-player__tv-progress">
+          <p className="hosted-player__tv-next">
+            {live === null ? null : (
+              <strong>{minutesLeft(live, info.now)} min left</strong>
+            )}
+            {next === null ? null : (
+              <span>
+                {live === null ? "" : "· "}Next <b>{clockLabel(next.startsAt)}</b>{" "}
+                {next.title}
+              </span>
+            )}
+          </p>
+          {live === null ? null : (
+            <div className="hosted-player__tv-meter">
+              <time dateTime={live.startsAt}>{clockLabel(live.startsAt)}</time>
+              <span
+                style={{ "--progress": `${elapsedFraction(live, info.now) * 100}%` }}
+              />
+              <time dateTime={live.endsAt}>{clockLabel(live.endsAt)}</time>
+            </div>
+          )}
+        </div>
+      )}
       <time className="hosted-player__tv-clock" dateTime={info.now.toISOString()}>
         {clockLabel(info.now)}
       </time>
-    </div>
-  );
-}
-
-/** The bottom scrim's "Next" line and the Programme's progress across the bar. */
-export function TelevisionProgress({ info }: { readonly info: TelevisionNow }) {
-  const { live, next } = televisionProgrammes(info);
-  if (live === null && next === null) return null;
-  return (
-    <div className="hosted-player__tv-progress" aria-hidden="true">
-      {next === null ? null : (
-        <p className="hosted-player__tv-next">
-          Next <b>{clockLabel(next.startsAt)}</b> {next.title}
-        </p>
-      )}
-      {live === null ? null : (
-        <div className="hosted-player__tv-meter">
-          <time dateTime={live.startsAt}>{clockLabel(live.startsAt)}</time>
-          <span
-            style={{ "--progress": `${elapsedFraction(live, info.now) * 100}%` }}
-          />
-          <time dateTime={live.endsAt}>{clockLabel(live.endsAt)}</time>
-          <strong>{minutesLeft(live, info.now)} min left</strong>
-        </div>
-      )}
     </div>
   );
 }

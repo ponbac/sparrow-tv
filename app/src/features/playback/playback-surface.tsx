@@ -32,11 +32,7 @@ import {
   type WindowBox,
 } from "../stage/stage-chrome";
 import { inVisualOrder, visibleStageControls } from "../stage/stage-dom";
-import {
-  TelevisionHead,
-  TelevisionProgress,
-  TelevisionQuality,
-} from "../stage/television-now";
+import { TelevisionHead, TelevisionQuality } from "../stage/television-now";
 import { useTelevisionNow } from "../stage/television-now-context";
 import { playerPresentation, type PlayerState } from "./playback-presentation";
 import "./hosted-player.css";
@@ -321,6 +317,30 @@ export function PlaybackSurface({
       returnToFullscreenButtonRef.current = false;
     };
   }, [cancelPendingFocus, television]);
+
+  // While the signal opens, the TV rests focus on the bar's way out of
+  // fullscreen (`useTelevisionControls`). Once the picture plays, focus still
+  // resting there goes back to the picture, so the bar hides as it does
+  // after any tune and OK shows it again instead of leaving fullscreen.
+  const previousStateRef = useRef(state._tag);
+  useEffect(() => {
+    const previous = previousStateRef.current;
+    previousStateRef.current = state._tag;
+    if (
+      previous !== "starting" ||
+      state._tag !== "playing" ||
+      !focusInFullscreenControls()
+    ) {
+      return;
+    }
+    const section = surfaceRef.current;
+    if (
+      document.activeElement instanceof HTMLElement &&
+      document.activeElement.matches(".hosted-player__fullscreen")
+    ) {
+      section?.focus({ preventScroll: true });
+    }
+  }, [focusInFullscreenControls, state._tag]);
 
   const presentation = playerPresentation(state);
   const { reportPicture } = chrome;
@@ -767,13 +787,10 @@ export function PlaybackSurface({
       </div>
 
       {tvNow !== null && sectionFullscreen ? (
-        <>
-          <TelevisionHead
-            info={tvNow}
-            state={state._tag === "playing" ? null : presentation.status}
-          />
-          {playing ? <TelevisionProgress info={tvNow} /> : null}
-        </>
+        <TelevisionHead
+          info={tvNow}
+          state={state._tag === "playing" ? null : presentation.status}
+        />
       ) : null}
 
       {controlsPlacement.slot === null

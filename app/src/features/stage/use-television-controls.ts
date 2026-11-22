@@ -152,14 +152,26 @@ function openOverlay(): HTMLElement | null {
   return overlays[overlays.length - 1] ?? null;
 }
 
-function fullscreenFailureAction(surface: HTMLElement): HTMLElement | undefined {
-  if (surface.querySelector('.hosted-player__state[data-state="failed"]') === null) {
-    return undefined;
+/**
+ * Where focus rests in a fullscreen player with no picture to watch: a
+ * failure's recovery (else its way back), and while the signal opens the
+ * way out of fullscreen, so one action is always marked. Undefined while
+ * there is a picture: then the surface itself takes focus.
+ */
+function fullscreenRestingAction(surface: HTMLElement): HTMLElement | undefined {
+  if (surface.querySelector('.hosted-player__state[data-state="failed"]') !== null) {
+    return (
+      firstControl(surface, ".hosted-player__recovery") ??
+      firstControl(surface, ".hosted-player__stop")
+    );
   }
-  return (
-    firstControl(surface, ".hosted-player__recovery") ??
-    firstControl(surface, ".hosted-player__stop")
-  );
+  if (surface.querySelector('.hosted-player__state[data-state="starting"]') !== null) {
+    return (
+      firstControl(surface, ".hosted-player__fullscreen") ??
+      firstControl(surface, ".hosted-player__stop")
+    );
+  }
+  return undefined;
 }
 
 function usable(element: EventTarget | null): element is HTMLElement {
@@ -168,7 +180,7 @@ function usable(element: EventTarget | null): element is HTMLElement {
   }
   const isFullscreenSurface = element === document.fullscreenElement;
   if (isFullscreenSurface) {
-    if (fullscreenFailureAction(element) !== undefined) {
+    if (fullscreenRestingAction(element) !== undefined) {
       return false;
     }
     return isVisibleControl(element, {
@@ -199,7 +211,7 @@ function fallbackFocus(mode: TelevisionControls["mode"]): HTMLElement | undefine
   if (overlay !== null) return firstControl(overlay, ACTION);
   if (document.fullscreenElement instanceof HTMLElement) {
     return (
-      fullscreenFailureAction(document.fullscreenElement) ??
+      fullscreenRestingAction(document.fullscreenElement) ??
       document.fullscreenElement
     );
   }

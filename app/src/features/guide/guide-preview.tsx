@@ -23,6 +23,8 @@ import { elapsedFraction, minutesLeft, programmeAt } from "./now-next";
 // reads nothing for the Channels it passes.
 const DESCRIPTION_SETTLE_MS = 300;
 const IMMUTABLE_CATALOG_STALE_TIME = Number.POSITIVE_INFINITY;
+// What the panel lists after the shown Programme, from the rows it holds.
+const LATER_PROGRAMMES = 3;
 
 /** Where the preview reads a Programme's description: the schedule read. */
 export interface GuidePreviewSource {
@@ -33,8 +35,9 @@ export interface GuidePreviewSource {
 /**
  * The TV band's panel about the Channel focus rests on: its name, quality
  * and group, the Programme in large type with its times and progress, two
- * lines about it, and what follows. With nothing playing it also takes the
- * picture's place with the Channel's number, so the band is never empty.
+ * lines about it, and the next three Programmes with their times. With
+ * nothing playing a compact plate with the Channel's number takes the
+ * picture's place, so the band is never empty.
  */
 export function GuidePreview({
   source,
@@ -77,12 +80,14 @@ export function GuidePreview({
     programmeAt(programmes, now) ??
     programmes.find((programme) => Date.parse(programme.startsAt) > now.getTime()) ??
     null;
-  const next =
+  const later =
     shown === null
-      ? null
-      : (programmes.find(
-          (programme) => Date.parse(programme.startsAt) >= Date.parse(shown.endsAt),
-        ) ?? null);
+      ? []
+      : programmes
+          .filter(
+            (programme) => Date.parse(programme.startsAt) >= Date.parse(shown.endsAt),
+          )
+          .slice(0, LATER_PROGRAMMES);
   const description = useProgrammeDescription(
     source,
     preferred?.channel.id ?? null,
@@ -171,15 +176,32 @@ export function GuidePreview({
           )}
         </div>
         <p className="programme-guide__preview-about">{description ?? ""}</p>
-        {next === null ? null : (
-          <p className="programme-guide__preview-next">
-            <b>{clockLabel(next.startsAt)}</b>
-            {programmeTitle(next)}
-          </p>
+        {later.length === 0 ? null : (
+          <ol className="programme-guide__preview-later">
+            {later.map((programme) => (
+              <li key={programme.startsAt}>
+                <time dateTime={programme.startsAt}>
+                  {clockLabel(programme.startsAt)}
+                </time>
+                <b>{programmeTitle(programme)}</b>
+                <span>{durationLabel(programme)}</span>
+              </li>
+            ))}
+          </ol>
         )}
       </div>
     </div>
   );
+}
+
+function durationLabel(programme: GuideProgramme): string {
+  const minutes = Math.round(
+    (Date.parse(programme.endsAt) - Date.parse(programme.startsAt)) / 60_000,
+  );
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours} h` : `${hours} h ${rest} min`;
 }
 
 function programmeTitle(programme: GuideProgramme): string {

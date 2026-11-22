@@ -65,6 +65,7 @@ html[data-television] {
   --tv-watch-h: 33rem;
   --tv-watch-top: 1.3333rem;
   --tv-keys-h: 2.6667rem;
+  --tv-plate-w: 14rem;
   --tv-panel-left: calc(var(--tv-gutter) + var(--tv-dock-w) + 1.8333rem);
   background: var(--ink);
   font-variant-numeric: tabular-nums;
@@ -1247,7 +1248,7 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__preview-qua
 }
 
 html[data-television] .shell[data-layout="pocket"] .programme-guide__preview-title {
-  margin: 0.3333rem 0 0.5rem;
+  margin: 0.25rem 0 0.4167rem;
   overflow: hidden;
   color: var(--tv-text);
   font-size: 2.75rem;
@@ -1296,38 +1297,64 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__preview-abo
   -webkit-line-clamp: 2;
 }
 
-html[data-television] .shell[data-layout="pocket"] .programme-guide__preview-next {
-  display: flex;
+/* What follows: three Programmes, each a line with its time, like the
+   schedule beside the Watch picture. */
+html[data-television] .shell[data-layout="pocket"] .programme-guide__preview-later {
+  display: grid;
+  max-width: 46rem;
+  grid-auto-rows: 1.4167rem;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+html[data-television] .shell[data-layout="pocket"] .programme-guide__preview-later li {
+  display: grid;
   min-width: 0;
-  gap: 0.5rem;
-  margin: auto 0 0;
-  overflow: hidden;
-  color: var(--tv-dim);
+  grid-template-columns: 3rem minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 0.5rem;
+  border-top: 0.0417rem solid var(--tv-faint);
   font-size: 0.8333rem;
-  line-height: 1.25rem;
-  text-overflow: ellipsis;
+  line-height: 1;
   white-space: nowrap;
 }
 
-html[data-television] .shell[data-layout="pocket"] .programme-guide__preview-next b {
-  flex: none;
-  color: var(--tv-text);
+html[data-television] .shell[data-layout="pocket"] .programme-guide__preview-later time {
+  color: var(--ice);
   font-weight: 600;
 }
 
-/* With nothing playing the band has no picture: the focused Channel takes its
-   place as a card with its number, and OK to watch it. */
+html[data-television] .shell[data-layout="pocket"] .programme-guide__preview-later b {
+  overflow: hidden;
+  color: var(--tv-text);
+  font-weight: 600;
+  text-overflow: ellipsis;
+}
+
+html[data-television] .shell[data-layout="pocket"] .programme-guide__preview-later span {
+  color: var(--tv-mute);
+  font-size: 0.75rem;
+}
+
+/* With nothing playing the band has no picture: a compact plate with the
+   focused Channel's number and OK to watch it takes its place, and the
+   panel beside it widens into the room the picture would use. */
+html[data-television] .shell[data-layout="pocket"][data-playing="false"] {
+  --tv-panel-left: calc(var(--tv-gutter) + var(--tv-plate-w) + 1.8333rem);
+}
+
 html[data-television] .shell[data-layout="pocket"] .programme-guide__poster {
   position: absolute;
   top: calc(-1 * 3.0833rem);
-  left: calc(-1 * (var(--tv-dock-w) + 1.8333rem));
+  left: calc(-1 * (var(--tv-plate-w) + 1.8333rem));
   display: grid;
-  width: var(--tv-dock-w);
+  width: var(--tv-plate-w);
   height: calc(var(--tv-dock-h) + var(--tv-caption-h));
-  align-content: center;
+  align-content: end;
   justify-items: start;
-  gap: 0.25rem;
-  padding: 0 1.75rem;
+  gap: 0.1667rem;
+  padding: 0 1.25rem 1.25rem;
   overflow: hidden;
   border-radius: 0.3333rem;
   background:
@@ -1337,8 +1364,9 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__poster {
 }
 
 html[data-television] .shell[data-layout="pocket"] .programme-guide__poster-number {
+  margin-bottom: 0.5rem;
   color: var(--ice);
-  font-size: 6.5rem;
+  font-size: 5.5rem;
   font-stretch: 110%;
   font-weight: 250;
   line-height: 0.9;
@@ -2061,6 +2089,20 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-
   display: block;
 }
 
+/* The time shown ends in a soft fade, so a Programme that runs on past it
+   reads as continuing rather than cut. */
+html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-view="timeline"] .programme-guide__rows::after {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 3.5rem;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgb(10 17 30 / 0%), var(--ink) 92%);
+  content: "";
+}
+
 html[data-television] .shell[data-layout="pocket"] .programme-guide__now-band {
   position: absolute;
   z-index: 2;
@@ -2141,13 +2183,45 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-
   white-space: nowrap;
 }
 
+/* Quality tags as in the Now grid, at the right end of every name: a lone
+   variant's one tag, or a family's tags with the chosen one boxed. */
 html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-view="timeline"] .programme-guide__channel > small {
   position: static;
   flex: none;
+  margin-left: auto;
+}
+
+html[data-television]
+  .shell[data-layout="pocket"]
+  .programme-guide__board[data-view="timeline"]
+  .programme-guide__row[style*="--variants"]
+  .programme-guide__channel {
+  padding-right: calc(var(--variants, 1) * 1.6667rem + 0.5rem);
 }
 
 html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-view="timeline"] .programme-guide__variants {
-  display: none;
+  top: 50%;
+  right: 1rem;
+  transform: translateY(-50%);
+}
+
+html[data-television]
+  .shell[data-layout="pocket"]
+  .programme-guide__board[data-view="timeline"]
+  .programme-guide__channel-cell:has(.programme-guide__channel:focus)
+  .programme-guide__variants
+  button {
+  color: var(--on-ice-dim);
+}
+
+html[data-television]
+  .shell[data-layout="pocket"]
+  .programme-guide__board[data-view="timeline"]
+  .programme-guide__channel-cell:has(.programme-guide__channel:focus)
+  .programme-guide__variants
+  button[data-current="true"] {
+  color: var(--on-ice);
+  box-shadow: inset 0 0 0 0.0417rem var(--on-ice-dim);
 }
 
 html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-view="timeline"] .programme-guide__channel:focus {
@@ -2192,9 +2266,10 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-
   color: var(--tv-text);
   border: 0;
   border-radius: 0.3333rem;
-  background: var(--tv-cell);
+  background: none;
   text-align: left;
   white-space: nowrap;
+  isolation: isolate;
 }
 
 html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-view="timeline"] .programme-guide__programme > * {
@@ -2202,14 +2277,27 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-
   padding: 0 0.5833rem;
 }
 
-/* A sliver of a Programme at either edge of the time shown keeps its fill
-   and drops its words, which would only be an ellipsis. */
+/* The fill lies under the words, so a container query on the cell can
+   drop it with them. */
+html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-view="timeline"] .programme-guide__programme > .programme-guide__fill {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  padding: 0;
+  border-radius: inherit;
+  background: var(--tv-cell);
+}
+
+/* A sliver of a Programme too narrow for its words, at either edge of the
+   time shown or between two others, drops its words and its fill: it is an
+   empty gap in the row, never a blank stub. Focused, it still fills. */
 html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-view="timeline"] .programme-guide__programme {
   container-type: inline-size;
 }
 
 @container (max-width: 3.75rem) {
-  html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-view="timeline"] .programme-guide__programme > * {
+  html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-view="timeline"] .programme-guide__programme > :not(.programme-guide__fill),
+  html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-view="timeline"] .programme-guide__programme:not(:focus) > .programme-guide__fill {
     visibility: hidden;
   }
 }
@@ -2236,6 +2324,13 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-
     (var(--tl-now) - max(var(--start), var(--tl-offset, 0))) /
       (var(--end) - max(var(--start), var(--tl-offset, 0))) * 100%
   );
+}
+
+html[data-television]
+  .shell[data-layout="pocket"]
+  .programme-guide__board[data-view="timeline"]
+  .programme-guide__programme[data-live="true"]
+  > .programme-guide__fill {
   background: linear-gradient(90deg, var(--tv-wash) var(--tl-elapsed), var(--tv-cell2) 0);
 }
 
@@ -2243,13 +2338,22 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-
   z-index: 3;
   color: var(--on-ice);
   outline: none;
+  background: none;
+}
+
+html[data-television]
+  .shell[data-layout="pocket"]
+  .programme-guide__board[data-view="timeline"]
+  .programme-guide__programme:focus
+  > .programme-guide__fill {
   background: var(--ice);
 }
 
 html[data-television]
   .shell[data-layout="pocket"]
   .programme-guide__board[data-view="timeline"]
-  .programme-guide__programme[data-live="true"]:focus {
+  .programme-guide__programme[data-live="true"]:focus
+  > .programme-guide__fill {
   background: linear-gradient(90deg, var(--ice-elapsed) var(--tl-elapsed), var(--ice) 0);
 }
 
@@ -2272,15 +2376,30 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-
 
 /* Inline search: compact one-line results above the keyboard, over a
    dimmed guide, with one focus mark at a time. */
+/* One even veil over the whole Guide, the band's plate and panel included;
+   only the search field stays above it. */
 html[data-television]:has(.board-search input[aria-expanded="true"])
   .shell[data-layout="pocket"]
-  :is(.programme-guide__body, .programme-guide__preview)::after {
+  .programme-guide::after {
   position: absolute;
-  z-index: 5;
+  z-index: 2;
   inset: 0;
   pointer-events: none;
   background: rgb(6 10 18 / 72%);
   content: "";
+}
+
+html[data-television]:has(.board-search input[aria-expanded="true"])
+  .shell[data-layout="pocket"]
+  .programme-guide__toolbar
+  > :not(.board-search) {
+  opacity: 0.28;
+}
+
+html[data-television]:has(.board-search input[aria-expanded="true"])
+  .shell[data-layout="pocket"]
+  .programme-guide__body {
+  z-index: 0;
 }
 
 html[data-television]:has(.shell[data-layout="pocket"]) .board-search__positioner {
@@ -2407,7 +2526,9 @@ html[data-television]:has(.shell[data-layout="pocket"]) .board-search__state {
 }
 
 /* Sheets: Find a channel, Choose groups and Sources come in from the right
-   over the dimmed Guide. */
+   over the dimmed Guide. They are one system: one width, one header, one
+   pill search field, rows of one height and one type scale, and a fade at
+   the bottom edge while there is more to scroll to. */
 html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__backdrop, .group-roster__backdrop, .feeds-dialog__backdrop) {
   inset: 0;
   background: rgb(5 9 16 / 70%);
@@ -2418,7 +2539,7 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
   right: 0;
   bottom: 0;
   left: auto;
-  width: 34vw;
+  width: 36vw;
   min-height: 0;
   color: var(--tv-text);
   border: 0;
@@ -2426,17 +2547,14 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
   box-shadow: -1.25rem 0 2.5rem rgb(0 0 0 / 40%);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__popup {
-  width: 40vw;
-}
-
-html[data-television]:has(.shell[data-layout="pocket"]) .feeds-dialog__popup {
-  width: 38vw;
-}
-
 html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__header, .group-roster__header, .feeds-dialog__header) {
-  padding: 1.25rem 1.25rem 0.75rem;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.25rem 1.25rem 0.875rem;
   border: 0;
+  background: none;
 }
 
 html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__header, .group-roster__header, .feeds-dialog__header) h2 {
@@ -2449,8 +2567,11 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
 }
 
 html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__header, .group-roster__header, .feeds-dialog__header) p {
+  max-width: none;
+  margin: 0.3333rem 0 0;
   color: var(--tv-dim);
   font-size: 0.7083rem;
+  line-height: 1.4;
 }
 
 html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__close, .group-roster__close, .feeds-dialog__close) {
@@ -2479,111 +2600,245 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
   height: 0.9167rem;
 }
 
-/* Find a channel */
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__toolbar {
-  padding: 0 1.25rem 0.5rem;
+/* The search row: a pill field, then the tally. */
+html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__toolbar, .group-roster__toolbar) {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0 1.25rem 0.75rem;
   border: 0;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__search {
+html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__search, .group-roster__search) {
+  position: relative;
   display: flex;
+  min-width: 0;
   height: 2.3333rem;
+  flex: 1 1 auto;
   align-items: center;
   gap: 0.5rem;
-  padding: 0 0.75rem;
+  padding: 0 0.875rem;
   border: 0;
   border-radius: 999px;
   background: var(--ink);
   box-shadow: inset 0 0 0 0.0833rem var(--tv-faint);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__search:has(input:focus) {
+html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__search, .group-roster__search):has(input:focus) {
   box-shadow: inset 0 0 0 0.125rem var(--ice);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__search input {
+html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__search, .group-roster__search) svg {
+  position: static;
+  width: 0.9167rem;
+  height: 0.9167rem;
+  flex: none;
+  color: var(--tv-dim);
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__search, .group-roster__search) input {
+  width: auto;
   min-width: 0;
+  height: 100%;
   flex: 1 1 auto;
+  padding: 0;
   color: var(--tv-text);
   border: 0;
   outline: none;
   background: none;
-  font-size: 0.9167rem;
+  font-size: 0.875rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__tally {
+html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__search, .group-roster__search) input::placeholder {
+  color: var(--tv-mute);
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__tally, .group-roster__tally) {
+  flex: none;
+  margin: 0;
   color: var(--tv-dim);
   font-size: 0.6667rem;
+  white-space: nowrap;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__list {
-  padding: 0 1.25rem 1.25rem;
+html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__tally, .group-roster__tally) b {
+  color: var(--tv-text);
+  font-weight: 600;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__row {
-  border: 0;
-}
-
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__pick {
+/* The scrolling part of every sheet, with the same edges. */
+html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__list, .group-roster__list, .feeds-dialog__content) {
   display: flex;
-  width: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 0.1667rem;
+  padding: 0 1.25rem 0;
+  overflow: hidden auto;
+  scrollbar-width: none;
+}
+
+/* While there is more below, the last rows fade into the sheet; at the end
+   the fade lies over empty room. */
+html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__list, .group-roster__list, .feeds-dialog__content)::after {
+  position: sticky;
+  bottom: 0;
+  display: block;
+  min-height: 2.5rem;
+  flex: none;
+  margin-top: auto;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgb(15 24 40 / 0%), var(--tv-panel) 85%);
+  content: "";
+}
+
+/* Rows: one height, one radius, one fill. */
+html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__row, .group-roster__row) {
+  display: flex;
   min-height: 0;
   height: 2.5rem;
+  flex: none;
+  align-items: center;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0.3333rem;
+  background: var(--tv-cell);
+  box-shadow: none;
+  content-visibility: visible;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__pick, .group-roster__pick) {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  flex: 1 1 auto;
   align-items: center;
   gap: 0.5rem;
-  padding: 0 0.6667rem 0 0;
+  padding: 0 0.875rem 0 0;
   color: var(--tv-text);
   border: 0;
   border-radius: 0.3333rem;
   background: none;
-  font-size: 0.8333rem;
+  font-size: 0.875rem;
   text-align: left;
 }
 
+html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__pick {
+  padding-left: 0.875rem;
+}
+
 html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__pick .board-search__number {
-  width: 2.25rem;
+  width: 2.5rem;
   flex: none;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__pick strong {
+html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__pick, .group-roster__pick) strong {
   min-width: 0;
+  flex: 0 1 auto;
   overflow: hidden;
   font-size: 0.875rem;
   font-stretch: 84%;
   font-weight: 650;
+  line-height: 1;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__pick small {
+html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__pick strong {
+  flex: 1 1 auto;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__pick small, .group-roster__pick em) {
+  flex: none;
   margin-left: auto;
   padding-left: 0.5rem;
   overflow: hidden;
   color: var(--tv-dim);
   font-size: 0.6667rem;
+  font-style: normal;
+  line-height: 1;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__pick:focus {
+html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__pick, .group-roster__pick):focus {
   color: var(--on-ice);
   outline: none;
   background: var(--ice);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__pick:focus :is(.board-search__number, .board-search__quality, small) {
+html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__pick:focus :is(.board-search__number, .board-search__quality, small),
+html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__pick:focus em {
   color: var(--on-ice-dim);
 }
 
+/* The Channel Group shown in the Guide: an ice edge, as the Guide's lane
+   marks it. */
+html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__row[data-active="true"] {
+  box-shadow: inset 0.1667rem 0 var(--ice);
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__row[data-excluded="true"] .group-roster__pick :is(strong, em) {
+  color: var(--tv-mute);
+}
+
+/* Hide and Show: a real button, an eye and its word. */
+html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__exclude {
+  display: inline-flex;
+  min-width: 0;
+  height: 1.8333rem;
+  min-height: 0;
+  flex: none;
+  align-items: center;
+  gap: 0.3333rem;
+  margin: 0 0.3333rem 0 0.25rem;
+  padding: 0 0.75rem 0 0.625rem;
+  color: var(--tv-text);
+  border: 0;
+  border-radius: 999px;
+  background: var(--tv-cell2);
+  font-size: 0.6667rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__exclude > svg {
+  display: block;
+  width: 0.8333rem;
+  height: 0.8333rem;
+  flex: none;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__exclude[aria-pressed="true"] {
+  color: var(--tv-text);
+  background: var(--tv-wash);
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__exclude:focus {
+  color: var(--on-ice);
+  outline: none;
+  background: var(--ice);
+}
+
 html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__more, .board-search-desk__include, .group-roster__restore) {
-  min-height: 2rem;
+  height: 1.8333rem;
+  min-height: 0;
+  flex: none;
   padding: 0 0.8333rem;
   color: var(--tv-text);
   border: 0;
   border-radius: 999px;
   background: var(--tv-cell2);
-  font-size: 0.75rem;
+  font-size: 0.6667rem;
   font-weight: 600;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__more {
+  align-self: flex-start;
+  margin-top: 0.3333rem;
 }
 
 html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__more, .board-search-desk__include, .group-roster__restore):focus {
@@ -2593,86 +2848,266 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
 }
 
 html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__state, .board-search-desk__hidden, .group-roster__empty) {
+  margin: 0;
+  padding: 0.5rem 0;
   color: var(--tv-dim);
+  font-size: 0.7083rem;
+  font-weight: 500;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__hidden {
+  padding: 0;
+  font-size: 0.6667rem;
+}
+
+/* Sources: its sections take the sheet's type scale. */
+html[data-television]:has(.shell[data-layout="pocket"]) .feeds-dialog__content {
+  gap: 0;
   font-size: 0.75rem;
 }
 
-/* Choose groups */
-html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__toolbar {
-  padding: 0 1.25rem 0.5rem;
+html[data-television]:has(.shell[data-layout="pocket"]) :is(.source-desk, .installed-settings) {
+  padding: 0 0 1rem;
   border: 0;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__search {
-  height: 2.1667rem;
-  border: 0;
-  border-radius: 999px;
-  background: var(--ink);
-  box-shadow: inset 0 0 0 0.0833rem var(--tv-faint);
+html[data-television]:has(.shell[data-layout="pocket"]) .installed-settings {
+  padding-top: 1rem;
+  border-top: 0.0417rem solid var(--tv-faint);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__list {
-  padding: 0 1.25rem 1.25rem;
-  gap: 0.25rem 0.5rem;
+html[data-television]:has(.shell[data-layout="pocket"]) :is(.source-desk__heading, .installed-settings__heading) {
+  display: flex;
+  min-height: 2rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0 0 0.5rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__row {
-  min-height: 0;
-  border: 0;
+html[data-television]:has(.shell[data-layout="pocket"]) :is(.source-desk, .installed-settings) h2 {
+  margin: 0;
+  color: var(--tv-text);
+  font-size: 1rem;
+  font-stretch: 84%;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__refresh {
+  display: inline-flex;
+  height: 1.8333rem;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0 0.8333rem;
+  font-size: 0.6667rem;
+  font-weight: 600;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .source-desk button svg {
+  width: 0.8333rem;
+  height: 0.8333rem;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__grid {
+  gap: 0.1667rem;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .source-card {
+  padding: 0.6667rem 0.875rem 0.75rem;
   border-radius: 0.3333rem;
   background: var(--tv-cell);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__pick {
+html[data-television]:has(.shell[data-layout="pocket"]) .source-card__head {
   align-items: center;
-  padding: 0 0.75rem;
+  gap: 0.25rem 0.75rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.group-roster__pick, .group-roster__exclude) {
-  min-height: 2.1667rem;
-  padding-block: 0;
+html[data-television]:has(.shell[data-layout="pocket"]) .source-card h3 {
+  font-size: 0.875rem;
+  font-stretch: 84%;
+  font-weight: 650;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .source-card__state {
+  gap: 0.375rem;
+  font-size: 0.6667rem;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .source-card__state::before {
+  width: 0.3333rem;
+  height: 0.3333rem;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .source-card p,
+html[data-television]:has(.shell[data-layout="pocket"]) .refresh-feedback p,
+html[data-television]:has(.shell[data-layout="pocket"]) .installed-settings__brief {
+  margin: 0.25rem 0 0;
+  color: var(--tv-dim);
+  font-size: 0.7083rem;
+  line-height: 1.4;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) :is(.source-card time, .source-card code) {
+  margin-top: 0.1667rem;
+  font-size: 0.6667rem;
+  line-height: 1.4;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .refresh-feedback {
+  margin-top: 0.1667rem;
+  padding: 0.6667rem 0.875rem;
   border-radius: 0.3333rem;
-  color: var(--tv-text);
-  border: 0;
-  background: none;
-  font-size: 0.8333rem;
+  background: var(--tv-cell);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.group-roster__pick, .group-roster__exclude):focus {
+html[data-television]:has(.shell[data-layout="pocket"]) .refresh-feedback strong {
+  font-size: 0.75rem;
+}
+
+/* Diagnostics: a row like every other, with a chevron that turns open. */
+html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostics {
+  margin-top: 0.1667rem;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostics summary {
+  display: flex;
+  width: auto;
+  height: 2.5rem;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.875rem;
+  color: var(--tv-text);
+  border-radius: 0.3333rem;
+  background: var(--tv-cell);
+  font-size: 0.75rem;
+  font-weight: 600;
+  list-style: none;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostics summary::-webkit-details-marker {
+  display: none;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostics summary::after {
+  width: 0.4167rem;
+  height: 0.4167rem;
+  margin: 0 0.125rem 0.1667rem auto;
+  border-right: 0.0833rem solid currentcolor;
+  border-bottom: 0.0833rem solid currentcolor;
+  content: "";
+  transform: rotate(45deg);
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostics[open] summary::after {
+  margin-bottom: -0.1667rem;
+  transform: rotate(225deg);
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostics summary:focus {
   color: var(--on-ice);
   outline: none;
   background: var(--ice);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__tally {
-  color: var(--tv-dim);
+html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostics > div {
+  gap: 0.5rem;
+  padding-top: 0.5rem;
 }
 
-/* Sources */
-html[data-television]:has(.shell[data-layout="pocket"]) .feeds-dialog__content {
-  padding: 0 1.25rem 1.25rem;
-  font-size: 0.8333rem;
+html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostics pre {
+  max-height: none;
+  padding: 0.6667rem 0.875rem;
+  border-radius: 0.3333rem;
+  background: var(--ink);
+  font-size: 0.6667rem;
+  line-height: 1.5;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostics pre:focus {
+  outline-offset: -0.1667rem;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostics button {
+  height: 1.8333rem;
+  padding: 0 0.8333rem;
+  border-radius: 999px;
+  background: var(--tv-cell2);
+  font-size: 0.6667rem;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostics button:focus {
+  color: var(--on-ice);
+  outline: none;
+  background: var(--ice);
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .installed-settings__privacy {
+  gap: 0.3333rem;
+  font-size: 0.6667rem;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .installed-settings__privacy svg {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .installed-settings__form {
+  gap: 0.6667rem;
+  margin-top: 0.75rem;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .installed-settings__form label > span {
+  font-size: 0.6667rem;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .installed-settings__form input {
+  height: 2.3333rem;
+  padding: 0 0.875rem;
+  color: var(--tv-text);
+  border: 0;
+  border-radius: 999px;
+  background: var(--ink);
+  box-shadow: inset 0 0 0 0.0833rem var(--tv-faint);
+  font-size: 0.875rem;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .installed-settings__form input:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 0.125rem var(--ice);
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) .installed-settings__form button {
+  height: 1.8333rem;
+  padding: 0 0.8333rem;
+  font-size: 0.6667rem;
+}
+
+html[data-television]:has(.shell[data-layout="pocket"]) :is(.installed-settings__feedback, .installed-settings__note) {
+  font-size: 0.6667rem;
 }
 
 /* Element fullscreen (960 x 540 CSS, one rem 12 px). Media3's surface
    stays above the WebView here too (NativePlaybackController brings it to
    the front), so nothing can be drawn over the picture. While watching, the
    bar is hidden and the picture runs edge to edge. While the bar is up the
-   picture's box sits between the two scrim bands, identity above and
-   progress and controls below, and jumps back when the bar hides. With no
-   picture (opening the signal, a failure) the bands lie over the canvas and
-   the message and its actions take the middle. */
+   picture's box is a 16:9 rectangle pinned to the top and centred, and one
+   compact band under it holds everything else: the Channel and Programme
+   with the progress, Next and the clock on one line, the controls on the
+   next. The box jumps back to the whole screen when the bar hides. With no
+   picture (opening the signal, a failure) the box keeps that rectangle as a
+   quiet screen with the message and its actions, and the band under it
+   keeps the Channel's line. */
 
 html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen {
-  --tv-control: 3.5rem;
-  --fs-top: 7.6667rem;
-  --fs-bottom: 9.3333rem;
+  --tv-control: 3.1667rem;
+  --fs-pic-h: 36.5rem;
+  --fs-pic-w: calc(var(--fs-pic-h) * 16 / 9);
+  --fs-gutter: 2.3333rem;
+  --fs-row-a: 2.8333rem;
+  --fs-row-a-top: 0.6667rem;
+  --fs-row-b-bottom: 0.8333rem;
   display: block;
   color: var(--tv-text);
   background: var(--ink);
@@ -2686,16 +3121,14 @@ html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .ho
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen[data-controls-visible="true"]:is(
-    [data-player-state="playing"],
-    [data-player-state="paused"],
-    [data-player-state="suspending"],
-    [data-player-state="recovering"],
-    [data-player-state="autoplay-blocked"]
-  )
+  .hosted-player:fullscreen[data-controls-visible="true"]
   .hosted-player__screen {
-  top: var(--fs-top);
-  bottom: var(--fs-bottom);
+  top: 0;
+  right: auto;
+  bottom: auto;
+  left: calc((100% - var(--fs-pic-w)) / 2);
+  width: var(--fs-pic-w);
+  height: var(--fs-pic-h);
 }
 
 html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen video {
@@ -2704,7 +3137,7 @@ html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen vid
   background: var(--ink);
 }
 
-/* The bands carry the player's heading; it stays for a screen reader. */
+/* The band carries the player's heading; it stays for a screen reader. */
 html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__heading {
   position: absolute;
   width: 1px;
@@ -2715,38 +3148,44 @@ html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .ho
   white-space: nowrap;
 }
 
+/* The band: the area under the picture, and its first line. */
 html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__tv-head {
   position: absolute;
   z-index: 2;
-  top: 0;
+  top: var(--fs-pic-h);
   right: 0;
+  bottom: 0;
   left: 0;
   display: grid;
-  height: var(--fs-top);
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: var(--fs-row-a) minmax(0, 1fr) minmax(0, 23rem) auto;
+  grid-template-rows: var(--fs-row-a);
+  align-content: start;
   align-items: center;
-  column-gap: 1.1667rem;
-  padding: 0 2.3333rem;
-  background: linear-gradient(180deg, var(--tv-panel), var(--ink));
+  column-gap: 1rem;
+  padding: var(--fs-row-a-top) var(--fs-gutter) 0;
+  background: var(--tv-panel);
+  box-shadow: inset 0 0.0833rem var(--tv-faint);
   pointer-events: none;
 }
 
 html[data-television] .hosted-player__tv-number {
   display: grid;
-  width: 3.8333rem;
-  height: 3.8333rem;
+  width: 100%;
+  aspect-ratio: 1;
   place-items: center;
   color: #fff;
-  border-radius: 0.6667rem;
+  border-radius: 0.5rem;
   background: var(--tally);
-  font-size: 2rem;
+  font-size: 1.4167rem;
   font-stretch: 100%;
   font-weight: 700;
   line-height: 1;
 }
 
 html[data-television] .hosted-player__tv-identity {
+  display: grid;
   min-width: 0;
+  grid-template-rows: 1.0833rem 1.75rem;
 }
 
 html[data-television] .hosted-player__tv-identity p {
@@ -2755,23 +3194,32 @@ html[data-television] .hosted-player__tv-identity p {
 
 html[data-television] .hosted-player__tv-channel {
   display: flex;
+  min-width: 0;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.5rem;
+  overflow: hidden;
   color: var(--tv-dim);
-  font-size: 1.25rem;
-  line-height: 1.6667rem;
+  font-size: 0.9167rem;
+  line-height: 1.0833rem;
   white-space: nowrap;
 }
 
 html[data-television] .hosted-player__tv-channel b {
+  overflow: hidden;
   color: var(--tv-text);
   font-weight: 600;
+  text-overflow: ellipsis;
 }
 
+/* Tags: a box of one line height, the word centred in it. */
 html[data-television] :is(.hosted-player__tv-live, .hosted-player__tv-quality) {
-  padding: 0.25rem 0.5833rem 0.1667rem;
-  border-radius: 0.25rem;
-  font-size: 1rem;
+  display: inline-grid;
+  height: 1.0833rem;
+  flex: none;
+  place-items: center;
+  padding: 0.1667rem 0.4167rem 0;
+  border-radius: 0.1667rem;
+  font-size: 0.6667rem;
   font-style: normal;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -2798,59 +3246,65 @@ html[data-television] .hosted-player__tv-quality {
 html[data-television] .hosted-player__tv-title {
   overflow: hidden;
   color: var(--tv-text);
-  font-size: 2.3333rem;
-  font-stretch: 76%;
+  font-size: 1.5rem;
+  font-stretch: 78%;
   font-weight: 700;
-  line-height: 1.15;
+  line-height: 1.75rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-html[data-television] .hosted-player__tv-about {
+/* Progress: what is left and what follows over the Programme's meter. */
+html[data-television] .hosted-player__tv-progress {
+  display: grid;
+  min-width: 0;
+  grid-template-rows: 1.0833rem 1.75rem;
+}
+
+html[data-television] .hosted-player__tv-next {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.4167rem;
+  margin: 0;
   overflow: hidden;
   color: var(--tv-dim);
-  font-size: 1.0833rem;
-  line-height: 1.35;
-  text-overflow: ellipsis;
+  font-size: 0.9167rem;
+  line-height: 1.0833rem;
   white-space: nowrap;
 }
 
-html[data-television] .hosted-player__tv-clock {
+html[data-television] .hosted-player__tv-next strong {
+  flex: none;
   color: var(--tv-text);
-  font-size: 2rem;
-  font-stretch: 100%;
   font-weight: 600;
-  line-height: 1;
 }
 
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__tv-progress {
-  position: absolute;
-  z-index: 3;
-  right: 2.3333rem;
-  bottom: calc(1.5rem + var(--tv-control) + 1rem);
-  left: 2.3333rem;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  column-gap: 2rem;
-  pointer-events: none;
+html[data-television] .hosted-player__tv-next span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+html[data-television] .hosted-player__tv-next b {
+  color: var(--tv-text);
+  font-weight: 600;
 }
 
 html[data-television] .hosted-player__tv-meter {
   display: grid;
-  grid-column: 1;
-  grid-row: 1;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 1rem;
+  gap: 0.6667rem;
   color: var(--tv-dim);
-  font-size: 1.1667rem;
+  font-size: 0.9167rem;
+  line-height: 1;
 }
 
 html[data-television] .hosted-player__tv-meter span {
   position: relative;
-  height: 0.4167rem;
-  border-radius: 0.25rem;
+  height: 0.3333rem;
+  border-radius: 0.1667rem;
   background: linear-gradient(90deg, var(--ice) var(--progress), rgb(238 243 248 / 22%) 0);
 }
 
@@ -2858,79 +3312,98 @@ html[data-television] .hosted-player__tv-meter span::after {
   position: absolute;
   top: 50%;
   left: var(--progress);
-  width: 1.0833rem;
-  height: 1.0833rem;
+  width: 0.8333rem;
+  height: 0.8333rem;
   border-radius: 50%;
   background: var(--tv-text);
   content: "";
   transform: translate(-50%, -50%);
 }
 
-html[data-television] .hosted-player__tv-meter strong {
-  margin-left: 0.25rem;
+html[data-television] .hosted-player__tv-clock {
+  padding-left: 0.3333rem;
   color: var(--tv-text);
+  font-size: 1.6667rem;
+  font-stretch: 100%;
   font-weight: 600;
+  line-height: 1;
 }
 
-html[data-television] .hosted-player__tv-next {
-  grid-column: 2;
-  grid-row: 1;
-  max-width: 22rem;
-  margin: 0;
-  overflow: hidden;
-  color: var(--tv-dim);
-  font-size: 1.1667rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-html[data-television] .hosted-player__tv-next b {
-  margin: 0 0.3333rem;
-  color: var(--tv-text);
-  font-weight: 600;
-}
-
+/* The second line of the band: the controls. */
 html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__controls {
   position: absolute;
-  z-index: 2;
+  z-index: 3;
   top: auto;
-  right: 0;
-  bottom: 0;
-  left: 0;
+  right: var(--fs-gutter);
+  bottom: var(--fs-row-b-bottom);
+  left: var(--fs-gutter);
   display: flex;
-  height: var(--fs-bottom);
+  height: var(--tv-control);
   flex-wrap: nowrap;
-  align-items: end;
-  gap: 0.6667rem;
-  padding: 0 2.3333rem 1.5rem;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0;
   overflow: visible;
   opacity: 1;
   border: 0;
-  background: linear-gradient(0deg, var(--tv-panel), var(--ink));
+  background: none;
   transition: none;
 }
 
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen[data-controls-visible="false"] :is(.hosted-player__tv-head, .hosted-player__tv-progress, .hosted-player__controls) {
+html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen[data-controls-visible="false"] :is(.hosted-player__tv-head, .hosted-player__controls) {
   display: none;
 }
 
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__controls > button:focus > span,
+html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__controls > button,
+html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen :is(.hosted-player__audio-track, .hosted-player__quality) {
+  background: var(--tv-cell2);
+}
+
+html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__controls > button > span,
 html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__controls > .hosted-player__recovery {
-  font-size: 1.25rem;
+  font-size: 1.1667rem;
+}
+
+/* Leaving fullscreen and stopping always say so: their names are shown. */
+html[data-television] .shell[data-layout="pocket"]
+  .hosted-player:fullscreen
+  .hosted-player__controls
+  > :is(.hosted-player__fullscreen, .hosted-player__stop) {
+  width: auto;
+  padding: 0 1.1667rem 0 1rem;
+  box-shadow: inset 0 0 0 0.0833rem var(--tv-faint);
+}
+
+html[data-television] .shell[data-layout="pocket"]
+  .hosted-player:fullscreen
+  .hosted-player__controls
+  > :is(.hosted-player__fullscreen, .hosted-player__stop)
+  > span {
+  position: static;
+  width: auto;
+  height: auto;
+  clip-path: none;
+}
+
+html[data-television] .shell[data-layout="pocket"]
+  .hosted-player:fullscreen
+  .hosted-player__controls
+  > :is(.hosted-player__fullscreen, .hosted-player__stop):focus {
+  box-shadow: none;
 }
 
 html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen :is(.hosted-player__audio-track, .hosted-player__quality) {
-  font-size: 1.25rem;
+  font-size: 1.1667rem;
 }
 
 html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__audio-track select,
 html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__quality button {
-  font-size: 1.1667rem;
+  font-size: 1.0833rem;
 }
 
 html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__audio-track svg {
-  width: 1.4167rem;
-  height: 1.4167rem;
+  width: 1.25rem;
+  height: 1.25rem;
 }
 
 html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__overlay {
@@ -2940,7 +3413,7 @@ html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .ho
   place-content: center;
   justify-items: center;
   gap: 0.6667rem;
-  padding: 0 4rem 5rem;
+  padding: 0 3rem 5.5rem;
   text-align: center;
   background: transparent;
 }
@@ -2948,7 +3421,7 @@ html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .ho
 html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__overlay p {
   margin: 0;
   color: var(--tv-text);
-  font-size: 2.6667rem;
+  font-size: 2.3333rem;
   font-stretch: 78%;
   font-weight: 700;
   line-height: 1.05;
@@ -2958,25 +3431,37 @@ html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .ho
   display: block;
   max-width: 44ch;
   color: var(--tv-dim);
-  font-size: 1.3333rem;
+  font-size: 1.1667rem;
 }
 
-/* Opening the signal, and a failure: no picture. The bands lie over the
-   canvas and the controls that make sense sit directly under the message. */
+/* Opening the signal, and a failure: no picture. The box is a quiet screen
+   with the message, the controls that make sense sit directly under it,
+   and the band keeps the Channel's line in its middle. */
+html[data-television] .shell[data-layout="pocket"]
+  .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="failed"], [data-player-state="stopping"])
+  .hosted-player__screen {
+  background: #060b14;
+  box-shadow: inset 0 0 0 0.0833rem var(--tv-faint);
+}
+
+html[data-television] .shell[data-layout="pocket"]
+  .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="failed"], [data-player-state="stopping"])
+  video {
+  background: transparent;
+}
+
 html[data-television] .shell[data-layout="pocket"]
   .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="failed"], [data-player-state="stopping"])
   .hosted-player__tv-head {
-  background: none;
+  align-content: center;
+  padding-top: 0;
 }
 
 html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="failed"], [data-player-state="stopping"]) .hosted-player__controls {
-  top: calc(50% + 2.5rem);
+  top: calc(var(--fs-pic-h) / 2 + 2.5rem);
   bottom: auto;
-  height: auto;
-  align-items: center;
   justify-content: center;
-  padding: 0 2.3333rem;
-  background: none;
+  gap: 0.6667rem;
 }
 
 html[data-television] .shell[data-layout="pocket"]
@@ -2993,7 +3478,6 @@ html[data-television] .shell[data-layout="pocket"]
   width: auto;
   margin: 0;
   padding: 0 1.3333rem 0 1.1667rem;
-  font-size: 1.25rem;
 }
 
 html[data-television] .shell[data-layout="pocket"]
@@ -3015,7 +3499,7 @@ html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen[dat
   display: block;
   width: 3rem;
   height: 0.3333rem;
-  margin: 0 auto 1.1667rem;
+  margin: 0 auto 1rem;
   border-radius: 0.1667rem;
   background: var(--tally);
   content: "";

@@ -69,6 +69,7 @@ export const ProgrammeTimelineRow = memo(function ProgrammeTimelineRow({
       data-number={family.number}
       data-playing={playing}
       data-last-played={lastPlayed ? "true" : undefined}
+      style={switchable ? { "--variants": family.variants.length } : undefined}
     >
       <div className="programme-guide__channel-cell">
         <span className="programme-guide__number" aria-hidden="true">
@@ -127,6 +128,8 @@ export const ProgrammeTimelineRow = memo(function ProgrammeTimelineRow({
               onFocus={onPreparePlayback}
               onClick={() => onTune(preferred.channel)}
             >
+              {/* The cell's fill: a sliver too narrow for words drops it too. */}
+              <i className="programme-guide__fill" aria-hidden="true" />
               <small>{clockLabel(programme.startsAt)}</small>
               <b>{title}</b>
             </button>
