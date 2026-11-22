@@ -1,9 +1,16 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import { stageMonitorSize } from "./stage-dom";
+import { stageMonitorBox } from "./stage-dom";
 
 /** The root properties `pocket.css` sizes a held picture by. */
 const PINNED_WIDTH = "--pocket-pinned-w";
 const PINNED_HEIGHT = "--pocket-pinned-h";
+/**
+ * Where the TV holds its picture (`television.css`): the TV places the box
+ * and what lies around it in units of the window's width, so the origin is
+ * held with the size.
+ */
+const PINNED_LEFT = "--pocket-pinned-x";
+const PINNED_TOP = "--pocket-pinned-y";
 
 /**
  * Holds the picture's box at the size it has for as long as the picture
@@ -58,7 +65,7 @@ export function usePicturePin(
         pendingExitRemeasureRef.current = false;
         return;
       }
-      pinPicture(root);
+      pinPicture(root, television);
     }
     function onFullscreenChange() {
       if (clearExitFrame !== null) {
@@ -109,18 +116,23 @@ export function usePicturePin(
     pendingExitRemeasureRef.current = false;
     const root = document.documentElement;
     unpinPicture(root);
-    pinPicture(root);
+    pinPicture(root, television);
   }, [hold, mode, television]);
 }
 
 function unpinPicture(root: HTMLElement): void {
   root.style.removeProperty(PINNED_WIDTH);
   root.style.removeProperty(PINNED_HEIGHT);
+  root.style.removeProperty(PINNED_LEFT);
+  root.style.removeProperty(PINNED_TOP);
 }
 
-function pinPicture(root: HTMLElement): void {
-  const size = stageMonitorSize();
-  if (size === null) return;
-  root.style.setProperty(PINNED_WIDTH, `${size.width}px`);
-  root.style.setProperty(PINNED_HEIGHT, `${size.height}px`);
+function pinPicture(root: HTMLElement, television: boolean): void {
+  const box = stageMonitorBox();
+  if (box === null) return;
+  root.style.setProperty(PINNED_WIDTH, `${box.width}px`);
+  root.style.setProperty(PINNED_HEIGHT, `${box.height}px`);
+  if (!television) return;
+  root.style.setProperty(PINNED_LEFT, `${box.left}px`);
+  root.style.setProperty(PINNED_TOP, `${box.top}px`);
 }

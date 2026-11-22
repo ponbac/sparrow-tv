@@ -6,6 +6,9 @@ import type {
   ChannelId,
   GuideProgramme,
   IsoInstant,
+  PageCursor,
+  ProgrammeSlot,
+  ProgrammeSummary,
   SparrowClient,
 } from "../../client/contracts";
 import { generationBoundResult } from "../../client/query-result";
@@ -17,15 +20,15 @@ import {
   type VariantPreferences,
 } from "./guide-families";
 import { ChannelIcon } from "./channel-icon";
-import { clockLabel, durationLabel } from "./guide-window";
+import { clockLabel, durationLabel, programmeKey, programmeKeys } from "./guide-window";
 import { elapsedFraction, minutesLeft, programmeAt } from "./now-next";
 
 // The description read waits until focus rests: a run of D-pad presses
 // reads nothing for the Channels it passes.
 const DESCRIPTION_SETTLE_MS = 300;
 const IMMUTABLE_CATALOG_STALE_TIME = Number.POSITIVE_INFINITY;
-// Enough Programmes from the shown one's start to hold it after any that
-// overlap that start.
+// One page of the schedule from the shown Programme's start; more follow
+// while Programmes that overlap that start fill the page.
 const DESCRIPTION_READ_LIMIT = 4;
 // What the panel lists after the shown Programme, from the rows it holds.
 const LATER_PROGRAMMES = 3;
@@ -78,11 +81,13 @@ export function GuidePreview({
       ? null
       : familyProgrammeSource(family, preferred);
   const programmes = source?.programmes ?? [];
-  const chosen =
-    focus !== null && focus.startsAt !== null && family?.number === focus.number
-      ? (programmes.find((programme) => programme.startsAt === focus.startsAt) ??
-        null)
-      : null;
+  // The focused cell's own Programme, by the key the Timeline gave its cell:
+  // two Programmes that start together are told apart.
+  const chosenIndex =
+    focus !== null && focus.programme !== null && family?.number === focus.number
+      ? programmeKeys(programmes).indexOf(focus.programme)
+      : -1;
+  const chosen = programmes[chosenIndex] ?? null;
   const shown =
     chosen ??
     programmeAt(programmes, now) ??
@@ -100,6 +105,7 @@ export function GuidePreview({
     descriptions,
     source?.channel.id ?? null,
     shown,
+    shown === null ? 0 : sameProgrammeBefore(programmes, shown),
   );
   const idle = playingChannel === null;
 
@@ -268,61 +274,114 @@ function startsIn(programme: GuideProgramme, now: Date): string {
 }
 
 /**
+ * How many Programmes before `shown` in `programmes` are the same Programme:
+ * the same slot under the same title.
+ */
+function sameProgrammeBefore(
+  programmes: readonly GuideProgramme[],
+  shown: GuideProgramme,
+): number {
+  const index = programmes.indexOf(shown);
+  return programmes
+    .slice(0, Math.max(0, index))
+    .filter((programme) => sameSlot(programme, shown) && programme.title === shown.title)
+    .length;
+}
+
+function sameSlot(a: ProgrammeSlot, b: ProgrammeSlot): boolean {
+  return a.startsAt === b.startsAt && a.endsAt === b.endsAt;
+}
+
+/**
+ * Whether a schedule's Programme is the guide row's: the same slot under the
+ * same title, or a title the row cut short.
+ */
+function isScheduledAs(scheduled: ProgrammeSummary, programme: GuideProgramme): boolean {
+  return (
+    sameSlot(scheduled, programme) &&
+    (programme.titleTruncated
+      ? scheduled.title.startsWith(programme.title)
+      : scheduled.title === programme.title)
+  );
+}
+
+/**
  * The shown Programme's description, once focus has rested on it. Guide rows
- * carry none; the schedule read from the Programme's start does. Null while
- * it is read, and when there is none.
+ * carry none; the schedule read from the Programme's start does. The read
+ * goes on page by page until it finds the Programme (the `occurrence`-th of
+ * its kind), passes its start, or runs out. Null while it is read, and when
+ * there is none.
  */
 function useProgrammeDescription(
   source: GuidePreviewSource,
   channel: ChannelId | null,
   programme: GuideProgramme | null,
+  occurrence: number,
 ): string | null {
-  const from = programme?.startsAt ?? null;
-  const wantedKey = channel === null || from === null ? null : `${channel}@${from}`;
-  const [settled, setSettled] = useState<{
-    readonly channel: ChannelId;
-    readonly from: IsoInstant;
-    readonly key: string;
-  } | null>(null);
+  const wantedKey =
+    channel === null || programme === null
+      ? null
+      : `${channel}@${programmeKey(programme, occurrence)}`;
+  // The key focus last rested on long enough to read.
+  const [settledKey, setSettledKey] = useState<string | null>(null);
   useEffect(() => {
-    const timer = setTimeout(
-      () =>
-        setSettled(
-          channel === null || from === null
-            ? null
-            : { channel, from, key: `${channel}@${from}` },
-        ),
-      DESCRIPTION_SETTLE_MS,
-    );
+    const timer = setTimeout(() => setSettledKey(wantedKey), DESCRIPTION_SETTLE_MS);
     return () => clearTimeout(timer);
-  }, [channel, from]);
+  }, [wantedKey]);
   const { client, generation } = source;
-  const read = settled !== null && settled.key === wantedKey ? settled : null;
+  const settled = wantedKey !== null && settledKey === wantedKey;
   const query = useQuery({
-    queryKey: ["catalog", "preview", "schedule", generation, read?.channel, read?.from],
+    queryKey: ["catalog", "preview", "description", generation, settled ? wantedKey : null],
     queryFn:
-      read === null || generation === null
+      !settled || channel === null || programme === null || generation === null
         ? skipToken
         : ({ signal }) =>
-            generationBoundResult(
-              client.schedule({
-                id: read.channel,
-                from: read.from,
-                // An earlier Programme still on at `from` may come first;
-                // the shown one is matched by its start below.
-                limit: DESCRIPTION_READ_LIMIT,
-                signal,
-              }),
-              generation,
-            ),
+            readDescription(client, generation, channel, programme, occurrence, signal),
     retry: false,
     staleTime: IMMUTABLE_CATALOG_STALE_TIME,
   });
-  if (read === null || programme === null) return null;
-  const item = query.data?.value.items.find(
-    (candidate) =>
-      candidate.startsAt === programme.startsAt &&
-      candidate.endsAt === programme.endsAt,
-  );
-  return item?.description ?? null;
+  if (!settled) return null;
+  return query.data ?? null;
+}
+
+async function readDescription(
+  client: GuidePreviewSource["client"],
+  generation: CatalogGeneration,
+  channel: ChannelId,
+  programme: GuideProgramme,
+  occurrence: number,
+  signal: AbortSignal,
+): Promise<string | null> {
+  const start = Date.parse(programme.startsAt);
+  let seen = 0;
+  let cursor: PageCursor | undefined;
+  let afterStartsAt: IsoInstant | undefined;
+  const previousCursors: PageCursor[] = [];
+  for (;;) {
+    const page = (
+      await generationBoundResult(
+        client.schedule({
+          id: channel,
+          from: programme.startsAt,
+          // An earlier Programme still on at `from` may come first; the
+          // shown one is matched by its slot and title.
+          limit: DESCRIPTION_READ_LIMIT,
+          ...(cursor === undefined ? {} : { cursor, afterStartsAt, previousCursors: [...previousCursors] }),
+          signal,
+        }),
+        generation,
+      )
+    ).value;
+    for (const item of page.items) {
+      if (Date.parse(item.startsAt) > start) return null;
+      if (!isScheduledAs(item, programme)) continue;
+      if (seen === occurrence) return item.description;
+      seen += 1;
+    }
+    signal.throwIfAborted();
+    if (page.next === null) return null;
+    if (cursor !== undefined) previousCursors.push(cursor);
+    cursor = page.next;
+    afterStartsAt = page.items.at(-1)?.startsAt ?? afterStartsAt;
+  }
 }

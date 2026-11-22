@@ -452,12 +452,104 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
       screen.getByRole("button", { name: new RegExp(`^${name}, `, "u") });
 
     act(() => cell("Morning").focus());
+    // A Timeline move reads the rows beside it, never every Channel.
+    const queries = vi.spyOn(Element.prototype, "querySelectorAll");
     fireEvent.keyDown(cell("Morning"), { key: "ArrowDown" });
     expect(cell("Feature")).toHaveFocus();
+    expect(queries.mock.calls.map(([selector]) => selector)).not.toContain(
+      ".programme-guide__row .programme-guide__channel",
+    );
+    queries.mockRestore();
     // At the first minute shown there is no earlier time to bring into view,
     // so Left from the cell drawn across the sliver reaches the rail.
     fireEvent.keyDown(cell("Feature"), { key: "ArrowLeft" });
     expect(screen.getByRole("radio", { name: "All" })).toHaveFocus();
+  });
+
+  it("keeps showing the same time when the window moves on under a panned timeline", () => {
+    document.documentElement.setAttribute("data-television", "");
+    const at = (minutes: number) =>
+      clientSchemas.isoInstant.parse(
+        new Date(WINDOW.startsAt.getTime() + minutes * 60_000).toISOString(),
+      );
+    const programme = (title: string, from: number, to: number) => ({
+      title,
+      startsAt: at(from),
+      endsAt: at(to),
+      titleTruncated: false,
+    });
+    const rows: GuideWindowChannel[] = [
+      {
+        channel: channelFixture({ id: "roll-1", name: "Roll 1", group: "News", number: 1 }),
+        programmes: [
+          programme("Morning", 0, 65),
+          programme("Bulletin", 65, 80),
+          programme("Afternoon", 150, 170),
+        ],
+        programmesTruncated: false,
+      },
+    ];
+    const guide = (window: typeof WINDOW, now: Date) => (
+      <ProgrammeGuide
+        television
+        rows={rows}
+        groups={GROUPS}
+        activeGroup={null}
+        window={window}
+        now={now}
+        playingChannel={null}
+        variantPreferences={new Map()}
+        layout="pocket"
+        mode="guide"
+        time={null}
+        view={{ current: "timeline", onToggle: () => undefined }}
+        loading={false}
+        replacing={false}
+        error={null}
+        hasMore={false}
+        loadingMore={false}
+        onSelectGroup={() => undefined}
+        onPrefetchGroup={() => undefined}
+        excludedGroups={new Set()}
+        onSetGroupExcluded={() => undefined}
+        onRestoreExcludedGroups={() => undefined}
+        onPreparePlayback={() => undefined}
+        onTune={() => undefined}
+        onTuneVariant={() => undefined}
+        onRetry={() => undefined}
+        onLoadMore={() => undefined}
+        search={null}
+        feeds={null}
+        status={null}
+      />
+    );
+    const { rerender } = render(guide(WINDOW, NOW));
+    const board = document.querySelector<HTMLElement>(".programme-guide__board")!;
+    const cell = (name: string) =>
+      screen.getByRole("button", { name: new RegExp(`^${name}, `, "u") });
+
+    // Panned to 11:00, with 11:05 to 11:20 focused.
+    act(() => cell("Afternoon").focus());
+    act(() => cell("Bulletin").focus());
+    expect(board.style.getPropertyValue("--tl-offset")).toBe("60");
+    const bulletin = cell("Bulletin");
+    expect(bulletin).toHaveAttribute("data-end", "80");
+
+    // The window moves on half an hour: the same button now ends at minute
+    // 50 of the window, and the timeline still shows it from 11:00.
+    rerender(
+      guide(
+        {
+          startsAt: new Date("2026-08-30T10:30:00Z"),
+          endsAt: new Date("2026-08-30T13:30:00Z"),
+        },
+        new Date("2026-08-30T10:30:00Z"),
+      ),
+    );
+    expect(cell("Bulletin")).toBe(bulletin);
+    expect(bulletin).toHaveFocus();
+    expect(bulletin).toHaveAttribute("data-end", "50");
+    expect(board.style.getPropertyValue("--tl-offset")).toBe("30");
   });
 
   it("checks visibility lazily on large Guide boards without reading styles for every loaded Channel", () => {

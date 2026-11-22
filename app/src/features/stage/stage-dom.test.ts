@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   isPictureTap,
   revealInScrollContainer,
-  stageMonitorSize,
+  stageMonitorBox,
 } from "./stage-dom";
 
 afterEach(() => {
@@ -70,9 +70,9 @@ describe("isPictureTap", () => {
   });
 });
 
-describe("stageMonitorSize", () => {
+describe("stageMonitorBox", () => {
   it("measures the picture box, and nothing where there is none or it is not laid out", () => {
-    expect(stageMonitorSize()).toBeNull();
+    expect(stageMonitorBox()).toBeNull();
 
     document.body.innerHTML = `<div class="stage__monitor"></div>`;
     const monitor = document.querySelector<HTMLElement>(".stage__monitor");
@@ -80,11 +80,11 @@ describe("stageMonitorSize", () => {
       throw new Error("expected the picture box");
     }
     // jsdom lays nothing out: every box is empty, as one out of the layout is.
-    expect(stageMonitorSize()).toBeNull();
+    expect(stageMonitorBox()).toBeNull();
 
     monitor.getBoundingClientRect = () =>
       DOMRect.fromRect({ x: 0, y: 38, width: 360, height: 202.5 });
-    expect(stageMonitorSize()).toEqual({ width: 360, height: 202.5 });
+    expect(stageMonitorBox()).toEqual({ left: 0, top: 38, width: 360, height: 202.5 });
   });
 });
 

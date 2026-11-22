@@ -123,19 +123,45 @@ describe("ChannelIcon on a TV", () => {
     expect(createElement).not.toHaveBeenCalledWith("canvas");
   });
 
-  it("reads the pixels of an icon the page holds itself", () => {
+  it("fits an icon the page holds itself by the ink its pixels show", () => {
+    // A 40 by 30 white tile with a black 20 by 10 wordmark in its middle.
+    const width = 40;
+    const height = 30;
+    const pixels = new Uint8ClampedArray(width * height * 4).fill(255);
+    for (let y = 10; y < 20; y += 1) {
+      for (let x = 10; x < 30; x += 1) {
+        pixels.set([0, 0, 0, 255], (y * width + x) * 4);
+      }
+    }
+    const drawImage = vi.fn();
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      drawImage,
+      getImageData: () => ({ data: pixels, width, height }),
+    } as unknown as CanvasRenderingContext2D);
     document.documentElement.setAttribute("data-television", "");
     const { container } = render(
       <ChannelIcon icon={`${window.location.origin}/logos/own.png`} number={4} />,
     );
     const image = container.querySelector("img") as HTMLImageElement;
-    Object.defineProperty(image, "naturalWidth", { value: 40 });
-    Object.defineProperty(image, "naturalHeight", { value: 30 });
-    const createElement = vi.spyOn(document, "createElement");
+    Object.defineProperty(image, "naturalWidth", { value: width });
+    Object.defineProperty(image, "naturalHeight", { value: height });
 
     fireEvent.load(image);
 
-    expect(createElement).toHaveBeenCalledWith("canvas");
+    expect(drawImage).toHaveBeenCalledWith(image, 0, 0, width, height);
+    const plate = tile(container);
+    expect(plate).toHaveAttribute("data-fit", "ink");
+    expect(plate).toHaveAttribute("data-ground", "true");
+    // The plate takes the tile's white, and the wordmark, half the image
+    // wide, is sized to 76 % of the plate's width and centred on it.
+    expect(plate.style.getPropertyValue("--fit-ground")).toBe("rgb(255 255 255)");
+    expect(plate.style.getPropertyValue("--fit-width")).toBe("152.000%");
+    expect(plate.style.getPropertyValue("--fit-height")).toBe("152.000%");
+    expect(plate.style.getPropertyValue("--fit-left")).toBe("-26.000%");
+    expect(plate.style.getPropertyValue("--fit-top")).toBe("-26.000%");
+    expect(plate.style.getPropertyValue("--fit-clip")).toBe(
+      "inset(30.33% 22.00% 30.33% 22.00%)",
+    );
   });
 });
 

@@ -13,8 +13,8 @@
  * Outside element fullscreen Media3 draws the picture on a native surface
  * above the WebView, at the `.stage__monitor` rectangle. Nothing here draws
  * over that box, and nothing moves over time: every change of its size is a
- * jump, and every rule that sizes it reads the held size
- * (`--pocket-pinned-w`, `--pocket-pinned-h`) first.
+ * jump, and every rule that places or sizes it reads the held rectangle
+ * (`--pocket-pinned-x`, `-y`, `-w`, `-h`) first.
  *
  * Palette "Nordic night and ice": ink, panel, cell and cell2 in blue-black,
  * an elapsed wash, text in one white at several strengths, an ice focus
@@ -75,20 +75,23 @@ html[data-television] {
   --tv-dock-w: 26.6667rem;
   --tv-dock-h: 15rem;
   --tv-caption-h: 1.8333rem;
-  /* What lies beside and under the docked picture is placed by the size the
-     picture is held at (`--pocket-pinned-*`, px) while the native picture
-     cannot follow its box, so a narrower window moves nothing into it. */
+  /* The docked picture's box, and what lies beside and under it, are placed
+     by the rectangle the picture is held at (`--pocket-pinned-*`, px, its
+     origin with its size) while the native picture cannot follow its box,
+     so a narrower window moves nothing into it. */
+  --tv-dock-left: var(--pocket-pinned-x, var(--tv-gutter));
+  --tv-dock-top: var(--pocket-pinned-y, var(--tv-band-top));
   --tv-band-h: calc(
-    var(--tv-band-top) + var(--pocket-pinned-h, var(--tv-dock-h)) + var(--tv-caption-h) + 0.5417rem
+    var(--tv-dock-top) + var(--pocket-pinned-h, var(--tv-dock-h)) + var(--tv-caption-h) + 0.5417rem
   );
   --tv-lane-h: 3.25rem;
   --tv-plate-w: 14rem;
-  --tv-panel-left: calc(var(--tv-gutter) + var(--pocket-pinned-w, var(--tv-dock-w)) + 1.8333rem);
+  --tv-panel-left: calc(var(--tv-dock-left) + var(--pocket-pinned-w, var(--tv-dock-w)) + 1.8333rem);
   /* The docked picture's box on the canvas, which a veil leaves out. */
-  --tv-dock-x0: var(--tv-gutter);
-  --tv-dock-x1: calc(var(--tv-gutter) + var(--pocket-pinned-w, var(--tv-dock-w)));
-  --tv-dock-y0: var(--tv-band-top);
-  --tv-dock-y1: calc(var(--tv-band-top) + var(--pocket-pinned-h, var(--tv-dock-h)));
+  --tv-dock-x0: var(--tv-dock-left);
+  --tv-dock-x1: calc(var(--tv-dock-left) + var(--pocket-pinned-w, var(--tv-dock-w)));
+  --tv-dock-y0: var(--tv-dock-top);
+  --tv-dock-y1: calc(var(--tv-dock-top) + var(--pocket-pinned-h, var(--tv-dock-h)));
   --tv-around-dock: polygon(
     evenodd,
     0 0,
@@ -357,8 +360,8 @@ html[data-television] .shell[data-layout="pocket"][data-playing="false"] .stage 
 /* The band's picture at the top left. */
 html[data-television] .shell[data-layout="pocket"] .stage__monitor {
   position: absolute;
-  top: var(--tv-band-top);
-  left: var(--tv-gutter);
+  top: var(--tv-dock-top);
+  left: var(--tv-dock-left);
   width: var(--pocket-pinned-w, var(--tv-dock-w));
   height: var(--pocket-pinned-h, var(--tv-dock-h));
   overflow: hidden;
@@ -427,14 +430,14 @@ html[data-television] .shell[data-layout="pocket"][data-dock="true"] .playback-l
 
 html[data-television] .shell[data-layout="pocket"][data-mode="guide"] .stage {
   inset: 0 auto auto 0;
-  width: calc(var(--tv-gutter) + var(--pocket-pinned-w, var(--tv-dock-w)));
+  width: calc(var(--tv-dock-left) + var(--pocket-pinned-w, var(--tv-dock-w)));
   height: var(--tv-band-h);
 }
 
 html[data-television] .shell[data-layout="pocket"][data-mode="guide"][data-dock="true"] .now-playing {
   position: absolute;
-  top: calc(var(--tv-band-top) + var(--pocket-pinned-h, var(--tv-dock-h)));
-  left: var(--tv-gutter);
+  top: calc(var(--tv-dock-top) + var(--pocket-pinned-h, var(--tv-dock-h)));
+  left: var(--tv-dock-left);
   display: flex;
   width: var(--pocket-pinned-w, var(--tv-dock-w));
   height: var(--tv-caption-h);
@@ -576,8 +579,8 @@ html[data-television] .shell[data-layout="pocket"][data-mode="guide"][data-dock=
 html[data-television] .shell[data-layout="pocket"][data-mode="guide"][data-playing="true"] .stage__undock {
   position: absolute;
   z-index: 1;
-  top: calc(var(--tv-band-top) + var(--pocket-pinned-h, var(--tv-dock-h)));
-  left: var(--tv-gutter);
+  top: calc(var(--tv-dock-top) + var(--pocket-pinned-h, var(--tv-dock-h)));
+  left: var(--tv-dock-left);
   display: flex;
   width: var(--pocket-pinned-w, var(--tv-dock-w));
   height: var(--tv-caption-h);

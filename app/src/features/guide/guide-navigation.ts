@@ -676,11 +676,16 @@ function handleBoardArrow(
   onRequestMore: () => void,
   television: boolean,
 ): void {
-  const channels = Array.from(
-    board.querySelectorAll<HTMLElement>(
-      ".programme-guide__row .programme-guide__channel",
-    ),
-  );
+  // Every Channel the board holds, read only by the paths that move across
+  // rows of the Now grid or reach its footer: a Timeline move touches the
+  // rows beside it alone.
+  let enumerated: readonly HTMLElement[] | null = null;
+  const channels = (): readonly HTMLElement[] =>
+    (enumerated ??= Array.from(
+      board.querySelectorAll<HTMLElement>(
+        ".programme-guide__row .programme-guide__channel",
+      ),
+    ));
   const timeline = board.dataset.view === "timeline";
 
   if (television && target.matches(QUALITY_CHIP_SELECTOR)) {
@@ -734,7 +739,7 @@ function handleBoardArrow(
     handleChannelGridArrow(
       event,
       target,
-      channels,
+      channels(),
       layout,
       lane,
       times,
@@ -772,7 +777,7 @@ function handleBoardArrow(
       handleChannelGridArrow(
         event,
         rowChannel,
-        channels,
+        channels(),
         layout,
         lane,
         times,
@@ -794,7 +799,7 @@ function handleBoardArrow(
   if (target === retainedButton) {
     if (event.key === "ArrowUp") {
       const next =
-        findVisibleChannelInRange(channels, channels.length - 1, 0, -1) ??
+        findVisibleChannelInRange(channels(), channels().length - 1, 0, -1) ??
         preferredTimesTarget(times) ??
         preferredLaneTarget(lane, target);
       if (next !== null) {
@@ -816,7 +821,7 @@ function handleBoardArrow(
     if (event.key === "ArrowUp") {
       const next =
         retainedButton ??
-        findVisibleChannelInRange(channels, channels.length - 1, 0, -1) ??
+        findVisibleChannelInRange(channels(), channels().length - 1, 0, -1) ??
         preferredTimesTarget(times) ??
         preferredLaneTarget(lane, target);
       if (next !== null) {
@@ -862,7 +867,7 @@ function handleQualityChipArrow(
   event: ArrowKeyEvent,
   chip: HTMLElement,
   context: {
-    readonly channels: readonly HTMLElement[];
+    readonly channels: () => readonly HTMLElement[];
     readonly layout: StageLayout;
     readonly lane: HTMLElement | null;
     readonly times: HTMLElement | null;
@@ -913,7 +918,7 @@ function handleQualityChipArrow(
   handleChannelGridArrow(
     event,
     cell,
-    channels,
+    channels(),
     layout,
     lane,
     times,
@@ -1407,7 +1412,6 @@ export function revealTimelineCell(board: HTMLElement, cell: HTMLElement): void 
   const start = Number(cell.dataset.start);
   const end = Number(cell.dataset.end);
   if (!Number.isFinite(start) || !Number.isFinite(end)) return;
-  const total = Number(board.dataset.windowMinutes) || TIMELINE_VIEW_MINUTES;
   const current = timelineOffset(board);
   let offset = current;
   if (start >= current + TIMELINE_VIEW_MINUTES - 15) {
@@ -1419,8 +1423,33 @@ export function revealTimelineCell(board: HTMLElement, cell: HTMLElement): void 
     // words: show it from its start.
     offset = Math.floor(start / 30) * 30;
   }
-  offset = Math.min(Math.max(offset, 0), Math.max(0, total - TIMELINE_VIEW_MINUTES));
-  if (offset === current) return;
+  setTimelineOffset(board, offset);
+}
+
+/**
+ * Keeps the TV timeline on the same stretch of time when its window moves on
+ * by `minutes`: the cells' minutes, counted from the window's start, all
+ * drop by as much, and so does the first minute shown. A focused cell the
+ * move leaves out of view is brought back.
+ */
+export function followTimelineWindow(board: HTMLElement, minutes: number): void {
+  if (board.dataset.view !== "timeline" || minutes === 0) return;
+  setTimelineOffset(board, timelineOffset(board) - minutes);
+  const focused = document.activeElement;
+  if (
+    focused instanceof HTMLElement &&
+    board.contains(focused) &&
+    focused.classList.contains("programme-guide__programme")
+  ) {
+    revealTimelineCell(board, focused);
+  }
+}
+
+/** Shows the timeline from `offset`, kept within the window. */
+function setTimelineOffset(board: HTMLElement, wanted: number): void {
+  const total = Number(board.dataset.windowMinutes) || TIMELINE_VIEW_MINUTES;
+  const offset = Math.min(Math.max(wanted, 0), Math.max(0, total - TIMELINE_VIEW_MINUTES));
+  if (offset === timelineOffset(board)) return;
   board.style.setProperty("--tl-offset", String(offset));
   const nowMinutes = Number(board.dataset.nowMinutes);
   board.dataset.nowHidden = String(

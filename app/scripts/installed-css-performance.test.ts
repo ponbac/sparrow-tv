@@ -352,22 +352,49 @@ describe("installed app repaint contract", () => {
     ).toBe("none");
   });
 
-  it("keeps what the TV draws clear of its docked picture's box, placed by the size it is held at", async () => {
+  it("keeps what the TV draws clear of its docked picture's box, placed by the rectangle it is held at", async () => {
     // Media3 draws the TV's docked picture above the page. A veil over the
-    // Guide or a sheet's backdrop must leave its box out, and the panel and
-    // the board beside and under it are placed by the held size, so a
-    // narrower window moves nothing under a picture that stays where it is.
+    // Guide or a sheet's backdrop must leave its box out, and the box, its
+    // caption, and the panel and the board beside and under it are placed by
+    // the held origin and size, so a narrower window moves nothing under a
+    // picture that stays where it is.
     const tvStyles = requireStylesheet(
       new Map(await installedStylesheets()),
       "features/stage/television.css",
     );
+    const root = "html[data-television]";
+    const pocket = `${root} .shell[data-layout="pocket"]`;
     const playing = '.shell[data-layout="pocket"][data-playing="true"]';
+    const width = "var(--pocket-pinned-w, var(--tv-dock-w))";
+    const height = "var(--pocket-pinned-h, var(--tv-dock-h))";
 
-    expect(declaration(tvStyles, "html[data-television]", "--tv-panel-left")).toBe(
-      "calc(var(--tv-gutter) + var(--pocket-pinned-w, var(--tv-dock-w)) + 1.8333rem)",
+    expect(declaration(tvStyles, root, "--tv-dock-left")).toBe(
+      "var(--pocket-pinned-x, var(--tv-gutter))",
     );
-    expect(declaration(tvStyles, "html[data-television]", "--tv-band-h")).toContain(
-      "var(--pocket-pinned-h, var(--tv-dock-h))",
+    expect(declaration(tvStyles, root, "--tv-dock-top")).toBe(
+      "var(--pocket-pinned-y, var(--tv-band-top))",
+    );
+    expect(declaration(tvStyles, `${pocket} .stage__monitor`, "left")).toBe("var(--tv-dock-left)");
+    expect(declaration(tvStyles, `${pocket} .stage__monitor`, "top")).toBe("var(--tv-dock-top)");
+    expect(declaration(tvStyles, `${pocket} .stage__monitor`, "width")).toBe(width);
+    expect(declaration(tvStyles, `${pocket} .stage__monitor`, "height")).toBe(height);
+    expect(declaration(tvStyles, root, "--tv-dock-x0")).toBe("var(--tv-dock-left)");
+    expect(declaration(tvStyles, root, "--tv-dock-x1")).toBe(`calc(var(--tv-dock-left) + ${width})`);
+    expect(declaration(tvStyles, root, "--tv-dock-y0")).toBe("var(--tv-dock-top)");
+    expect(declaration(tvStyles, root, "--tv-dock-y1")).toBe(`calc(var(--tv-dock-top) + ${height})`);
+    for (const caption of [
+      `${pocket}[data-mode="guide"][data-dock="true"] .now-playing`,
+      `${pocket}[data-mode="guide"][data-playing="true"] .stage__undock`,
+    ]) {
+      expect(declaration(tvStyles, caption, "left")).toBe("var(--tv-dock-left)");
+      expect(declaration(tvStyles, caption, "top")).toBe(`calc(var(--tv-dock-top) + ${height})`);
+      expect(declaration(tvStyles, caption, "width")).toBe(width);
+    }
+    expect(declaration(tvStyles, root, "--tv-panel-left")).toBe(
+      `calc(var(--tv-dock-left) + ${width} + 1.8333rem)`,
+    );
+    expect(declaration(tvStyles, root, "--tv-band-h")).toContain(
+      `var(--tv-dock-top) + ${height}`,
     );
     expect(
       declaration(

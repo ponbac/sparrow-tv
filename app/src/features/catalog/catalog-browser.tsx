@@ -349,23 +349,47 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   // A held OK repeats its keydown, and each repeat presses the focused
   // control again: the first press tunes a Channel, a repeat would take it
   // fullscreen. Only a fresh press counts as the fullscreen gesture.
+  // Android's WebView never flags a held key's repeats, so a keydown of an
+  // activation key that is still down counts as a repeat whatever the flag
+  // says. The press that follows a keydown is judged by that keydown.
   const heldPress = useRef(false);
   useEffect(() => {
     if (!television) return;
+    const down = new Set<string>();
     const press = (event: KeyboardEvent) => {
-      heldPress.current =
-        event.repeat && (event.key === "Enter" || event.key === " ");
+      const key = activationKey(event);
+      if (key === null) {
+        heldPress.current = false;
+        return;
+      }
+      heldPress.current = event.repeat || down.has(key);
+      down.add(key);
+    };
+    const lift = (event: KeyboardEvent) => {
+      const key = activationKey(event);
+      if (key !== null) down.delete(key);
+      heldPress.current = false;
+    };
+    // A keyup lost to another window or a hidden page must not leave a key
+    // held for good.
+    const forget = () => {
+      down.clear();
+      heldPress.current = false;
     };
     const release = () => {
       heldPress.current = false;
     };
     document.addEventListener("keydown", press, true);
-    document.addEventListener("keyup", release, true);
+    document.addEventListener("keyup", lift, true);
     document.addEventListener("pointerdown", release, true);
+    document.addEventListener("visibilitychange", forget);
+    window.addEventListener("blur", forget);
     return () => {
       document.removeEventListener("keydown", press, true);
-      document.removeEventListener("keyup", release, true);
+      document.removeEventListener("keyup", lift, true);
       document.removeEventListener("pointerdown", release, true);
+      document.removeEventListener("visibilitychange", forget);
+      window.removeEventListener("blur", forget);
     };
   }, [television]);
   // The Guide control that took the picture fullscreen, where focus returns.
@@ -1114,4 +1138,14 @@ function guideEmptyState(
 
 function reloadSparrow(): void {
   window.location.reload();
+}
+
+/**
+ * The key that presses a focused control, named the same for both Enters,
+ * or null for any other key.
+ */
+function activationKey(event: KeyboardEvent): "Enter" | " " | null {
+  if (event.key === "Enter" || event.code === "NumpadEnter") return "Enter";
+  if (event.key === " " || event.key === "Spacebar") return " ";
+  return null;
 }

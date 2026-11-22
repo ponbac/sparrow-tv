@@ -91,10 +91,13 @@ export function focusPictureReturn(): void {
 }
 
 /**
- * Measures the picture box: its width and height in CSS pixels. Null where
- * there is no box, and for one that is not laid out and so has no size.
+ * Measures the picture box: where it lies in the viewport and its width and
+ * height, in CSS pixels. Null where there is no box, and for one that is not
+ * laid out and so has no size.
  */
-export function stageMonitorSize(): {
+export function stageMonitorBox(): {
+  readonly left: number;
+  readonly top: number;
   readonly width: number;
   readonly height: number;
 } | null {
@@ -103,7 +106,7 @@ export function stageMonitorSize(): {
     ?.getBoundingClientRect();
   return box === undefined || box.width <= 0 || box.height <= 0
     ? null
-    : { width: box.width, height: box.height };
+    : { left: box.left, top: box.top, width: box.width, height: box.height };
 }
 
 /**

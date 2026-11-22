@@ -10,7 +10,7 @@ import { channelFixture } from "../../test/channel-fixture";
 import type { GuideFamily } from "./guide-families";
 import { GuidePreview } from "./guide-preview";
 import { createPreviewStore } from "./guide-preview-store";
-import { clockLabel } from "./guide-window";
+import { clockLabel, programmeKeys } from "./guide-window";
 
 afterEach(cleanup);
 
@@ -41,9 +41,14 @@ const FAMILY: GuideFamily = {
   ],
 };
 
-function renderPreview(startsAt: string | null) {
+/** The key the Timeline gives the cell of `family`'s `index`-th Programme. */
+function cellKey(family: GuideFamily, index: number): string {
+  return programmeKeys(family.variants[0]?.programmes ?? [])[index] as string;
+}
+
+function renderPreview(focused: number | null) {
   const store = createPreviewStore();
-  store.set({ number: 1, startsAt });
+  store.set({ number: 1, programme: focused === null ? null : cellKey(FAMILY, focused) });
   return render(
     <QueryClientProvider client={new QueryClient()}>
       <GuidePreview
@@ -74,7 +79,7 @@ describe("GuidePreview", () => {
   });
 
   it("gives a Programme not on yet a start cue instead of an empty bar", () => {
-    const { container } = renderPreview(LATER.startsAt);
+    const { container } = renderPreview(1);
 
     expect(meter(container)).toHaveAttribute("data-when", "later");
     expect(container.querySelector(".programme-guide__preview-progress")).toBeNull();
@@ -106,9 +111,13 @@ describe("GuidePreview's description", () => {
   function renderWith(
     family: GuideFamily,
     schedule: (input: ScheduleInput) => Promise<unknown>,
+    focused: number | null = null,
   ) {
     const store = createPreviewStore();
-    store.set({ number: family.number, startsAt: null });
+    store.set({
+      number: family.number,
+      programme: focused === null ? null : cellKey(family, focused),
+    });
     return render(
       <QueryClientProvider client={new QueryClient()}>
         <GuidePreview
@@ -178,6 +187,87 @@ describe("GuidePreview's description", () => {
       expect.objectContaining({ id: "svt1-sd", from: LIVE.startsAt }),
     );
     expect(schedule.mock.calls[0]?.[0].limit).toBeGreaterThan(1);
+  });
+
+  it("shows the focused cell's own Programme when two share a slot, and its own description", async () => {
+    // As in the core's fixture: distinct titles in one slot.
+    const first = programme("Nyheter", "2026-11-22T09:00:00Z", "2026-11-22T10:00:00Z");
+    const second = programme("Sporten", "2026-11-22T09:00:00Z", "2026-11-22T10:00:00Z");
+    const family: GuideFamily = {
+      ...FAMILY,
+      variants: [
+        {
+          channel: channelFixture({ id: "svt1", name: "SVT1", group: "Sverige", number: 1 }),
+          programmes: [LIVE, first, second, LATER],
+          programmesTruncated: false,
+        },
+      ],
+    };
+    const schedule = vi.fn(async (input: ScheduleInput) => {
+      void input;
+      return {
+        ok: true,
+        value: clientSchemas.schedulePage.parse({
+          generation: 7,
+          items: [
+            summary("svt1", first, "The news."),
+            summary("svt1", second, "The sport."),
+          ],
+          next: null,
+        }),
+      };
+    });
+
+    const { container } = renderWith(family, schedule, 2);
+
+    expect(container.querySelector(".programme-guide__preview-title")).toHaveTextContent(
+      /^Sporten$/u,
+    );
+    const details = screen.getByRole("region", { name: "About Sporten" });
+    expect(await within(details).findByText("The sport.")).toBeInTheDocument();
+    expect(within(details).queryByText("The news.")).toBeNull();
+  });
+
+  it("reads on past a first page of Programmes that overlap the shown one's start", async () => {
+    const overlapping = (index: number) =>
+      programme(`Earlier ${index}`, "2026-11-22T07:00:00Z", `2026-11-22T08:0${index}:00Z`);
+    const schedule = vi.fn(async (input: ScheduleInput) => ({
+      ok: true,
+      value: clientSchemas.schedulePage.parse(
+        input.cursor === undefined
+          ? {
+              generation: 7,
+              items: [0, 1, 2, 3].map((index) =>
+                summary("svt1", overlapping(index + 1), "Not this one."),
+              ),
+              next: "page-2",
+            }
+          : {
+              generation: 7,
+              items: [
+                summary("svt1", LIVE, "Morning news from Sweden."),
+                summary("svt1", LATER, "Not this one either."),
+              ],
+              next: "page-3",
+            },
+      ),
+    }));
+
+    renderWith(FAMILY, schedule);
+
+    const details = await screen.findByRole("region", { name: "About Morgon" });
+    expect(
+      await within(details).findByText("Morning news from Sweden."),
+    ).toBeInTheDocument();
+    expect(schedule).toHaveBeenCalledTimes(2);
+    expect(schedule.mock.calls.map(([input]) => [input.limit, input.cursor])).toEqual([
+      [4, undefined],
+      [4, "page-2"],
+    ]);
+    expect(schedule.mock.calls[1]?.[0]).toMatchObject({
+      from: LIVE.startsAt,
+      afterStartsAt: "2026-11-22T07:00:00Z",
+    });
   });
 
   it("offers the description and what follows to a screen reader as a named region that is not live", () => {

@@ -30,6 +30,7 @@ import {
   type VariantPreferences,
 } from "./guide-families";
 import {
+  followTimelineWindow,
   handleGuideArrowKey,
   revealTimelineCell,
   scrollBoardToReveal,
@@ -309,6 +310,17 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
     board.style.setProperty("--tl-offset", "0");
     board.dataset.nowHidden = "false";
   }, [boardRef, timeline]);
+  // When the window moves on, the timeline keeps showing the same time, so a
+  // focused cell does not slide out from under the focus.
+  const windowStart = guideWindow.startsAt.getTime();
+  const shownWindowStart = useRef(windowStart);
+  useLayoutEffect(() => {
+    const moved = (windowStart - shownWindowStart.current) / 60_000;
+    shownWindowStart.current = windowStart;
+    const board = boardRef.current;
+    if (board === null || !timeline) return;
+    followTimelineWindow(board, moved);
+  }, [boardRef, timeline, windowStart]);
   const boardEmpty =
     emptyState === undefined &&
     groups.length > 0 &&

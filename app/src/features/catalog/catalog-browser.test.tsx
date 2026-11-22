@@ -2640,6 +2640,8 @@ describe("CatalogBrowser pocket layout", () => {
     await user.click(screen.getByRole("button", { name: "Pause" }));
     await screen.findByRole("button", { name: "Resume" });
     expect(pinnedPictureSize()).toEqual({ width: "360px", height: "202.5px" });
+    // A phone places its box by the layout: only the TV holds its origin.
+    expect(pinnedPictureOrigin()).toBeNull();
 
     // The soft keyboard opens over the guide: the window is lower, and the
     // page would lay the box out lower with it. The size taken when the
@@ -3127,6 +3129,11 @@ describe("CatalogBrowser on a TV", () => {
     await user.keyboard("{Enter}");
   }
 
+  /** The Channel the band's info block names. */
+  function bandChannel(): string | null | undefined {
+    return document.querySelector(".now-playing__channel strong")?.textContent;
+  }
+
   /** The remote's Back, as the Android shell turns it into Escape. */
   async function back(): Promise<void> {
     fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
@@ -3367,14 +3374,24 @@ describe("CatalogBrowser on a TV", () => {
       await screen.findByLabelText("Cinema One live video");
       await screen.findByRole("button", { name: "Pause" });
 
-      // Holding OK on a Channel that does not play: the first press tunes
-      // it docked, and the key's repeats press the same row again.
+      // Holding OK on a Channel that does not play, as the Shield's WebView
+      // delivers it: the first press tunes it docked, and the key's repeat
+      // presses the same row again, its keydown never flagged as a repeat.
       act(() => row.focus());
-      await user.keyboard("{Enter>4/}");
+      fireEvent.keyDown(row, { key: "Enter", code: "Enter", repeat: false });
+      fireEvent.click(row);
+      expect(row).toHaveAttribute("aria-pressed", "true");
+      fireEvent.keyDown(row, { key: "Enter", code: "Enter", repeat: false });
+      fireEvent.click(row);
+      fireEvent.keyUp(row, { key: "Enter", code: "Enter" });
       await screen.findByLabelText("World News live video");
       expect(row).toHaveAttribute("aria-pressed", "true");
       expect(fullscreen.requested).toEqual([]);
       expect(client.installedSessionCount).toBe(2);
+
+      // An OK whose keyup went to another window is not held for good.
+      fireEvent.keyDown(row, { key: "Enter", code: "Enter" });
+      act(() => window.dispatchEvent(new Event("blur")));
 
       // A fresh press on the playing Channel is the fullscreen gesture.
       await user.keyboard("{Enter}");
@@ -3414,9 +3431,12 @@ describe("CatalogBrowser on a TV", () => {
       // The same holds for the band's caption.
       await back();
       expect(document.fullscreenElement).toBeNull();
-      act(() => port.deliver("tv:channel-down"));
+      act(() => port.deliver("tv:channel-up"));
+      // The band already names the Channel the change is queued for.
+      expect(bandChannel()).toBe("Cinema One");
       await user.click(screen.getByRole("button", { name: "Watch full screen" }));
       expect(document.fullscreenElement).toBe(player);
+      expect(bandChannel()).toBe("World News");
       await act(
         () => new Promise<void>((resolve) => setTimeout(resolve, 500)),
       );
@@ -3473,12 +3493,16 @@ describe("CatalogBrowser on a TV", () => {
       const shell = requireShell();
       expect(shell).toHaveAttribute("data-dock", "true");
       expect(pinnedPictureSize()).toEqual({ width: "320px", height: "180px" });
+      // The TV holds where the box lies too, so the box, its caption and the
+      // panel beside it stay put if the window's width changes.
+      expect(pinnedPictureOrigin()).toEqual({ left: "0px", top: "38px" });
 
       // Fullscreen lays the picture out on its own; nothing is held there.
       await center(user, row);
       const player = screen.getByRole("region", { name: "World News" });
       expect(document.fullscreenElement).toBe(player);
       expect(pinnedPictureSize()).toBeNull();
+      expect(pinnedPictureOrigin()).toBeNull();
 
       // A paused bar does not hide: one Back leaves, to the band's held box.
       await back();
@@ -3486,6 +3510,7 @@ describe("CatalogBrowser on a TV", () => {
       expect(shell).toHaveAttribute("data-mode", "guide");
       expect(shell).toHaveAttribute("data-dock", "true");
       expect(pinnedPictureSize()).toEqual({ width: "320px", height: "180px" });
+      expect(pinnedPictureOrigin()).toEqual({ left: "0px", top: "38px" });
       expect(row).toHaveFocus();
       expect(screen.getByLabelText("World News live video")).toBe(video);
       expect(client.installedSessionCount).toBe(1);
@@ -3576,6 +3601,17 @@ function pinnedPictureSize(): {
   const width = root.getPropertyValue("--pocket-pinned-w");
   const height = root.getPropertyValue("--pocket-pinned-h");
   return width === "" && height === "" ? null : { width, height };
+}
+
+/** Where the TV holds the picture's box, or null while it holds no origin. */
+function pinnedPictureOrigin(): {
+  readonly left: string;
+  readonly top: string;
+} | null {
+  const root = document.documentElement.style;
+  const left = root.getPropertyValue("--pocket-pinned-x");
+  const top = root.getPropertyValue("--pocket-pinned-y");
+  return left === "" && top === "" ? null : { left, top };
 }
 
 function requireShell(): HTMLElement {

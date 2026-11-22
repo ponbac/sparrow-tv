@@ -10,7 +10,7 @@ import {
   type GuideFamily,
 } from "./guide-families";
 import { ChannelIcon } from "./channel-icon";
-import { clockLabel, programmeKey, type ClockWindow } from "./guide-window";
+import { clockLabel, programmeKeys, type ClockWindow } from "./guide-window";
 import { QualitySwitch } from "./quality-switch";
 
 const MINUTE_MS = 60_000;
@@ -59,16 +59,14 @@ export const ProgrammeTimelineRow = memo(function ProgrammeTimelineRow({
   // A cell's key is the Programme itself, counted only among identical
   // ones: when the window moves on and earlier Programmes leave the row,
   // the cells that stay keep their keys, so a focused cell is not replaced.
-  const occurrences = new Map<string, number>();
-  const cells = source.programmes.flatMap((programme) => {
+  // The preview finds the focused Programme by the same key.
+  const keys = programmeKeys(source.programmes);
+  const cells = source.programmes.flatMap((programme, index) => {
     const start = Date.parse(programme.startsAt);
     const end = Date.parse(programme.endsAt);
     if (end <= windowStart || start >= windowEnd || end <= start) return [];
-    const identity = `${programme.startsAt}:${programme.endsAt}:${programme.title}`;
-    const occurrence = occurrences.get(identity) ?? 0;
-    occurrences.set(identity, occurrence + 1);
     const live = start <= nowTime && nowTime < end;
-    return [{ programme, key: programmeKey(programme, occurrence), start, end, live }];
+    return [{ programme, key: keys[index] as string, start, end, live }];
   });
   return (
     <div
@@ -126,6 +124,7 @@ export const ProgrammeTimelineRow = memo(function ProgrammeTimelineRow({
               className="programme-guide__programme"
               data-live={live}
               data-starts-at={programme.startsAt}
+              data-programme-key={key}
               data-start={(start - windowStart) / MINUTE_MS}
               data-end={(end - windowStart) / MINUTE_MS}
               type="button"

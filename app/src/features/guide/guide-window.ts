@@ -126,6 +126,22 @@ export function programmeKey(
   return `${programme.startsAt}:${programme.endsAt}:${programme.title}:${occurrence}`;
 }
 
+/**
+ * The stable identity of each of a row's Programmes, in order: the Programme
+ * itself, counted only among identical ones. Programmes that share a slot
+ * but not a title keep apart; earlier Programmes leaving the row change no
+ * later one's key.
+ */
+export function programmeKeys(programmes: readonly ProgrammeSlot[]): readonly string[] {
+  const occurrences = new Map<string, number>();
+  return programmes.map((programme) => {
+    const identity = programmeKey(programme, 0);
+    const occurrence = occurrences.get(identity) ?? 0;
+    occurrences.set(identity, occurrence + 1);
+    return programmeKey(programme, occurrence);
+  });
+}
+
 const WEEKDAY_FORMATTER = new Intl.DateTimeFormat(undefined, {
   weekday: "long",
 });

@@ -6,8 +6,11 @@
 /** The guide row, and in the timeline the Programme, that focus rests on. */
 export interface PreviewFocus {
   readonly number: number;
-  /** The focused Programme's start in the timeline; null for a whole row. */
-  readonly startsAt: string | null;
+  /**
+   * The focused Programme in the timeline, by its key among the row's
+   * Programmes (`programmeKeys`); null for a whole row.
+   */
+  readonly programme: string | null;
 }
 
 /** Holds what focus rests on, outside React, so a move re-renders the preview alone. */
@@ -27,7 +30,7 @@ export function createPreviewStore(): PreviewStore {
       if (
         current !== null &&
         current.number === focus.number &&
-        current.startsAt === focus.startsAt
+        current.programme === focus.programme
       ) {
         return;
       }
@@ -47,6 +50,6 @@ export function previewFocusOf(target: EventTarget | null): PreviewFocus | null 
   const row = target.closest<HTMLElement>(".programme-guide__row[data-number]");
   const number = Number(row?.dataset.number);
   if (row === null || !Number.isFinite(number)) return null;
-  const cell = target.closest<HTMLElement>("[data-starts-at]");
-  return { number, startsAt: cell?.dataset.startsAt ?? null };
+  const cell = target.closest<HTMLElement>("[data-programme-key]");
+  return { number, programme: cell?.dataset.programmeKey ?? null };
 }
