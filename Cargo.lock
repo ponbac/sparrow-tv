@@ -3652,6 +3652,7 @@ dependencies = [
  "chrono",
  "futures-core",
  "futures-util",
+ "memchr",
  "proptest",
  "quick-xml 0.42.0",
  "serde",

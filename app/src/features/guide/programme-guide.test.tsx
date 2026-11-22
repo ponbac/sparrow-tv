@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -67,6 +67,20 @@ describe("ProgrammeGuide channel names", () => {
 });
 
 describe("ProgrammeGuide TV pagination", () => {
+  it.each(["now", "timeline"] as const)("hands focus from More to the next page of a long %s guide", (view) => {
+    const rows = Array.from({ length: 90 }, (_, index) => ({
+      ...LONG_CHANNEL_ROW,
+      channel: channelFixture({ id: `station-${index}`, name: `Station ${index + 1}`, group: "Stations", number: index + 1 }),
+    }));
+    const guide = renderGuide({ television: true, layout: "pocket", view, rows: rows.slice(0, 60), hasMore: true });
+    const more = screen.getByRole("button", { name: "More channels" });
+    act(() => more.focus());
+    guide.rerender({ loadingMore: true });
+    expect(more).toHaveFocus();
+    guide.rerender({ rows });
+    expect(screen.getByRole("button", { name: "Tune Station 61" })).toHaveFocus();
+  });
+
   it("keeps More channels focused while loading, then focuses the first new row", async () => {
     const user = userEvent.setup();
     const loadMore = vi.fn();
@@ -585,6 +599,29 @@ describe("ProgrammeGuide Channel Groups", () => {
     expect(onSetGroupExcluded).toHaveBeenCalledWith("News", false);
   });
 
+  it("keeps distant TV groups reachable from the lane and the complete roster", async () => {
+    const groups = Array.from({ length: 100 }, (_, index) => ({
+      name: `Group ${index + 1}`, channelCount: 1,
+    }));
+    const { rerender } = renderGuide({ television: true, layout: "pocket", groups });
+    const lane = within(screen.getByRole("radiogroup", { name: "Channel groups" }));
+    const firstPage = lane.getAllByRole("radio");
+    expect(firstPage.length).toBeLessThan(groups.length);
+    expect(firstPage[0]).toHaveAttribute("aria-setsize", "101");
+    const last = firstPage[firstPage.length - 1];
+    act(() => last.focus());
+    const next = lane.getAllByRole("radio")[firstPage.length];
+    fireEvent.keyDown(last, { key: "ArrowRight" });
+    expect(next).toHaveFocus();
+    fireEvent.keyDown(next, { key: "ArrowLeft" });
+    expect(last).toHaveFocus();
+
+    await userEvent.click(screen.getByRole("button", { name: "Choose groups" }));
+    expect(await screen.findByRole("button", { name: "Group 100, 1 channels" })).toBeVisible();
+    rerender({ activeGroup: "Group 100" });
+    expect(lane.getByRole("radio", { name: /Group 100/, hidden: true })).toHaveAttribute("aria-checked", "true");
+  });
+
   it("lets the roster search, select, and exclude Channel Groups", async () => {
     const user = userEvent.setup();
     const onSelectGroup = vi.fn();
@@ -858,6 +895,7 @@ interface GuideOverrides {
   /** The timeline unless a test is about pocket's list. */
   readonly layout?: "theater" | "pocket";
   readonly mode?: "watch" | "guide";
+  readonly view?: "now" | "timeline";
   readonly time?: GuideTime;
   readonly replacing?: boolean;
   readonly rows?: readonly GuideWindowChannel[];
@@ -899,6 +937,7 @@ function guide(overrides: GuideOverrides) {
       layout={overrides.layout ?? "theater"}
       mode={overrides.mode ?? "guide"}
       time={overrides.time ?? null}
+      view={overrides.view === undefined ? null : { current: overrides.view, onToggle: vi.fn() }}
       loading={false}
       replacing={overrides.replacing ?? false}
       error={null}
@@ -981,3 +1020,89 @@ function mockScrollerOverflow(
     },
   });
 }
+
+describe("TV Guide browsing through a long list", () => {
+  it("keeps the focused origin through a virtual-window jump when six Down presses wait for a page", () => {
+    const rows = Array.from({ length: 65 }, (_, index) => ({
+      channel: channelFixture({ id: `number-${index}`, name: `Number ${index + 1}`, group: "North", number: index + 1 }),
+      programmes: [], programmesTruncated: false,
+    }));
+    const height = vi.spyOn(Element.prototype, "clientHeight", "get").mockImplementation(function (this: Element) {
+      return this.matches(".programme-guide__board") ? 180 : 0;
+    });
+    const bounds = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return DOMRect.fromRect({ height: this.matches(".programme-guide__row") ? 60 : 0 });
+    });
+    try {
+      const firstPage = rows.slice(0, 17);
+      const guide = renderGuide({ layout: "pocket", television: true, view: "now", hasMore: true, rows: firstPage });
+      const origin = screen.getByRole("button", { name: "Tune Number 16" });
+      act(() => origin.focus());
+      for (let press = 0; press < 6; press++) fireEvent.keyDown(origin, { key: "ArrowDown" });
+      expect(origin).toHaveFocus();
+
+      guide.rerender({ rows, hasMore: false });
+      expect(screen.getByRole("button", { name: "Tune Number 34" })).toHaveFocus();
+    } finally {
+      bounds.mockRestore();
+      height.mockRestore();
+    }
+  });
+
+  it.each(["now", "timeline"] as const)("moves through the %s view and requests more only near the loaded end", (view) => {
+    const columns = view === "now" ? 3 : 1;
+    const rows = Array.from({ length: 121 }, (_, index) => ({
+      channel: channelFixture({ id: `north-${index}`, name: `North ${index + 1}`, group: "North", number: index + 1 }),
+      programmes: [programme("On now", 0, 60)], programmesTruncated: false,
+    }));
+    const loadMore = vi.fn();
+    // jsdom supplies no geometry. The TV has room for four 60px lines.
+    const height = vi.spyOn(Element.prototype, "clientHeight", "get").mockImplementation(function (this: Element) {
+      return this.matches(".programme-guide__board") ? 240 : 0;
+    });
+    const bounds = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      const board = this.closest<HTMLElement>(".programme-guide__board");
+      const row = this.closest<HTMLElement>(".programme-guide__row");
+      if (board === this) return DOMRect.fromRect({ width: 960, height: 240 });
+      if (row && board) {
+        const index = Number(row.dataset.number) - 1;
+        return DOMRect.fromRect({
+          x: index % columns * 960 / columns,
+          y: Math.floor(index / columns) * 60 - board.scrollTop,
+          width: 960 / columns, height: 60,
+        });
+      }
+      return DOMRect.fromRect();
+    });
+    try {
+      const guide = renderGuide({ layout: "pocket", television: true, view, rows, hasMore: true, onLoadMore: loadMore });
+      const board = requirePart(guide.container, ".programme-guide__board");
+      const focusedNumber = () => Number(document.activeElement?.closest<HTMLElement>(".programme-guide__row")?.dataset.number);
+      const move = (key: "ArrowDown" | "ArrowUp", expected: number) => {
+        fireEvent.keyDown(document.activeElement ?? document.body, { key });
+        expect(focusedNumber()).toBe(expected);
+      };
+      const start = view === "timeline"
+        ? requirePart(board, ".programme-guide__programme")
+        : screen.getByRole("button", { name: "Tune North 1" });
+      act(() => start.focus());
+      expect(board.querySelectorAll(".programme-guide__row").length).toBeLessThan(rows.length);
+      for (let n = 1 + columns; n <= 61; n += columns) move("ArrowDown", n);
+      move("ArrowUp", 61 - columns);
+      expect(loadMore).not.toHaveBeenCalled();
+      expect(board.querySelectorAll(".programme-guide__row").length).toBeLessThan(rows.length);
+      for (let n = 61; n <= 121; n += columns) move("ArrowDown", n);
+      expect(loadMore).toHaveBeenCalled();
+      move("ArrowUp", 121 - columns);
+      if (view === "timeline") expect(document.activeElement).toHaveClass("programme-guide__programme");
+
+      const south = channelFixture({ id: "south", name: "South Coast", group: "South", number: 200 });
+      guide.rerender({ activeGroup: "South", hasMore: false, rows: [{ channel: south, programmes: [], programmesTruncated: false }] });
+      expect(screen.getByRole("button", { name: "Tune South Coast" })).toBeVisible();
+      expect(board.querySelectorAll(".programme-guide__row")).toHaveLength(1);
+    } finally {
+      bounds.mockRestore();
+      height.mockRestore();
+    }
+  });
+});

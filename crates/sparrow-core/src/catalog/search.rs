@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use memchr::memmem::Finder;
+
 use crate::domain::{CoreError, PageLimit, SearchTerm, SelectionPrefix};
 
 use super::flat::{ABSENT_U32, FlatCatalog};
@@ -28,7 +30,8 @@ pub(super) struct SearchMatcher<'term> {
     token_lookup: HashMap<&'term [u8], usize>,
     matched_tokens: Vec<bool>,
     longest_token: usize,
-    substring_fallback: Vec<usize>,
+    substring: Finder<'term>,
+    required_token: Option<Finder<'term>>,
 }
 
 impl<'term> SearchMatcher<'term> {
@@ -43,18 +46,18 @@ impl<'term> SearchMatcher<'term> {
         }
         let longest_token = token_lookup
             .keys()
-            .map(|token| token.len())
-            .max()
-            .unwrap_or(0);
+            .copied()
+            .max_by_key(|token| token.len())
+            .expect("a normalized search term has at least one token");
         let matched_tokens = vec![false; token_lookup.len()];
-        let substring_fallback = substring_fallback(term_bytes);
         Self {
             term,
             term_bytes,
             token_lookup,
             matched_tokens,
-            longest_token,
-            substring_fallback,
+            longest_token: longest_token.len(),
+            substring: Finder::new(term_bytes),
+            required_token: (token_count > 1).then(|| Finder::new(longest_token)),
         }
     }
 
@@ -69,12 +72,20 @@ impl<'term> SearchMatcher<'term> {
         if field.starts_with(self.term_bytes) {
             return Ok(Some(MatchCategory::Prefix));
         }
+        // All match categories require the longest query word to occur somewhere.
+        // Reject misses before tokenizing a potentially long Programme description.
+        let required = self.required_token.as_ref().unwrap_or(&self.substring);
+        if !contains_bytes(required, field, is_cancelled)? {
+            return Ok(None);
+        }
         if self.contains_all_tokens(field, is_cancelled)? {
             return Ok(Some(MatchCategory::Token));
         }
-        Ok(self
-            .contains_substring(field, is_cancelled)?
-            .then_some(MatchCategory::Substring))
+        // For a single word the first scan already proved a substring match.
+        Ok(
+            (self.required_token.is_none() || self.contains_substring(field, is_cancelled)?)
+                .then_some(MatchCategory::Substring),
+        )
     }
 
     fn contains_all_tokens(
@@ -133,32 +144,35 @@ impl<'term> SearchMatcher<'term> {
         field: &[u8],
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<bool, CoreError> {
+        contains_bytes(&self.substring, field, is_cancelled)
+    }
+}
+
+fn contains_bytes(
+    finder: &Finder<'_>,
+    field: &[u8],
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<bool, CoreError> {
+    if is_cancelled() {
+        return Err(CoreError::Cancelled);
+    }
+    // Give each checkpoint enough lookahead to find a match that begins
+    // in its last bytes. The normalized search term is bounded to 256 bytes.
+    let overlap = finder.needle().len() - 1;
+    let mut remaining = field;
+    while remaining.len() > SEARCH_CANCELLATION_CHECKPOINT_BYTES {
+        let end = remaining
+            .len()
+            .min(SEARCH_CANCELLATION_CHECKPOINT_BYTES + overlap);
+        if finder.find(&remaining[..end]).is_some() {
+            return Ok(true);
+        }
         if is_cancelled() {
             return Err(CoreError::Cancelled);
         }
-        let needle = self.term_bytes;
-        let mut matched = 0;
-        for (chunk_index, chunk) in field
-            .chunks(SEARCH_CANCELLATION_CHECKPOINT_BYTES)
-            .enumerate()
-        {
-            if chunk_index != 0 && is_cancelled() {
-                return Err(CoreError::Cancelled);
-            }
-            for byte in chunk {
-                while matched > 0 && *byte != needle[matched] {
-                    matched = self.substring_fallback[matched - 1];
-                }
-                if *byte == needle[matched] {
-                    matched += 1;
-                    if matched == needle.len() {
-                        return Ok(true);
-                    }
-                }
-            }
-        }
-        Ok(false)
+        remaining = &remaining[SEARCH_CANCELLATION_CHECKPOINT_BYTES..];
     }
+    Ok(finder.find(remaining).is_some())
 }
 
 #[derive(Default)]
@@ -188,6 +202,9 @@ fn finalize_buckets(
     prefix_len: usize,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<SelectionPrefix, CoreError> {
+    if is_cancelled() {
+        return Err(CoreError::Cancelled);
+    }
     let match_count = buckets.iter().map(|bucket| bucket.total).sum();
     let mut ranked = Vec::with_capacity(prefix_len.min(match_count));
     for bucket in buckets {
@@ -326,19 +343,4 @@ impl SearchRank {
 
 pub(super) fn never_cancelled() -> bool {
     false
-}
-
-fn substring_fallback(needle: &[u8]) -> Vec<usize> {
-    let mut fallback = vec![0; needle.len()];
-    let mut prefix_length = 0;
-    for index in 1..needle.len() {
-        while prefix_length > 0 && needle[index] != needle[prefix_length] {
-            prefix_length = fallback[prefix_length - 1];
-        }
-        if needle[index] == needle[prefix_length] {
-            prefix_length += 1;
-            fallback[index] = prefix_length;
-        }
-    }
-    fallback
 }

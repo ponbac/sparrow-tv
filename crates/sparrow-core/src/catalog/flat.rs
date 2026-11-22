@@ -1593,6 +1593,35 @@ fn is_valid_playback_url(raw: &str) -> bool {
         .is_some_and(|url| matches!(url.scheme(), "http" | "https") && url.has_host())
 }
 
+/// The URL parser validates every new authority. An ordinary HTTP(S) path,
+/// query or fragment following the same literal authority cannot change its
+/// host or scheme. Apply this shortcut only to bounded printable ASCII URLs.
+fn validate_playback<'a>(raw: &'a str, last_prefix: &mut Option<&'a str>) -> bool {
+    if let Some(path) = last_prefix.and_then(|prefix| raw.strip_prefix(prefix))
+        && path.len() <= 16 * 1024
+        && path.bytes().all(|byte| byte.is_ascii_graphic())
+    {
+        return true;
+    }
+    if !is_valid_playback_url(raw) {
+        return false;
+    }
+    // Only an explicit, non-empty authority ending in a slash qualifies.
+    // The full parser still covers alternate spellings and special URLs.
+    *last_prefix = raw
+        .strip_prefix("https://")
+        .or_else(|| raw.strip_prefix("http://"))
+        .and_then(|rest| {
+            let (authority, suffix) = rest.split_once('/')?;
+            (!authority.is_empty()
+                && authority
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b".-:@[]".contains(&byte)))
+            .then(|| &raw[..raw.len() - suffix.len()])
+        });
+    true
+}
+
 /// Performs complete O(N + M + P + file_bytes) structural validation of an
 /// untrusted or reopened flat catalog buffer before any query runs against it.
 ///
@@ -1856,6 +1885,7 @@ fn validate_flat_bytes(
     }
 
     // Validate channels and parallel channel tables with contiguous non-overlapping spans.
+    let mut last_playback_prefix = None;
     let mut channel_name_cursor = 0_usize;
     let mut playback_cursor = 0_usize;
     let mut tvg_id_cursor = 0_usize;
@@ -1887,7 +1917,7 @@ fn validate_flat_bytes(
             playback_span.off.get(),
             playback_span.len.get(),
         )?;
-        if !is_valid_playback_url(playback) {
+        if !validate_playback(playback, &mut last_playback_prefix) {
             return None;
         }
 
@@ -2137,4 +2167,33 @@ fn validate_flat_bytes(
     }
 
     Some(layout)
+}
+
+#[cfg(test)]
+mod playback_url_tests {
+    use super::{is_valid_playback_url, validate_playback};
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn repeated_authorities_match_the_url_parser(
+            suffix in "[ -~]{0,160}",
+            other in ".{0,100}",
+        ) {
+            for authority in [
+                "http://example.test", "https://name:pass@example.test:123",
+                "http://127.0.0.1", "http://[::1]", "http://999.256.1.2",
+                "http://", "http://example.test:65536", "http://\\t",
+                "http://example.test?query", "ftp://example.test",
+            ] {
+                let first = format!("{authority}/station-a");
+                let second = format!("{authority}/{suffix}");
+                let other = format!("{authority}/{other}");
+                let mut prefix = None;
+                for source in [first.as_str(), &second, &other, first.as_str()] {
+                    prop_assert_eq!(validate_playback(source, &mut prefix), is_valid_playback_url(source));
+                }
+            }
+        }
+    }
 }

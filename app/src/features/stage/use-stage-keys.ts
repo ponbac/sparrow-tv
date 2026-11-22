@@ -1,3 +1,4 @@
+import { fullscreenElement } from "./playback-fullscreen";
 import { useEffect, useLayoutEffect, useRef } from "react";
 import {
   focusStageMonitor,
@@ -72,7 +73,7 @@ function handleStageKey(
   if (
     !active &&
     (!television ||
-      document.fullscreenElement == null ||
+      fullscreenElement() == null ||
       (key !== "arrowup" && key !== "arrowdown"))
   ) {
     return;

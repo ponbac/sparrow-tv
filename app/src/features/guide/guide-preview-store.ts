@@ -16,7 +16,8 @@ export interface PreviewFocus {
 /** Holds what focus rests on, outside React, so a move re-renders the preview alone. */
 export interface PreviewStore {
   readonly get: () => PreviewFocus | null;
-  readonly set: (focus: PreviewFocus) => void;
+  readonly set: (focus: PreviewFocus, afterPaint?: boolean) => void;
+  readonly cancelPending: () => void;
   readonly subscribe: (listener: () => void) => () => void;
 }
 
@@ -24,18 +25,41 @@ export interface PreviewStore {
 export function createPreviewStore(): PreviewStore {
   let current: PreviewFocus | null = null;
   const listeners = new Set<() => void>();
+  let frame: number | null = null;
+  let timer: number | null = null;
+  let pending: PreviewFocus | null = null;
+  const publish = (focus: PreviewFocus) => {
+    if (current?.number === focus.number && current.programme === focus.programme) return;
+    current = focus;
+    listeners.forEach((listener) => listener());
+  };
+  const cancelPending = () => {
+    if (frame !== null) window.cancelAnimationFrame(frame);
+    if (timer !== null) window.clearTimeout(timer);
+    frame = timer = null;
+    pending = null;
+  };
   return {
     get: () => current,
-    set: (focus) => {
-      if (
-        current !== null &&
-        current.number === focus.number &&
-        current.programme === focus.programme
-      ) {
+    cancelPending,
+    set: (focus, afterPaint = false) => {
+      if (!afterPaint || current === null) {
+        cancelPending();
+        publish(focus);
         return;
       }
-      current = focus;
-      listeners.forEach((listener) => listener());
+      // Let the browser draw the newly focused Channel first. Repeated
+      // arrows in the same frame publish only the most recent preview.
+      pending = focus;
+      if (frame !== null || timer !== null) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        timer = window.setTimeout(() => {
+          timer = null;
+          if (pending !== null) publish(pending);
+          pending = null;
+        }, 0);
+      });
     },
     subscribe: (listener) => {
       listeners.add(listener);

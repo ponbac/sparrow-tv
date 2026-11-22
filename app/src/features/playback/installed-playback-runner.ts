@@ -1,3 +1,4 @@
+import { enterPlaybackFullscreen, exitPlaybackFullscreen, fullscreenElement } from "../stage/playback-fullscreen";
 import type {
   AudioTrackId,
   InstalledPlaybackSession,
@@ -529,18 +530,12 @@ export class InstalledPlaybackRunner {
     }
     try {
       if (requestedFullscreen) {
-        if (target.requestFullscreen === undefined) {
-          return false;
-        }
-        await target.requestFullscreen();
+        await enterPlaybackFullscreen(target);
       } else {
-        if (
-          document.fullscreenElement !== target ||
-          document.exitFullscreen === undefined
-        ) {
+        if (fullscreenElement() !== target) {
           return false;
         }
-        await document.exitFullscreen();
+        await exitPlaybackFullscreen();
       }
       if (sessionEpoch !== this.#sessionEpoch || video !== this.#video) {
         return false;

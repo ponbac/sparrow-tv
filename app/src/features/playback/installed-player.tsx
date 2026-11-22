@@ -1,3 +1,4 @@
+import { exitPlaybackFullscreen, fullscreenElement, subscribeToFullscreen } from "../stage/playback-fullscreen";
 import { AudioLines, RotateCcw, ScrollText } from "lucide-react";
 import {
   useEffect,
@@ -191,14 +192,13 @@ export function InstalledPlayer({
     const updateFullscreen = () => {
       runner.setFullscreen(
         videoRef.current !== null &&
-          (document.fullscreenElement?.contains(videoRef.current) ?? false),
+          (fullscreenElement()?.contains(videoRef.current) ?? false),
       );
     };
-    document.addEventListener("fullscreenchange", updateFullscreen);
+    const unsubscribeFullscreen = subscribeToFullscreen(updateFullscreen);
     // Fullscreen on the document root outlives the player that asked for it.
     updateFullscreen();
-    return () =>
-      document.removeEventListener("fullscreenchange", updateFullscreen);
+    return unsubscribeFullscreen;
   }, [runner]);
 
   const playerWindow = useAndroidPlayerWindow(androidPlayer);
@@ -290,8 +290,8 @@ export function InstalledPlayer({
   // does: fullscreen ends and the failed Playback Session stays in the
   // Guide's docked picture, where Center on its row shows the failure again.
   const backToGuide = () => {
-    if (document.fullscreenElement != null) {
-      void document.exitFullscreen().catch(() => undefined);
+    if (fullscreenElement() != null) {
+      void exitPlaybackFullscreen().catch(() => undefined);
     } else {
       stop();
     }
@@ -321,7 +321,7 @@ export function InstalledPlayer({
   ];
   const switchPlayer = () => {
     const switchTo = async () => {
-      if (document.fullscreenElement !== null) await document.exitFullscreen();
+      if (fullscreenElement() !== null) await exitPlaybackFullscreen();
       await runner.switchPlayer(usesMpv ? "in-app" : "mpv");
     };
     void switchTo().catch(() => undefined);

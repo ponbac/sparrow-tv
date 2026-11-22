@@ -362,3 +362,30 @@ describe("GuidePreview's description", () => {
     ).toHaveTextContent("Fiskeläget");
   });
 });
+
+it("keeps the first row current and publishes the latest arrow focus after a frame", () => {
+  vi.useFakeTimers();
+  try {
+    const store = createPreviewStore();
+    const publish = vi.fn();
+    store.subscribe(publish);
+    const focus = (number: number) => ({ number, programme: null });
+    store.set(focus(1), true);
+    store.set(focus(2), true);
+    store.set(focus(3), true);
+    expect(store.get()).toEqual(focus(1));
+    vi.runAllTimers();
+    expect(store.get()).toEqual(focus(3));
+    expect(publish).toHaveBeenCalledTimes(2);
+    store.set(focus(4), true);
+    store.set(focus(5));
+    vi.runAllTimers();
+    expect(store.get()).toEqual(focus(5));
+    store.set(focus(6), true);
+    store.cancelPending();
+    vi.runAllTimers();
+    expect(store.get()).toEqual(focus(5));
+  } finally {
+    vi.useRealTimers();
+  }
+});

@@ -34,6 +34,7 @@ import {
   handleGuideArrowKey,
   revealTimelineCell,
   scrollBoardToReveal,
+  settleGuideNavigation,
 } from "./guide-navigation";
 import { GuidePreview, type GuidePreviewSource } from "./guide-preview";
 import { createPreviewStore, previewFocusOf } from "./guide-preview-store";
@@ -48,6 +49,7 @@ import { revealScrollTop } from "./list-scroll";
 import { ProgrammeGuideRow } from "./programme-guide-row";
 import { ProgrammeListRow } from "./programme-list-row";
 import { ProgrammeTimelineRow } from "./programme-timeline-row";
+import { TelevisionGuideRows, type TelevisionRowsHandle } from "./television-guide-rows";
 import "./programme-guide.css";
 
 /** Inputs for the guide: Theater's timetable or pocket's now-and-next list. */
@@ -159,9 +161,35 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
   feeds,
   status,
 }: ProgrammeGuideProps) {
-  const families = useMemo(() => guideFamilies(rows), [rows]);
+  const previousFamilies = useRef<readonly GuideFamily[]>([]);
+  const families = useMemo(() => guideFamilies(rows, previousFamilies.current), [rows]);
+  useLayoutEffect(() => {
+    previousFamilies.current = families;
+  }, [families]);
   const timeline = television && view?.current === "timeline";
+  const windowed = television && layout === "pocket";
+  const televisionRows = useRef<TelevisionRowsHandle>(null);
+  const revealIndex = useCallback((index: number) => {
+    televisionRows.current?.revealIndex(index);
+  }, []);
+  const playingIndex = useMemo(() => {
+    const channel = playingChannel ?? lastPlayedChannel;
+    if (!windowed || channel === null) return -1;
+    return families.findIndex((family) =>
+      family.variants.some((variant) => variant.channel.id === channel),
+    );
+  }, [families, lastPlayedChannel, playingChannel, windowed]);
   const [previewStore] = useState(createPreviewStore);
+  const navigating = useRef(false);
+  const duringNavigation = (move: () => void) => {
+    navigating.current = true;
+    try {
+      move();
+    } finally {
+      navigating.current = false;
+    }
+  };
+  useLayoutEffect(() => () => previewStore.cancelPending(), [activeGroup, mode, previewStore, timeline]);
   const windowMinutes =
     (guideWindow.endsAt.getTime() - guideWindow.startsAt.getTime()) / 60_000;
   const nowMinutes = (now.getTime() - guideWindow.startsAt.getTime()) / 60_000;
@@ -186,7 +214,7 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
     autoLoadTriggeredForCountRef.current = rows.length;
     onLoadMore();
   }, [canAutoLoad, onLoadMore, rows.length]);
-  const moreButtonHandlers = useMoreButtonFocusHandoff({
+  const { buttonProps: moreButtonHandlers, firstNewRow } = useMoreButtonFocusHandoff({
     television,
     active: mode === "guide",
     busy: paginationBusy,
@@ -209,9 +237,10 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
           ) ?? channelButtons[channelButtons.length - 1]
         );
       }
-      if (channelButtons[existingRows] !== undefined) {
-        return channelButtons[existingRows];
-      }
+      const appended = windowed
+        ? board.querySelector<HTMLButtonElement>(`[data-guide-index="${existingRows}"] .programme-guide__channel`)
+        : channelButtons[existingRows];
+      if (appended) return appended;
       return buttonConnected ? null : channelButtons[channelButtons.length - 1];
     },
     revealTarget: (target) => {
@@ -273,7 +302,7 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
   const onRowsFocus = useCallback(
     (event: FocusEvent<HTMLDivElement>) => {
       const focus = previewFocusOf(event.target);
-      if (focus !== null) previewStore.set(focus);
+      if (focus !== null) previewStore.set(focus, navigating.current);
       const board = boardRef.current;
       if (
         board !== null &&
@@ -285,8 +314,14 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
       if (!canAutoLoad || !(event.target instanceof Element)) {
         return;
       }
-      const row = event.target.closest(".programme-guide__row");
+      const row = event.target.closest<HTMLElement>(".programme-guide__row");
       if (row === null) {
+        return;
+      }
+      if (row.dataset.guideIndex !== undefined) {
+        if (families.length - Number(row.dataset.guideIndex) <= AUTO_LOAD_FOCUS_TAIL_ROWS) {
+          requestAutoLoad();
+        }
         return;
       }
       let followingRows = 0;
@@ -301,7 +336,7 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
         requestAutoLoad();
       }
     },
-    [boardRef, canAutoLoad, previewStore, requestAutoLoad],
+    [boardRef, canAutoLoad, families.length, previewStore, requestAutoLoad],
   );
   // A fresh timeline starts at the window's first half hour.
   useLayoutEffect(() => {
@@ -357,16 +392,17 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
       onKeyDownCapture={(event) => {
         const section = sectionRef.current;
         if (section === null) return;
-        handleGuideArrowKey(event, {
+        duringNavigation(() => handleGuideArrowKey(event, {
           section,
           workspace: section.closest<HTMLElement>(".shell__workspace"),
           board: boardRef.current,
           layout,
           mode,
           television,
+          televisionWindow: windowed ? { columns: timeline ? 1 : 3, familyCount: families.length, revealIndex } : undefined,
           hasMore,
           onRequestMore: requestAutoLoad,
-        });
+        }));
       }}
       onKeyDown={(event) => {
         if (
@@ -494,17 +530,41 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
                 </div>
                 <ChannelNameTooltip handle={channelNameTooltip} />
               </Tooltip.Provider>
-            ) : timeline ? (
-              <div className="programme-guide__rows" onFocus={onRowsFocus}>
-                <div className="programme-guide__now-band" aria-hidden="true" />
-                {families.map((family) => (
+            ) : windowed ? (
+              <TelevisionGuideRows
+                key={JSON.stringify([activeGroup, timeline])}
+                families={families}
+                timeline={timeline}
+                playingIndex={playingIndex}
+                firstNewRow={firstNewRow}
+                handle={televisionRows}
+                onCommit={(board) => duringNavigation(() => settleGuideNavigation(board, {
+                  familyCount: families.length,
+                  hasMore,
+                  busy: paginationBusy,
+                  hasError: error !== null,
+                  onRequestMore: requestAutoLoad,
+                  revealIndex,
+                }))}
+                onFocus={onRowsFocus}
+                renderRow={(family, index) => timeline ? (
                   <ProgrammeTimelineRow
                     key={family.number}
+                    guideIndex={index}
                     {...rowProps(family)}
                     window={guideWindow}
                   />
-                ))}
-              </div>
+                ) : (
+                  <ProgrammeListRow
+                    key={family.number}
+                    guideIndex={index}
+                    {...rowProps(family)}
+                    channelIcon
+                    at={time?.chosen ?? null}
+                    pending={replacing}
+                  />
+                )}
+              />
             ) : (
               <div className="programme-guide__rows" onFocus={onRowsFocus}>
                 {families.map((family) => (
@@ -534,6 +594,10 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
                 type="button"
                 aria-disabled={paginationBusy || undefined}
                 {...moreButtonHandlers}
+                onFocus={(event) => {
+                  if (windowed) revealIndex(families.length - 1);
+                  moreButtonHandlers.onFocus(event);
+                }}
               >
                 {replacing
                   ? "Updating the guide…"

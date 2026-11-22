@@ -245,13 +245,7 @@ export function useMoreButtonFocusHandoff({
     readonly buttonConnected: boolean;
   }) => HTMLElement | null | undefined;
   readonly revealTarget: (target: HTMLElement) => void;
-}): {
-  readonly onPointerDown: () => void;
-  readonly onPointerCancel: () => void;
-  readonly onBlur: () => void;
-  readonly onFocus: (event: FocusEvent<HTMLButtonElement>) => void;
-  readonly onClick: (event: MouseEvent<HTMLButtonElement>) => void;
-} {
+}) {
   const pointerDownRef = useRef(false);
   const requestRef = useRef<{
     readonly button: HTMLButtonElement;
@@ -286,7 +280,7 @@ export function useMoreButtonFocusHandoff({
     }
   }, [active, busy, hasError, rowCount, scopeKey]);
 
-  return {
+  const buttonProps = {
     onPointerDown: () => {
       pointerDownRef.current = true;
     },
@@ -296,7 +290,7 @@ export function useMoreButtonFocusHandoff({
     onBlur: () => {
       pointerDownRef.current = false;
     },
-    onFocus: (event) => {
+    onFocus: (event: FocusEvent<HTMLButtonElement>) => {
       if (pointerDownRef.current) return;
       if (television && (canAutoLoad || busy)) {
         if (
@@ -314,7 +308,7 @@ export function useMoreButtonFocusHandoff({
         onRequestAutoLoad();
       }
     },
-    onClick: (event) => {
+    onClick: (event: MouseEvent<HTMLButtonElement>) => {
       pointerDownRef.current = false;
       if (busy) return;
       if (television && event.currentTarget === document.activeElement) {
@@ -330,5 +324,10 @@ export function useMoreButtonFocusHandoff({
         onManualLoadMore();
       }
     },
+  };
+  return {
+    buttonProps,
+    // Keep the destination mounted until the layout effect can transfer focus.
+    firstNewRow: requestRef.current?.scopeKey === scopeKey ? requestRef.current.existingRows : -1,
   };
 }

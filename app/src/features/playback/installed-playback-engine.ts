@@ -10,9 +10,9 @@ import {
   type AndroidMedia3PlaybackEngine,
 } from "./android-media3-engine";
 import type { HostedPlaybackHandle } from "./mpegts-engine";
-import {
-  nativeMpegtsPlaybackEngine,
-  type NativeMpegtsPlaybackEngine,
+import type {
+  NativeMpegtsPlaybackEngine,
+  NativeMpegtsPlaybackHandle,
 } from "./native-mpegts-engine";
 import { installedClientPlaybackFailure } from "./playback-failure";
 import type { InstalledPlaybackFailure } from "./installed-playback-state";
@@ -57,10 +57,39 @@ export interface InstalledPlaybackEngineAdapters {
   readonly androidMedia3: AndroidMedia3PlaybackEngine;
 }
 
+// The Guide preloads this router when a Channel first receives focus. Only
+// a WebView MSE presentation needs the JavaScript demuxer.
+const webviewMse: NativeMpegtsPlaybackEngine = {
+  start(request) {
+    let stopped = false;
+    let handle: NativeMpegtsPlaybackHandle | undefined;
+    void import("./native-mpegts-engine").then(({ nativeMpegtsPlaybackEngine }) => {
+      if (stopped) return;
+      const started = nativeMpegtsPlaybackEngine.start(request);
+      if (typeof started === "string") {
+        request.onFailure(started, true);
+      } else if (stopped) {
+        started.stop();
+      } else {
+        handle = started;
+      }
+    }).catch(() => {
+      if (!stopped) request.onFailure("media-unsupported", false);
+    });
+    return {
+      stop() {
+        stopped = true;
+        handle?.stop();
+      },
+      mediaSnapshot: () => handle?.mediaSnapshot?.(),
+    };
+  },
+};
+
 /** Routes installed playback without exposing platform branches to the runner. */
 export function createInstalledPlaybackEngine(
   adapters: InstalledPlaybackEngineAdapters = {
-    webviewMse: nativeMpegtsPlaybackEngine,
+    webviewMse,
     androidMedia3: androidMedia3PlaybackEngine,
   },
 ): InstalledPlaybackEngine {

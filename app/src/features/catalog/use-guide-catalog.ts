@@ -8,6 +8,9 @@ import {
   type QueryClient,
 } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { clientSchemas } from "../../client/contracts";
+import { clockWindow } from "../guide/guide-window";
+import { catalogStatusQueryOptions } from "../status/catalog-synchronization";
 import type {
   CatalogGeneration,
   ChannelGroup,
@@ -73,6 +76,28 @@ export interface GuideCatalogRead {
   readonly prefetchGroup: (group: string | null) => void;
 }
 
+/**
+ * Overlaps the initial TV shell render with opening the local catalog. Prefetch
+ * only a configured generation; the mounted Guide joins these same queries.
+ */
+export async function prefetchTelevisionGuide(queryClient: QueryClient, client: SparrowClient): Promise<void> {
+  const statusOptions = catalogStatusQueryOptions(client);
+  await queryClient.prefetchQuery(statusOptions);
+  const status = queryClient.getQueryData(statusOptions.queryKey)?.value;
+  if (!status?.configuration.configured || status.generation === null) return;
+  const window = clockWindow(new Date());
+  await Promise.all([
+    queryClient.prefetchInfiniteQuery(groupsQueryOptions(client, status.generation)),
+    queryClient.prefetchInfiniteQuery(guideWindowQueryOptions({
+      client,
+      group: null,
+      startsAt: clientSchemas.isoInstant.parse(window.startsAt.toISOString()),
+      endsAt: clientSchemas.isoInstant.parse(window.endsAt.toISOString()),
+      expectedGeneration: status.generation,
+    })),
+  ]);
+}
+
 /** Owns generation-bound group and guide pagination for the shell. */
 export function useGuideCatalog({
   client,
@@ -89,33 +114,14 @@ export function useGuideCatalog({
     expectedGeneration,
   );
   const groupsQuery = useInfiniteQuery({
-    queryKey: groupsQueryKey(groupsGeneration),
-    initialPageParam: null as CatalogContinuation | null,
-    queryFn: ({ pageParam, signal }) =>
-      generationBoundResult(
-        client.listGroups({
-          limit: GROUP_PAGE_SIZE,
-          ...(pageParam === null
-            ? {}
-            : {
-                cursor: pageParam.cursor,
-                previousCursors: pageParam.previousCursors,
-              }),
-          signal,
-        }),
-        groupsGeneration ?? pageParam?.generation ?? null,
-      ),
-    getNextPageParam: (lastPage, _pages, lastPageParam) =>
-      nextContinuation(lastPage, lastPageParam),
+    ...groupsQueryOptions(client, groupsGeneration),
     enabled,
-    retry: false,
     placeholderData: keepPreviousData,
     initialData: promotableBootstrapData<ChannelGroup>(
       queryClient,
       groupsQueryKey(null),
       expectedGeneration,
     ),
-    staleTime: IMMUTABLE_CATALOG_STALE_TIME,
   });
   // The window whose rows are shown. It follows the window asked for at
   // once, except while the viewer has read past the first page: the rows of
@@ -287,6 +293,31 @@ export function useGuideCatalog({
     loadMore,
     prefetchGroup,
   };
+}
+
+function groupsQueryOptions(client: SparrowClient, expectedGeneration: CatalogGeneration | null) {
+  return infiniteQueryOptions({
+    queryKey: groupsQueryKey(expectedGeneration),
+    initialPageParam: null as CatalogContinuation | null,
+    queryFn: ({ pageParam, signal }) =>
+      generationBoundResult(
+        client.listGroups({
+          limit: GROUP_PAGE_SIZE,
+          ...(pageParam === null
+            ? {}
+            : {
+                cursor: pageParam.cursor,
+                previousCursors: pageParam.previousCursors,
+              }),
+          signal,
+        }),
+        expectedGeneration ?? pageParam?.generation ?? null,
+      ),
+    getNextPageParam: (lastPage, _pages, lastPageParam) =>
+      nextContinuation(lastPage, lastPageParam),
+    retry: false,
+    staleTime: IMMUTABLE_CATALOG_STALE_TIME,
+  });
 }
 
 function guideWindowQueryOptions({

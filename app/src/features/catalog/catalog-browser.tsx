@@ -1,3 +1,4 @@
+import { fullscreenElement, subscribeToFullscreen } from "../stage/playback-fullscreen";
 import { useQueryClient } from "@tanstack/react-query";
 import { List, Search } from "lucide-react";
 import {
@@ -146,7 +147,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   const client = props.client;
   const now = useGuideClock();
   const queryClient = useQueryClient();
-  const synchronization = useCatalogSynchronization(client);
+  const synchronization = useCatalogSynchronization(client, television);
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
   const groupExclusions = useBoardGroupExclusions();
   const boardGroup = resolvedActiveGroup(activeGroup, groupExclusions.excluded);
@@ -165,7 +166,10 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     useState<TelevisionFullscreenTune | null>(null);
   // The Channel an arrow press has moved to. The info block shows it at once;
   // it is tuned when no further press follows.
-  const [pendingZap, setPendingZap] = useState<{ readonly channel: ChannelSummary } | null>(null);
+  const [pendingZap, setPendingZap] = useState<{
+    readonly channel: ChannelSummary;
+    readonly commitAt: number;
+  } | null>(null);
   const zapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancelZap = useCallback(() => {
     if (zapTimer.current !== null) {
@@ -395,7 +399,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   // The Guide control that took the picture fullscreen, where focus returns.
   const fullscreenOrigin = useRef<HTMLElement | null>(null);
   const enterTelevisionFullscreen = useCallback((channel: ChannelId) => {
-    if (document.fullscreenElement != null || heldPress.current) return;
+    if (fullscreenElement() != null || heldPress.current) return;
     // The viewer chose the picture that plays: a Channel change still
     // queued from the Channel keys must not switch it underneath.
     cancelZap();
@@ -425,13 +429,13 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
   useEffect(() => {
     if (!television) return;
     const returnToGuide = () => {
-      if (document.fullscreenElement != null) return;
+      if (fullscreenElement() != null) return;
       const origin = fullscreenOrigin.current;
       fullscreenOrigin.current = null;
       focusGuideAfterFullscreen(origin);
     };
-    document.addEventListener("fullscreenchange", returnToGuide);
-    return () => document.removeEventListener("fullscreenchange", returnToGuide);
+    const unsubscribeFullscreen = subscribeToFullscreen(returnToGuide);
+    return unsubscribeFullscreen;
   }, [television]);
   // The TV's Center on a Channel: a Channel that is not playing starts in the
   // docked picture; the exact Channel that plays goes fullscreen.
@@ -508,10 +512,12 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     if (playingChannel === null) {
       return;
     }
+    // Rendering the new guide caption counts toward the delay after the keypress.
+    const commitAt = Date.now() + ZAP_COMMIT_MS;
     setPendingZap((pending) => {
       const from = pending?.channel ?? playingChannel;
       const next = neighbouringZapStop(stops, from.id, direction);
-      return next === null ? pending : { channel: next.target.channel };
+      return next === null ? pending : { channel: next.target.channel, commitAt };
     });
   };
   useLayoutEffect(() => {
@@ -524,7 +530,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
       setPlayingChannel((current) =>
         current === null ? current : pendingZap.channel,
       );
-    }, ZAP_COMMIT_MS);
+    }, Math.min(ZAP_COMMIT_MS, Math.max(0, pendingZap.commitAt - Date.now())));
     zapTimer.current = timer;
     return () => {
       clearTimeout(timer);
@@ -736,7 +742,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     [guideNow, status],
   );
 
-  if (synchronization.statusPending) {
+  if (synchronization.statusPending && !television) {
     return <CatalogLoading />;
   }
 
@@ -916,7 +922,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
           time={guideTime}
           view={tvGuideView}
           preview={guidePreview}
-          loading={guideCatalog.loading}
+          loading={synchronization.statusPending || guideCatalog.loading}
           replacing={guideCatalog.replacing}
           error={guideError}
           hasMore={guideCatalog.hasMore}

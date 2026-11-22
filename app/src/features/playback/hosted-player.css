@@ -10,19 +10,19 @@
   background: var(--black);
 }
 
-.hosted-player:fullscreen {
+.hosted-player:is(:fullscreen, [popover="manual"]) {
   width: 100vw;
   height: 100dvh;
   grid-template-rows: minmax(0, 1fr);
   background: var(--black);
 }
 
-.hosted-player:fullscreen .hosted-player__screen {
+.hosted-player:is(:fullscreen, [popover="manual"]) .hosted-player__screen {
   grid-area: 1 / 1;
 }
 
-.hosted-player:fullscreen .hosted-player__heading,
-.hosted-player:fullscreen .hosted-player__controls {
+.hosted-player:is(:fullscreen, [popover="manual"]) .hosted-player__heading,
+.hosted-player:is(:fullscreen, [popover="manual"]) .hosted-player__controls {
   position: absolute;
   z-index: 5;
   right: 0;
@@ -31,40 +31,40 @@
   transition: opacity 180ms ease;
 }
 
-.hosted-player:fullscreen .hosted-player__heading {
+.hosted-player:is(:fullscreen, [popover="manual"]) .hosted-player__heading {
   top: 0;
   padding: 1.25rem 1.5rem 2.5rem;
   background: linear-gradient(#000c, transparent);
 }
 
-.hosted-player:fullscreen .hosted-player__controls {
+.hosted-player:is(:fullscreen, [popover="manual"]) .hosted-player__controls {
   bottom: 0;
   padding: 2.5rem 1.5rem 1.25rem;
   background: linear-gradient(transparent, #000e);
 }
 
-.hosted-player:fullscreen .hosted-player__controls p {
+.hosted-player:is(:fullscreen, [popover="manual"]) .hosted-player__controls p {
   display: none;
 }
 
-.hosted-player:fullscreen[data-controls-visible="false"] {
+.hosted-player:is(:fullscreen, [popover="manual"])[data-controls-visible="false"] {
   cursor: none;
 }
 
-.hosted-player:fullscreen[data-controls-visible="false"] .hosted-player__heading,
-.hosted-player:fullscreen[data-controls-visible="false"] .hosted-player__controls {
+.hosted-player:is(:fullscreen, [popover="manual"])[data-controls-visible="false"] .hosted-player__heading,
+.hosted-player:is(:fullscreen, [popover="manual"])[data-controls-visible="false"] .hosted-player__controls {
   opacity: 0;
   pointer-events: none;
 }
 
-.hosted-player:fullscreen:has(:focus-visible) .hosted-player__controls {
+.hosted-player:is(:fullscreen, [popover="manual"]):has(:focus-visible) .hosted-player__controls {
   opacity: 1;
   pointer-events: auto;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hosted-player:fullscreen .hosted-player__heading,
-  .hosted-player:fullscreen .hosted-player__controls {
+  .hosted-player:is(:fullscreen, [popover="manual"]) .hosted-player__heading,
+  .hosted-player:is(:fullscreen, [popover="manual"]) .hosted-player__controls {
     transition: none;
   }
 }
@@ -317,12 +317,12 @@
 }
 
 /* Android renders above the WebView: fullscreen controls need their own rows. */
-.hosted-player:fullscreen[data-native-video="true"] {
+.hosted-player:is(:fullscreen, [popover="manual"])[data-native-video="true"] {
   grid-template-rows: minmax(0, 1fr) auto auto;
 }
 
-.hosted-player:fullscreen[data-native-video="true"] .hosted-player__heading,
-.hosted-player:fullscreen[data-native-video="true"] .hosted-player__controls {
+.hosted-player:is(:fullscreen, [popover="manual"])[data-native-video="true"] .hosted-player__heading,
+.hosted-player:is(:fullscreen, [popover="manual"])[data-native-video="true"] .hosted-player__controls {
   position: static;
   padding: 0.375rem 0.625rem;
   opacity: 1;
@@ -332,8 +332,8 @@
 
 /* Reclaim the control rows as well as their pixels while watching. A tap on
    the picture restores them before native video is measured into its slot. */
-.hosted-player:fullscreen[data-native-video="true"][data-controls-visible="false"] .hosted-player__heading,
-.hosted-player:fullscreen[data-native-video="true"][data-controls-visible="false"] .hosted-player__controls {
+.hosted-player:is(:fullscreen, [popover="manual"])[data-native-video="true"][data-controls-visible="false"] .hosted-player__heading,
+.hosted-player:is(:fullscreen, [popover="manual"])[data-native-video="true"][data-controls-visible="false"] .hosted-player__controls {
   display: none;
 }
 

@@ -1,3 +1,4 @@
+import { fullscreenElement, subscribeToFullscreen } from "./playback-fullscreen";
 import { useLayoutEffect, useRef, useState } from "react";
 import { stageMonitorBox } from "./stage-dom";
 
@@ -50,7 +51,7 @@ export function usePicturePin(
   // Before paint, so the box is never drawn at a size the picture has left.
   useLayoutEffect(() => {
     if (!hold) {
-      wasFullscreenRef.current = document.fullscreenElement != null;
+      wasFullscreenRef.current = fullscreenElement() != null;
       pendingExitRemeasureRef.current = false;
       return;
     }
@@ -58,9 +59,8 @@ export function usePicturePin(
     let clearExitFrame: number | null = null;
     function measure() {
       unpinPicture(root);
-      // Android temporarily restores its default page scale in element fullscreen.
-      // The hidden monitor has the right coordinates again on fullscreen exit.
-      if (television && document.fullscreenElement != null) {
+      // Wait for the dock to be visible again before measuring its held box.
+      if (television && fullscreenElement() != null) {
         wasFullscreenRef.current = true;
         pendingExitRemeasureRef.current = false;
         return;
@@ -72,7 +72,7 @@ export function usePicturePin(
         cancelAnimationFrame(clearExitFrame);
         clearExitFrame = null;
       }
-      if (document.fullscreenElement != null) {
+      if (fullscreenElement() != null) {
         wasFullscreenRef.current = true;
         pendingExitRemeasureRef.current = false;
         unpinPicture(root);
@@ -91,10 +91,10 @@ export function usePicturePin(
       measure();
     }
     measure();
-    if (television) document.addEventListener("fullscreenchange", onFullscreenChange);
+    const unsubscribe = television ? subscribeToFullscreen(onFullscreenChange) : undefined;
     return () => {
       if (clearExitFrame !== null) cancelAnimationFrame(clearExitFrame);
-      document.removeEventListener("fullscreenchange", onFullscreenChange);
+      unsubscribe?.();
       unpinPicture(root);
     };
   }, [hold, television]);
@@ -109,7 +109,7 @@ export function usePicturePin(
       !hold ||
       !modeChanged ||
       !pendingExitRemeasureRef.current ||
-      document.fullscreenElement != null
+      fullscreenElement() != null
     ) {
       return;
     }

@@ -10,6 +10,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type FocusEvent,
   type RefObject,
 } from "react";
 import type { ChannelGroup } from "../../client/contracts";
@@ -25,6 +26,9 @@ import { railFit, railScrollTop } from "./rail-fit";
 const ALL_GROUPS = "all";
 const GROUP_PREFIX = "group:";
 const FOCUS_PREFETCH_DEBOUNCE_MS = 150;
+// Keep enough real chips to fill the initial TV lane. Browsing the lane extends
+// it before focus reaches the end; the roster always contains every group.
+const TV_GROUP_BATCH = 24;
 
 /** The time the now-and-next list looks at, and the chips that change it. */
 export interface GuideTime {
@@ -89,8 +93,21 @@ export const ChannelGroupLane = memo(function ChannelGroupLane({
     () => visibleChannelGroups(groups, excluded),
     [groups, excluded],
   );
-  const overflow = useLaneOverflow(scrollerRef, visibleGroups.length);
-  useRailFit(scrollerRef, vertical, visibleGroups.length);
+  const [groupLimit, setGroupLimit] = useState(TV_GROUP_BATCH);
+  const selectedIndex = activeGroup === null
+    ? -1
+    : visibleGroups.findIndex((group) => group.name === activeGroup);
+  const shownGroups = television
+    ? visibleGroups.slice(0, Math.max(groupLimit, selectedIndex + TV_GROUP_BATCH))
+    : visibleGroups;
+  const hasMoreGroups = shownGroups.length < visibleGroups.length;
+  const extendLane = useCallback(() => {
+    setGroupLimit(shownGroups.length + TV_GROUP_BATCH);
+  }, [shownGroups.length]);
+  const overflow = useLaneOverflow(
+    scrollerRef, shownGroups.length, vertical, hasMoreGroups ? extendLane : null,
+  );
+  useRailFit(scrollerRef, vertical, shownGroups.length);
   const activeFilter = filterValue(activeGroup);
 
   const cancelFocusPrefetch = useCallback(() => {
@@ -145,6 +162,56 @@ export const ChannelGroupLane = memo(function ChannelGroupLane({
     scroller.scrollLeft += distance;
   };
 
+  const groupRadio = (group: ChannelGroup | null, index: number) => {
+    const name = group?.name ?? null;
+    const value = filterValue(name);
+    const props = {
+      className: "programme-guide__group",
+      "data-acceptance-group": true,
+      onMouseEnter: () => onPrefetchGroup(name),
+      onFocus: (event: FocusEvent<HTMLElement>) => {
+        if (hasMoreGroups && index >= shownGroups.length - 4) extendLane();
+        reveal(event.currentTarget);
+        scheduleFocusPrefetch(name);
+      },
+      onBlur: cancelFocusPrefetch,
+    };
+    const label = group === null ? "All" : (
+      <>{groupDisplayName(group.name)}<em>{group.channelCount}</em></>
+    );
+    // The Guide already owns TV arrow navigation. A plain button lets focus
+    // browse independently of selection without registering every group with
+    // a second keyboard controller during the first Guide render.
+    if (television) {
+      const checked = name === activeGroup;
+      return (
+        <button
+          key={value}
+          {...props}
+          type="button"
+          role="radio"
+          aria-setsize={visibleGroups.length + 1}
+          aria-posinset={index + 2}
+          aria-checked={checked}
+          data-checked={checked ? "" : undefined}
+          tabIndex={checked ? 0 : -1}
+          onClick={() => onSelectGroup(name)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              event.stopPropagation();
+              onSelectGroup(name);
+            }
+          }}
+        >
+          {label}
+        </button>
+      );
+    }
+    return <Radio.Root key={value} {...props} value={value}>{label}</Radio.Root>;
+  };
+  const radios = [groupRadio(null, -1), ...shownGroups.map(groupRadio)];
+
   return (
     <>
       <div
@@ -195,67 +262,25 @@ export const ChannelGroupLane = memo(function ChannelGroupLane({
           <ChevronLeft aria-hidden="true" />
         </button>
         <div className="programme-guide__groups-scroller" ref={scrollerRef}>
-          <RadioGroup
-            className="programme-guide__groups"
-            value={activeFilter}
-            onKeyDownCapture={(event) => {
-              // On TV, stop Base UI RadioGroup from arming focus-follows-selection
-              // on arrow keys while preserving pointer clicks and Enter/Space commit.
-              if (television && event.key.startsWith("Arrow")) {
-                event.preventBaseUIHandler();
-              }
-            }}
-            onValueChange={(value) => onSelectGroup(groupFromFilterValue(value))}
-            aria-label="Channel groups"
-          >
-            <Radio.Root
-              className="programme-guide__group"
-              data-acceptance-group
-              value={ALL_GROUPS}
-              onMouseEnter={() => onPrefetchGroup(null)}
-              onFocus={(event) => {
-                reveal(event.currentTarget);
-                scheduleFocusPrefetch(null);
-              }}
-              onBlur={cancelFocusPrefetch}
-              onKeyDown={(event) => {
-                if (television && (event.key === "Enter" || event.key === " ")) {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  onSelectGroup(null);
-                }
-              }}
+          {television ? (
+            <div
+              className="programme-guide__groups"
+              role="radiogroup"
+              aria-label="Channel groups"
+              aria-orientation={orientation}
             >
-              All
-            </Radio.Root>
-            {visibleGroups.map((group) => {
-              const groupValue = filterValue(group.name);
-              return (
-                <Radio.Root
-                  className="programme-guide__group"
-                  data-acceptance-group
-                  key={groupValue}
-                  value={groupValue}
-                  onMouseEnter={() => onPrefetchGroup(group.name)}
-                  onFocus={(event) => {
-                    reveal(event.currentTarget);
-                    scheduleFocusPrefetch(group.name);
-                  }}
-                  onBlur={cancelFocusPrefetch}
-                  onKeyDown={(event) => {
-                    if (television && (event.key === "Enter" || event.key === " ")) {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      onSelectGroup(group.name);
-                    }
-                  }}
-                >
-                  {groupDisplayName(group.name)}
-                  <em>{group.channelCount}</em>
-                </Radio.Root>
-              );
-            })}
-          </RadioGroup>
+              {radios}
+            </div>
+          ) : (
+            <RadioGroup
+              className="programme-guide__groups"
+              value={activeFilter}
+              onValueChange={(value) => onSelectGroup(groupFromFilterValue(value))}
+              aria-label="Channel groups"
+            >
+              {radios}
+            </RadioGroup>
+          )}
         </div>
         <button
           className="programme-guide__lane-step"
@@ -311,6 +336,8 @@ export const ChannelGroupLane = memo(function ChannelGroupLane({
 function useLaneOverflow(
   scrollerRef: RefObject<HTMLDivElement | null>,
   itemCount: number,
+  vertical: boolean,
+  extend: (() => void) | null,
 ): { readonly canBack: boolean; readonly canAhead: boolean } {
   const [overflow, setOverflow] = useState({
     canBack: false,
@@ -326,6 +353,11 @@ function useLaneOverflow(
     let scrollFrame: number | null = null;
     const measure = () => {
       const max = Math.max(0, node.scrollWidth - node.clientWidth);
+      if (extend !== null) {
+        const viewport = vertical ? node.clientHeight : node.clientWidth;
+        const remaining = vertical ? node.scrollHeight - node.scrollTop - viewport : max - node.scrollLeft;
+        if (viewport > 0 && remaining < viewport) extend();
+      }
       const canBack = node.scrollLeft > 1;
       const canAhead = max - node.scrollLeft > 1;
       setOverflow((current) =>
@@ -361,7 +393,7 @@ function useLaneOverflow(
       node.removeEventListener("wheel", onLaneWheel);
       window.removeEventListener("resize", measure);
     };
-  }, [itemCount, scrollerRef]);
+  }, [extend, itemCount, scrollerRef, vertical]);
 
   return overflow;
 }

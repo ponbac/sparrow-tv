@@ -50,6 +50,7 @@ export interface GuideArrowNavigation {
   readonly layout: StageLayout;
   readonly mode: "watch" | "guide";
   readonly television?: boolean;
+  readonly televisionWindow?: TelevisionGuideWindow | undefined;
   readonly hasMore: boolean;
   readonly onRequestMore: () => void;
 }
@@ -72,6 +73,7 @@ export function handleGuideArrowKey(
     layout,
     mode,
     television = false,
+    televisionWindow,
     hasMore,
     onRequestMore,
   }: GuideArrowNavigation,
@@ -87,6 +89,7 @@ export function handleGuideArrowKey(
     return;
   }
   const key = event.key;
+  if (board && key !== "ArrowDown") pendingGuideMoves.delete(board);
   if (
     key !== "ArrowDown" &&
     key !== "ArrowUp" &&
@@ -99,6 +102,13 @@ export function handleGuideArrowKey(
     return;
   }
   const target = event.target;
+  if (board && television && board.contains(target) && target.closest(IGNORE_NAVIGATION_SELECTOR) === null) {
+    if (televisionWindow && moveInTelevisionWindow(event, target, board, televisionWindow, hasMore, onRequestMore)) return;
+    if (key === "ArrowDown") {
+      handleBoardArrow(event, target, layout, null, null, board, null, hasMore, onRequestMore, true);
+      return;
+    }
+  }
   const toolbar = section.querySelector<HTMLElement>(
     ".programme-guide__toolbar",
   );
@@ -537,11 +547,7 @@ function handleLaneArrow(
 
   const whenButton = lane.querySelector<HTMLElement>(LEAD_SELECTOR);
   const rosterButton = lane.querySelector<HTMLElement>(".group-roster-trigger");
-  const groups = visibleFocusables(lane, ".programme-guide__group");
-  const activeGroup =
-    groups.find((group) => group.hasAttribute("data-checked")) ??
-    groups[0] ??
-    null;
+  const groups = Array.from(lane.querySelectorAll<HTMLElement>(".programme-guide__group"));
 
   if (target === whenButton) {
     if (event.key === "ArrowLeft") {
@@ -553,7 +559,9 @@ function handleLaneArrow(
       return;
     }
     if (event.key === "ArrowRight") {
-      const next = (television ? groups[0] ?? null : activeGroup) ?? rosterButton;
+      const next = (television
+        ? findVisibleInRange(groups, 0, groups.length - 1, 1)
+        : checkedGroupInLane(lane)) ?? rosterButton;
       if (next !== null && isVisibleFocusable(next)) {
         consumeAndFocus(event, next, board);
       } else {
@@ -569,7 +577,9 @@ function handleLaneArrow(
     }
     if (event.key === "ArrowLeft") {
       const next =
-        (television ? groups[groups.length - 1] ?? null : activeGroup) ??
+        (television
+          ? findVisibleInRange(groups, groups.length - 1, 0, -1)
+          : checkedGroupInLane(lane)) ??
         whenButton;
       if (next !== null && isVisibleFocusable(next)) {
         consumeAndFocus(event, next, board);
@@ -587,7 +597,8 @@ function handleLaneArrow(
   // At the outer edges of the Channel Group RadioGroup, move cleanly to the
   // adjacent lane controls instead of wrapping across all groups.
   if (event.key === "ArrowLeft") {
-    if (groupIndex === 0) {
+    const previous = findVisibleInRange(groups, groupIndex - 1, 0, -1);
+    if (previous === null) {
       const edge =
         whenButton !== null && isVisibleFocusable(whenButton)
           ? whenButton
@@ -600,12 +611,13 @@ function handleLaneArrow(
       return;
     }
     if (television) {
-      consumeAndFocus(event, groups[groupIndex - 1], board);
+      consumeAndFocus(event, previous, board);
     }
     return;
   }
   if (event.key === "ArrowRight") {
-    if (groupIndex === groups.length - 1) {
+    const next = findVisibleInRange(groups, groupIndex + 1, groups.length - 1, 1);
+    if (next === null) {
       if (rosterButton !== null && isVisibleFocusable(rosterButton)) {
         consumeAndFocus(event, rosterButton, board);
       } else {
@@ -614,7 +626,7 @@ function handleLaneArrow(
       return;
     }
     if (television) {
-      consumeAndFocus(event, groups[groupIndex + 1], board);
+      consumeAndFocus(event, next, board);
     }
   }
 }
@@ -664,6 +676,162 @@ function handleTimesArrow(
       clampArrow(event);
     }
   }
+}
+
+interface TelevisionGuideWindow {
+  readonly columns: number;
+  readonly familyCount: number;
+  readonly revealIndex: (index: number) => void;
+}
+
+interface PendingGuideMove {
+  readonly origin: HTMLElement;
+  readonly originIndex: number;
+  targetIndex: number;
+  readonly down: boolean;
+  readonly columns: number;
+  readonly minute: number | null;
+  revealed?: number;
+}
+
+// Keep one destination while waiting for rows. A stalled page cannot save
+// more than eight unshown Down steps, however long a remote is held.
+const MAX_PENDING_GUIDE_STEPS = 8;
+const pendingGuideMoves = new WeakMap<HTMLElement, PendingGuideMove>();
+
+function keepPendingMove(board: HTMLElement, move: PendingGuideMove): void {
+  if (pendingGuideMoves.get(board) === move) return;
+  pendingGuideMoves.set(board, move);
+  move.origin.addEventListener("blur", () => {
+    if (pendingGuideMoves.get(board) === move) pendingGuideMoves.delete(board);
+  }, { once: true });
+}
+
+/** Steps by logical family index even when the scroll window has gaps. */
+function moveInTelevisionWindow(
+  event: ArrowKeyEvent,
+  target: HTMLElement,
+  board: HTMLElement,
+  window: TelevisionGuideWindow,
+  hasMore: boolean,
+  onRequestMore: () => void,
+): boolean {
+  const row = target.closest<HTMLElement>(".programme-guide__row[data-guide-index]");
+  if (!row) return false;
+  const index = Number(row.dataset.guideIndex);
+  const timeline = board.dataset.view === "timeline";
+  const columns = timeline ? 1 : window.columns;
+  const down = event.key === "ArrowDown";
+  const up = event.key === "ArrowUp";
+  const column = index % columns;
+  if (!down && !up) {
+    if (timeline) return false;
+    const right = event.key === "ArrowRight";
+    const chips = rowQualityChips(target);
+    const chip = chips.indexOf(target);
+    const next = right ? chips[chip + 1] : chip > 0 ? chips[chip - 1]
+      : chip === 0 ? row.querySelector<HTMLElement>(".programme-guide__channel") : null;
+    if (next) {
+      consumeAndFocus(event, next, board);
+      return true;
+    }
+    if (right ? column + 1 >= columns || index + 1 >= window.familyCount : column === 0) {
+      clampArrow(event);
+      return true;
+    }
+  }
+  if (up && index < columns) return false;
+  const targetIndex = index + (down ? columns : up ? -columns : event.key === "ArrowRight" ? 1 : -1);
+  if (down && targetIndex >= window.familyCount &&
+      visibleBoardFooterButton(board, ".programme-guide__retained button")) return false;
+  const previous = pendingGuideMoves.get(board);
+  if (down && previous?.origin === target && previous.down) {
+    clampArrow(event);
+    previous.targetIndex = Math.min(
+      previous.targetIndex + columns,
+      previous.originIndex + MAX_PENDING_GUIDE_STEPS * columns,
+    );
+    if (previous.targetIndex < window.familyCount || !hasMore) {
+      finishGuideMove(board, previous, window.familyCount, window.revealIndex);
+    }
+    return true;
+  }
+  const move: PendingGuideMove = {
+    origin: target, originIndex: index, targetIndex, columns, down,
+    minute: timeline ? timelineAnchor(board, target) : null,
+  };
+  clampArrow(event);
+  if (targetIndex >= window.familyCount && hasMore) {
+    keepPendingMove(board, move);
+    onRequestMore();
+  } else {
+    finishGuideMove(board, move, window.familyCount, window.revealIndex);
+  }
+  return true;
+}
+
+/** Applies a queued D-pad move when its virtual rows or next catalog page arrive. */
+export function settleGuideNavigation(
+  board: HTMLElement,
+  {
+    familyCount, hasMore, busy, hasError, onRequestMore, revealIndex,
+  }: {
+    readonly familyCount: number;
+    readonly hasMore: boolean;
+    readonly busy: boolean;
+    readonly hasError: boolean;
+    readonly onRequestMore: () => void;
+    readonly revealIndex: (index: number) => void;
+  },
+): void {
+  const move = pendingGuideMoves.get(board);
+  if (!move) return;
+  if (document.activeElement !== move.origin || !board.contains(move.origin) ||
+      (board.dataset.view === "timeline") !== (move.minute !== null)) {
+    pendingGuideMoves.delete(board);
+    return;
+  }
+  if (hasError) {
+    pendingGuideMoves.delete(board);
+    const retry = visibleBoardFooterButton(board, ".programme-guide__retained button");
+    if (retry) focusBoardControl(board, retry);
+    return;
+  }
+  if (move.targetIndex >= familyCount && hasMore) {
+    if (!busy) onRequestMore();
+    return;
+  }
+  finishGuideMove(board, move, familyCount, revealIndex);
+}
+
+function finishGuideMove(
+  board: HTMLElement,
+  move: PendingGuideMove,
+  familyCount: number,
+  revealIndex: (index: number) => void,
+): void {
+  let index = move.targetIndex;
+  if (index >= familyCount) {
+    const lastLine = Math.floor((familyCount - 1) / move.columns);
+    if (lastLine <= Math.floor(move.originIndex / move.columns)) {
+      pendingGuideMoves.delete(board);
+      return;
+    }
+    index = Math.min(familyCount - 1, lastLine * move.columns + move.originIndex % move.columns);
+  }
+  const row = board.querySelector<HTMLElement>(`.programme-guide__row[data-guide-index="${index}"]`);
+  if (!row) {
+    keepPendingMove(board, move);
+    if (move.revealed !== index) {
+      move.revealed = index;
+      revealIndex(index);
+    }
+    return;
+  }
+  pendingGuideMoves.delete(board);
+  const destination = move.minute === null ? row.querySelector<HTMLElement>(".programme-guide__channel")
+    : timelineCellAt(row, move.minute, timelineOffset(board));
+  if (destination) focusBoardControl(board, destination);
 }
 
 function handleBoardArrow(
@@ -801,7 +969,7 @@ function handleBoardArrow(
   if (target === retainedButton) {
     if (event.key === "ArrowUp") {
       const next =
-        findVisibleChannelInRange(channels(), channels().length - 1, 0, -1) ??
+        findVisibleInRange(channels(), channels().length - 1, 0, -1) ??
         preferredTimesTarget(times) ??
         preferredLaneTarget(lane, target);
       if (next !== null) {
@@ -823,7 +991,7 @@ function handleBoardArrow(
     if (event.key === "ArrowUp") {
       const next =
         retainedButton ??
-        findVisibleChannelInRange(channels(), channels().length - 1, 0, -1) ??
+        findVisibleInRange(channels(), channels().length - 1, 0, -1) ??
         preferredTimesTarget(times) ??
         preferredLaneTarget(lane, target);
       if (next !== null) {
@@ -939,28 +1107,15 @@ function visibleBoardFooterButton(
   return candidate !== null && isVisibleFocusable(candidate) ? candidate : null;
 }
 
-function findVisibleChannelInRange(
-  channels: readonly HTMLElement[],
-  startIndex: number,
-  endInclusive: number,
+/** Walks only as far as the next usable control, including when most are offscreen. */
+function findVisibleInRange(
+  controls: readonly HTMLElement[],
+  start: number,
+  end: number,
   step: number,
 ): HTMLElement | null {
-  if (step > 0) {
-    for (
-      let i = startIndex;
-      i <= endInclusive && i < channels.length;
-      i += step
-    ) {
-      if (isVisibleFocusable(channels[i])) {
-        return channels[i];
-      }
-    }
-  } else if (step < 0) {
-    for (let i = startIndex; i >= endInclusive && i >= 0; i += step) {
-      if (isVisibleFocusable(channels[i])) {
-        return channels[i];
-      }
-    }
+  for (let i = start; i >= 0 && i < controls.length && (step > 0 ? i <= end : i >= end); i += step) {
+    if (isVisibleFocusable(controls[i])) return controls[i];
   }
   return null;
 }
@@ -997,7 +1152,7 @@ function handleChannelGridArrow(
     const rowEnd = Math.min(channels.length - 1, index - col + columns - 1);
     const next =
       col + 1 < columns
-        ? findVisibleChannelInRange(channels, index + 1, rowEnd, 1)
+        ? findVisibleInRange(channels, index + 1, rowEnd, 1)
         : null;
     if (next !== null) {
       consumeAndFocus(event, next, board);
@@ -1012,7 +1167,7 @@ function handleChannelGridArrow(
     const rowStart = index - col;
     const next =
       col > 0
-        ? findVisibleChannelInRange(channels, index - 1, rowStart, -1)
+        ? findVisibleInRange(channels, index - 1, rowStart, -1)
         : null;
     if (next !== null) {
       consumeAndFocus(event, next, board);
@@ -1023,7 +1178,7 @@ function handleChannelGridArrow(
   }
 
   if (event.key === "ArrowDown") {
-    const next = findVisibleChannelInRange(
+    const next = findVisibleInRange(
       channels,
       index + columns,
       channels.length - 1,
@@ -1036,7 +1191,7 @@ function handleChannelGridArrow(
     const currentRow = Math.floor(index / columns);
     const lastRow = Math.floor((channels.length - 1) / columns);
     if (currentRow < lastRow) {
-      const lastVisible = findVisibleChannelInRange(
+      const lastVisible = findVisibleInRange(
         channels,
         channels.length - 1,
         lastRow * columns,
@@ -1071,7 +1226,7 @@ function handleChannelGridArrow(
   }
 
   if (event.key === "ArrowUp") {
-    const prev = findVisibleChannelInRange(
+    const prev = findVisibleInRange(
       channels,
       index - columns,
       0,
@@ -1154,7 +1309,7 @@ function checkedGroupInLane(lane: HTMLElement | null): HTMLElement | null {
   if (checked !== null && isVisibleFocusable(checked)) {
     return checked;
   }
-  return visibleFocusables(lane, ".programme-guide__group")[0] ?? null;
+  return firstVisibleIn(lane, ".programme-guide__group", { allowNegativeTabIndex: true });
 }
 
 function preferredLaneTarget(
@@ -1224,7 +1379,7 @@ function firstVisibleBoardTarget(
   const columns = gridColumnCount(channels);
   const boardRect = board.getBoundingClientRect();
   if (boardRect.height === 0) {
-    return findVisibleChannelInRange(channels, 0, channels.length - 1, 1);
+    return findVisibleInRange(channels, 0, channels.length - 1, 1);
   }
   let topRowIndex = 0;
   for (let i = 0; i < channels.length; i += 1) {
@@ -1376,6 +1531,10 @@ function consumeAndFocus(
 ): void {
   event.preventDefault();
   event.stopPropagation();
+  if (board !== null && board.contains(next)) {
+    focusBoardControl(board, next);
+    return;
+  }
   next.focus({ preventScroll: true });
   // Group radios already reveal themselves inside ChannelGroupLane's onFocus;
   // only time-row chips need horizontal reveal here.
@@ -1385,9 +1544,13 @@ function consumeAndFocus(
       revealInHorizontalScroller(times, next);
     }
   }
-  if (board !== null && board.contains(next)) {
-    scrollBoardToReveal(board, next);
-  }
+}
+
+function focusBoardControl(board: HTMLElement, next: HTMLElement): void {
+  // Focus changes the preview and focus-ring styles. Measure and scroll the
+  // row first so its reveal doesn't force a second layout on the same key.
+  scrollBoardToReveal(board, next);
+  next.focus({ preventScroll: true });
 }
 
 /** Scrolls the guide board directly to keep `target` clear of sticky footers. */
@@ -1492,11 +1655,11 @@ function timelineOffset(board: HTMLElement): number {
 
 /**
  * What a timeline row offers the D-pad: its cells, or its Channel when it
- * has none (unless `channelStop` is false).
+ * has none.
  */
-function timelineStops(row: HTMLElement, channelStop = true): HTMLElement[] {
+function timelineStops(row: HTMLElement): HTMLElement[] {
   const cells = visibleFocusables(row, ".programme-guide__programme");
-  if (cells.length > 0 || !channelStop) return cells;
+  if (cells.length > 0) return cells;
   const channel = row.querySelector<HTMLElement>(".programme-guide__channel");
   return channel !== null && isVisibleFocusable(channel) ? [channel] : [];
 }
@@ -1512,23 +1675,31 @@ function timelineCellAt(
   offset: number,
   channelStop = true,
 ): HTMLElement | null {
-  const all = timelineStops(row, channelStop);
-  const drawn = all.filter((stop) => !isEdgeSliver(stop, offset));
-  const stops = drawn.length > 0 ? drawn : all;
-  let best: HTMLElement | null = null;
-  let bestDistance = Number.POSITIVE_INFINITY;
-  for (const stop of stops) {
-    const start = Number(stop.dataset.start);
-    const end = Number(stop.dataset.end);
-    if (!Number.isFinite(start) || !Number.isFinite(end)) return stop;
-    if (start <= minute && minute < end) return stop;
-    const distance = Math.min(Math.abs(start - minute), Math.abs(end - minute));
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      best = stop;
+  const cells = Array.from(row.querySelectorAll<HTMLElement>(".programme-guide__programme"));
+  // Rank by the time metadata first. Usually only the one destination needs
+  // a visibility check, even on rows with dozens of short Programmes.
+  while (cells.length > 0) {
+    let best = 0;
+    let bestSliver = true;
+    let bestDistance = Infinity;
+    for (const [index, cell] of cells.entries()) {
+      const start = Number(cell.dataset.start);
+      const end = Number(cell.dataset.end);
+      const sliver = isEdgeSliver(cell, offset);
+      const distance = start <= minute && minute < end
+        ? -1
+        : Math.min(Math.abs(start - minute), Math.abs(end - minute));
+      if ((!sliver && bestSliver) || (sliver === bestSliver && distance < bestDistance)) {
+        best = index;
+        bestSliver = sliver;
+        bestDistance = distance;
+      }
     }
+    const [candidate] = cells.splice(best, 1);
+    if (isVisibleFocusable(candidate)) return candidate;
   }
-  return best;
+  const channel = channelStop ? row.querySelector<HTMLElement>(".programme-guide__channel") : null;
+  return channel && isVisibleFocusable(channel) ? channel : null;
 }
 
 /** A cell cut at the left edge with too little in view for its words. */
@@ -1577,18 +1748,18 @@ function handleTimelineArrow(
 ): void {
   const row = target.closest<HTMLElement>(".programme-guide__row");
   if (row === null) return;
-  // Stepping onto a sliver at the left edge brings its time into view; at
-  // the first minute there is no earlier time, so it is not a stop.
-  const offset = timelineOffset(board);
-  const stops = timelineStops(row).filter(
-    (stop) => offset > 0 || stop === target || !isEdgeSliver(stop, offset),
-  );
-  const index = stops.indexOf(target);
-  // A TV row's quality chips lie under its name, between the rail and the
-  // cells: Left from the row's first cell reaches them, the last one first,
-  // so Left and Right still step through time everywhere else.
-  const chips = television ? rowQualityChips(row) : [];
   if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+    // Stepping onto a sliver at the left edge brings its time into view; at
+    // the first minute there is no earlier time, so it is not a stop.
+    const offset = timelineOffset(board);
+    const stops = timelineStops(row).filter(
+      (stop) => offset > 0 || stop === target || !isEdgeSliver(stop, offset),
+    );
+    const index = stops.indexOf(target);
+    // A TV row's quality chips lie under its name, between the rail and the
+    // cells: Left from the row's first cell reaches them, the last one first,
+    // so Left and Right still step through time everywhere else.
+    const chips = television ? rowQualityChips(row) : [];
     if (target.classList.contains("programme-guide__channel")) {
       const next =
         event.key === "ArrowRight"
@@ -1695,10 +1866,9 @@ function handleRailArrow(
   board: HTMLElement | null,
   dockControl: HTMLElement | null,
 ): void {
-  const stops = visibleFocusables(
-    lane,
+  const stops = Array.from(lane.querySelectorAll<HTMLElement>(
     `${LEAD_SELECTOR}, .programme-guide__group, .group-roster-trigger`,
-  );
+  ));
   const index = stops.indexOf(target);
   if (index === -1) return;
   if (event.key === "ArrowRight") {
@@ -1715,7 +1885,7 @@ function handleRailArrow(
     return;
   }
   if (event.key === "ArrowDown") {
-    const next = stops[index + 1] ?? null;
+    const next = findVisibleInRange(stops, index + 1, stops.length - 1, 1);
     if (next !== null) {
       consumeAndFocus(event, next, board);
     } else {
@@ -1723,8 +1893,9 @@ function handleRailArrow(
     }
     return;
   }
-  if (index > 0) {
-    consumeAndFocus(event, stops[index - 1], board);
+  const previous = findVisibleInRange(stops, index - 1, 0, -1);
+  if (previous !== null) {
+    consumeAndFocus(event, previous, board);
     return;
   }
   const next =

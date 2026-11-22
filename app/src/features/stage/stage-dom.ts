@@ -1,3 +1,4 @@
+import { enterPlaybackFullscreen } from "./playback-fullscreen";
 /*
  * Where the shell's handlers find its parts in the document. Theater's
  * document-level listeners work on native events, outside React, so they look
@@ -64,7 +65,7 @@ export function showTelevisionPicture(): "fullscreen" | "load-notice" | "no-play
   );
   if (section !== null) {
     // The players' fullscreenchange observers reconcile the native viewport.
-    void section.requestFullscreen?.().catch(() => undefined);
+    void enterPlaybackFullscreen(section).catch(() => undefined);
     return "fullscreen";
   }
   const action = document.querySelector<HTMLElement>(

@@ -815,6 +815,10 @@ fn search_ranking_is_exact_then_prefix_then_token_then_substring() {
     assert_eq!(rank("evening news bulletin"), Some(Token));
     assert_eq!(rank("goodnews bulletin"), Some(Substring));
     assert_eq!(rank("weather bulletin"), None);
+
+    let prefix = "x".repeat(super::SEARCH_CANCELLATION_CHECKPOINT_BYTES - 2);
+    assert_eq!(rank(&format!("{prefix}newsroom")), Some(Substring));
+    assert_eq!(rank(&format!("{prefix}newsroom news")), Some(Token));
 }
 
 #[test]

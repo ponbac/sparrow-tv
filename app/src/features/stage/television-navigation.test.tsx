@@ -977,15 +977,16 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
       />,
     );
     const cells = document.querySelectorAll<HTMLElement>(".programme-guide__programme");
-    expect(cells).toHaveLength(60);
+    const current = cells[2];
+    const next = cells[3];
     const styleSpy = vi.spyOn(window, "getComputedStyle");
     try {
-      act(() => cells[30].focus());
+      act(() => current.focus());
       styleSpy.mockClear();
-      fireEvent.keyDown(cells[30], { key: "ArrowDown" });
-      expect(cells[31]).toHaveFocus();
-      fireEvent.keyDown(cells[31], { key: "ArrowUp" });
-      expect(cells[30]).toHaveFocus();
+      fireEvent.keyDown(current, { key: "ArrowDown" });
+      expect(next).toHaveFocus();
+      fireEvent.keyDown(next, { key: "ArrowUp" });
+      expect(current).toHaveFocus();
       // Two moves read the focused and the neighbouring rows, not all sixty.
       expect(styleSpy.mock.calls.length).toBeLessThan(60);
     } finally {

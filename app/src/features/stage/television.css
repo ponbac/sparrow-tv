@@ -1,10 +1,9 @@
 /*
  * Android TV and NVIDIA Shield: the TV's own layout of the pocket tree.
  *
- * The Guide, Watch and the sheets lay out on the TV canvas (1920 x 1080 CSS
- * on a 1080p Shield, `main.tsx`); element fullscreen lays out at half that
- * (960 x 540). One rem is an eightieth of the width in both, 24 px on the
- * canvas and 12 px in fullscreen, so a 4K canvas scales with it.
+ * Keep the WebView at its default page scale in the Guide and in element
+ * fullscreen. One rem is an eightieth of the viewport width, so both layouts
+ * use the same proportions at any TV resolution or pixel density.
  *
  * The shell carries `data-pocket="television"`, so none of pocket's stacked
  * or split rules apply; the generic pocket rules still do and are overridden
@@ -216,14 +215,14 @@ html[data-television] .channel-icon[data-icon="loaded"]::after {
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  box-shadow: inset 0 0 0 max(1px, 0.0417rem) var(--tv-plate-rim-dark);
+  box-shadow: inset 0 0 0 0.0417rem var(--tv-plate-rim-dark);
   pointer-events: none;
   content: "";
 }
 
 html[data-television] .channel-icon[data-icon="loaded"]:is([data-shape="square"], [data-ground])::after {
   background: var(--tv-plate-veil);
-  box-shadow: inset 0 0 0 max(1px, 0.0417rem) var(--tv-plate-rim-light);
+  box-shadow: inset 0 0 0 0.0417rem var(--tv-plate-rim-light);
 }
 
 /* On an ice focus fill the navy plate turns to ink seen through. */
@@ -369,7 +368,7 @@ html[data-television] .shell[data-layout="pocket"] .stage__monitor {
   box-shadow: 0 -0.2083rem 0 var(--tally);
 }
 
-html[data-television] .shell[data-layout="pocket"] .hosted-player:not(:fullscreen) {
+html[data-television] .shell[data-layout="pocket"] .hosted-player:not(:fullscreen, [popover="manual"]) {
   background: var(--tv-cell);
 }
 
@@ -629,21 +628,21 @@ html[data-television] .shell[data-layout="pocket"] .channel-bar {
    Track and quality pills say what is chosen. */
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__controls
   > :is(button, .hosted-player__audio-track, .hosted-player__quality) {
   order: 7;
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__controls
   > .hosted-player__primary-control:first-child {
   order: 1;
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__controls
   > .hosted-player__primary-control[aria-pressed]:not(.hosted-player__fullscreen) {
   order: 2;
@@ -651,28 +650,28 @@ html[data-television] .shell[data-layout="pocket"]
 
 /* Restart and the other plain secondary actions follow Mute. */
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__controls
   > button:not([class]) {
   order: 3;
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__controls
   > .hosted-player__audio-track {
   order: 5;
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__controls
   > .hosted-player__quality {
   order: 6;
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__controls
   > .hosted-player__fullscreen {
   order: 8;
@@ -680,14 +679,14 @@ html[data-television] .shell[data-layout="pocket"]
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__controls
   > .hosted-player__stop {
   order: 9;
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__controls
   > :is(p, .hosted-player__volume) {
   display: none;
@@ -697,7 +696,7 @@ html[data-television] .shell[data-layout="pocket"]
    room between the controls and the way out, so it never runs off the
    screen's foot. */
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__controls
   > .hosted-player__status {
   position: static;
@@ -715,7 +714,7 @@ html[data-television] .shell[data-layout="pocket"]
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__controls
   > .hosted-player__status
   > * {
@@ -725,7 +724,7 @@ html[data-television] .shell[data-layout="pocket"]
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__controls
   > button {
   position: relative;
@@ -750,7 +749,7 @@ html[data-television] .shell[data-layout="pocket"]
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__controls
   > button
   svg {
@@ -761,7 +760,7 @@ html[data-television] .shell[data-layout="pocket"]
 
 /* Every control says what it does. */
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__controls
   > button
   > span {
@@ -774,7 +773,7 @@ html[data-television] .shell[data-layout="pocket"]
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__controls
   > button:focus {
   color: var(--on-ice);
@@ -783,7 +782,7 @@ html[data-television] .shell[data-layout="pocket"]
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__controls
   > button[aria-disabled="true"] {
   opacity: 0.55;
@@ -791,7 +790,7 @@ html[data-television] .shell[data-layout="pocket"]
 
 /* Audio Track: a labelled pill around the native picker. */
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__audio-track {
   display: inline-flex;
   min-width: 0;
@@ -809,7 +808,7 @@ html[data-television] .shell[data-layout="pocket"]
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__audio-track
   svg {
   width: 1rem;
@@ -819,7 +818,7 @@ html[data-television] .shell[data-layout="pocket"]
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__audio-track
   > span {
   position: static;
@@ -829,7 +828,7 @@ html[data-television] .shell[data-layout="pocket"]
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__audio-track
   select {
   width: auto;
@@ -850,14 +849,14 @@ html[data-television] .shell[data-layout="pocket"]
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__audio-track:has(select:focus) {
   color: var(--on-ice);
   background: var(--ice);
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__audio-track:has(select:focus)
   :is(svg, select) {
   color: var(--on-ice-dim);
@@ -865,7 +864,7 @@ html[data-television] .shell[data-layout="pocket"]
 
 /* Quality: the label and the variants; the chosen one is bright. */
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__quality {
   display: inline-flex;
   height: var(--tv-control);
@@ -880,7 +879,7 @@ html[data-television] .shell[data-layout="pocket"]
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__quality
   .quality-switch {
   display: inline-flex;
@@ -888,7 +887,7 @@ html[data-television] .shell[data-layout="pocket"]
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__quality
   button {
   display: inline-grid;
@@ -906,7 +905,7 @@ html[data-television] .shell[data-layout="pocket"]
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__quality
   button[data-current="true"] {
   color: var(--tv-text);
@@ -914,7 +913,7 @@ html[data-television] .shell[data-layout="pocket"]
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen
+  .hosted-player:is(:fullscreen, [popover="manual"])
   .hosted-player__quality
   button:focus {
   color: var(--on-ice);
@@ -1520,7 +1519,7 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__board {
   padding: 0.1667rem var(--tv-gutter) 1rem;
   overflow: hidden auto;
   scroll-padding-top: 0.1667rem;
-  scroll-snap-type: y mandatory;
+  overflow-anchor: none;
   scrollbar-width: none;
 }
 
@@ -1532,20 +1531,21 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__board::-web
 html[data-television] .shell[data-layout="pocket"] .programme-guide__rows {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.4583rem;
+  --guide-row-gap: 0.4583rem;
+  --guide-row-height: 4.1667rem;
+  gap: var(--guide-row-gap);
 }
 
 html[data-television] .shell[data-layout="pocket"] .programme-guide__row {
   position: relative;
   display: block;
-  height: 4.1667rem;
+  height: var(--guide-row-height);
   min-height: 0;
   overflow: hidden;
   border: 0;
   border-radius: 0.3333rem;
   background: var(--tv-cell);
   contain-intrinsic-size: auto 4.1667rem;
-  scroll-snap-align: start;
 }
 
 html[data-television] .shell[data-layout="pocket"] .programme-guide__row[data-playing="true"] {
@@ -2108,8 +2108,23 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-
 }
 
 html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-view="timeline"] .programme-guide__rows {
+  --guide-row-height: var(--tl-row-h);
+  --guide-row-gap: 0px;
   position: relative;
   display: block;
+}
+
+/* Keep each mounted Channel at its catalog position across page appends. */
+html[data-television] .shell[data-layout="pocket"] .programme-guide__rows[data-windowed] {
+  --guide-pitch: calc(var(--guide-row-height) + var(--guide-row-gap));
+  --guide-column-width: calc((100% + var(--guide-row-gap)) / var(--guide-columns));
+}
+
+html[data-television] .shell[data-layout="pocket"] .programme-guide__rows[data-windowed] > .programme-guide__row {
+  position: absolute;
+  top: calc(var(--guide-line) * var(--guide-pitch));
+  left: calc(var(--guide-column, 0) * var(--guide-column-width));
+  width: calc(var(--guide-column-width) - var(--guide-row-gap));
 }
 
 /* The time shown ends in a soft fade, so a Programme that runs on past it
@@ -2607,6 +2622,7 @@ html[data-television]:has(.shell[data-layout="pocket"]) .board-search__state {
    the bottom edge while there is more to scroll to. */
 html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__backdrop, .group-roster__backdrop, .feeds-dialog__backdrop) {
   inset: 0;
+  width: auto;
   background: rgb(5 9 16 / 70%);
 }
 
@@ -2649,6 +2665,7 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
 }
 
 html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__header, .group-roster__header, .feeds-dialog__header) p {
+  display: block;
   max-width: none;
   margin: 0.3333rem 0 0;
   color: var(--tv-dim);
@@ -2819,6 +2836,7 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
   min-height: 0;
   height: 100%;
   flex: 1 1 auto;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 0.5rem;
   padding: 0 0.875rem 0 0;
@@ -3307,7 +3325,21 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.installed-settings_
    quiet screen with the message and its actions, and the band under it
    keeps the Channel's line. */
 
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen {
+/* A manual popover occupies the TV window's top layer, clear of the dock's
+   clipping and stacking context. Match the bounds of element fullscreen. */
+html[data-television] .hosted-player[popover="manual"] {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"]) {
   --tv-control: 3.1667rem;
   --fs-pic-h: 36.5rem;
   --fs-pic-w: calc(var(--fs-pic-h) * 16 / 9);
@@ -3321,14 +3353,14 @@ html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen {
   font-size: 1rem;
 }
 
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__screen {
+html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"]) .hosted-player__screen {
   position: absolute;
   inset: 0;
   background: var(--ink);
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen[data-controls-visible="true"]
+  .hosted-player:is(:fullscreen, [popover="manual"])[data-controls-visible="true"]
   .hosted-player__screen {
   top: 0;
   right: auto;
@@ -3338,14 +3370,14 @@ html[data-television] .shell[data-layout="pocket"]
   height: var(--fs-pic-h);
 }
 
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen video {
+html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"]) video {
   width: 100%;
   height: 100%;
   background: var(--ink);
 }
 
 /* The band carries the player's heading; it stays for a screen reader. */
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__heading {
+html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"]) .hosted-player__heading {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -3356,7 +3388,7 @@ html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .ho
 }
 
 /* The band: the area under the picture, and its first line. */
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__tv-head {
+html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"]) .hosted-player__tv-head {
   position: absolute;
   z-index: 2;
   top: var(--fs-pic-h);
@@ -3539,7 +3571,7 @@ html[data-television] .hosted-player__tv-clock {
 }
 
 /* The second line of the band: the controls. */
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__controls {
+html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"]) .hosted-player__controls {
   position: absolute;
   z-index: 3;
   top: auto;
@@ -3559,40 +3591,40 @@ html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .ho
   transition: none;
 }
 
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen[data-controls-visible="false"] :is(.hosted-player__tv-head, .hosted-player__controls) {
+html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"])[data-controls-visible="false"] :is(.hosted-player__tv-head, .hosted-player__controls) {
   display: none;
 }
 
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__controls > button,
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen :is(.hosted-player__audio-track, .hosted-player__quality) {
+html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"]) .hosted-player__controls > button,
+html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"]) :is(.hosted-player__audio-track, .hosted-player__quality) {
   background: var(--tv-cell2);
 }
 
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__controls > button {
+html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"]) .hosted-player__controls > button {
   padding: 0 1rem 0 0.8333rem;
   font-size: 1.125rem;
 }
 
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__controls > button:focus {
+html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"]) .hosted-player__controls > button:focus {
   background: var(--ice);
 }
 
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen :is(.hosted-player__audio-track, .hosted-player__quality) {
+html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"]) :is(.hosted-player__audio-track, .hosted-player__quality) {
   padding-left: 0.8333rem;
   font-size: 1.125rem;
 }
 
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__audio-track select,
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__quality button {
+html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"]) .hosted-player__audio-track select,
+html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"]) .hosted-player__quality button {
   font-size: 1.0833rem;
 }
 
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__audio-track svg {
+html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"]) .hosted-player__audio-track svg {
   width: 1.25rem;
   height: 1.25rem;
 }
 
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__overlay {
+html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"]) .hosted-player__overlay {
   position: absolute;
   inset: 0;
   display: grid;
@@ -3604,7 +3636,7 @@ html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .ho
   background: transparent;
 }
 
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__overlay p {
+html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"]) .hosted-player__overlay p {
   margin: 0;
   color: var(--tv-text);
   font-size: 2.3333rem;
@@ -3613,7 +3645,7 @@ html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .ho
   line-height: 1.05;
 }
 
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .hosted-player__overlay span {
+html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"]) .hosted-player__overlay span {
   display: block;
   max-width: 44ch;
   color: var(--tv-dim);
@@ -3628,25 +3660,25 @@ html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen .ho
    box, opaque, before the stream prepares: the message and its actions are
    then in the band, under the box, where nothing covers them. */
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="failed"], [data-player-state="stopping"])
+  .hosted-player:is(:fullscreen, [popover="manual"]):is([data-player-state="starting"], [data-player-state="failed"], [data-player-state="stopping"])
   .hosted-player__screen {
   background: var(--ink);
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="failed"], [data-player-state="stopping"])
+  .hosted-player:is(:fullscreen, [popover="manual"]):is([data-player-state="starting"], [data-player-state="failed"], [data-player-state="stopping"])
   video {
   background: transparent;
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen[data-player-state="failed"]
+  .hosted-player:is(:fullscreen, [popover="manual"])[data-player-state="failed"]
   .hosted-player__tv-head {
   align-content: center;
   padding-top: 0;
 }
 
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen[data-player-state="failed"] .hosted-player__controls {
+html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"])[data-player-state="failed"] .hosted-player__controls {
   top: calc(var(--fs-pic-h) / 2 + 2.5rem);
   bottom: auto;
   justify-content: center;
@@ -3656,19 +3688,19 @@ html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen[dat
 /* While the signal opens: the band's second line, the message at the left
    and its actions at the right. The message is drawn from the picture's
    box, so it is placed by the section's size (the fullscreen viewport). */
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="stopping"]) .hosted-player__controls {
+html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"]):is([data-player-state="starting"], [data-player-state="stopping"]) .hosted-player__controls {
   justify-content: flex-end;
   gap: 0.6667rem;
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="stopping"])
+  .hosted-player:is(:fullscreen, [popover="manual"]):is([data-player-state="starting"], [data-player-state="stopping"])
   .hosted-player__screen {
   overflow: visible;
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="stopping"])
+  .hosted-player:is(:fullscreen, [popover="manual"]):is([data-player-state="starting"], [data-player-state="stopping"])
   .hosted-player__overlay {
   z-index: 3;
   top: calc(100vh - var(--fs-row-b-bottom) - var(--tv-control));
@@ -3690,7 +3722,7 @@ html[data-television] .shell[data-layout="pocket"]
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="stopping"])
+  .hosted-player:is(:fullscreen, [popover="manual"]):is([data-player-state="starting"], [data-player-state="stopping"])
   .hosted-player__overlay
   p {
   flex: none;
@@ -3698,7 +3730,7 @@ html[data-television] .shell[data-layout="pocket"]
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="stopping"])
+  .hosted-player:is(:fullscreen, [popover="manual"]):is([data-player-state="starting"], [data-player-state="stopping"])
   .hosted-player__overlay
   span {
   min-width: 0;
@@ -3709,14 +3741,14 @@ html[data-television] .shell[data-layout="pocket"]
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="failed"], [data-player-state="stopping"])
+  .hosted-player:is(:fullscreen, [popover="manual"]):is([data-player-state="starting"], [data-player-state="failed"], [data-player-state="stopping"])
   .hosted-player__controls
   > :not(.hosted-player__stop, .hosted-player__recovery, .hosted-player__fullscreen) {
   display: none;
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="failed"], [data-player-state="stopping"])
+  .hosted-player:is(:fullscreen, [popover="manual"]):is([data-player-state="starting"], [data-player-state="failed"], [data-player-state="stopping"])
   .hosted-player__controls
   > :is(.hosted-player__fullscreen, .hosted-player__stop, .hosted-player__recovery) {
   width: auto;
@@ -3725,7 +3757,7 @@ html[data-television] .shell[data-layout="pocket"]
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen:is([data-player-state="starting"], [data-player-state="failed"], [data-player-state="stopping"])
+  .hosted-player:is(:fullscreen, [popover="manual"]):is([data-player-state="starting"], [data-player-state="failed"], [data-player-state="stopping"])
   .hosted-player__controls
   > button
   > span {
@@ -3735,14 +3767,14 @@ html[data-television] .shell[data-layout="pocket"]
   clip-path: none;
 }
 
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen[data-player-state="failed"] .hosted-player__controls > .hosted-player__recovery {
+html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"])[data-player-state="failed"] .hosted-player__controls > .hosted-player__recovery {
   order: 1;
 }
 
 /* Without a picture the band's meter is a calm line: no knob that looks
    like something to drag. */
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen:not([data-player-state="playing"], [data-player-state="paused"])
+  .hosted-player:is(:fullscreen, [popover="manual"]):not([data-player-state="playing"], [data-player-state="paused"])
   .hosted-player__tv-meter
   span {
   height: 0.1667rem;
@@ -3750,14 +3782,14 @@ html[data-television] .shell[data-layout="pocket"]
 }
 
 html[data-television] .shell[data-layout="pocket"]
-  .hosted-player:fullscreen:not([data-player-state="playing"], [data-player-state="paused"])
+  .hosted-player:is(:fullscreen, [popover="manual"]):not([data-player-state="playing"], [data-player-state="paused"])
   .hosted-player__tv-meter
   span::after {
   display: none;
 }
 
 /* A failure's tag reads as an error, never as the live tally. */
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen[data-player-state="failed"] .hosted-player__tv-live {
+html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"])[data-player-state="failed"] .hosted-player__tv-live {
   color: var(--tv-error);
   background: rgb(255 138 117 / 14%);
   box-shadow: inset 0 0 0 0.0833rem rgb(255 138 117 / 70%);
@@ -3772,7 +3804,7 @@ html[data-television] .shell[data-layout="pocket"] .now-playing .now-playing__st
 /* Opening the signal: a signal glyph over the message that pulses (opacity
    only, `tv-tuning` in hosted-player.css). It exists only while this state
    is drawn; nothing persistent animates. */
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen[data-player-state="starting"] .hosted-player__overlay::before {
+html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"])[data-player-state="starting"] .hosted-player__overlay::before {
   width: 1.6667rem;
   height: 1.25rem;
   flex: none;
@@ -3787,7 +3819,7 @@ html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen[dat
 
 /* A failure: the same three bars, still, in coral and cut through, so it
    pairs with the glyph above and reads as no signal at a glance. */
-html[data-television] .shell[data-layout="pocket"] .hosted-player:fullscreen[data-player-state="failed"] .hosted-player__overlay::before {
+html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen, [popover="manual"])[data-player-state="failed"] .hosted-player__overlay::before {
   width: 2.6667rem;
   height: 2rem;
   margin-bottom: 0.5rem;
