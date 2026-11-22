@@ -552,6 +552,89 @@ describe("Shield TV integrated D-pad navigation regressions", () => {
     expect(board.style.getPropertyValue("--tl-offset")).toBe("30");
   });
 
+  it("keeps focus in its row when the window moves on past the focused cell", () => {
+    document.documentElement.setAttribute("data-television", "");
+    const at = (minutes: number) =>
+      clientSchemas.isoInstant.parse(
+        new Date(WINDOW.startsAt.getTime() + minutes * 60_000).toISOString(),
+      );
+    const programme = (title: string, from: number, to: number) => ({
+      title,
+      startsAt: at(from),
+      endsAt: at(to),
+      titleTruncated: false,
+    });
+    const row = (number: number, programmes: ReturnType<typeof programme>[]) => ({
+      channel: channelFixture({
+        id: `roll-${number}`,
+        name: `Roll ${number}`,
+        group: "News",
+        number,
+      }),
+      programmes,
+      programmesTruncated: false,
+    });
+    // The first row plays: where the TV's focus fallback would go.
+    const rows: GuideWindowChannel[] = [
+      row(1, [programme("Playing", 0, 180)]),
+      row(2, [programme("Early", 0, 30), programme("Following", 30, 120)]),
+      row(3, [programme("Last", 0, 60)]),
+    ];
+    const guide = (from: number) => (
+      <ProgrammeGuide
+        television
+        rows={rows}
+        groups={GROUPS}
+        activeGroup={null}
+        window={{
+          startsAt: new Date(WINDOW.startsAt.getTime() + from * 60_000),
+          endsAt: new Date(WINDOW.endsAt.getTime() + from * 60_000),
+        }}
+        now={new Date(WINDOW.startsAt.getTime() + from * 60_000)}
+        playingChannel={rows[0]!.channel.id}
+        variantPreferences={new Map()}
+        layout="pocket"
+        mode="guide"
+        time={null}
+        view={{ current: "timeline", onToggle: () => undefined }}
+        loading={false}
+        replacing={false}
+        error={null}
+        hasMore={false}
+        loadingMore={false}
+        onSelectGroup={() => undefined}
+        onPrefetchGroup={() => undefined}
+        excludedGroups={new Set()}
+        onSetGroupExcluded={() => undefined}
+        onRestoreExcludedGroups={() => undefined}
+        onPreparePlayback={() => undefined}
+        onTune={() => undefined}
+        onTuneVariant={() => undefined}
+        onRetry={() => undefined}
+        onLoadMore={() => undefined}
+        search={null}
+        feeds={null}
+        status={null}
+      />
+    );
+    const { rerender } = render(guide(0));
+    const cell = (name: string) =>
+      screen.getByRole("button", { name: new RegExp(`^${name}, `, "u") });
+
+    // The focused cell ends where the moved window starts: focus goes on to
+    // the next cell of its own row.
+    act(() => cell("Early").focus());
+    rerender(guide(30));
+    expect(screen.queryByRole("button", { name: /^Early, /u })).toBeNull();
+    expect(cell("Following")).toHaveFocus();
+
+    // A row with no cell after the one that leaves keeps focus on its Channel.
+    act(() => cell("Last").focus());
+    rerender(guide(60));
+    expect(screen.queryByRole("button", { name: /^Last, /u })).toBeNull();
+    expect(screen.getByRole("button", { name: "Tune Roll 3" })).toHaveFocus();
+  });
+
   it("checks visibility lazily on large Guide boards without reading styles for every loaded Channel", () => {
     document.documentElement.setAttribute("data-television", "");
     render(

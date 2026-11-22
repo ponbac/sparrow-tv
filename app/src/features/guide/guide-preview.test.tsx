@@ -15,6 +15,8 @@ import { clockLabel, programmeKeys } from "./guide-window";
 afterEach(cleanup);
 
 const NOW = new Date("2026-11-22T08:04:00Z");
+// The guide window the rows were read for: it starts with LIVE.
+const WINDOW_START = new Date("2026-11-22T07:30:00Z");
 
 function programme(title: string, startsAt: string, endsAt: string): GuideProgramme {
   return {
@@ -58,6 +60,7 @@ function renderPreview(focused: number | null) {
         variantPreferences={new Map()}
         playingChannel={null}
         now={NOW}
+        windowStart={WINDOW_START}
       />
     </QueryClientProvider>,
   );
@@ -112,6 +115,7 @@ describe("GuidePreview's description", () => {
     family: GuideFamily,
     schedule: (input: ScheduleInput) => Promise<unknown>,
     focused: number | null = null,
+    windowStart = WINDOW_START,
   ) {
     const store = createPreviewStore();
     store.set({
@@ -130,6 +134,7 @@ describe("GuidePreview's description", () => {
           variantPreferences={new Map()}
           playingChannel={null}
           now={NOW}
+          windowStart={windowStart}
         />
       </QueryClientProvider>,
     );
@@ -268,6 +273,82 @@ describe("GuidePreview's description", () => {
       from: LIVE.startsAt,
       afterStartsAt: "2026-11-22T07:00:00Z",
     });
+  });
+
+  it("tells apart two Programmes in one slot whose cut titles share a prefix", async () => {
+    // The row cuts titles at 256 bytes on a character boundary: one stops at
+    // 255 bytes before a two-byte "é", the other keeps a 256th byte "x".
+    const prefix = "a".repeat(255);
+    const slot = (title: string, titleTruncated: boolean): GuideProgramme => ({
+      ...programme(title, "2026-11-22T09:00:00Z", "2026-11-22T10:00:00Z"),
+      titleTruncated,
+    });
+    const first = slot(`${prefix}x`, true);
+    const second = slot(prefix, true);
+    const family: GuideFamily = {
+      ...FAMILY,
+      variants: [
+        {
+          channel: channelFixture({ id: "svt1", name: "SVT1", group: "Sverige", number: 1 }),
+          programmes: [LIVE, first, second, LATER],
+          programmesTruncated: false,
+        },
+      ],
+    };
+    const schedule = vi.fn(async (input: ScheduleInput) => {
+      void input;
+      return {
+        ok: true,
+        value: clientSchemas.schedulePage.parse({
+          generation: 7,
+          items: [
+            { ...summary("svt1", first, "The first."), title: `${prefix}x and more` },
+            { ...summary("svt1", second, "The second."), title: `${prefix}é and more` },
+          ],
+          next: null,
+        }),
+      };
+    });
+
+    renderWith(family, schedule, 2);
+
+    const details = screen.getByRole("region", { name: `About ${prefix}…` });
+    expect(await within(details).findByText("The second.")).toBeInTheDocument();
+    expect(within(details).queryByText("The first.")).toBeNull();
+  });
+
+  it("reads a Programme that began before the guide window from the window's start", async () => {
+    // On since yesterday: read from its own start, every Programme still on
+    // then would come first.
+    const marathon = programme("Maraton", "2026-11-21T06:00:00Z", "2026-11-22T12:00:00Z");
+    const family: GuideFamily = {
+      ...FAMILY,
+      variants: [
+        {
+          channel: channelFixture({ id: "svt1", name: "SVT1", group: "Sverige", number: 1 }),
+          programmes: [marathon],
+          programmesTruncated: false,
+        },
+      ],
+    };
+    const schedule = vi.fn(async (input: ScheduleInput) => {
+      void input;
+      return {
+        ok: true,
+        value: clientSchemas.schedulePage.parse({
+          generation: 7,
+          items: [summary("svt1", marathon, "All day long.")],
+          next: null,
+        }),
+      };
+    });
+
+    renderWith(family, schedule, null, new Date("2026-11-22T08:00:00Z"));
+
+    const details = await screen.findByRole("region", { name: "About Maraton" });
+    expect(await within(details).findByText("All day long.")).toBeInTheDocument();
+    expect(schedule).toHaveBeenCalledTimes(1);
+    expect(schedule.mock.calls[0]?.[0].from).toBe("2026-11-22T08:00:00.000Z");
   });
 
   it("offers the description and what follows to a screen reader as a named region that is not live", () => {

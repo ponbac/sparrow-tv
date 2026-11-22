@@ -19,6 +19,8 @@ const TIMELINE_VIEW_MINUTES = 120;
 const TIMELINE_EDGE_SLIVER_MINUTES = 8.5;
 /** The cell focus last rested on in each timeline, where Right from the rail returns. */
 const lastTimelineCell = new WeakMap<HTMLElement, HTMLElement>();
+/** The row of each timeline's `lastTimelineCell`, kept when the cell leaves it. */
+const lastTimelineRow = new WeakMap<HTMLElement, HTMLElement>();
 const BOARD_FOCUS_MARGIN_PX = 12;
 /** A guide row's Quality Variant chips. They are out of the Tab order (`tabindex="-1"`); the TV reaches them with the D-pad. */
 const QUALITY_CHIP_SELECTOR = ".programme-guide__variants button";
@@ -1409,6 +1411,8 @@ export function scrollBoardToReveal(board: HTMLElement, target: HTMLElement): vo
 export function revealTimelineCell(board: HTMLElement, cell: HTMLElement): void {
   if (board.dataset.view !== "timeline") return;
   lastTimelineCell.set(board, cell);
+  const row = cell.closest<HTMLElement>(".programme-guide__row");
+  if (row !== null) lastTimelineRow.set(board, row);
   const start = Number(cell.dataset.start);
   const end = Number(cell.dataset.end);
   if (!Number.isFinite(start) || !Number.isFinite(end)) return;
@@ -1430,7 +1434,9 @@ export function revealTimelineCell(board: HTMLElement, cell: HTMLElement): void 
  * Keeps the TV timeline on the same stretch of time when its window moves on
  * by `minutes`: the cells' minutes, counted from the window's start, all
  * drop by as much, and so does the first minute shown. A focused cell the
- * move leaves out of view is brought back.
+ * move leaves out of view is brought back. A focused cell the move takes
+ * out of the window hands focus to its row's next cell, or to the row's
+ * Channel when none follows, never to another Channel.
  */
 export function followTimelineWindow(board: HTMLElement, minutes: number): void {
   if (board.dataset.view !== "timeline" || minutes === 0) return;
@@ -1442,7 +1448,29 @@ export function followTimelineWindow(board: HTMLElement, minutes: number): void 
     focused.classList.contains("programme-guide__programme")
   ) {
     revealTimelineCell(board, focused);
+    return;
   }
+  const last = lastTimelineCell.get(board);
+  const row = lastTimelineRow.get(board);
+  // Focus was on a cell the move removed: it rests on nothing now.
+  if (
+    (focused !== null && focused !== document.body) ||
+    last === undefined ||
+    last.isConnected ||
+    row === undefined ||
+    !row.isConnected
+  ) {
+    return;
+  }
+  // The removed cell's end, in the moved window's minutes.
+  const end = Number(last.dataset.end) - minutes;
+  const next =
+    visibleFocusables(row, ".programme-guide__programme").find(
+      (cell) => Number(cell.dataset.start) >= end,
+    ) ?? row.querySelector<HTMLElement>(".programme-guide__channel");
+  if (next === null || !isVisibleFocusable(next)) return;
+  next.focus({ preventScroll: true });
+  scrollBoardToReveal(board, next);
 }
 
 /** Shows the timeline from `offset`, kept within the window. */

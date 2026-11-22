@@ -411,6 +411,7 @@ export const ProgrammeGuide = memo(function ProgrammeGuide({
           variantPreferences={variantPreferences}
           playingChannel={playingChannel}
           now={now}
+          windowStart={guideWindow.startsAt}
         />
       )}
 
