@@ -104,6 +104,25 @@ describe("ChannelIcon on a TV", () => {
     expect(image).not.toHaveAttribute("crossorigin");
   });
 
+  it("takes a square cross-origin icon for an app tile, by its size alone", () => {
+    // The plate is filled by a square icon (`television.css`); nothing but
+    // the image's natural size decides it.
+    document.documentElement.setAttribute("data-television", "");
+    const { container } = render(
+      <ChannelIcon icon="https://logos.example/tv4.png" number={4} />,
+    );
+    const image = container.querySelector("img") as HTMLImageElement;
+    Object.defineProperty(image, "naturalWidth", { value: 304 });
+    Object.defineProperty(image, "naturalHeight", { value: 304 });
+    const createElement = vi.spyOn(document, "createElement");
+
+    fireEvent.load(image);
+
+    expect(tile(container)).toHaveAttribute("data-shape", "square");
+    expect(tile(container)).not.toHaveAttribute("data-fit");
+    expect(createElement).not.toHaveBeenCalledWith("canvas");
+  });
+
   it("reads the pixels of an icon the page holds itself", () => {
     document.documentElement.setAttribute("data-television", "");
     const { container } = render(
@@ -123,9 +142,17 @@ describe("ChannelIcon on a TV", () => {
 describe("iconShape", () => {
   it("tells square tiles from wide and tall wordmarks", () => {
     expect(iconShape(304, 304)).toBe("square");
+    expect(iconShape(512, 513)).toBe("square");
     expect(iconShape(512, 396)).toBe("wide");
-    expect(iconShape(332, 400)).toBe("square");
     expect(iconShape(512, 757)).toBe("tall");
     expect(iconShape(0, 0)).toBeNull();
+  });
+
+  it("shows a nearly square full-bleed logo whole rather than as a tile", () => {
+    // Covering the plate would cut a badge drawn to its canvas's edge.
+    expect(iconShape(149, 139)).toBe("wide");
+    expect(iconShape(111, 95)).toBe("wide");
+    expect(iconShape(332, 400)).toBe("tall");
+    expect(iconShape(168, 190)).toBe("tall");
   });
 });

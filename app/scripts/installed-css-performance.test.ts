@@ -401,6 +401,62 @@ describe("installed app repaint contract", () => {
     );
   });
 
+  it("fills a Now cell's elapsed time from its left edge, under the Channel's tile", async () => {
+    // A cell reads as one band, watched up to now and then the rest. A fill
+    // that starts after the tile's column reads as normal, watched, normal.
+    const tvStyles = requireStylesheet(
+      new Map(await installedStylesheets()),
+      "features/stage/television.css",
+    );
+    const cell = 'html[data-television] .shell[data-layout="pocket"]';
+    const offset: string[] = [];
+
+    tvStyles.walkRules((rule) => {
+      if (!rule.selectors.some((selector) => /\.programme-guide__elapsed\s*$/u.test(selector))) return;
+      const declarations = declarationsByProperty(rule);
+      const inset = declarations.get("inset");
+      if (
+        declarations.has("left") ||
+        (inset !== undefined && inset.split(" ").at(-1) !== "0") ||
+        [...declarations.values()].some((value) => value.includes("--grid-lead"))
+      ) {
+        offset.push(rule.selector.replace(/\s+/gu, " "));
+      }
+    });
+
+    expect(offset).toEqual([]);
+    expect(declaration(tvStyles, `${cell} .programme-guide__elapsed`, "inset")).toBe("0 auto 0 0");
+    expect(declaration(tvStyles, `${cell} .programme-guide__elapsed`, "width")).toBe("var(--progress)");
+    expect(
+      Number(
+        declaration(
+          tvStyles,
+          `${cell} .programme-guide__row[data-body="list"] > .programme-guide__icon`,
+          "z-index",
+        ),
+      ),
+    ).toBeGreaterThan(Number(declaration(tvStyles, `${cell} .programme-guide__elapsed`, "z-index")));
+  });
+
+  it("lets a square Channel Icon cover its plate, its own edge cut away by the plate", async () => {
+    // A cross-origin app tile is never read, so its frame cannot be found;
+    // zoomed past the plate's edge, the tile becomes the plate.
+    const tvStyles = requireStylesheet(
+      new Map(await installedStylesheets()),
+      "features/stage/television.css",
+    );
+    const square = 'html[data-television] .channel-icon[data-shape="square"]';
+    const zoom = Number(declaration(tvStyles, square, "--tile-zoom"));
+
+    expect(zoom).toBeGreaterThanOrEqual(1.12);
+    expect(zoom).toBeLessThanOrEqual(1.2);
+    expect(declaration(tvStyles, `${square} .channel-icon__image`, "object-fit")).toBe("cover");
+    expect(declaration(tvStyles, `${square} .channel-icon__image`, "width")).toBe(
+      "calc(100% * var(--tile-zoom))",
+    );
+    expect(declaration(tvStyles, `${square} .channel-icon__image`, "clip-path")).toBeUndefined();
+  });
+
   it("never transitions or animates the picture's box", async () => {
     const moving: string[] = [];
 

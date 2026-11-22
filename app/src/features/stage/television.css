@@ -148,19 +148,29 @@ html[data-television] .channel-icon[data-shape="tall"] .channel-icon__image {
   padding: 8% 24%;
 }
 
-/* A square icon fills the light plate from edge to edge: its own ground
-   becomes the plate, and the hairline frame many tiles carry at their rim
-   is cut away. */
+/* A square icon (square to within a few percent, `icon-shape.ts`) is taken
+   for an app-style tile, and the tile becomes the plate: the image covers
+   the whole 4:3 plate, zoomed (`--tile-zoom`) so the tile's own rounded
+   edge and the frame line at its rim lie outside the plate's rounded clip.
+   Only the plate clips it, so no inner edge can show. About a sixth of the
+   tile's height goes at its top and at its bottom, where a tile keeps its
+   padding. Its pixels are never read, so a round logo on a transparent
+   square canvas covers the light plate too. */
 html[data-television] .channel-icon[data-shape="square"] {
+  --tile-zoom: 1.15;
   background: var(--tv-plate-light);
 }
 
 html[data-television] .channel-icon[data-shape="square"] .channel-icon__image {
-  inset: -4% auto auto 9.5%;
-  width: 81%;
-  height: 108%;
+  inset: auto;
+  top: calc(50% - 50% * 4 / 3 * var(--tile-zoom));
+  left: calc(50% - 50% * var(--tile-zoom));
+  width: calc(100% * var(--tile-zoom));
+  max-width: none;
+  height: calc(100% * 4 / 3 * var(--tile-zoom));
+  max-height: none;
   padding: 0;
-  clip-path: inset(4.5% round 18%);
+  object-fit: cover;
 }
 
 /* Where its pixels can be read, an icon is fitted by its ink instead: the
@@ -1617,19 +1627,16 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__row[data-bo
   left: calc((var(--grid-lead) - var(--icon-w)) / 2 + 0.0833rem);
 }
 
-/* Elapsed time fills the words' part of the cell, from the edge of the
-   tile's column: nothing peeks out beside the tile. */
-html[data-television] .shell[data-layout="pocket"] .programme-guide__row[data-body="list"] > .programme-guide__elapsed {
-  inset: 0 0 0 var(--grid-lead);
-  width: auto;
-  background: linear-gradient(90deg, var(--tv-cell2) var(--progress), transparent 0);
-}
-
+/* Elapsed time fills the whole cell from its left edge, as in every cell
+   (above), so a cell reads as one band: watched up to now, then the rest.
+   The tile lies over the fill, opaque, so the fill's edge never shows
+   through or beside it. On an ice focus the see-through plate is laid on
+   the deeper ice, so it stays one tone wherever the fill's edge falls. */
 html[data-television]
   .shell[data-layout="pocket"]
   .programme-guide__row[data-body="list"]:has(.programme-guide__channel:focus)
-  > .programme-guide__elapsed {
-  background: linear-gradient(90deg, var(--ice-elapsed) var(--progress), transparent 0);
+  > .programme-guide__icon:not([data-shape="square"], [data-ground]) {
+  background: linear-gradient(var(--tv-plate-on-ice), var(--tv-plate-on-ice)) var(--ice-elapsed);
 }
 
 html[data-television] .shell[data-layout="pocket"] .programme-guide__name-number {
