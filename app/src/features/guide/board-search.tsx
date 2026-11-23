@@ -1,7 +1,7 @@
 import { Autocomplete } from "@base-ui/react/autocomplete";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { RotateCcw, Search, X } from "lucide-react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useInsertionEffect, useMemo, useRef, useState } from "react";
 import type {
   CatalogGeneration,
   ChannelSummary,
@@ -262,6 +262,14 @@ export function BoardSearch({
     clear();
   };
   const popupOpen = open && requestTerm.length > 0 && !deskOpen;
+  // The TV dims the Guide under open results by a root attribute, not by
+  // `html:has(input[aria-expanded])`, which restyles the page on every move.
+  // Set before layout effects, as the input's own attribute was.
+  useInsertionEffect(() => {
+    if (!popupOpen) return;
+    document.documentElement.setAttribute("data-search-expanded", "");
+    return () => document.documentElement.removeAttribute("data-search-expanded");
+  }, [popupOpen]);
 
   return (
     <>

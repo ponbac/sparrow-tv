@@ -26,7 +26,7 @@
 
 /* The picture and the sheets under it read their sizes from the root, so the
    two cannot drift apart. */
-:root:has(.shell[data-layout="pocket"]) {
+:root[data-shell][data-shell-layout="pocket"] {
   --pocket-band-w: 9.375rem;
   --pocket-band-h: 5.25rem;
   --pocket-banner-h: 0rem;
@@ -54,15 +54,15 @@
   --pocket-picture-h: 0rem;
 }
 
-:root:has(.shell[data-layout="pocket"] .shell__retained) {
+:root[data-shell][data-shell-layout="pocket"][data-shell-retained] {
   --pocket-banner-h: 2rem;
 }
 
-:root:has(.shell[data-layout="pocket"][data-playing="true"][data-dock="true"]) {
+:root[data-shell][data-shell-layout="pocket"][data-shell-playing="true"][data-shell-dock="true"] {
   --pocket-picture-h: var(--pocket-pinned-h, var(--pocket-band-h));
 }
 
-:root:has(.shell[data-layout="pocket"][data-playing="true"][data-dock="false"]) {
+:root[data-shell][data-shell-layout="pocket"][data-shell-playing="true"][data-shell-dock="false"] {
   --pocket-picture-h: var(--pocket-pinned-h, var(--pocket-monitor-h));
 }
 
@@ -1122,12 +1122,12 @@
 
   /* A row of the search desk has no room for a Channel's name and its group
      on one line: the group goes under the name, in line with it. */
-  :root:has(.shell[data-layout="pocket"]) .board-search-desk__pick {
+  :root[data-shell][data-shell-layout="pocket"] .board-search-desk__pick {
     flex-wrap: wrap;
     row-gap: 0.125rem;
   }
 
-  :root:has(.shell[data-layout="pocket"]) .board-search-desk__pick small {
+  :root[data-shell][data-shell-layout="pocket"] .board-search-desk__pick small {
     flex: 0 0 100%;
     margin-left: 0;
     padding-left: 3.25rem;
@@ -1136,7 +1136,7 @@
 
 /* The More menu keeps to the room under the picture; where that is less
    than it needs, it scrolls. */
-:root:has(.shell[data-layout="pocket"]) .hosted-player__menu {
+:root[data-shell][data-shell-layout="pocket"] .hosted-player__menu {
   max-height: var(--available-height);
   overflow-y: auto;
 }
@@ -1144,12 +1144,12 @@
 /* Search results stack the name over its detail: the list is never wide
    enough for both on one line. A detail too long for its line runs on to
    the next, so the times at its end are never cut. */
-:root:has(.shell[data-layout="pocket"]) .board-search__result {
+:root[data-shell][data-shell-layout="pocket"] .board-search__result {
   grid-template-columns: 2.25rem minmax(0, 1fr);
   gap: 0.125rem 0.5rem;
 }
 
-:root:has(.shell[data-layout="pocket"]) .board-search__result > small {
+:root[data-shell][data-shell-layout="pocket"] .board-search__result > small {
   max-width: none;
   grid-column: 2;
   white-space: normal;
@@ -1370,7 +1370,7 @@
 }
 
 /* The search results run the width of the window, not of the field. */
-:root:has(.shell[data-layout="pocket"]:where([data-pocket="stacked"])) .board-search__positioner {
+:root[data-shell][data-shell-layout="pocket"]:where([data-shell-pocket="stacked"]) .board-search__positioner {
   width: calc(100vw - 1.25rem);
   max-width: 35rem;
 }
@@ -1378,18 +1378,18 @@
 /* Sheets open from the guide, under the picture: across a narrow window,
    as a panel at the right edge of a wide one. */
 
-:root:has(.shell[data-layout="pocket"]:where([data-pocket="stacked"])) .feeds-dialog__backdrop,
-:root:has(.shell[data-layout="pocket"]:where([data-pocket="stacked"])) .group-roster__backdrop,
-:root:has(.shell[data-layout="pocket"]:where([data-pocket="stacked"])) .board-search-desk__backdrop {
+:root[data-shell][data-shell-layout="pocket"]:where([data-shell-pocket="stacked"]) .feeds-dialog__backdrop,
+:root[data-shell][data-shell-layout="pocket"]:where([data-shell-pocket="stacked"]) .group-roster__backdrop,
+:root[data-shell][data-shell-layout="pocket"]:where([data-shell-pocket="stacked"]) .board-search-desk__backdrop {
   top: calc(
     var(--bar-h) + var(--pocket-banner-h) + var(--pocket-picture-h)
   );
   left: 0;
 }
 
-:root:has(.shell[data-layout="pocket"]:where([data-pocket="stacked"])) .feeds-dialog__popup,
-:root:has(.shell[data-layout="pocket"]:where([data-pocket="stacked"])) .group-roster__popup,
-:root:has(.shell[data-layout="pocket"]:where([data-pocket="stacked"])) .board-search-desk__popup {
+:root[data-shell][data-shell-layout="pocket"]:where([data-shell-pocket="stacked"]) .feeds-dialog__popup,
+:root[data-shell][data-shell-layout="pocket"]:where([data-shell-pocket="stacked"]) .group-roster__popup,
+:root[data-shell][data-shell-layout="pocket"]:where([data-shell-pocket="stacked"]) .board-search-desk__popup {
   top: calc(
     var(--bar-h) + var(--pocket-banner-h) + var(--pocket-picture-h)
   );

@@ -226,7 +226,7 @@ html[data-television] .channel-icon[data-icon="loaded"]:is([data-shape="square"]
 }
 
 /* On an ice focus fill the navy plate turns to ink seen through. */
-html[data-television]:has(.shell[data-layout="pocket"])
+html[data-television][data-shell][data-shell-layout="pocket"]
   :is(
     .programme-guide__row:has(.programme-guide__channel:focus),
     .programme-guide__channel:focus,
@@ -239,7 +239,7 @@ html[data-television]:has(.shell[data-layout="pocket"])
 }
 
 /* Every quality tag: one size, one box, the chosen one filled. */
-html[data-television]:has(.shell[data-layout="pocket"])
+html[data-television][data-shell][data-shell-layout="pocket"]
   :is(
     .programme-guide__name small,
     .programme-guide__channel > small,
@@ -267,7 +267,7 @@ html[data-television]:has(.shell[data-layout="pocket"])
   text-decoration: none;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"])
+html[data-television][data-shell][data-shell-layout="pocket"]
   :is(
     .programme-guide__name small,
     .programme-guide__channel > small,
@@ -1836,7 +1836,7 @@ html[data-television]
 }
 
 /* Quality tags on an ice fill: the same boxes in the focus ink. */
-html[data-television]:has(.shell[data-layout="pocket"])
+html[data-television][data-shell][data-shell-layout="pocket"]
   :is(
     .programme-guide__row:has(.programme-guide__channel:focus),
     .programme-guide__channel:focus,
@@ -1849,7 +1849,7 @@ html[data-television]:has(.shell[data-layout="pocket"])
   box-shadow: inset 0 0 0 0.0625rem rgb(6 18 28 / 30%);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"])
+html[data-television][data-shell][data-shell-layout="pocket"]
   :is(
     .programme-guide__row:has(.programme-guide__channel:focus),
     .programme-guide__channel:focus,
@@ -1870,7 +1870,7 @@ html[data-television]:has(.shell[data-layout="pocket"])
 
 /* A focused quality chip: the ice fill on the chip, and an ice rim on the
    cell it belongs to, so the D-pad's place in the row stays plain. */
-html[data-television]:has(.shell[data-layout="pocket"])
+html[data-television][data-shell][data-shell-layout="pocket"]
   .programme-guide__row
   .programme-guide__variants
   button:focus {
@@ -2450,7 +2450,7 @@ html[data-television] .shell[data-layout="pocket"] .programme-guide__board[data-
    dimmed guide, with one focus mark at a time. */
 /* One even veil over the whole Guide, the band's plate and panel included;
    only the search field stays above it. */
-html[data-television]:has(.board-search input[aria-expanded="true"])
+html[data-television][data-shell][data-search-expanded]
   .shell[data-layout="pocket"]
   .programme-guide::after {
   position: absolute;
@@ -2463,33 +2463,33 @@ html[data-television]:has(.board-search input[aria-expanded="true"])
 
 /* The native picture lies above the page there anyway; the page draws
    nothing over the docked picture's box. */
-html[data-television]:has(.board-search input[aria-expanded="true"])
+html[data-television][data-shell][data-search-expanded]
   .shell[data-layout="pocket"][data-playing="true"]
   .programme-guide::after {
   clip-path: var(--tv-around-dock);
 }
 
-html[data-television]:has(.board-search input[aria-expanded="true"])
+html[data-television][data-shell][data-search-expanded]
   .shell[data-layout="pocket"]
   .programme-guide__toolbar
   > :not(.board-search) {
   opacity: 0.28;
 }
 
-html[data-television]:has(.board-search input[aria-expanded="true"])
+html[data-television][data-shell][data-search-expanded]
   .shell[data-layout="pocket"]
   .programme-guide__body {
   z-index: 0;
 }
 
 /* Exactly as wide as the field it drops from, both edges aligned. */
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search__positioner {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search__positioner {
   z-index: 60;
   width: var(--anchor-width, 36rem);
   max-width: none;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search__popup {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search__popup {
   max-height: min(var(--available-height, 30rem), 30rem);
   padding: 0.3333rem;
   overflow: auto;
@@ -2501,13 +2501,13 @@ html[data-television]:has(.shell[data-layout="pocket"]) .board-search__popup {
   scrollbar-width: none;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search__results {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search__results {
   display: flex;
   flex-direction: column;
   gap: 0.0833rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search__result {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search__result {
   display: grid;
   min-height: 0;
   height: 2.3333rem;
@@ -2522,20 +2522,20 @@ html[data-television]:has(.shell[data-layout="pocket"]) .board-search__result {
   font-size: 0.8333rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search__result[data-highlighted] {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search__result[data-highlighted] {
   outline: none;
   background: none;
   box-shadow: none;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search__result:focus {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search__result:focus {
   color: var(--on-ice);
   outline: none;
   background: var(--ice);
   box-shadow: none;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search__number {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search__number {
   display: grid;
   place-items: center;
   color: var(--tv-mute);
@@ -2544,39 +2544,39 @@ html[data-television]:has(.shell[data-layout="pocket"]) .board-search__number {
   font-weight: 300;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search__number svg {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search__number svg {
   width: 0.875rem;
   height: 0.875rem;
 }
 
 /* A result's tile, and its number as a small label before the name. */
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search__icon {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search__icon {
   --icon-w: 2.3333rem;
   --icon-h: 1.75rem;
   --icon-radius: 0.25rem;
   --icon-number: 0.875rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search__channel-number {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search__channel-number {
   flex: none;
   color: var(--tv-dim);
   font-size: 0.8333rem;
   font-weight: 600;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"])
+html[data-television][data-shell][data-shell-layout="pocket"]
   :is(.board-search__result, .board-search-desk__pick):has(.channel-icon:is([data-icon="none"], [data-icon="failed"]))
   .board-search__channel-number {
   display: none;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search__qualities {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search__qualities {
   display: inline-flex;
   flex: none;
   gap: 0.1667rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search__name {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search__name {
   display: flex;
   min-width: 0;
   align-items: center;
@@ -2585,7 +2585,7 @@ html[data-television]:has(.shell[data-layout="pocket"]) .board-search__name {
   white-space: nowrap;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search__name strong {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search__name strong {
   min-width: 0;
   overflow: hidden;
   font-size: 0.875rem;
@@ -2594,7 +2594,7 @@ html[data-television]:has(.shell[data-layout="pocket"]) .board-search__name stro
   text-overflow: ellipsis;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search__result > small {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search__result > small {
   grid-column: 3;
   max-width: 14rem;
   overflow: hidden;
@@ -2605,11 +2605,11 @@ html[data-television]:has(.shell[data-layout="pocket"]) .board-search__result > 
   white-space: nowrap;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search__result:focus :is(.board-search__number, .board-search__channel-number, small) {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search__result:focus :is(.board-search__number, .board-search__channel-number, small) {
   color: var(--on-ice-dim);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search__state {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search__state {
   margin: 0;
   padding: 0.5rem 0.75rem;
   color: var(--tv-dim);
@@ -2620,7 +2620,7 @@ html[data-television]:has(.shell[data-layout="pocket"]) .board-search__state {
    over the dimmed Guide. They are one system: one width, one header, one
    pill search field, rows of one height and one type scale, and a fade at
    the bottom edge while there is more to scroll to. */
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__backdrop, .group-roster__backdrop, .feeds-dialog__backdrop) {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__backdrop, .group-roster__backdrop, .feeds-dialog__backdrop) {
   inset: 0;
   width: auto;
   background: rgb(5 9 16 / 70%);
@@ -2628,11 +2628,11 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
 
 /* A backdrop spans the window from its top left, as the Guide does: it
    leaves out the docked picture's box. */
-html[data-television]:has(.shell[data-layout="pocket"][data-playing="true"]) :is(.board-search-desk__backdrop, .group-roster__backdrop, .feeds-dialog__backdrop) {
+html[data-television][data-shell][data-shell-layout="pocket"][data-shell-playing="true"] :is(.board-search-desk__backdrop, .group-roster__backdrop, .feeds-dialog__backdrop) {
   clip-path: var(--tv-around-dock);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__popup, .group-roster__popup, .feeds-dialog__popup) {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__popup, .group-roster__popup, .feeds-dialog__popup) {
   top: 0;
   right: 0;
   bottom: 0;
@@ -2645,7 +2645,7 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
   box-shadow: -1.25rem 0 2.5rem rgb(0 0 0 / 40%);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__header, .group-roster__header, .feeds-dialog__header) {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__header, .group-roster__header, .feeds-dialog__header) {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -2655,7 +2655,7 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
   background: none;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__header, .group-roster__header, .feeds-dialog__header) h2 {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__header, .group-roster__header, .feeds-dialog__header) h2 {
   margin: 0;
   color: var(--tv-text);
   font-size: 1.6667rem;
@@ -2664,7 +2664,7 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
   line-height: 1.05;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__header, .group-roster__header, .feeds-dialog__header) p {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__header, .group-roster__header, .feeds-dialog__header) p {
   display: block;
   max-width: none;
   margin: 0.3333rem 0 0;
@@ -2673,7 +2673,7 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
   line-height: 1.4;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__close, .group-roster__close, .feeds-dialog__close) {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__close, .group-roster__close, .feeds-dialog__close) {
   display: grid;
   width: 2rem;
   min-width: 0;
@@ -2688,19 +2688,19 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
   background: var(--tv-cell);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__close, .group-roster__close, .feeds-dialog__close):focus {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__close, .group-roster__close, .feeds-dialog__close):focus {
   color: var(--on-ice);
   outline: none;
   background: var(--ice);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__close, .group-roster__close, .feeds-dialog__close) svg {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__close, .group-roster__close, .feeds-dialog__close) svg {
   width: 0.9167rem;
   height: 0.9167rem;
 }
 
 /* The search row: a pill field, then the tally. */
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__toolbar, .group-roster__toolbar) {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__toolbar, .group-roster__toolbar) {
   display: flex;
   align-items: center;
   gap: 0.75rem;
@@ -2708,7 +2708,7 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
   border: 0;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__search, .group-roster__search) {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__search, .group-roster__search) {
   position: relative;
   display: flex;
   min-width: 0;
@@ -2723,11 +2723,11 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
   box-shadow: inset 0 0 0 0.0833rem var(--tv-faint);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__search, .group-roster__search):has(input:focus) {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__search, .group-roster__search):has(input:focus) {
   box-shadow: inset 0 0 0 0.125rem var(--ice);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__search, .group-roster__search) svg {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__search, .group-roster__search) svg {
   position: static;
   width: 0.9167rem;
   height: 0.9167rem;
@@ -2735,7 +2735,7 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
   color: var(--tv-dim);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__search, .group-roster__search) input {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__search, .group-roster__search) input {
   width: auto;
   min-width: 0;
   height: 100%;
@@ -2748,11 +2748,11 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
   font-size: 0.875rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__search, .group-roster__search) input::placeholder {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__search, .group-roster__search) input::placeholder {
   color: var(--tv-mute);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__tally, .group-roster__tally) {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__tally, .group-roster__tally) {
   flex: none;
   margin: 0;
   color: var(--tv-dim);
@@ -2760,13 +2760,13 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
   white-space: nowrap;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__tally, .group-roster__tally) b {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__tally, .group-roster__tally) b {
   color: var(--tv-text);
   font-weight: 600;
 }
 
 /* The scrolling part of every sheet, with the same edges. */
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__list, .group-roster__list, .feeds-dialog__content) {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__list, .group-roster__list, .feeds-dialog__content) {
   display: flex;
   min-height: 0;
   flex: 1 1 auto;
@@ -2782,7 +2782,7 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
 
 /* While there is more below, the last rows fade into the sheet; at the end
    the fade lies over empty room. */
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__list, .group-roster__list, .feeds-dialog__content)::after {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__list, .group-roster__list, .feeds-dialog__content)::after {
   position: sticky;
   bottom: 0;
   display: block;
@@ -2796,21 +2796,21 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
 
 /* Choose groups keeps its compact sheet: shorter rows, the smaller helper
    line and the shorter fade, so the last group clears the fade. */
-html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__header p {
+html[data-television][data-shell][data-shell-layout="pocket"] .group-roster__header p {
   font-size: 0.7083rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__list {
+html[data-television][data-shell][data-shell-layout="pocket"] .group-roster__list {
   scroll-padding-bottom: 3rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__list::after {
+html[data-television][data-shell][data-shell-layout="pocket"] .group-roster__list::after {
   min-height: 2.5rem;
   background: linear-gradient(180deg, rgb(15 24 40 / 0%), var(--tv-panel) 85%);
 }
 
 /* Rows: one height, one radius, one fill. */
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__row, .group-roster__row) {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__row, .group-roster__row) {
   display: flex;
   min-height: 0;
   height: 2.75rem;
@@ -2825,11 +2825,11 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
   content-visibility: visible;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__row {
+html[data-television][data-shell][data-shell-layout="pocket"] .group-roster__row {
   height: 2.5rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__pick, .group-roster__pick) {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__pick, .group-roster__pick) {
   display: flex;
   width: 100%;
   min-width: 0;
@@ -2848,18 +2848,18 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
   text-align: left;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__pick {
+html[data-television][data-shell][data-shell-layout="pocket"] .group-roster__pick {
   padding-left: 0.875rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__pick .board-search__number {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search-desk__pick .board-search__number {
   width: 2.5rem;
   flex: none;
 }
 
 /* A hit's plate is the Guide's own size, so the logo reads as it does in
    the grid. */
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__pick .board-search__icon {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search-desk__pick .board-search__icon {
   --icon-w: 3rem;
   --icon-h: 2.25rem;
   margin: 0 0.1667rem 0 0.4167rem;
@@ -2867,13 +2867,13 @@ html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__pick
 
 /* A hit's words: the name line, and under it, quietly, what is on now
    (when the Guide has read that row). */
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__row {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search-desk__row {
   height: 3.25rem;
 }
 
 /* Under the last hit, a quiet line says the list is whole and how to
    search again. */
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__end {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search-desk__end {
   flex: none;
   margin: 0.5rem 0 0;
   padding: 0 0.4167rem;
@@ -2882,7 +2882,7 @@ html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__end 
   line-height: 1.4;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__hit {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search-desk__hit {
   display: flex;
   min-width: 0;
   flex: 1 1 auto;
@@ -2891,14 +2891,14 @@ html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__hit 
   gap: 0.3333rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__hit-name {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search-desk__hit-name {
   display: flex;
   min-width: 0;
   align-items: center;
   gap: 0.5rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__on-now {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search-desk__on-now {
   display: flex;
   min-width: 0;
   align-items: baseline;
@@ -2909,27 +2909,27 @@ html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__on-n
   white-space: nowrap;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__on-now-title {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search-desk__on-now-title {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__on-now-left {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search-desk__on-now-left {
   flex: none;
   color: var(--tv-mute);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__on-now-left::before {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search-desk__on-now-left::before {
   margin-right: 0.5rem;
   content: "·";
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__pick:focus :is(.board-search-desk__on-now, .board-search-desk__on-now-left) {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search-desk__pick:focus :is(.board-search-desk__on-now, .board-search-desk__on-now-left) {
   color: var(--on-ice-dim);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__pick, .group-roster__pick) strong {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__pick, .group-roster__pick) strong {
   min-width: 0;
   flex: 0 1 auto;
   overflow: hidden;
@@ -2941,11 +2941,11 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
   white-space: nowrap;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__pick strong {
+html[data-television][data-shell][data-shell-layout="pocket"] .group-roster__pick strong {
   flex: 1 1 auto;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__pick small, .group-roster__pick em) {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__pick small, .group-roster__pick em) {
   flex: none;
   margin-left: auto;
   padding-left: 0.5rem;
@@ -2958,29 +2958,29 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
   white-space: nowrap;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__pick, .group-roster__pick):focus {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__pick, .group-roster__pick):focus {
   color: var(--on-ice);
   outline: none;
   background: var(--ice);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__pick:focus :is(.board-search__number, .board-search__channel-number, small),
-html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__pick:focus em {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search-desk__pick:focus :is(.board-search__number, .board-search__channel-number, small),
+html[data-television][data-shell][data-shell-layout="pocket"] .group-roster__pick:focus em {
   color: var(--on-ice-dim);
 }
 
 /* The Channel Group shown in the Guide: an ice edge, as the Guide's lane
    marks it. */
-html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__row[data-active="true"] {
+html[data-television][data-shell][data-shell-layout="pocket"] .group-roster__row[data-active="true"] {
   box-shadow: inset 0.1667rem 0 var(--ice);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__row[data-excluded="true"] .group-roster__pick :is(strong, em) {
+html[data-television][data-shell][data-shell-layout="pocket"] .group-roster__row[data-excluded="true"] .group-roster__pick :is(strong, em) {
   color: var(--tv-mute);
 }
 
 /* Hide and Show: a real button, an eye and its word. */
-html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__exclude {
+html[data-television][data-shell][data-shell-layout="pocket"] .group-roster__exclude {
   display: inline-flex;
   min-width: 0;
   height: 1.8333rem;
@@ -2999,25 +2999,25 @@ html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__exclude {
   line-height: 1;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__exclude > svg {
+html[data-television][data-shell][data-shell-layout="pocket"] .group-roster__exclude > svg {
   display: block;
   width: 0.8333rem;
   height: 0.8333rem;
   flex: none;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__exclude[aria-pressed="true"] {
+html[data-television][data-shell][data-shell-layout="pocket"] .group-roster__exclude[aria-pressed="true"] {
   color: var(--tv-text);
   background: var(--tv-wash);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .group-roster__exclude:focus {
+html[data-television][data-shell][data-shell-layout="pocket"] .group-roster__exclude:focus {
   color: var(--on-ice);
   outline: none;
   background: var(--ice);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__more, .board-search-desk__include, .group-roster__restore) {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__more, .board-search-desk__include, .group-roster__restore) {
   height: 1.8333rem;
   min-height: 0;
   flex: none;
@@ -3030,18 +3030,18 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
   font-weight: 600;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__more {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search-desk__more {
   align-self: flex-start;
   margin-top: 0.3333rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__more, .board-search-desk__include, .group-roster__restore):focus {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__more, .board-search-desk__include, .group-roster__restore):focus {
   color: var(--on-ice);
   outline: none;
   background: var(--ice);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__state, .board-search-desk__hidden, .group-roster__empty) {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.board-search-desk__state, .board-search-desk__hidden, .group-roster__empty) {
   margin: 0;
   padding: 0.5rem 0;
   color: var(--tv-dim);
@@ -3049,28 +3049,28 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.board-search-desk__
   font-weight: 500;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .board-search-desk__hidden {
+html[data-television][data-shell][data-shell-layout="pocket"] .board-search-desk__hidden {
   padding: 0;
   font-size: 0.6667rem;
 }
 
 /* Sources: its sections take the sheet's type scale. */
-html[data-television]:has(.shell[data-layout="pocket"]) .feeds-dialog__content {
+html[data-television][data-shell][data-shell-layout="pocket"] .feeds-dialog__content {
   gap: 0;
   font-size: 0.8333rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.source-desk, .installed-settings) {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.source-desk, .installed-settings) {
   padding: 0 0 1rem;
   border: 0;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .installed-settings {
+html[data-television][data-shell][data-shell-layout="pocket"] .installed-settings {
   padding-top: 1rem;
   border-top: 0.0417rem solid var(--tv-faint);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.source-desk__heading, .installed-settings__heading) {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.source-desk__heading, .installed-settings__heading) {
   display: flex;
   min-height: 2rem;
   align-items: center;
@@ -3079,7 +3079,7 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.source-desk__headin
   margin: 0 0 0.5rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.source-desk, .installed-settings) h2 {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.source-desk, .installed-settings) h2 {
   margin: 0;
   color: var(--tv-text);
   font-size: 1.1667rem;
@@ -3088,7 +3088,7 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.source-desk, .insta
   line-height: 1.2;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__refresh {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-desk__refresh {
   display: inline-flex;
   height: 2rem;
   align-items: center;
@@ -3098,45 +3098,45 @@ html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__refresh {
   font-weight: 600;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .source-desk button svg {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-desk button svg {
   width: 0.8333rem;
   height: 0.8333rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__grid {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-desk__grid {
   gap: 0.1667rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .source-card {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-card {
   padding: 0.6667rem 0.875rem 0.75rem;
   border-radius: 0.3333rem;
   background: var(--tv-cell);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .source-card__head {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-card__head {
   align-items: center;
   gap: 0.25rem 0.75rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .source-card h3 {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-card h3 {
   font-size: 1rem;
   font-stretch: 84%;
   font-weight: 650;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .source-card__state {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-card__state {
   gap: 0.375rem;
   font-size: 0.75rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .source-card__state::before {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-card__state::before {
   width: 0.3333rem;
   height: 0.3333rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .source-card p,
-html[data-television]:has(.shell[data-layout="pocket"]) .refresh-feedback p,
-html[data-television]:has(.shell[data-layout="pocket"]) .installed-settings__brief {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-card p,
+html[data-television][data-shell][data-shell-layout="pocket"] .refresh-feedback p,
+html[data-television][data-shell][data-shell-layout="pocket"] .installed-settings__brief {
   margin: 0.25rem 0 0;
   color: var(--tv-dim);
   font-size: 0.8333rem;
@@ -3145,11 +3145,11 @@ html[data-television]:has(.shell[data-layout="pocket"]) .installed-settings__bri
 
 /* A card says its state once: a sentence that only restates the label is
    left out, so the sheet's own action shows without scrolling. */
-html[data-television]:has(.shell[data-layout="pocket"]) .source-card p[data-restates-label] {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-card p[data-restates-label] {
   display: none;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.source-card time, .source-card code) {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.source-card time, .source-card code) {
   margin-top: 0.1667rem;
   font-size: 0.7917rem;
   line-height: 1.4;
@@ -3157,46 +3157,46 @@ html[data-television]:has(.shell[data-layout="pocket"]) :is(.source-card time, .
 
 /* Why a source failed, in the coral for what has gone wrong: well above AA
    on the card, and never the live tally. */
-html[data-television]:has(.shell[data-layout="pocket"]) .source-card code {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-card code {
   color: var(--tv-error);
   font-weight: 600;
 }
 
 /* Its two times share one line where they fit. */
-html[data-television]:has(.shell[data-layout="pocket"]) .source-card {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-card {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   column-gap: 0.5rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .source-card > :not(time) {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-card > :not(time) {
   flex: 1 0 100%;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .source-card time + time::before {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-card time + time::before {
   margin-right: 0.5rem;
   color: var(--tv-mute);
   content: "·";
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .refresh-feedback {
+html[data-television][data-shell][data-shell-layout="pocket"] .refresh-feedback {
   margin-top: 0.1667rem;
   padding: 0.6667rem 0.875rem;
   border-radius: 0.3333rem;
   background: var(--tv-cell);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .refresh-feedback strong {
+html[data-television][data-shell][data-shell-layout="pocket"] .refresh-feedback strong {
   font-size: 0.8333rem;
 }
 
 /* Diagnostics: a row like every other, with a chevron that turns open. */
-html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostics {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-desk__diagnostics {
   margin-top: 0.1667rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostics summary {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-desk__diagnostics summary {
   display: flex;
   width: auto;
   height: 2.5rem;
@@ -3211,11 +3211,11 @@ html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostic
   list-style: none;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostics summary::-webkit-details-marker {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-desk__diagnostics summary::-webkit-details-marker {
   display: none;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostics summary::after {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-desk__diagnostics summary::after {
   width: 0.4167rem;
   height: 0.4167rem;
   margin: 0 0.125rem 0.1667rem auto;
@@ -3225,23 +3225,23 @@ html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostic
   transform: rotate(45deg);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostics[open] summary::after {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-desk__diagnostics[open] summary::after {
   margin-bottom: -0.1667rem;
   transform: rotate(225deg);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostics summary:focus {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-desk__diagnostics summary:focus {
   color: var(--on-ice);
   outline: none;
   background: var(--ice);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostics > div {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-desk__diagnostics > div {
   gap: 0.5rem;
   padding-top: 0.5rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostics pre {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-desk__diagnostics pre {
   max-height: none;
   padding: 0.6667rem 0.875rem;
   border-radius: 0.3333rem;
@@ -3250,11 +3250,11 @@ html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostic
   line-height: 1.5;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostics pre:focus {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-desk__diagnostics pre:focus {
   outline-offset: -0.1667rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostics button {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-desk__diagnostics button {
   height: 2rem;
   padding: 0 0.9167rem;
   border-radius: 999px;
@@ -3262,32 +3262,32 @@ html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostic
   font-size: 0.75rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .source-desk__diagnostics button:focus {
+html[data-television][data-shell][data-shell-layout="pocket"] .source-desk__diagnostics button:focus {
   color: var(--on-ice);
   outline: none;
   background: var(--ice);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .installed-settings__privacy {
+html[data-television][data-shell][data-shell-layout="pocket"] .installed-settings__privacy {
   gap: 0.3333rem;
   font-size: 0.75rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .installed-settings__privacy svg {
+html[data-television][data-shell][data-shell-layout="pocket"] .installed-settings__privacy svg {
   width: 0.75rem;
   height: 0.75rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .installed-settings__form {
+html[data-television][data-shell][data-shell-layout="pocket"] .installed-settings__form {
   gap: 0.6667rem;
   margin-top: 0.75rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .installed-settings__form label > span {
+html[data-television][data-shell][data-shell-layout="pocket"] .installed-settings__form label > span {
   font-size: 0.75rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .installed-settings__form input {
+html[data-television][data-shell][data-shell-layout="pocket"] .installed-settings__form input {
   height: 2.3333rem;
   padding: 0 0.875rem;
   color: var(--tv-text);
@@ -3298,18 +3298,18 @@ html[data-television]:has(.shell[data-layout="pocket"]) .installed-settings__for
   font-size: 0.875rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .installed-settings__form input:focus {
+html[data-television][data-shell][data-shell-layout="pocket"] .installed-settings__form input:focus {
   outline: none;
   box-shadow: inset 0 0 0 0.125rem var(--ice);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .installed-settings__form button {
+html[data-television][data-shell][data-shell-layout="pocket"] .installed-settings__form button {
   height: 2rem;
   padding: 0 0.9167rem;
   font-size: 0.75rem;
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) :is(.installed-settings__feedback, .installed-settings__note) {
+html[data-television][data-shell][data-shell-layout="pocket"] :is(.installed-settings__feedback, .installed-settings__note) {
   font-size: 0.75rem;
 }
 
@@ -3479,7 +3479,7 @@ html[data-television] .hosted-player__tv-live[data-state="other"] {
   background: var(--tv-wash);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .hosted-player .hosted-player__tv-channel .hosted-player__tv-quality {
+html[data-television][data-shell][data-shell-layout="pocket"] .hosted-player .hosted-player__tv-channel .hosted-player__tv-quality {
   height: 1.0833rem;
   padding-top: 0.125rem;
 }
@@ -3829,21 +3829,21 @@ html[data-television] .shell[data-layout="pocket"] .hosted-player:is(:fullscreen
 }
 
 /* Ice is the focus fill on a TV; actions that were amber become quiet fills. */
-html[data-television]:has(.shell[data-layout="pocket"])
+html[data-television][data-shell][data-shell-layout="pocket"]
   :is(.source-desk__refresh, .installed-settings__form button, .playback-load-notice__actions button:first-child) {
   color: var(--tv-text);
   border-radius: 999px;
   background: var(--tv-cell2);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"])
+html[data-television][data-shell][data-shell-layout="pocket"]
   :is(.source-desk__refresh, .installed-settings__form button, .playback-load-notice__actions button):focus {
   color: var(--on-ice);
   outline: none;
   background: var(--ice);
 }
 
-html[data-television]:has(.shell[data-layout="pocket"]) .feeds-trigger[data-attention="true"] {
+html[data-television][data-shell][data-shell-layout="pocket"] .feeds-trigger[data-attention="true"] {
   color: var(--tv-warn);
   background: none;
   box-shadow: inset 0 0 0 0.0833rem rgb(255 199 106 / 55%);
