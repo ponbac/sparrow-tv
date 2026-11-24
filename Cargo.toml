@@ -8,6 +8,7 @@ members = [
   "crates/sparrow-server",
   "crates/sparrow-snapshot-store",
   "crates/sparrow-source-http",
+  "crates/sparrow-tv-guide",
 ]
 resolver = "3"
 

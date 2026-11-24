@@ -1,0 +1,15 @@
+[package]
+name = "sparrow-tv-guide"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+chrono = { version = "0.4", default-features = false }
+sparrow-core = { path = "../sparrow-core" }
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+sparrow-installed-catalog = { path = "../sparrow-installed-catalog" }
+tempfile = "3"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "time"] }
