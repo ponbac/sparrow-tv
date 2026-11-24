@@ -10,7 +10,7 @@
  */
 
 /* Portalled sheets read the masthead height from the root. */
-:root:has(.shell[data-layout="theater"]) {
+:root[data-shell][data-shell-layout="theater"] {
   --bar-h: 3.5rem;
 }
 
@@ -752,16 +752,16 @@
 
 /* Sheets: one right-hand panel under the masthead, over a dimmed window. */
 
-:root:has(.shell[data-layout="theater"]) .feeds-dialog__backdrop,
-:root:has(.shell[data-layout="theater"]) .group-roster__backdrop,
-:root:has(.shell[data-layout="theater"]) .board-search-desk__backdrop {
+:root[data-shell][data-shell-layout="theater"] .feeds-dialog__backdrop,
+:root[data-shell][data-shell-layout="theater"] .group-roster__backdrop,
+:root[data-shell][data-shell-layout="theater"] .board-search-desk__backdrop {
   top: 0;
   left: 0;
 }
 
-:root:has(.shell[data-layout="theater"]) .feeds-dialog__popup,
-:root:has(.shell[data-layout="theater"]) .group-roster__popup,
-:root:has(.shell[data-layout="theater"]) .board-search-desk__popup {
+:root[data-shell][data-shell-layout="theater"] .feeds-dialog__popup,
+:root[data-shell][data-shell-layout="theater"] .group-roster__popup,
+:root[data-shell][data-shell-layout="theater"] .board-search-desk__popup {
   top: var(--bar-h);
   width: min(34rem, 92vw);
 }

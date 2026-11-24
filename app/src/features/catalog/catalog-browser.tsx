@@ -70,6 +70,7 @@ import { useIdleChrome } from "../stage/use-idle-chrome";
 import { guideRowProgramme, useNowPlaying } from "../stage/use-now-playing";
 import { usePicturePin } from "../stage/use-picture-pin";
 import { useStageKeys } from "../stage/use-stage-keys";
+import { useRootShellState } from "../stage/use-root-shell-state";
 import {
   usePictureOverlay,
   useSplitPocket,
@@ -742,7 +743,13 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     [guideNow, status],
   );
 
-  if (synchronization.statusPending && !television) {
+  const loadingShell = synchronization.statusPending && !television;
+  const pocket = layout !== "pocket" ? null : television ? "television" : splitPocket ? "split" : "stacked";
+  const playing = playingChannel !== null;
+  const retained = status !== null && isRetainedCatalog(status);
+  useRootShellState(loadingShell ? null : { layout, pocket, playing, dock, retained });
+
+  if (loadingShell) {
     return <CatalogLoading />;
   }
 
@@ -797,19 +804,11 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
     <div
       className="shell"
       data-layout={layout}
-      data-pocket={
-        layout !== "pocket"
-          ? undefined
-          : television
-            ? // The TV lays its own pocket out: television.css.
-              "television"
-            : splitPocket
-              ? "split"
-              : "stacked"
-      }
+      // The TV lays its own pocket out: television.css.
+      data-pocket={pocket ?? undefined}
       data-mode={effectiveMode}
       data-chrome={chromeVisibility}
-      data-playing={playingChannel !== null}
+      data-playing={playing}
       data-dock={dock}
       data-inline-masthead={inlineMasthead || undefined}
       data-external={picture?.external === true}
@@ -831,7 +830,7 @@ export function CatalogBrowser(props: CatalogBrowserProps) {
           }
         />
       )}
-      {status !== null && isRetainedCatalog(status) ? (
+      {retained ? (
         <aside
           className="shell__retained"
           data-acceptance-retained

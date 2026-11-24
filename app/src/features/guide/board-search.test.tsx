@@ -203,9 +203,13 @@ describe("BoardSearch", () => {
       screen.getByRole("combobox", { name: "Search channels and programmes" }),
       "news",
     );
-    await user.click(await screen.findByRole("option", { name: /World News/ }));
+    const result = await screen.findByRole("option", { name: /World News/ });
+    // The TV dims the Guide under open results by this root attribute.
+    expect(document.documentElement).toHaveAttribute("data-search-expanded");
+    await user.click(result);
 
     expect(onTune).toHaveBeenCalledWith(CHANNEL);
+    expect(document.documentElement).not.toHaveAttribute("data-search-expanded");
   });
 
   it("shows a Quality Variant hit by Channel Number, base name and quality", async () => {

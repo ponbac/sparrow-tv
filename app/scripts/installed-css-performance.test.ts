@@ -11,6 +11,9 @@ const THEATER_STYLESHEET = "features/stage/theater.css";
 const THEATER_SCOPE = '.shell[data-layout="theater"]';
 const POCKET_STYLESHEET = "features/stage/pocket.css";
 const POCKET_SCOPE = '.shell[data-layout="pocket"]';
+// The shell's layout mirrored on the root, for rules that style the page around it.
+const ROOT_THEATER = ':root[data-shell][data-shell-layout="theater"]';
+const ROOT_POCKET = ':root[data-shell][data-shell-layout="pocket"]';
 const SPLIT_POCKET = `${POCKET_SCOPE}:where([data-pocket="split"])`;
 const STACKED_POCKET = `${POCKET_SCOPE}:where([data-pocket="stacked"])`;
 
@@ -56,7 +59,7 @@ describe("installed app repaint contract", () => {
     // Theater has its own masthead and its own, taller guide rows; the
     // pocket values above are untouched by it.
     expect(
-      declaration(theaterStyles, `:root:has(${THEATER_SCOPE})`, "--bar-h"),
+      declaration(theaterStyles, ROOT_THEATER, "--bar-h"),
     ).toBe("3.5rem");
     expect(
       declaration(
@@ -65,6 +68,24 @@ describe("installed app repaint contract", () => {
         "height",
       ),
     ).toBe("3.7rem");
+  });
+
+  it("never gates rules on html[…]:has() or :root:has()", async () => {
+    // Chrome then restyles the whole document whenever focus moves or a row
+    // mounts; mirror the state onto the root instead (use-root-shell-state.ts).
+    // Catches the root forms the stylesheets used, not every spelling of one.
+    const rootHas: string[] = [];
+    for (const [path, root] of await installedStylesheets()) {
+      root.walkRules((rule) => {
+        rootHas.push(
+          ...rule.selectors
+            .filter((selector) => /(^|[\s>+~(,])(html|:root)(\[[^\]]*\]|:[\w-]+(?!\())*:has\(/u.test(selector))
+            .map((selector) => `${path}: ${selector}`),
+        );
+      });
+    }
+
+    expect(rootHas).toEqual([]);
   });
 
   it("keeps persistent shell chrome static", async () => {
@@ -146,10 +167,10 @@ describe("installed app repaint contract", () => {
   });
 
   it.each([
-    [THEATER_STYLESHEET, THEATER_SCOPE],
-    [POCKET_STYLESHEET, POCKET_SCOPE],
-    ["features/stage/television.css", "html[data-television]"],
-  ])("scopes every rule in %s to its own layout", async (path, scope) => {
+    [THEATER_STYLESHEET, [THEATER_SCOPE, ROOT_THEATER]],
+    [POCKET_STYLESHEET, [POCKET_SCOPE, ROOT_POCKET]],
+    ["features/stage/television.css", ["html[data-television]"]],
+  ])("scopes every rule in %s to its own layout", async (path, scopes) => {
     const layoutStyles = requireStylesheet(
       new Map(await installedStylesheets()),
       path,
@@ -162,7 +183,7 @@ describe("installed app repaint contract", () => {
       // In-tree elements hang off the shell; portalled ones off the root
       // that holds it.
       unscoped.push(
-        ...rule.selectors.filter((selector) => !selector.includes(scope)),
+        ...rule.selectors.filter((selector) => !scopes.some((scope) => selector.includes(scope))),
       );
     });
 
@@ -259,21 +280,20 @@ describe("installed app repaint contract", () => {
       new Map(await installedStylesheets()),
       POCKET_STYLESHEET,
     );
-    const playing = `${POCKET_SCOPE.slice(0, -1)}][data-playing="true"]`;
     const monitor = `${POCKET_SCOPE} .stage__monitor`;
 
     // The height of the box, which the sheets open under.
     expect(
       declaration(
         pocketStyles,
-        `:root:has(${playing}[data-dock="true"])`,
+        `${ROOT_POCKET}[data-shell-playing="true"][data-shell-dock="true"]`,
         "--pocket-picture-h",
       ),
     ).toBe("var(--pocket-pinned-h, var(--pocket-band-h))");
     expect(
       declaration(
         pocketStyles,
-        `:root:has(${playing}[data-dock="false"])`,
+        `${ROOT_POCKET}[data-shell-playing="true"][data-shell-dock="false"]`,
         "--pocket-picture-h",
       ),
     ).toBe("var(--pocket-pinned-h, var(--pocket-monitor-h))");
@@ -399,14 +419,14 @@ describe("installed app repaint contract", () => {
     expect(
       declaration(
         tvStyles,
-        `html[data-television]:has(.board-search input[aria-expanded="true"]) ${playing} .programme-guide::after`,
+        `html[data-television][data-shell][data-search-expanded] ${playing} .programme-guide::after`,
         "clip-path",
       ),
     ).toBe("var(--tv-around-dock)");
     expect(
       declaration(
         tvStyles,
-        `html[data-television]:has(${playing}) :is(.board-search-desk__backdrop, .group-roster__backdrop, .feeds-dialog__backdrop)`,
+        `html[data-television][data-shell][data-shell-layout="pocket"][data-shell-playing="true"] :is(.board-search-desk__backdrop, .group-roster__backdrop, .feeds-dialog__backdrop)`,
         "clip-path",
       ),
     ).toBe("var(--tv-around-dock)");

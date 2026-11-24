@@ -12,6 +12,8 @@ const { values } = parseArgs({ options: {
   "browse-steps": { type: "string" },
   "browse-repeat-ms": { type: "string" },
   "browse-input": { type: "string", default: "all" },
+  // Tune the first Channel after every walk's reload, so the Guide is browsed over a playing picture.
+  "browse-playback": { type: "boolean", default: false },
   runs: { type: "string", default: "3" },
   channels: { type: "string", default: "0,1" },
   out: { type: "string" },
@@ -26,8 +28,9 @@ if (!process.env.ANDROID_SERIAL || !values.out || !["all", "guide", "playback", 
     || (repeatMs !== null && (!Number.isSafeInteger(repeatMs) || repeatMs < 50 || repeatMs > 1000))
     || (walkSteps !== null && (!Number.isSafeInteger(walkSteps) || walkSteps < 1 || walkSteps > 120))
     || !Number.isSafeInteger(runs) || runs < 1 || runs > 100 || !/^\d+,\d+$/.test(values.channels)
-    || channels.some(n => !Number.isSafeInteger(n)) || channels[0] === channels[1]) {
-  throw Error("Set ANDROID_SERIAL and pass --out <new JSON file>, --scenario all|guide|playback|quality|controls|tune|catalog-search|browse|browse-now|browse-timeline, --runs 1..100, optional --browse-steps 1..120, --browse-repeat-ms 50..1000, --browse-input all|single|burst|held|return, --channels <two distinct zero-based row indices>.");
+    || channels.some(n => !Number.isSafeInteger(n)) || channels[0] === channels[1]
+    || (values["browse-playback"] && !values.scenario.startsWith("browse"))) {
+  throw Error("Set ANDROID_SERIAL and pass --out <new JSON file>, --scenario all|guide|playback|quality|controls|tune|catalog-search|browse|browse-now|browse-timeline, --runs 1..100, optional --browse-playback (browse scenarios only), --browse-steps 1..120, --browse-repeat-ms 50..1000, --browse-input all|single|burst|held|return, --channels <two distinct zero-based row indices>.");
 }
 
 const exec = promisify(execFile);
@@ -349,6 +352,42 @@ async function reloadGuide() {
   throw Error("Populated TV Guide unavailable");
 }
 
+// Tunes the first row and waits for Media3 to decode, then leaves focus on that row.
+let tunedForWalk = false;
+async function tuneFirstRow() {
+  if (!await focusAt(guideRow)) throw Error("Guide walk setup failed");
+  tunedForWalk = true;
+  await adb("shell", "input", "keyevent", "DPAD_CENTER");
+  for (let i = 0; i < 250; i++) {
+    if (await check("playing")) return;
+    await sleep(100);
+  }
+  throw Error("Guide walk playback unavailable");
+}
+// Snapshots Media3's counters on the playing video. While a leg runs, any
+// playback state other than "playing" (a stall or recovery) is recorded, so
+// the walk can withhold counter deltas that might span two players.
+let videoIds = 0;
+async function pictureCounters() {
+  return evaluate(`(() => {
+    const video = document.querySelector('.hosted-player video');
+    const watch = window.__sparrowWalkPicture ??= { ids: new WeakMap(), interrupted: false, observer: null };
+    if (video && !watch.ids.has(video)) watch.ids.set(video, ${++videoIds});
+    const count = field => /^[0-9]+$/.test(video?.dataset[field] ?? "") ? Number(video.dataset[field]) : null;
+    const snapshot = { video: video ? watch.ids.get(video) : null, playing: video?.dataset.playbackState === 'playing',
+      interrupted: watch.interrupted, decoded: count('decodedFrames'), dropped: count('droppedFrames') };
+    watch.observer?.disconnect();
+    watch.interrupted = false;
+    if (video) {
+      watch.observer = new MutationObserver(() => {
+        if (video.dataset.playbackState !== 'playing' || !video.isConnected) watch.interrupted = true;
+      });
+      watch.observer.observe(video, { attributes: true, attributeFilter: ['data-playback-state', 'data-playback-engine'] });
+    }
+    return snapshot;
+  })()`);
+}
+
 async function quality() {
   // The first --channels index identifies the row with two or more Quality Variants.
   const index = channels[0];
@@ -500,7 +539,11 @@ try {
   for (run = 1; run <= runs; run++) {
     for (const mode of ["now", "timeline"]) {
       if (values.scenario === "browse" || values.scenario === "browse-" + mode) {
-        samples.push(...await walkGuide({ mode, run, walkSteps, walkInput, repeatMs, adb, cdp, evaluate, focusAt, freshGuide: reloadGuide, sleep }));
+        const playback = values["browse-playback"];
+        samples.push(...await walkGuide({ mode, run, walkSteps, walkInput, repeatMs, adb, cdp, evaluate, focusAt, sleep,
+          // Stop the previous walk's session while its controls are still on the page.
+          freshGuide: playback ? async () => { if (tunedForWalk) await cleanupPlayer(); await reloadGuide(); await tuneFirstRow(); } : reloadGuide,
+          picture: playback ? pictureCounters : null }));
       }
     }
     if (values.scenario === "catalog-search") await catalogSearch();
@@ -524,10 +567,20 @@ try {
     "WebView probe timed out", "WebView probe failed", "ADB command failed",
     "Populated TV Guide unavailable", "Playback scenario needs the Guide with no active player",
     "Could not clean up the Playback Session", "Could not restore original quality preference",
-    "Guide walk requires All groups", "Guide walk setup failed", "Guide walk needs at least two Channel pages"];
+    "Guide walk requires All groups", "Guide walk setup failed", "Guide walk needs at least two Channel pages",
+    "Guide walk playback unavailable"];
   console.error(safe.includes(error.message) ? error.message : "Benchmark setup or I/O failed");
   process.exitCode = 1;
 } finally {
+  // Stops only the Playback Session a walk started.
+  if (tunedForWalk) {
+    try {
+      await cleanupPlayer();
+    } catch {
+      console.error("Could not clean up the Playback Session");
+      process.exitCode = 1;
+    }
+  }
   socket?.close();
   if (forward) await adb("forward", "--remove", "tcp:" + forward);
   if (file) {

@@ -150,7 +150,7 @@ async function heldDown(count, interval, { cdp, evaluate, sleep }) {
   return { intervalMs: interval, actualSendMs: sent, clockSyncRoundTripMs: Math.round(after - before) };
 }
 
-export async function walkGuide({ mode, run, walkSteps, walkInput, repeatMs, adb, cdp, evaluate, focusAt, freshGuide, sleep }) {
+export async function walkGuide({ mode, run, walkSteps, walkInput, repeatMs, adb, cdp, evaluate, focusAt, freshGuide, sleep, picture = null }) {
   const summary = [];
   const stimuli = walkInput === "all" ? ["single", "burst", ...(repeatMs === null ? [] : ["held"])] : [walkInput];
   for (const stimulus of stimuli) {
@@ -180,6 +180,7 @@ export async function walkGuide({ mode, run, walkSteps, walkInput, repeatMs, adb
       return { openingRows: ${opening.openingRows}, columns: ${mode === "now"} ? Math.max(1, nextBand) : 1 };
     })()`);
     const count = walkSteps ?? Math.ceil(setup.openingRows / setup.columns) + 5;
+    let pictureBefore = picture && await picture();
     await evaluate(`(${installWalkProbe.toString()})(${boundary})`);
     const tapIndividually = async (code) => {
       for (let i = 0; i < count; i++) {
@@ -193,6 +194,7 @@ export async function walkGuide({ mode, run, walkSteps, walkInput, repeatMs, adb
         await tapIndividually("DPAD_DOWN");
         if (stimulus === "return") {
           outward = await evaluate("window.__sparrowGuideWalk.finish()");
+          pictureBefore = picture && await picture();
           await evaluate(`(${installWalkProbe.toString()})(${boundary}, "ArrowUp")`);
           await tapIndividually("DPAD_UP");
         }
@@ -208,6 +210,21 @@ export async function walkGuide({ mode, run, walkSteps, walkInput, repeatMs, adb
     } finally {
       steps = await evaluate("window.__sparrowGuideWalk.finish()");
     }
+    const pictureAfter = picture && await picture();
+    // Media3's counters around the reported leg, when a Channel plays behind the
+    // Guide. Counted only while one player was seen playing the whole leg; its
+    // state is polled every 250 ms, so a shorter stall can go unseen. Media3
+    // reports drops in batches: a zero delta means none were reported.
+    const observedPlaying = Boolean(pictureBefore && pictureAfter && pictureBefore.video !== null &&
+      pictureAfter.video === pictureBefore.video && pictureBefore.playing && pictureAfter.playing &&
+      !pictureAfter.interrupted);
+    const delta = (field) => observedPlaying && pictureBefore[field] !== null && pictureAfter[field] !== null &&
+      pictureAfter[field] >= pictureBefore[field] ? pictureAfter[field] - pictureBefore[field] : null;
+    const pictureDuringWalk = pictureBefore && pictureAfter ? {
+      observedPlayingThroughout: observedPlaying,
+      decodedFrames: delta("decoded"),
+      reportedDroppedFrames: delta("dropped"),
+    } : null;
     // Read boundary positions after the timed walk. Cursor reads here must never
     // prefetch a continuation before the real remote crosses it.
     const maximum = Math.max(0, ...steps.map(s => Math.max(s.from ?? 0, s.to ?? 0)));
@@ -225,9 +242,10 @@ export async function walkGuide({ mode, run, walkSteps, walkInput, repeatMs, adb
     const reversal = outward && { retraced: outward.length === count && steps.length === count &&
       steps.every((s, i) => s.to !== null && s.to === outward[count - 1 - i].from) };
     summary.push({ run, action: mode + (returning ? "-up-" : "-down-") + stimulus, stimulus, ...reversal, ...setup, firstPageLast: boundary, measuredPageEnds: ends, comparable,
-      requested: count, observed, focused, painted, crossed, pacing, missingKeys: Math.max(0, count - observed),
+      requested: count, observed, focused, painted, crossed, pacing, picture: pictureDuringWalk, missingKeys: Math.max(0, count - observed),
       noForwardFocus: observed - focused, supersededBeforePaint: steps.filter(s => s.superseded).length, steps });
-    console.log(`${run} ${mode} ${stimulus}: ${focused}/${count} advanced, ${painted} visibly settled, page crossed=${crossed}`);
+    const pictureNote = pictureDuringWalk ? `, picture ${pictureDuringWalk.observedPlayingThroughout ? "seen playing throughout" : "INTERRUPTED"} reported dropped=${pictureDuringWalk.reportedDroppedFrames}/${pictureDuringWalk.decodedFrames}` : "";
+    console.log(`${run} ${mode} ${stimulus}: ${focused}/${count} advanced, ${painted} visibly settled, page crossed=${crossed}${pictureNote}`);
   }
   return summary;
 }
