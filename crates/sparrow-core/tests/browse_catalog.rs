@@ -1,11 +1,11 @@
 mod support;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use sparrow_core::{
-    CatalogGeneration, ChannelGroupFilter, ChannelQuality, ChannelQuery, ChannelSummary, CoreError,
-    InputField, InputReason, PageCursor, PageLimit, PageRequest, SourceConfigurationInput,
-    SparrowCore,
+    CatalogGeneration, ChannelDirection, ChannelGroupFilter, ChannelQuality, ChannelQuery,
+    ChannelSummary, CoreError, InputField, InputReason, PageCursor, PageLimit, PageRequest,
+    SourceConfigurationInput, SparrowCore,
 };
 use support::{MemorySnapshotStore, ScriptedSource, adapters};
 
@@ -210,6 +210,118 @@ async fn quality_variants_share_a_channel_number_counted_in_channel_catalog_orde
     assert_eq!(details.name(), "Arena 4K");
     assert_eq!(details.number(), 4);
     assert_eq!(details.variant(), uhd.variant());
+}
+
+#[tokio::test]
+async fn adjacent_families_follow_catalog_order_skip_exact_hidden_groups_and_stop_at_ends() {
+    use ChannelDirection::{Next, Previous};
+
+    let (core, source) = browse_core(BROWSE_M3U).await;
+    let generation = core.status().generation().unwrap();
+    let hidden = HashSet::from(["News".to_owned(), "Culture".to_owned()]);
+    let next = core
+        .adjacent_channel_family(generation, 2, Next, &hidden)
+        .unwrap()
+        .unwrap();
+    assert_eq!(next.generation(), generation);
+    assert_eq!(next.number(), 7);
+    assert_eq!(next.variants()[0].group(), "");
+
+    let previous = core
+        .adjacent_channel_family(generation, 7, Previous, &hidden)
+        .unwrap()
+        .unwrap();
+    assert_eq!(previous.number(), 2);
+    assert_eq!(previous.variants()[0].name(), "Arena Two");
+
+    // A playing Channel remains an anchor after its group is hidden.
+    assert_eq!(
+        core.adjacent_channel_family(generation, 4, Next, &hidden)
+            .unwrap()
+            .unwrap()
+            .number(),
+        7
+    );
+    assert_eq!(
+        core.adjacent_channel_family(generation, 2, Next, &HashSet::from(["news".into()]))
+            .unwrap()
+            .unwrap()
+            .number(),
+        3
+    );
+
+    assert!(
+        core.adjacent_channel_family(generation, 1, Previous, &hidden)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        core.adjacent_channel_family(generation, 8, Next, &hidden)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        core.adjacent_channel_family(generation, 0, Next, &hidden)
+            .unwrap()
+            .is_none()
+    );
+    let hidden_tail = HashSet::from(["News".into(), "Culture".into(), "".into(), "Kids".into()]);
+    assert!(
+        core.adjacent_channel_family(generation, 2, Next, &hidden_tail)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(source.open_count(), 1);
+}
+
+#[tokio::test]
+async fn number_lookup_and_zap_return_complete_families_and_reject_stale_generations() {
+    use ChannelDirection::{Next, Previous};
+
+    let (core, _) = browse_core(QUALITY_VARIANTS_M3U).await;
+    let generation = core.status().generation().unwrap();
+    let first = core.channel_family(generation, 1).unwrap().unwrap();
+    assert_eq!(first.generation(), generation);
+    assert_eq!(first.number(), 1);
+    assert_eq!(
+        first
+            .variants()
+            .iter()
+            .map(ChannelSummary::name)
+            .collect::<Vec<_>>(),
+        ["SVT1 SD SE", "SVT1 HD SE", "svt1 [FHD] se"],
+    );
+    let next = core
+        .adjacent_channel_family(generation, 1, Next, &HashSet::new())
+        .unwrap()
+        .unwrap();
+    assert_eq!(next.number(), 2);
+    let previous = core
+        .adjacent_channel_family(generation, 5, Previous, &HashSet::new())
+        .unwrap()
+        .unwrap();
+    assert_eq!(previous.number(), 4);
+    assert_eq!(
+        previous
+            .variants()
+            .iter()
+            .map(ChannelSummary::name)
+            .collect::<Vec<_>>(),
+        ["Arena HD", "Arena 4K"],
+    );
+    assert!(core.channel_family(generation, u32::MAX).unwrap().is_none());
+
+    let (replacement, _) = browse_core(BROWSE_M3U).await;
+    let current = replacement.status().generation().unwrap();
+    assert_ne!(generation, current);
+    assert_eq!(
+        replacement.channel_family(generation, 1),
+        Err(CoreError::StaleCursor { current })
+    );
+    assert_eq!(
+        replacement.adjacent_channel_family(generation, 1, Next, &HashSet::new()),
+        Err(CoreError::StaleCursor { current }),
+    );
 }
 
 #[tokio::test]

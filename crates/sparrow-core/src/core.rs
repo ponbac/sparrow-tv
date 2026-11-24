@@ -1,6 +1,7 @@
 use arc_swap::ArcSwap;
 use futures_util::{FutureExt, StreamExt};
 use std::{
+    collections::HashSet,
     io::{self, BufRead, Read},
     ops::Deref,
     panic::{AssertUnwindSafe, resume_unwind},
@@ -14,12 +15,13 @@ use tokio::sync::{Mutex as AsyncMutex, Notify, broadcast, oneshot, watch};
 use crate::{
     catalog::ChannelCatalog,
     domain::{
-        CatalogStatus, ChannelDetails, ChannelGroupView, ChannelId, ChannelQuery, ChannelSummary,
-        CoreError, CoreEvent, GuideWindowChannel, GuideWindowQuery, LifecycleSignal, Page,
-        PageRequest, ProgrammeSummary, RefreshOutcome, RefreshReport, RefreshTrigger,
-        ResolvedPlaybackSource, SafeFailure, ScheduleQuery, SearchRequest, SearchResults,
-        SearchTerm, SnapshotOperation, SnapshotRecoveryDiagnostic, SnapshotRecoveryReason,
-        SourceAccessError, SourceConfiguration, SourceConfigurationInput, SourceKind, SourceState,
+        CatalogGeneration, CatalogStatus, ChannelDetails, ChannelDirection, ChannelFamily,
+        ChannelGroupView, ChannelId, ChannelQuery, ChannelSummary, CoreError, CoreEvent,
+        GuideWindowChannel, GuideWindowQuery, LifecycleSignal, Page, PageRequest, ProgrammeSummary,
+        RefreshOutcome, RefreshReport, RefreshTrigger, ResolvedPlaybackSource, SafeFailure,
+        ScheduleQuery, SearchRequest, SearchResults, SearchTerm, SnapshotOperation,
+        SnapshotRecoveryDiagnostic, SnapshotRecoveryReason, SourceAccessError, SourceConfiguration,
+        SourceConfigurationInput, SourceKind, SourceState,
     },
     m3u,
     ports::{
@@ -276,6 +278,32 @@ impl CatalogAccess {
         self.query_catalog(|catalog| catalog.channels_page(&query))
     }
 
+    /// Returns all Quality Variants for a Channel Number in the requested
+    /// publication. An absent number yields no family. A different published
+    /// generation yields [`CoreError::StaleCursor`].
+    pub fn channel_family(
+        &self,
+        expected: CatalogGeneration,
+        number: u32,
+    ) -> Result<Option<ChannelFamily>, CoreError> {
+        self.query_generation(expected, |catalog| catalog.channel_family(number))
+    }
+
+    /// Finds one adjacent visible family in whole-catalog order. The starting
+    /// family may itself be hidden. At either end there is no neighbor. A
+    /// different published generation yields [`CoreError::StaleCursor`].
+    pub fn adjacent_channel_family(
+        &self,
+        expected: CatalogGeneration,
+        number: u32,
+        direction: ChannelDirection,
+        excluded_groups: &HashSet<String>,
+    ) -> Result<Option<ChannelFamily>, CoreError> {
+        self.query_generation(expected, |catalog| {
+            catalog.adjacent_channel_family(number, direction, excluded_groups)
+        })
+    }
+
     pub fn channel(&self, id: &ChannelId) -> Result<ChannelDetails, CoreError> {
         self.query_catalog(|catalog| catalog.channel(id))
     }
@@ -399,6 +427,20 @@ impl CatalogAccess {
                 status: self.runtime.view.load().status.clone(),
             }),
         }
+    }
+
+    fn query_generation<T>(
+        &self,
+        expected: CatalogGeneration,
+        query: impl FnOnce(&ChannelCatalog) -> T,
+    ) -> Result<T, CoreError> {
+        self.query_catalog(|catalog| {
+            let current = catalog.generation();
+            if current != expected {
+                return Err(CoreError::StaleCursor { current });
+            }
+            Ok(query(catalog))
+        })
     }
 
     fn query_catalog<T>(

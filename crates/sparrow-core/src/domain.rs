@@ -883,6 +883,43 @@ impl ChannelSummary {
     }
 }
 
+/// Direction through visible families in Channel Catalog order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChannelDirection {
+    Previous,
+    Next,
+}
+
+/// One Channel Number and its full set of Channels from a single publication.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChannelFamily {
+    generation: CatalogGeneration,
+    variants: Arc<[ChannelSummary]>,
+}
+
+impl ChannelFamily {
+    pub(crate) fn new(generation: CatalogGeneration, variants: Arc<[ChannelSummary]>) -> Self {
+        debug_assert!(!variants.is_empty());
+        Self {
+            generation,
+            variants,
+        }
+    }
+
+    pub const fn generation(&self) -> CatalogGeneration {
+        self.generation
+    }
+
+    pub fn number(&self) -> u32 {
+        self.variants[0].number()
+    }
+
+    /// All Channels in the family, in Channel Catalog order.
+    pub fn variants(&self) -> &[ChannelSummary] {
+        &self.variants
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChannelDetails {
     id: ChannelId,

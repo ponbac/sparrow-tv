@@ -1,6 +1,7 @@
 //! Shared composition for Sparrow's on-device catalog and private storage.
 
 mod config_store;
+mod guide_preferences;
 
 use std::{
     fs,
@@ -18,8 +19,10 @@ use sparrow_source_http::HttpSourceAccess;
 use tokio::{runtime::Handle, sync::Mutex};
 
 pub use config_store::{ConfigurationStoreError, ensure_private_directory};
+pub use guide_preferences::{GuidePreferenceChange, GuidePreferenceError, GuidePreferences};
 
 use config_store::{SourceConfigurationStore, StoredSourceConfiguration};
+use guide_preferences::GuidePreferenceStore;
 
 const PRIVATE_DIRECTORY: &str = "private-v1";
 const SNAPSHOT_DIRECTORY: &str = "snapshots-v1";
@@ -30,6 +33,7 @@ pub struct InstalledCatalog {
     private_root: PathBuf,
     configuration_store: SourceConfigurationStore,
     configuration_mutation: Arc<Mutex<()>>,
+    guide_preferences: GuidePreferenceStore,
 }
 
 /// Holds the instance lock across synchronous preparation and async catalog bootstrap.
@@ -83,6 +87,61 @@ impl InstalledCatalog {
         &self.private_root
     }
 
+    /// The active snapshot, or defaults until an installed client loads preferences.
+    pub fn guide_preferences(&self) -> Arc<GuidePreferences> {
+        self.guide_preferences.snapshot()
+    }
+
+    /// Observes the initial load and later activated writes independently of Activity lifetime.
+    pub fn subscribe_guide_preferences(
+        &self,
+    ) -> tokio::sync::watch::Receiver<Arc<GuidePreferences>> {
+        self.guide_preferences.subscribe()
+    }
+
+    /// Lazily reads the private Guide settings on the catalog's blocking pool.
+    /// Missing or invalid preference records recover to defaults.
+    pub async fn load_guide_preferences(
+        self: &Arc<Self>,
+    ) -> Result<Arc<GuidePreferences>, GuidePreferenceError> {
+        if let Some(loaded) = self.guide_preferences.loaded_snapshot() {
+            return Ok(loaded);
+        }
+        let mutation = Arc::clone(&self.guide_preferences.mutation)
+            .lock_owned()
+            .await;
+        let catalog = Arc::clone(self);
+        self.runtime
+            .spawn_blocking(move || {
+                let _mutation = mutation;
+                catalog.guide_preferences.load(&catalog.private_root)
+            })
+            .await
+            .map_err(|_| GuidePreferenceError::Unavailable)?
+    }
+
+    /// Writes a batch in order and publishes it after the file is activated,
+    /// even if confirming the rename's durability fails.
+    /// Once admitted, the operation owns the instance lease through completion.
+    pub async fn update_guide_preferences(
+        self: &Arc<Self>,
+        changes: Vec<GuidePreferenceChange>,
+    ) -> Result<Arc<GuidePreferences>, GuidePreferenceError> {
+        let mutation = Arc::clone(&self.guide_preferences.mutation)
+            .lock_owned()
+            .await;
+        let catalog = Arc::clone(self);
+        self.runtime
+            .spawn_blocking(move || {
+                let _mutation = mutation;
+                catalog
+                    .guide_preferences
+                    .update(&catalog.private_root, changes)
+            })
+            .await
+            .map_err(|_| GuidePreferenceError::Unavailable)?
+    }
+
     /// Runs on Tokio. Once admitted, the save and core replacement finish even if the caller stops waiting.
     pub async fn replace_configuration(
         self: &Arc<Self>,
@@ -134,6 +193,7 @@ impl PreparedInstalledCatalog {
             private_root: self.private_root,
             configuration_store: self.configuration_store,
             configuration_mutation: Arc::new(Mutex::new(())),
+            guide_preferences: GuidePreferenceStore::new(),
         }))
     }
 }

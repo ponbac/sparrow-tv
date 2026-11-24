@@ -28,6 +28,10 @@ impl GuideFamily {
         self.variants[0].channel().group()
     }
 
+    pub fn preference_title(&self) -> String {
+        normalize_title(self.title())
+    }
+
     pub fn variants(&self) -> &[GuideWindowChannel] {
         &self.variants
     }
@@ -78,10 +82,24 @@ impl GuideFamily {
 }
 
 /// Picture quality choices by exact Channel Group and normalized family title.
-#[derive(Default)]
+#[derive(Default, Eq, PartialEq)]
 pub struct VariantPreferences(HashMap<String, HashMap<String, ChannelQuality>>);
 
 impl VariantPreferences {
+    pub fn from_normalized(
+        choices: impl IntoIterator<Item = (String, String, ChannelQuality)>,
+    ) -> Self {
+        let mut preferences = Self::default();
+        for (group, title, quality) in choices {
+            preferences
+                .0
+                .entry(group)
+                .or_default()
+                .insert(title, quality);
+        }
+        preferences
+    }
+
     pub fn choose(&mut self, group: &str, title: &str, quality: ChannelQuality) {
         self.0
             .entry(group.to_owned())
@@ -89,7 +107,7 @@ impl VariantPreferences {
             .insert(normalize_title(title), quality);
     }
 
-    fn quality(&self, group: &str, title: &str) -> Option<ChannelQuality> {
+    pub fn quality(&self, group: &str, title: &str) -> Option<ChannelQuality> {
         self.0.get(group)?.get(&normalize_title(title)).copied()
     }
 }

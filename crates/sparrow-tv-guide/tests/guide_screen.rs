@@ -1,14 +1,15 @@
 mod support;
 
-use std::{collections::HashSet, fmt::Write};
+use std::{collections::HashSet, fmt::Write, sync::Arc};
 
 use chrono::{DateTime, FixedOffset, TimeDelta, TimeZone, Utc};
-use sparrow_core::{CatalogAccess, CoreError};
+use sparrow_core::{CatalogAccess, ChannelQuality, CoreError};
 use sparrow_tv_guide::{
-    GuidePageRequest, GuideWindow, PageUpdate,
+    GuidePageRequest, GuideWindow, PageStatus, PageUpdate, VariantPreferences,
+    group_chooser::{GroupChooserFocus, GroupChooserIntent, GroupRosterCounts},
     guide_screen::{
-        GuideMode, GuideRead, GuideScreen, LaneFocus, ScreenAction, ScreenFocus, ScreenKey,
-        ScreenNotice, ToolbarFocus,
+        GroupVisibilityChange, GuideMode, GuideRead, GuideScreen, LaneFocus, ScreenAction,
+        ScreenFocus, ScreenKey, ScreenNotice, ToolbarFocus,
     },
     now_focus::{Direction, NowFocus},
     timeline_focus::TimelineFocus,
@@ -536,6 +537,42 @@ async fn timeline_keeps_programme_preview_and_returns_through_the_rail_and_toolb
 }
 
 #[tokio::test]
+async fn changing_preferred_quality_reconciles_timeline_focus_with_the_new_schedule() {
+    let m3u = timeline_catalog().replacen(r#"tvg-id="one""#, r#"tvg-id="one-hd""#, 1);
+    let epg = timeline_epg().replace(
+        "</tv>",
+        r#"<channel id="one-hd"><display-name>One HD</display-name></channel>
+  <programme channel="one-hd" start="20260109131000 +0000" stop="20260109134000 +0000"><title>Regional</title></programme>
+</tv>"#,
+    );
+    let fixture = support::open(m3u, Some(epg)).await;
+    let core = fixture.core();
+    let mut screen = open_screen(core, HashSet::new());
+    open_timeline(&mut screen);
+    finish_reads(&mut screen, core);
+    arrow(&mut screen, Direction::Down);
+    arrow(&mut screen, Direction::Right);
+    arrow(&mut screen, Direction::Right);
+    assert_eq!(screen.focus(), programme(0, 1));
+
+    let preferences = VariantPreferences::from_normalized([(
+        "Guide".to_owned(),
+        "one".to_owned(),
+        ChannelQuality::Hd,
+    )]);
+    screen.set_variant_preferences(Arc::new(preferences));
+    assert_eq!(screen.focus(), programme(0, 0));
+    assert_eq!(screen.preview_cell(), Some(0));
+    let family = screen.preview_family().unwrap();
+    assert_eq!(family.preference_title(), "one");
+    assert_eq!(
+        family.programmes(screen.variant_preferences())[0].title(),
+        "Regional"
+    );
+    assert!(screen.take_reads().is_empty());
+}
+
+#[tokio::test]
 async fn timeline_restores_the_next_programme_only_after_the_displayed_window_changes() {
     let fixture = support::open(timeline_catalog(), Some(timeline_epg())).await;
     let core = fixture.core();
@@ -751,6 +788,308 @@ fn timeline_epg() -> String {
   <programme channel="one" start="20260109123000 +0000" stop="20260109130000 +0000"><title>Midday</title></programme>
   <programme channel="one" start="20260109135500 +0000" stop="20260109142000 +0000"><title>Later</title></programme>
 </tv>"#.into()
+}
+
+#[tokio::test]
+async fn chooser_filters_across_catalog_pages_and_unhides_ungrouped_when_picked() {
+    let mut m3u = String::from("#EXTM3U\n");
+    for index in 0..120 {
+        writeln!(m3u, "#EXTINF:-1 group-title=\"Group {index:03}\",Fixture {index}\nhttps://fixture.invalid/{index}.ts").unwrap();
+    }
+    m3u.push_str("#EXTINF:-1,Ungrouped fixture\nhttps://fixture.invalid/ungrouped.ts\n");
+    let fixture = support::open(m3u, None).await;
+    let core = fixture.core();
+    let exclusions = ["", "Former group"]
+        .map(str::to_owned)
+        .into_iter()
+        .collect();
+    let mut screen = GuideScreen::new(clock(), local_offset(), exclusions);
+    screen.catalog_status(&core.status());
+    for read in screen.take_reads() {
+        match read {
+            GuideRead::Groups(request) => {
+                let result = core.list_groups(request.query().clone());
+                assert_eq!(
+                    screen.groups_completed(request, result),
+                    PageUpdate::Applied
+                );
+            }
+            GuideRead::Guide(request) => complete_guide(&mut screen, core, request),
+            GuideRead::Status => panic!("unexpected status reconciliation"),
+        }
+    }
+    open_chooser_from_now_board(&mut screen);
+    assert_eq!(screen.group_roster().len(), 100);
+    assert_ne!(screen.group_roster_status(), Some(PageStatus::Complete));
+
+    assert_eq!(
+        screen.group_chooser_intent(GroupChooserIntent::Activate(GroupChooserFocus::Filter)),
+        ScreenAction::EditGroupFilter
+    );
+    screen.group_chooser_intent(GroupChooserIntent::Filter("  gROUP 119  ".into()));
+    assert!(screen.group_chooser().unwrap().matches().is_empty());
+    finish_reads(&mut screen, core);
+    assert_eq!(
+        screen.group_roster_counts(),
+        GroupRosterCounts {
+            shown: 120,
+            hidden: 1
+        }
+    );
+    assert_eq!(screen.group_roster_status(), Some(PageStatus::Complete));
+    let [match_index] = *screen.group_chooser().unwrap().matches() else {
+        panic!("one matching group expected");
+    };
+    assert_eq!(screen.group_roster()[match_index].name(), "Group 119");
+
+    screen.group_chooser_intent(GroupChooserIntent::Filter("ungrouped".into()));
+    assert_eq!(
+        screen.group_chooser().unwrap().focus(),
+        GroupChooserFocus::Filter
+    );
+    arrow(&mut screen, Direction::Down);
+    assert_eq!(
+        screen.group_chooser().unwrap().focus(),
+        GroupChooserFocus::Pick(0)
+    );
+    arrow(&mut screen, Direction::Down);
+    assert_eq!(
+        screen.group_chooser().unwrap().focus(),
+        GroupChooserFocus::Pick(1)
+    );
+    assert_eq!(
+        activate(&mut screen),
+        ScreenAction::GroupVisibilityChanged(GroupVisibilityChange::Set {
+            name: String::new(),
+            hidden: false,
+        })
+    );
+    assert!(screen.group_chooser().is_none());
+    assert_eq!(
+        screen.focus(),
+        ScreenFocus::GroupLane(LaneFocus::ChooseGroups)
+    );
+    assert_eq!(screen.selected_group().unwrap().as_str(), "");
+    assert!(!screen.exclusions().contains(""));
+    assert!(screen.exclusions().contains("Former group"));
+    assert_eq!(
+        screen.group_roster_counts(),
+        GroupRosterCounts {
+            shown: 121,
+            hidden: 0
+        }
+    );
+    let request = guide_request(&mut screen);
+    assert_eq!(request.query().channels().group(), Some(""));
+    complete_guide(&mut screen, core, request);
+    assert_eq!(screen.families()[0].title(), "Ungrouped fixture");
+}
+
+#[tokio::test]
+async fn chooser_hiding_a_selected_group_rejects_its_pending_read_and_show_all_recovers() {
+    let fixture = support::open(catalog(160), None).await;
+    let core = fixture.core();
+    let mut screen = open_screen(core, HashSet::from(["Former group".into()]));
+    open_chooser_from_now_board(&mut screen);
+    let shown_group = screen.group_roster()[0].name().to_owned();
+    assert_eq!(
+        screen.group_chooser_intent(GroupChooserIntent::Activate(GroupChooserFocus::Pick(1))),
+        ScreenAction::None
+    );
+    let stale = guide_request(&mut screen);
+    assert_eq!(screen.selected_group().unwrap().as_str(), shown_group);
+
+    activate(&mut screen);
+    assert_eq!(
+        screen.group_chooser().unwrap().focus(),
+        GroupChooserFocus::Pick(1)
+    );
+    arrow(&mut screen, Direction::Right);
+    assert_eq!(
+        screen.group_chooser().unwrap().focus(),
+        GroupChooserFocus::Toggle(1)
+    );
+    assert_eq!(
+        activate(&mut screen),
+        ScreenAction::GroupVisibilityChanged(GroupVisibilityChange::Set {
+            name: shown_group.clone(),
+            hidden: true,
+        })
+    );
+    assert!(screen.selected_group().is_none());
+    assert!(
+        screen
+            .families()
+            .iter()
+            .all(|family| family.group() != shown_group)
+    );
+    assert_eq!(
+        screen.group_roster_counts(),
+        GroupRosterCounts {
+            shown: 2,
+            hidden: 1
+        }
+    );
+    let stale_result = core.guide_window(stale.query().clone());
+    assert_eq!(
+        screen.guide_completed(stale, stale_result),
+        PageUpdate::Superseded
+    );
+    let stale_all = guide_request(&mut screen);
+    assert!(stale_all.query().channels().group().is_none());
+
+    let roster_len = screen.group_roster().len();
+    for row in 2..=roster_len {
+        let name = screen.group_roster()[row - 1].name().to_owned();
+        assert_eq!(
+            screen
+                .group_chooser_intent(GroupChooserIntent::Activate(GroupChooserFocus::Toggle(row))),
+            ScreenAction::GroupVisibilityChanged(GroupVisibilityChange::Set { name, hidden: true })
+        );
+    }
+    assert_eq!(
+        screen.group_roster_counts(),
+        GroupRosterCounts {
+            shown: 0,
+            hidden: 3
+        }
+    );
+    assert_eq!(screen.notice(), Some(ScreenNotice::AllGroupsHidden));
+    assert!(screen.families().is_empty());
+    assert!(screen.exclusions().contains("Former group"));
+    assert!(screen.take_reads().is_empty());
+    let stale_result = core.guide_window(stale_all.query().clone());
+    assert_eq!(
+        screen.guide_completed(stale_all, stale_result),
+        PageUpdate::Superseded
+    );
+
+    for _ in 0..roster_len {
+        arrow(&mut screen, Direction::Up);
+    }
+    assert_eq!(
+        screen.group_chooser().unwrap().focus(),
+        GroupChooserFocus::ShowAll
+    );
+    assert_eq!(
+        activate(&mut screen),
+        ScreenAction::GroupVisibilityChanged(GroupVisibilityChange::ShowAll)
+    );
+    assert_eq!(
+        screen.group_chooser().unwrap().focus(),
+        GroupChooserFocus::Pick(0)
+    );
+    assert_eq!(
+        screen.group_roster_counts(),
+        GroupRosterCounts {
+            shown: 3,
+            hidden: 0
+        }
+    );
+    assert!(screen.exclusions().is_empty());
+    screen.group_chooser_intent(GroupChooserIntent::Close);
+    assert_eq!(
+        screen.focus(),
+        ScreenFocus::GroupLane(LaneFocus::ChooseGroups)
+    );
+    finish_reads(&mut screen, core);
+    assert_eq!(screen.families().len(), 40);
+    assert_eq!(screen.notice(), None);
+}
+
+#[tokio::test]
+async fn chooser_moves_focus_to_filter_when_external_preferences_remove_show_all() {
+    let fixture = support::open(catalog(6), None).await;
+    let mut screen = open_screen(fixture.core(), HashSet::from(["Local".into()]));
+    open_chooser_from_now_board(&mut screen);
+    arrow(&mut screen, Direction::Up);
+    arrow(&mut screen, Direction::Right);
+    assert_eq!(
+        screen.group_chooser().unwrap().focus(),
+        GroupChooserFocus::ShowAll
+    );
+
+    assert!(screen.set_group_exclusions(HashSet::new()));
+    assert!(!screen.group_chooser_can_show_all());
+    assert_eq!(
+        screen.group_chooser().unwrap().focus(),
+        GroupChooserFocus::Filter
+    );
+    assert_eq!(activate(&mut screen), ScreenAction::EditGroupFilter);
+}
+
+#[tokio::test]
+async fn excluding_another_group_preserves_the_timeline_pan_and_programme_focus() {
+    let fixture = support::open(timeline_catalog(), Some(timeline_epg())).await;
+    let core = fixture.core();
+    let mut screen = open_screen(core, HashSet::new());
+    open_timeline(&mut screen);
+    finish_reads(&mut screen, core);
+    arrow(&mut screen, Direction::Right);
+    arrow(&mut screen, Direction::Right);
+    arrow(&mut screen, Direction::Right);
+    assert_eq!(screen.focus(), programme(0, 2));
+    let pan = screen.timeline().unwrap().starts_at();
+    assert!(pan > screen.displayed_window().starts_at());
+
+    let hidden = screen.families()[1].group().to_owned();
+    assert!(screen.set_group_exclusions(HashSet::from([hidden])));
+    assert!(screen.families().len() == 1);
+    assert_eq!(screen.focus(), programme(0, 2));
+    finish_reads(&mut screen, core);
+    assert_eq!(screen.mode(), GuideMode::Timeline);
+    assert_eq!(screen.timeline().unwrap().starts_at(), pan);
+    assert_eq!(screen.focus(), programme(0, 2));
+}
+
+#[tokio::test]
+async fn exclusions_keep_a_surviving_focused_channel_during_page_catch_up() {
+    let fixture = support::open(catalog(160), None).await;
+    let core = fixture.core();
+    let mut screen = open_screen(core, HashSet::new());
+    for _ in 0..11 {
+        arrow(&mut screen, Direction::Down);
+    }
+    let second = guide_request(&mut screen);
+    complete_guide(&mut screen, core, second);
+    for _ in 0..15 {
+        arrow(&mut screen, Direction::Down);
+    }
+    assert_eq!(screen.focus(), channel(78));
+    let current = &screen.families()[78];
+    let number = current.number();
+    let hidden = screen
+        .groups()
+        .iter()
+        .find(|group| group.name() != current.group())
+        .unwrap()
+        .name()
+        .to_owned();
+    assert!(screen.set_group_exclusions(HashSet::from([hidden])));
+
+    let first = guide_request(&mut screen);
+    complete_guide(&mut screen, core, first);
+    let ScreenFocus::Board(NowFocus::Channel(index)) = screen.focus() else {
+        panic!("the surviving Channel should retain board focus");
+    };
+    assert_eq!(screen.families()[index].number(), number);
+    let second = guide_request(&mut screen);
+    assert!(second.query().channels().page().cursor().is_some());
+    complete_guide(&mut screen, core, second);
+    assert_eq!(screen.focus(), channel(index));
+    assert_eq!(screen.families()[index].number(), number);
+}
+
+fn open_chooser_from_now_board(screen: &mut GuideScreen) {
+    arrow(screen, Direction::Up);
+    arrow(screen, Direction::Up);
+    arrow(screen, Direction::Down);
+    assert_eq!(
+        screen.focus(),
+        ScreenFocus::GroupLane(LaneFocus::ChooseGroups)
+    );
+    assert_eq!(activate(screen), ScreenAction::None);
+    assert!(screen.group_chooser().is_some());
 }
 
 fn catalog(count: usize) -> String {

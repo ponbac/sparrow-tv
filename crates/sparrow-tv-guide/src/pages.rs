@@ -144,14 +144,15 @@ impl GuidePages {
                 .displayed_previous
                 .take()
                 .map_or(prior, |shown| shown.group_source.unwrap_or(shown.data));
-            self.displayed_previous = Self::group_placeholder(source, group.as_ref());
+            self.displayed_previous =
+                Self::group_placeholder(source, group.as_ref(), &self.excluded_groups);
         }
         self.group = group;
         self.selection = next_id();
         self.pager.reset(generation);
     }
 
-    /// A group switch can display compatible rows from a pager kept in the cache.
+    /// A replacement pager can display compatible rows while its first pages load.
     pub(crate) fn keep_compatible_rows(&mut self, previous: &Self) {
         if self.active.page_count != 0
             || self
@@ -168,23 +169,46 @@ impl GuidePages {
             .map_or(&previous.active, |shown| {
                 shown.group_source.as_ref().unwrap_or(&shown.data)
             });
-        self.displayed_previous = Self::group_placeholder(source.clone(), self.group.as_ref());
+        self.displayed_previous =
+            Self::group_placeholder(source.clone(), self.group.as_ref(), &self.excluded_groups);
+        if self.group == previous.group
+            && self.excluded_groups != previous.excluded_groups
+            && let Some(shown) = &mut self.displayed_previous
+        {
+            // Exclusions filter the same raw pages. Restore their depth so a
+            // surviving focused Channel stays visible throughout the read.
+            shown.replace_after = previous
+                .displayed_previous
+                .as_ref()
+                .map_or(previous.active.page_count, |prior| prior.replace_after)
+                .max(1);
+            if !shown.data.families.is_empty() {
+                shown.status = match previous.displayed_status() {
+                    PageStatus::Failed | PageStatus::ReconcileGeneration => PageStatus::Loading,
+                    status => status,
+                };
+            }
+        }
     }
 
     fn group_placeholder(
         source: LoadedWindow,
         group: Option<&ChannelGroupFilter>,
+        excluded_groups: &HashSet<String>,
     ) -> Option<RetainedWindow> {
         if source.page_count == 0 {
             return None;
         }
         let mut data = source.clone();
-        if let Some(group) = group {
+        if group.is_some() || !excluded_groups.is_empty() {
             data.families = Arc::new(
                 source
                     .families
                     .iter()
-                    .filter(|family| family.group() == group.as_str())
+                    .filter(|family| {
+                        !excluded_groups.contains(family.group())
+                            && group.is_none_or(|group| family.group() == group.as_str())
+                    })
                     .cloned()
                     .collect(),
             );
@@ -291,11 +315,10 @@ impl GuidePages {
                     &self.excluded_groups,
                 );
                 self.active.page_count += 1;
-                if self
-                    .displayed_previous
-                    .as_ref()
-                    .is_some_and(|prior| self.active.page_count >= prior.replace_after)
-                {
+                if self.displayed_previous.as_ref().is_some_and(|prior| {
+                    self.active.page_count >= prior.replace_after
+                        || self.status() == PageStatus::Complete
+                }) {
                     self.displayed_previous = None;
                 }
                 PageUpdate::Applied

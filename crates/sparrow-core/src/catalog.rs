@@ -1,16 +1,16 @@
-use std::{ops::Range, sync::Arc};
+use std::{collections::HashSet, ops::Range, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use url::Url;
 
 use crate::{
     domain::{
-        CHANNEL_ID_PREFIX, CatalogGeneration, ChannelDetails, ChannelGroupView, ChannelIcon,
-        ChannelId, ChannelQuality, ChannelQuery, ChannelSummary, ChannelVariant, CoreError,
-        CursorQueryHash, GuideProgramme, GuideWindowChannel, GuideWindowQuery, Page, PageLimit,
-        PageRequest, PageTextArena, ProgrammeSearchHit, ProgrammeSummary, ResolvedPlaybackSource,
-        ScheduleQuery, SearchRequest, SearchResults, SearchTerm, SecretPlaybackLocation,
-        SelectionPrefix, SourceConfiguration, TextSlot,
+        CHANNEL_ID_PREFIX, CatalogGeneration, ChannelDetails, ChannelDirection, ChannelFamily,
+        ChannelGroupView, ChannelIcon, ChannelId, ChannelQuality, ChannelQuery, ChannelSummary,
+        ChannelVariant, CoreError, CursorQueryHash, GuideProgramme, GuideWindowChannel,
+        GuideWindowQuery, Page, PageLimit, PageRequest, PageTextArena, ProgrammeSearchHit,
+        ProgrammeSummary, ResolvedPlaybackSource, ScheduleQuery, SearchRequest, SearchResults,
+        SearchTerm, SecretPlaybackLocation, SelectionPrefix, SourceConfiguration, TextSlot,
     },
     m3u::ParsedChannel,
     ports::{CatalogCacheMapping, SnapshotCandidate, SnapshotStore},
@@ -142,6 +142,50 @@ impl ChannelCatalog {
             query.page(),
             query_hash,
             |range| self.project_channels_range(range),
+        )
+    }
+
+    pub(crate) fn channel_family(&self, number: u32) -> Option<ChannelFamily> {
+        let index = self.flat.channel_index_by_number(number)?;
+        Some(self.project_channel_family(index))
+    }
+
+    pub(crate) fn adjacent_channel_family(
+        &self,
+        number: u32,
+        direction: ChannelDirection,
+        excluded_groups: &HashSet<String>,
+    ) -> Option<ChannelFamily> {
+        let anchor = self.flat.channel_index_by_number(number)?;
+        let current = self.flat.channel_family_range(anchor);
+        let mut index = match direction {
+            ChannelDirection::Previous => current.start.checked_sub(1)?,
+            ChannelDirection::Next => current.end,
+        };
+        let channels = self.flat.channels_hot();
+        while let Some(channel) = channels.get(index) {
+            let group_index = channel.group_index.get() as usize;
+            if !excluded_groups.contains(self.flat.group_name(group_index)) {
+                return Some(self.project_channel_family(index));
+            }
+
+            // Group records cover contiguous runs, so an excluded group costs
+            // one lookup regardless of how many Channels it contains.
+            let group = &self.flat.groups()[group_index];
+            index = match direction {
+                ChannelDirection::Previous => {
+                    (group.channel_start.get() as usize).checked_sub(1)?
+                }
+                ChannelDirection::Next => group.channel_end.get() as usize,
+            };
+        }
+        None
+    }
+
+    fn project_channel_family(&self, index: usize) -> ChannelFamily {
+        ChannelFamily::new(
+            self.generation(),
+            self.project_channels_range(self.flat.channel_family_range(index)),
         )
     }
 
