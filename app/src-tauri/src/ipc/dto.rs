@@ -10,11 +10,12 @@ pub(crate) use sparrow_client_contract::{
     ProgrammeDto, SearchResultsDto,
 };
 
-use crate::{
-    android_playback::{AndroidPlaybackAudio, AndroidPlaybackPhase, AndroidPlaybackStatus},
-    playback::{InstalledPlaybackStart, PlaybackManagerError, StartedPlayback},
-    selected_transport_stream::{AudioSelection, AudioTrack},
+use sparrow_installed_playback::{
+    AudioSelection, AudioTrack, InstalledPlaybackStart, PlaybackManagerError, PreferenceStatus,
+    StartedPlayback,
 };
+
+use crate::android_playback::{AndroidPlaybackAudio, AndroidPlaybackPhase, AndroidPlaybackStatus};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,7 +51,7 @@ pub(crate) enum PlaybackDescriptorDto {
         tracks: Vec<AudioTrack>,
         selection: AudioSelection,
         #[serde(skip_serializing_if = "Option::is_none")]
-        preference_status: Option<crate::selected_transport_stream::PreferenceStatus>,
+        preference_status: Option<PreferenceStatus>,
     },
     #[cfg(target_os = "linux")]
     #[serde(rename = "linux-mpv")]
@@ -728,7 +729,7 @@ mod tests {
                 json!({ "_tag": "cancelled" }),
             ),
             (
-                PlaybackManagerError::Mpv(crate::playback::MpvFailure::NotInstalled),
+                PlaybackManagerError::Mpv(sparrow_installed_playback::MpvFailure::NotInstalled),
                 json!({
                     "_tag": "mpv-failed",
                     "reason": "not-installed",

@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::playback::{NativeStreamHandle, PlaybackSessionId};
+use sparrow_installed_playback::{NativeStreamHandle, PlaybackSessionId};
 
 const MAX_VIEWPORT_COORDINATE: u32 = 32_768;
 const MAX_VIEWPORT_EXTENT: u32 = 32_768;
@@ -288,6 +288,7 @@ mod platform {
         objects::{Global, JByteArray, JObject, JString},
         sys::{jint, jsize},
     };
+    use sparrow_installed_playback::{NativeStreamHandle, PlaybackSessionId};
     use tauri::tao::platform::android::prelude::main_android_context;
 
     use super::{
@@ -295,10 +296,7 @@ mod platform {
         AndroidPlaybackStatus, AndroidPlaybackViewport, RemainderReadAction, RemainderStop,
         parse_status_json, remainder_read_action,
     };
-    use crate::{
-        playback::{NativeStreamHandle, PlaybackSessionId},
-        runtime::InstalledRuntime,
-    };
+    use crate::runtime::InstalledRuntime;
 
     const MAX_NATIVE_READ_BYTES: usize = 64 * 1024;
     const MAX_COALESCED_ACTOR_READS: usize = 16;

@@ -8,14 +8,15 @@ mod guide_window;
 
 pub(crate) use guide_window::GuideWindowInput;
 
-use crate::{
-    android_playback::{AndroidPlaybackControls, AndroidPlaybackIdentity, AndroidPlaybackViewport},
-    playback::{
-        MpvPlaybackControl, MpvVolume, NativeStreamHandle, PlaybackRestartIntent, PlaybackSessionId,
-    },
-    selected_transport_stream::AudioTrackId,
-};
 use sparrow_installed_catalog::SourceConfigurationUpdate;
+use sparrow_installed_playback::{
+    AudioTrackId, MpvPlaybackControl, MpvVolume, NativeStreamHandle, PlaybackRestartIntent,
+    PlaybackSessionId,
+};
+
+use crate::android_playback::{
+    AndroidPlaybackControls, AndroidPlaybackIdentity, AndroidPlaybackViewport,
+};
 
 use super::dto::ClientErrorDto;
 

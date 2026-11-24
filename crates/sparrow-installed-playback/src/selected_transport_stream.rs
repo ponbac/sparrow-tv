@@ -26,10 +26,10 @@ const AUDIO_TRACK_ID_DOMAIN: &[u8] = b"sparrow-tv/audio-track/v1\0";
 /// A restart-stable opaque identity for one elementary audio stream.
 #[derive(Clone, Eq, Hash, PartialEq, Serialize)]
 #[serde(transparent)]
-pub(crate) struct AudioTrackId(String);
+pub struct AudioTrackId(String);
 
 impl AudioTrackId {
-    pub(crate) fn parse(value: String) -> Result<Self, TransportStreamError> {
+    pub fn parse(value: String) -> Result<Self, TransportStreamError> {
         let Some(digest) = value.strip_prefix(AUDIO_TRACK_ID_PREFIX) else {
             return Err(TransportStreamError::InvalidSelection);
         };
@@ -121,7 +121,7 @@ impl TransportReader {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct AudioTrack {
+pub struct AudioTrack {
     id: AudioTrackId,
     #[serde(skip_serializing_if = "Option::is_none")]
     language: Option<String>,
@@ -157,7 +157,7 @@ impl AudioTrack {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "_tag", rename_all = "kebab-case")]
-pub(crate) enum AudioSelection {
+pub enum AudioSelection {
     None,
     Selected {
         #[serde(rename = "trackId")]
@@ -183,7 +183,7 @@ impl AudioSelection {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum AudioSelectionReason {
+pub enum AudioSelectionReason {
     Requested,
     SavedPreference,
     CurrentSession,
@@ -192,7 +192,7 @@ pub(crate) enum AudioSelectionReason {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum MissingAudioSelection {
+pub enum MissingAudioSelection {
     Requested,
     SavedPreference,
 }
@@ -211,14 +211,14 @@ pub(crate) enum SelectionRequest {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum PreferenceStatus {
+pub enum PreferenceStatus {
     Saved,
     NotSaved,
     Unchanged,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub(crate) enum TransportStreamError {
+pub enum TransportStreamError {
     #[error("transport stream discovery exceeded its bound")]
     DiscoveryBound,
     #[error("transport stream discovery timed out")]
@@ -236,7 +236,7 @@ pub(crate) enum TransportStreamError {
 }
 
 impl TransportStreamError {
-    pub(crate) const fn retryable(self) -> bool {
+    pub const fn retryable(self) -> bool {
         matches!(
             self,
             Self::DiscoveryBound
@@ -246,7 +246,7 @@ impl TransportStreamError {
         )
     }
 
-    pub(crate) const fn reason(self) -> &'static str {
+    pub const fn reason(self) -> &'static str {
         match self {
             Self::DiscoveryBound => "programme-discovery-bounded",
             Self::DiscoveryTimedOut => "programme-discovery-timed-out",

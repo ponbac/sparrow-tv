@@ -13,26 +13,24 @@ use sparrow_core::{
     RefreshTrigger, SearchRequest, SearchResults, SearchTerm,
 };
 use sparrow_installed_catalog::{CatalogStartupError, InstalledCatalog, PreparedInstalledCatalog};
+use sparrow_installed_playback::{
+    InstalledPlaybackStart, NativeStreamHandle, PlaybackManager, PlaybackManagerError,
+    PlaybackRestartIntent, PlaybackSessionId, ScreenWake,
+};
 use sparrow_source_http::HttpPlaybackAccess;
 use tokio::sync::{Mutex, Notify, watch};
 
 use crate::{
     android_playback,
-    audio_preferences::AudioPreferenceStore,
     ipc::{
         dto::{CatalogStatusDto, ClientErrorDto, CoreEventDto},
         input::{PlaybackEngineInput, SearchRequestId, SourceConfigurationInputDto},
         subscriptions::SubscriptionRegistry,
     },
-    playback::{
-        InstalledPlaybackStart, NativeStreamHandle, PlaybackManager, PlaybackManagerError,
-        PlaybackRestartIntent, PlaybackSessionId,
-    },
-    screen_wake::ScreenWake,
 };
 
 #[cfg(test)]
-use crate::screen_wake::noop_screen_wake;
+use sparrow_installed_playback::noop_screen_wake;
 
 const MAX_TRACKED_SEARCH_REQUESTS: usize = 64;
 
@@ -210,11 +208,9 @@ impl InstalledRuntime {
         let private_root = catalog.private_root().to_path_buf();
         let playback_access =
             HttpPlaybackAccess::new().map_err(|_| InstalledStartupError::PlaybackAdapter)?;
-        let audio_preferences = AudioPreferenceStore::open(&private_root);
-        let playback = Arc::new(PlaybackManager::new_with_screen_wake(
+        let playback = Arc::new(PlaybackManager::new(
             catalog.core().clone(),
             playback_access,
-            audio_preferences,
             private_root,
             screen_wake,
         ));
@@ -597,7 +593,7 @@ impl InstalledRuntime {
     pub(crate) async fn control_mpv(
         &self,
         session_id: PlaybackSessionId,
-        control: crate::playback::MpvPlaybackControl,
+        control: sparrow_installed_playback::MpvPlaybackControl,
     ) -> Result<(), PlaybackManagerError> {
         self.playback.control_mpv(session_id, control).await
     }

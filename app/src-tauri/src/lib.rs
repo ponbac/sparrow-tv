@@ -5,14 +5,11 @@ use sparrow_installed_catalog::CatalogStartupError;
 mod agent_control;
 mod android_lifecycle;
 mod android_playback;
-mod audio_preferences;
 mod ipc;
-mod playback;
 #[cfg(all(target_os = "linux", feature = "linux-playback-lab"))]
 mod playback_lab;
 mod runtime;
 mod screen_wake;
-mod selected_transport_stream;
 
 /// Runs the installed Sparrow shell.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

@@ -575,7 +575,7 @@ The root redirects to `/app/`. Raw M3U/EPG download routes and the arbitrary `/p
 | `app/src-tauri/` | Tauri crate/config/capabilities plus composition root |
 | `crates/sparrow-installed-catalog/`, `crates/sparrow-snapshot-store/` | Atomic installed configuration and Source Snapshot adapters |
 | `app/src-tauri/src/commands.rs`, `events.rs`, `lifecycle.rs` | IPC/event translation and lifecycle reporting |
-| `app/src-tauri/src/playback/` | Native request/handle ownership, TS selection, Audio Track preference, mpv |
+| `crates/sparrow-installed-playback/src/` | Native request and handle ownership, TS selection, Audio Track preference, mpv |
 | `tests/contract/` | Shared JSON contract cases exercised through HTTP and IPC adapters |
 | `tests/private/` (gitignored) | Local provider acceptance configuration/scripts with redacted output |
 

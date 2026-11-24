@@ -27,7 +27,7 @@ use sparrow_source_http::{
 };
 use tempfile::TempDir;
 
-use crate::screen_wake::ScreenWake;
+use crate::screen_wake::{ScreenWake, ScreenWakeError};
 
 use super::*;
 use crate::selected_transport_stream::{AudioCodec, AudioSelectionReason, MissingAudioSelection};
@@ -1642,7 +1642,7 @@ impl RecordingScreenWake {
 }
 
 impl ScreenWake for RecordingScreenWake {
-    fn set_active(&self, active: bool) -> Result<(), ()> {
+    fn set_active(&self, active: bool) -> Result<(), ScreenWakeError> {
         self.states.lock().expect("screen wake lock").push(active);
         Ok(())
     }
