@@ -1,330 +1,53 @@
-use serde::Deserialize;
+use sparrow_installed_playback::{
+    PlaybackSessionId,
+    android::{
+        AndroidPlaybackControls, AndroidPlaybackError, AndroidPlaybackIdentity,
+        AndroidPlaybackStatus, AndroidPlaybackViewport,
+    },
+};
 
-use crate::playback::{NativeStreamHandle, PlaybackSessionId};
-
-const MAX_VIEWPORT_COORDINATE: u32 = 32_768;
-const MAX_VIEWPORT_EXTENT: u32 = 32_768;
-#[cfg(any(test, target_os = "android"))]
-const MAX_SAFE_COUNTER: u64 = 9_007_199_254_740_991;
-
-/// Physical-pixel rectangle occupied by the Android native video surface.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct AndroidPlaybackViewport {
-    left: u32,
-    top: u32,
-    width: u32,
-    height: u32,
-    fullscreen: bool,
-}
-
-impl AndroidPlaybackViewport {
-    pub(crate) fn parse(
-        left: u32,
-        top: u32,
-        width: u32,
-        height: u32,
-        fullscreen: bool,
-    ) -> Result<Self, AndroidPlaybackError> {
-        if left > MAX_VIEWPORT_COORDINATE
-            || top > MAX_VIEWPORT_COORDINATE
-            || width == 0
-            || width > MAX_VIEWPORT_EXTENT
-            || height == 0
-            || height > MAX_VIEWPORT_EXTENT
-        {
-            return Err(AndroidPlaybackError);
-        }
-        Ok(Self {
-            left,
-            top,
-            width,
-            height,
-            fullscreen,
-        })
-    }
-
-    #[cfg(target_os = "android")]
-    const fn left(self) -> u32 {
-        self.left
-    }
-
-    #[cfg(target_os = "android")]
-    const fn top(self) -> u32 {
-        self.top
-    }
-
-    #[cfg(target_os = "android")]
-    const fn width(self) -> u32 {
-        self.width
-    }
-
-    #[cfg(target_os = "android")]
-    const fn height(self) -> u32 {
-        self.height
-    }
-
-    #[cfg(target_os = "android")]
-    const fn fullscreen(self) -> bool {
-        self.fullscreen
-    }
-}
-
-/// Bounded presentation controls applied together on Android's UI thread.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct AndroidPlaybackControls {
-    volume: f32,
-    muted: bool,
-    paused: bool,
-}
-
-impl AndroidPlaybackControls {
-    pub(crate) fn parse(
-        volume: f64,
-        muted: bool,
-        paused: bool,
-    ) -> Result<Self, AndroidPlaybackError> {
-        if !volume.is_finite() || !(0.0..=1.0).contains(&volume) {
-            return Err(AndroidPlaybackError);
-        }
-        Ok(Self {
-            volume: volume as f32,
-            muted,
-            paused,
-        })
-    }
-
-    #[cfg(target_os = "android")]
-    const fn volume(self) -> f32 {
-        self.volume
-    }
-
-    #[cfg(target_os = "android")]
-    const fn muted(self) -> bool {
-        self.muted
-    }
-
-    #[cfg(target_os = "android")]
-    const fn paused(self) -> bool {
-        self.paused
-    }
-}
-
-/// Opaque identity shared by the Rust stream actor and Android DataSource.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct AndroidPlaybackIdentity {
-    session_id: PlaybackSessionId,
-    stream_handle: NativeStreamHandle,
-}
-
-impl AndroidPlaybackIdentity {
-    pub(crate) const fn new(
-        session_id: PlaybackSessionId,
-        stream_handle: NativeStreamHandle,
-    ) -> Self {
-        Self {
-            session_id,
-            stream_handle,
-        }
-    }
-
-    pub(crate) fn session_id(&self) -> &PlaybackSessionId {
-        &self.session_id
-    }
-
-    pub(crate) fn stream_handle(&self) -> &NativeStreamHandle {
-        &self.stream_handle
-    }
-}
-
-/// Safe aggregate Android player phases returned to the WebView controller.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) enum AndroidPlaybackPhase {
-    Starting,
-    Playing,
-    Paused,
-    Failed,
-    Stopped,
-}
-
-/// What Media3 is doing with the Audio Track of the transport it was given.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) enum AndroidPlaybackAudio {
-    /// The player has not yet settled what it can play.
-    Pending,
-    /// The device is decoding the track: with a decoder of its own, or in
-    /// the audio output it hands the track to undecoded.
-    DeviceDecoder,
-    /// The decoder bundled with the app is decoding the track.
-    BundledDecoder,
-    /// The transport carries an audio track that nothing here can decode.
-    Undecodable,
-    /// The player found no audio track in the transport.
-    Absent,
-}
-
-/// Aggregate-only Android player status. It cannot contain provider data.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct AndroidPlaybackStatus {
-    phase: AndroidPlaybackPhase,
-    decoded_frames: u64,
-    dropped_frames: u64,
-    buffered_duration_ms: u64,
-    silent: bool,
-    audio: AndroidPlaybackAudio,
-}
-
-impl AndroidPlaybackStatus {
-    pub(crate) const fn phase(self) -> AndroidPlaybackPhase {
-        self.phase
-    }
-
-    pub(crate) const fn dropped_frames(self) -> u64 {
-        self.dropped_frames
-    }
-
-    pub(crate) const fn decoded_frames(self) -> u64 {
-        self.decoded_frames
-    }
-
-    pub(crate) const fn buffered_duration_ms(self) -> u64 {
-        self.buffered_duration_ms
-    }
-
-    pub(crate) const fn silent(self) -> bool {
-        self.silent
-    }
-
-    pub(crate) const fn audio(self) -> AndroidPlaybackAudio {
-        self.audio
-    }
-}
-
-#[cfg(any(test, target_os = "android"))]
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct AndroidPlaybackStatusWire {
-    state: AndroidPlaybackPhase,
-    decoded_frames: u64,
-    dropped_frames: u64,
-    buffered_duration_ms: u64,
-    silent: bool,
-    audio: AndroidPlaybackAudio,
-}
-
-/// Privacy-safe Android adapter failure.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("Android native playback is unavailable")]
-pub(crate) struct AndroidPlaybackError;
-
-#[cfg(any(test, target_os = "android"))]
-fn parse_status_json(value: &str) -> Result<AndroidPlaybackStatus, AndroidPlaybackError> {
-    let status: AndroidPlaybackStatusWire =
-        serde_json::from_str(value).map_err(|_| AndroidPlaybackError)?;
-    if status.decoded_frames > MAX_SAFE_COUNTER
-        || status.dropped_frames > MAX_SAFE_COUNTER
-        || status.buffered_duration_ms > MAX_SAFE_COUNTER
-    {
-        return Err(AndroidPlaybackError);
-    }
-    Ok(AndroidPlaybackStatus {
-        phase: status.state,
-        decoded_frames: status.decoded_frames,
-        dropped_frames: status.dropped_frames,
-        buffered_duration_ms: status.buffered_duration_ms,
-        silent: status.silent,
-        audio: status.audio,
-    })
-}
-
-#[cfg(any(test, target_os = "android"))]
-#[derive(Clone, Copy)]
-enum RemainderStop<'a> {
-    Exact(&'a AndroidPlaybackIdentity),
-    Session(&'a PlaybackSessionId),
-    All,
-}
-
-#[cfg(any(test, target_os = "android"))]
-impl RemainderStop<'_> {
-    fn matches(self, identity: &AndroidPlaybackIdentity) -> bool {
-        match self {
-            Self::Exact(expected) => expected == identity,
-            Self::Session(session_id) => &identity.session_id == session_id,
-            Self::All => true,
-        }
-    }
-}
-
-#[cfg(any(test, target_os = "android"))]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RemainderReadAction {
-    Serve,
-    PreserveForOwner,
-}
-
-#[cfg(any(test, target_os = "android"))]
-fn remainder_read_action(
-    buffered: &AndroidPlaybackIdentity,
-    requested: &AndroidPlaybackIdentity,
-) -> RemainderReadAction {
-    if buffered == requested {
-        RemainderReadAction::Serve
-    } else {
-        RemainderReadAction::PreserveForOwner
-    }
+/// Tauri's Java adapter can wait for the Android main thread. Keep that wait
+/// on a blocking worker while the shared gate awaits the result.
+pub(crate) async fn blocking<Output: Send + 'static>(
+    operation: impl FnOnce() -> Result<Output, AndroidPlaybackError> + Send + 'static,
+) -> Result<Output, AndroidPlaybackError> {
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|_| AndroidPlaybackError)?
 }
 
 #[cfg(target_os = "android")]
 mod platform {
-    use std::{
-        panic::{AssertUnwindSafe, catch_unwind},
-        sync::{Mutex, OnceLock, Weak},
-    };
+    use std::sync::{Arc, OnceLock, Weak};
 
     use jni::{
         Env, EnvUnowned, JValue, jni_sig, jni_str,
         objects::{Global, JByteArray, JObject, JString},
         sys::{jint, jsize},
     };
+    use sparrow_installed_playback::{NativeStreamHandle, PlaybackSessionId};
     use tauri::tao::platform::android::prelude::main_android_context;
+
+    use sparrow_installed_playback::android::AndroidMedia3Reader;
 
     use super::{
         AndroidPlaybackControls, AndroidPlaybackError, AndroidPlaybackIdentity,
-        AndroidPlaybackStatus, AndroidPlaybackViewport, RemainderReadAction, RemainderStop,
-        parse_status_json, remainder_read_action,
+        AndroidPlaybackStatus, AndroidPlaybackViewport,
     };
-    use crate::{
-        playback::{NativeStreamHandle, PlaybackSessionId},
-        runtime::InstalledRuntime,
-    };
+    use crate::runtime::InstalledRuntime;
 
-    const MAX_NATIVE_READ_BYTES: usize = 64 * 1024;
-    const MAX_COALESCED_ACTOR_READS: usize = 16;
     const NATIVE_READ_FAILED: jint = -2;
-
-    static BRIDGE: OnceLock<AndroidPlaybackBridge> = OnceLock::new();
-
-    struct AndroidPlaybackBridge {
-        runtime: Weak<InstalledRuntime>,
-        remainder: Mutex<Option<BufferedRead>>,
-    }
-
-    struct BufferedRead {
-        identity: AndroidPlaybackIdentity,
-        bytes: Vec<u8>,
-        offset: usize,
-    }
+    static READER: OnceLock<AndroidMedia3Reader> = OnceLock::new();
 
     pub(crate) fn bind_runtime(
         runtime: Weak<InstalledRuntime>,
     ) -> Result<(), AndroidPlaybackError> {
-        BRIDGE
-            .set(AndroidPlaybackBridge {
-                runtime,
-                remainder: Mutex::new(None),
-            })
+        let runtime = runtime.upgrade().ok_or(AndroidPlaybackError)?;
+        READER
+            .set(AndroidMedia3Reader::new(
+                tauri::async_runtime::handle().inner().clone(),
+                Arc::downgrade(runtime.playback_manager()),
+            ))
             .map_err(|_| AndroidPlaybackError)
     }
 
@@ -377,7 +100,7 @@ mod platform {
                 .cast_local::<JString>(value)?
                 .try_to_string(environment)
         })?;
-        parse_status_json(&wire)
+        AndroidPlaybackStatus::parse_json(&wire)
     }
 
     pub(super) fn set_controls(
@@ -450,7 +173,6 @@ mod platform {
         if !stopped {
             return Err(AndroidPlaybackError);
         }
-        forget_remainder(RemainderStop::Exact(identity));
         Ok(())
     }
 
@@ -469,7 +191,6 @@ mod platform {
         if !stopped {
             return Err(AndroidPlaybackError);
         }
-        forget_remainder(RemainderStop::Session(session_id));
         Ok(())
     }
 
@@ -490,7 +211,6 @@ mod platform {
         if !suspended {
             return Err(AndroidPlaybackError);
         }
-        forget_remainder(RemainderStop::Session(session_id));
         Ok(())
     }
 
@@ -508,7 +228,6 @@ mod platform {
         if !suspended {
             return Err(AndroidPlaybackError);
         }
-        forget_remainder(RemainderStop::All);
         Ok(())
     }
 
@@ -526,7 +245,6 @@ mod platform {
         if !stopped {
             return Err(AndroidPlaybackError);
         }
-        forget_remainder(RemainderStop::All);
         Ok(())
     }
 
@@ -547,98 +265,6 @@ mod platform {
                 operation(environment, activity.as_ref())
             })
             .map_err(|_| AndroidPlaybackError)
-    }
-
-    fn forget_remainder(scope: RemainderStop<'_>) {
-        let Some(bridge) = BRIDGE.get() else {
-            return;
-        };
-        let Ok(mut remainder) = bridge.remainder.lock() else {
-            return;
-        };
-        if remainder
-            .as_ref()
-            .is_some_and(|buffered| scope.matches(&buffered.identity))
-        {
-            *remainder = None;
-        }
-    }
-
-    fn read_native(
-        identity: AndroidPlaybackIdentity,
-        maximum: usize,
-    ) -> Result<Vec<u8>, AndroidPlaybackError> {
-        let bridge = BRIDGE.get().ok_or(AndroidPlaybackError)?;
-        if let Some(bytes) = take_remainder(bridge, &identity, maximum)? {
-            return Ok(bytes);
-        }
-        let runtime = bridge.runtime.upgrade().ok_or(AndroidPlaybackError)?;
-        let session_id = identity.session_id().clone();
-        let stream_handle = identity.stream_handle().clone();
-        let (returned, overflow) = catch_unwind(AssertUnwindSafe(|| {
-            tauri::async_runtime::block_on(async move {
-                let mut returned = Vec::with_capacity(maximum);
-                let mut overflow = None;
-                for _ in 0..MAX_COALESCED_ACTOR_READS {
-                    let next = runtime
-                        .read_playback(session_id.clone(), stream_handle.clone())
-                        .await;
-                    let mut bytes = match next {
-                        Ok(bytes) => bytes,
-                        Err(_) if !returned.is_empty() => break,
-                        Err(_) => return Err(AndroidPlaybackError),
-                    };
-                    if bytes.is_empty() {
-                        break;
-                    }
-                    let remaining = maximum - returned.len();
-                    if bytes.len() > remaining {
-                        overflow = Some(bytes.split_off(remaining));
-                    }
-                    returned.extend_from_slice(&bytes);
-                    if returned.len() == maximum || overflow.is_some() {
-                        break;
-                    }
-                }
-                Ok::<_, AndroidPlaybackError>((returned, overflow))
-            })
-        }))
-        .map_err(|_| AndroidPlaybackError)??;
-        if let Some(bytes) = overflow {
-            let mut remainder = bridge.remainder.lock().map_err(|_| AndroidPlaybackError)?;
-            *remainder = Some(BufferedRead {
-                identity,
-                bytes,
-                offset: 0,
-            });
-        }
-        Ok(returned)
-    }
-
-    fn take_remainder(
-        bridge: &AndroidPlaybackBridge,
-        identity: &AndroidPlaybackIdentity,
-        maximum: usize,
-    ) -> Result<Option<Vec<u8>>, AndroidPlaybackError> {
-        let mut slot = bridge.remainder.lock().map_err(|_| AndroidPlaybackError)?;
-        let Some(buffered) = slot.as_mut() else {
-            return Ok(None);
-        };
-        if remainder_read_action(&buffered.identity, identity)
-            == RemainderReadAction::PreserveForOwner
-        {
-            return Ok(None);
-        }
-        let end = buffered
-            .offset
-            .saturating_add(maximum)
-            .min(buffered.bytes.len());
-        let bytes = buffered.bytes[buffered.offset..end].to_vec();
-        buffered.offset = end;
-        if buffered.offset == buffered.bytes.len() {
-            *slot = None;
-        }
-        Ok(Some(bytes))
     }
 
     fn write_native_bytes(
@@ -667,10 +293,12 @@ mod platform {
                 Ok(stream_handle) => stream_handle,
                 Err(_) => return Ok(NATIVE_READ_FAILED),
             };
-        let maximum = requested.min(MAX_NATIVE_READ_BYTES);
-        let bytes = match read_native(
+        let Some(reader) = READER.get() else {
+            return Ok(NATIVE_READ_FAILED);
+        };
+        let bytes = match reader.read(
             AndroidPlaybackIdentity::new(session_id, stream_handle),
-            maximum,
+            requested,
         ) {
             Ok(bytes) => bytes,
             Err(_) => return Ok(NATIVE_READ_FAILED),
@@ -826,110 +454,4 @@ pub(crate) fn stop_all() -> Result<(), AndroidPlaybackError> {
 #[cfg(not(target_os = "android"))]
 pub(crate) fn stop_all() -> Result<(), AndroidPlaybackError> {
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn viewport_and_controls_reject_unbounded_or_non_finite_values() {
-        assert!(AndroidPlaybackViewport::parse(0, 0, 1920, 1080, false).is_ok());
-        assert!(AndroidPlaybackViewport::parse(0, 0, 0, 1080, false).is_err());
-        assert!(AndroidPlaybackViewport::parse(32_769, 0, 1, 1, true).is_err());
-        assert!(AndroidPlaybackViewport::parse(0, 0, 32_769, 1, true).is_err());
-
-        assert!(AndroidPlaybackControls::parse(0.75, false, false).is_ok());
-        assert!(AndroidPlaybackControls::parse(f64::NAN, false, false).is_err());
-        assert!(AndroidPlaybackControls::parse(-0.1, false, false).is_err());
-        assert!(AndroidPlaybackControls::parse(1.1, false, false).is_err());
-    }
-
-    #[test]
-    fn aggregate_status_is_closed_bounded_and_rejects_extra_context() {
-        assert_eq!(
-            parse_status_json(
-                r#"{"state":"playing","decodedFrames":1200,"droppedFrames":3,"bufferedDurationMs":1250,"silent":true,"audio":"bundled-decoder"}"#,
-            ),
-            Ok(AndroidPlaybackStatus {
-                phase: AndroidPlaybackPhase::Playing,
-                decoded_frames: 1_200,
-                dropped_frames: 3,
-                buffered_duration_ms: 1_250,
-                silent: true,
-                audio: AndroidPlaybackAudio::BundledDecoder,
-            })
-        );
-        for (wire, audio) in [
-            ("pending", AndroidPlaybackAudio::Pending),
-            ("device-decoder", AndroidPlaybackAudio::DeviceDecoder),
-            ("undecodable", AndroidPlaybackAudio::Undecodable),
-            ("absent", AndroidPlaybackAudio::Absent),
-        ] {
-            assert_eq!(
-                parse_status_json(&format!(
-                    r#"{{"state":"playing","decodedFrames":0,"droppedFrames":0,"bufferedDurationMs":0,"silent":false,"audio":"{wire}"}}"#,
-                ))
-                .map(AndroidPlaybackStatus::audio),
-                Ok(audio)
-            );
-        }
-        assert!(
-            parse_status_json(
-                r#"{"state":"playing","decodedFrames":0,"droppedFrames":0,"bufferedDurationMs":0,"silent":true,"audio":"c2.vendor.decoder"}"#,
-            )
-            .is_err()
-        );
-        assert!(
-            parse_status_json(
-                r#"{"state":"playing","decodedFrames":0,"droppedFrames":0,"bufferedDurationMs":0,"silent":true,"audio":"pending","url":"https://provider.invalid/private"}"#,
-            )
-            .is_err()
-        );
-        assert!(
-            parse_status_json(
-                r#"{"state":"unknown","decodedFrames":0,"droppedFrames":0,"bufferedDurationMs":0,"silent":true,"audio":"pending"}"#,
-            )
-            .is_err()
-        );
-        assert!(
-            parse_status_json(&format!(
-                r#"{{"state":"playing","decodedFrames":0,"droppedFrames":{},"bufferedDurationMs":0,"silent":true,"audio":"pending"}}"#,
-                MAX_SAFE_COUNTER + 1
-            ))
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn remainder_stop_scope_is_exact_before_it_is_session_wide() {
-        let session_id =
-            PlaybackSessionId::parse("play1_0123456789abcdef0123456789abcdef_1".to_owned())
-                .expect("fixture session parses");
-        let first = AndroidPlaybackIdentity::new(
-            session_id.clone(),
-            NativeStreamHandle::parse("stream1_0000000000000001".to_owned())
-                .expect("fixture handle parses"),
-        );
-        let second = AndroidPlaybackIdentity::new(
-            session_id.clone(),
-            NativeStreamHandle::parse("stream1_0000000000000002".to_owned())
-                .expect("fixture handle parses"),
-        );
-
-        assert!(RemainderStop::Exact(&first).matches(&first));
-        assert!(!RemainderStop::Exact(&first).matches(&second));
-        assert!(RemainderStop::Session(&session_id).matches(&first));
-        assert!(RemainderStop::Session(&session_id).matches(&second));
-        assert!(RemainderStop::All.matches(&first));
-        assert_eq!(
-            remainder_read_action(&first, &second),
-            RemainderReadAction::PreserveForOwner,
-            "a late old read cannot discard a new generation's buffered bytes"
-        );
-        assert_eq!(
-            remainder_read_action(&first, &first),
-            RemainderReadAction::Serve
-        );
-    }
 }

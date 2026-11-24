@@ -27,9 +27,10 @@ use sparrow_source_http::{
 };
 use tempfile::TempDir;
 
-use crate::screen_wake::ScreenWake;
+use crate::screen_wake::{ScreenWake, ScreenWakeError};
 
 use super::*;
+use crate::android::{AndroidMedia3Reader, AndroidPlaybackIdentity};
 use crate::selected_transport_stream::{AudioCodec, AudioSelectionReason, MissingAudioSelection};
 
 const PRIVATE_PLAYBACK_CANARY: &str =
@@ -71,6 +72,51 @@ async fn pulls_are_bounded_lossless_and_distinguish_empty_chunks_from_eof() {
         Err(PlaybackManagerError::Cancelled)
     ));
     assert_eq!(access.tracker.active(), 0, "EOF releases the body");
+}
+
+#[tokio::test]
+async fn media3_buffered_bytes_are_released_with_the_exact_transport_generation() {
+    let fixture = CoreFixture::one(PRIVATE_PLAYBACK_CANARY).await;
+    let access = FakeAccess::new([
+        OpenPlan::Stream(vec![StreamStep::Chunk(Bytes::from_static(b"retired"))]),
+        OpenPlan::Stream(vec![
+            StreamStep::Chunk(Bytes::from_static(b"next")),
+            StreamStep::Chunk(Bytes::from_static(b"stream")),
+        ]),
+    ]);
+    let manager = Arc::new(PlaybackManager::with_access(
+        Arc::clone(&fixture.core),
+        access,
+    ));
+    let reader = Arc::new(AndroidMedia3Reader::new(
+        tokio::runtime::Handle::current(),
+        Arc::downgrade(&manager),
+    ));
+    let pull = |started: &StartedPlayback, count| {
+        let reader = Arc::clone(&reader);
+        let identity = AndroidPlaybackIdentity::new(
+            started.session_id().clone(),
+            started.stream_handle().clone(),
+        );
+        tokio::task::spawn_blocking(move || reader.read(identity, count))
+    };
+    let retired = manager
+        .start(session(31), fixture.channel.clone())
+        .await
+        .expect("first stream opens");
+    assert_eq!(pull(&retired, 1).await.unwrap().unwrap(), b"r");
+
+    let replacement = manager
+        .reopen(retired.session_id().clone())
+        .await
+        .expect("the exact stream is replaced");
+    assert!(pull(&retired, 1).await.unwrap().is_err());
+    assert_eq!(pull(&replacement, 6).await.unwrap().unwrap(), b"nextst");
+    assert!(pull(&retired, 1).await.unwrap().is_err());
+    assert_eq!(
+        pull(&replacement, usize::MAX).await.unwrap().unwrap(),
+        b"ream"
+    );
 }
 
 #[tokio::test]
@@ -1642,7 +1688,7 @@ impl RecordingScreenWake {
 }
 
 impl ScreenWake for RecordingScreenWake {
-    fn set_active(&self, active: bool) -> Result<(), ()> {
+    fn set_active(&self, active: bool) -> Result<(), ScreenWakeError> {
         self.states.lock().expect("screen wake lock").push(active);
         Ok(())
     }
