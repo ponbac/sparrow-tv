@@ -120,7 +120,10 @@ pub enum TvPlaybackCommand {
         target: TvTuneTarget,
         repeat: bool,
     },
-    Zap(TvTuneTarget),
+    Zap {
+        target: TvTuneTarget,
+        revision: u64,
+    },
     Pause,
     Resume,
     Restart,
@@ -212,6 +215,8 @@ pub struct TvPlaybackSnapshot {
     pub phase: TvPlaybackPhase,
     pub selected: Option<TvTuneTarget>,
     pub pending_zap: Option<TvTuneTarget>,
+    /// Advances when the owner cancels a zap sequence, even if no target was queued yet.
+    pub zap_revision: u64,
     pub last_played: Option<TvTuneTarget>,
     pub controls: TvPlaybackControls,
     pub audio: Option<TvPlaybackAudio>,
@@ -228,6 +233,7 @@ impl Default for TvPlaybackSnapshot {
             phase: TvPlaybackPhase::Idle,
             selected: None,
             pending_zap: None,
+            zap_revision: 0,
             last_played: None,
             controls: TvPlaybackControls::default(),
             audio: None,

@@ -254,8 +254,11 @@ impl Owner {
                     self.select(target, self.snapshot.controls.fullscreen);
                 }
             }
-            Command::Zap(target) => {
-                if self.can_tune() && self.snapshot.selected.is_some() {
+            Command::Zap { target, revision } => {
+                if revision == self.snapshot.zap_revision
+                    && self.can_tune()
+                    && self.snapshot.selected.is_some()
+                {
                     self.snapshot.pending_zap = Some(target);
                     self.zap_at = Some(Instant::now() + ZAP_DELAY);
                 }
@@ -564,13 +567,13 @@ impl Owner {
         {
             return;
         }
+        self.cancel_zap();
         if matches!(self.snapshot.phase, Phase::Paused(_)) {
             if cause == TvPauseCause::User {
                 self.snapshot.phase = Phase::Paused(cause);
             }
             return;
         }
-        self.cancel_zap();
         self.audio_request = None;
         self.snapshot.phase = Phase::Pausing;
         if self
@@ -1096,6 +1099,7 @@ impl Owner {
             },
             visible_host,
             last_played,
+            zap_revision: self.snapshot.zap_revision,
             ..Snapshot::default()
         };
         self.cancel_deadlines();
@@ -1141,6 +1145,7 @@ impl Owner {
     fn cancel_zap(&mut self) {
         self.zap_at = None;
         self.snapshot.pending_zap = None;
+        self.snapshot.zap_revision = self.snapshot.zap_revision.wrapping_add(1);
     }
 
     fn current_picture(&self) -> Option<&TvPresentationKey> {

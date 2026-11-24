@@ -176,11 +176,14 @@ impl GuideSurface {
         };
         self.playback.zap_running = true;
         let revision = self.playback.tune_revision;
+        let zap_revision = self.playback.state.zap_revision;
         let activation = self.activation;
         cx.spawn(async move |view, cx| {
             let target = query.await.ok().flatten().flatten();
             let _ = view.update(cx, |view, cx| {
-                if revision != view.playback.tune_revision {
+                if revision != view.playback.tune_revision
+                    || zap_revision != view.playback.state.zap_revision
+                {
                     return;
                 }
                 view.playback.zap_running = false;
@@ -192,7 +195,10 @@ impl GuideSurface {
                     return;
                 }
                 if let Some(target) = target
-                    && playback::send(Command::Zap(target.clone()))
+                    && playback::send(Command::Zap {
+                        target: target.clone(),
+                        revision: zap_revision,
+                    })
                 {
                     view.playback.zap_target = Some(target);
                 }

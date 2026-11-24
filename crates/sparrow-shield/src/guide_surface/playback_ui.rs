@@ -126,6 +126,10 @@ impl PlaybackUi {
 
     fn cancel_zap(&mut self) {
         self.tune_revision = self.tune_revision.wrapping_add(1);
+        self.reset_zap();
+    }
+
+    fn reset_zap(&mut self) {
         self.zap_keys.clear();
         self.zap_target = None;
         self.zap_running = false;
@@ -282,6 +286,9 @@ impl GuideSurface {
             && snapshot.audio == self.playback.state.audio
             && snapshot.visible_host == self.playback.state.visible_host
             && snapshot.quality_fallback == self.playback.state.quality_fallback;
+        if snapshot.zap_revision != self.playback.state.zap_revision {
+            self.playback.reset_zap();
+        }
         self.playback.state = snapshot;
         if frame_only {
             return;

@@ -463,7 +463,12 @@ async fn held_center_does_not_fullscreen_and_zap_commits_only_the_latest_target(
     let (fixture, mut owner) = setup();
     visible(&mut owner, 1).await;
     let key = tune(&mut owner, target(1)).await;
-    owner.command(Command::Zap(target(2))).await;
+    owner
+        .command(Command::Zap {
+            target: target(2),
+            revision: owner.snapshot.zap_revision,
+        })
+        .await;
     owner
         .command(Command::Tune {
             target: target(1),
@@ -485,8 +490,15 @@ async fn held_center_does_not_fullscreen_and_zap_commits_only_the_latest_target(
             .calls()
             .ends_with(&[Call::Viewport(key, Some(true))])
     );
-    owner.command(Command::Zap(target(2))).await;
-    owner.command(Command::Zap(target(3))).await;
+    let revision = owner.snapshot.zap_revision;
+    for number in [2, 3] {
+        owner
+            .command(Command::Zap {
+                target: target(number),
+                revision,
+            })
+            .await;
+    }
     owner
         .command(Command::Tune {
             target: target(1),
@@ -505,6 +517,47 @@ async fn held_center_does_not_fullscreen_and_zap_commits_only_the_latest_target(
     open(&mut owner).await;
     assert!(fixture.calls().ends_with(&[Call::Open(target(3).channel)]));
     assert!(owner.snapshot.controls.fullscreen);
+}
+
+#[tokio::test]
+async fn pause_and_host_suspension_reject_zaps_from_a_cancelled_sequence() {
+    for (cancel, resume) in [
+        (Command::Pause, Command::Resume),
+        (Command::HostStopped(1), Command::HostStarted(1)),
+    ] {
+        let (_, mut owner) = setup();
+        visible(&mut owner, 1).await;
+        tune(&mut owner, target(1)).await;
+        let revision = owner.snapshot.zap_revision;
+        owner
+            .command(Command::Zap {
+                target: target(2),
+                revision,
+            })
+            .await;
+        assert_eq!(owner.snapshot.pending_zap, Some(target(2)));
+
+        owner.command(cancel).await;
+        owner.command(resume).await;
+        assert_eq!(owner.snapshot.selected, Some(target(1)));
+        assert!(owner.snapshot.pending_zap.is_none());
+        assert_ne!(owner.snapshot.zap_revision, revision);
+
+        owner
+            .command(Command::Zap {
+                target: target(3),
+                revision,
+            })
+            .await;
+        assert!(owner.snapshot.pending_zap.is_none());
+        owner
+            .command(Command::Zap {
+                target: target(2),
+                revision: owner.snapshot.zap_revision,
+            })
+            .await;
+        assert_eq!(owner.snapshot.pending_zap, Some(target(2)));
+    }
 }
 
 #[tokio::test]
