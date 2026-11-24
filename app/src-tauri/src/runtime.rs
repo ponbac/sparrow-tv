@@ -842,23 +842,12 @@ mod tests {
             },
         );
 
-        let resumed_task = tokio::spawn(resumed);
-        tokio::task::yield_now().await;
-        assert!(
-            events
-                .lock()
-                .expect("lifecycle events are readable")
-                .is_empty()
-        );
-        let suspended_task = tokio::spawn(suspended);
-        suspended_task
+        // Wait for the later signal first. Dispatch order follows submission.
+        tokio::time::timeout(std::time::Duration::from_secs(2), resumed)
             .await
-            .expect("suspend task joins")
-            .expect("suspend dispatches");
-        resumed_task
-            .await
-            .expect("resume task joins")
+            .expect("resume completes before awaiting suspend")
             .expect("resume dispatches");
+        suspended.await.expect("suspend dispatches");
 
         let events = events.lock().expect("lifecycle events are readable");
         assert_eq!(events.len(), 2);
