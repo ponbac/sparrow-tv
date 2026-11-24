@@ -1,14 +1,13 @@
 use serde::Deserialize;
 use sparrow_core::{
     ChannelGroupFilter, ChannelId, ChannelQuery, PageCursor, PageLimit, PageRequest, ScheduleQuery,
-    SearchRequest, SearchTerm, SourceConfiguration,
+    SearchRequest, SearchTerm,
 };
 
 mod guide_window;
 
 pub(crate) use guide_window::GuideWindowInput;
 
-use crate::config_store::StoredSourceConfiguration;
 use crate::{
     android_playback::{AndroidPlaybackControls, AndroidPlaybackIdentity, AndroidPlaybackViewport},
     playback::{
@@ -16,6 +15,7 @@ use crate::{
     },
     selected_transport_stream::AudioTrackId,
 };
+use sparrow_installed_catalog::SourceConfigurationUpdate;
 
 use super::dto::ClientErrorDto;
 
@@ -502,14 +502,9 @@ pub(crate) struct SourceConfigurationInputDto {
 }
 
 impl SourceConfigurationInputDto {
-    pub(crate) fn validate(
-        self,
-    ) -> Result<(StoredSourceConfiguration, SourceConfiguration), ClientErrorDto> {
-        let stored = StoredSourceConfiguration::normalized(self.m3u_location, self.epg_location);
-        let configuration =
-            sparrow_core::SparrowCore::parse_source_configuration(stored.source_input())
-                .map_err(ClientErrorDto::from)?;
-        Ok((stored, configuration))
+    pub(crate) fn validate(self) -> Result<SourceConfigurationUpdate, ClientErrorDto> {
+        SourceConfigurationUpdate::parse(self.m3u_location, self.epg_location)
+            .map_err(ClientErrorDto::from)
     }
 }
 
@@ -994,17 +989,13 @@ mod tests {
     }
 
     #[test]
-    fn source_input_is_private_normalized_and_validated_once() {
+    fn source_input_refines_locations_and_rejects_unsupported_schemes() {
         let input: SourceConfigurationInputDto = serde_json::from_value(json!({
             "m3uLocation": "  https://example.invalid/list.m3u  ",
             "epgLocation": "   "
         }))
         .expect("input shape parses");
-        let (stored, configuration) = input.validate().expect("locations validate");
-        assert!(
-            sparrow_core::SparrowCore::parse_source_configuration(stored.source_input()).is_ok()
-        );
-        assert!(!format!("{configuration:?}").contains("example.invalid"));
+        assert!(input.validate().is_ok());
 
         let invalid: SourceConfigurationInputDto = serde_json::from_value(json!({
             "m3uLocation": "file:///private/list.m3u",

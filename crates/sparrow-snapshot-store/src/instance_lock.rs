@@ -8,13 +8,13 @@ use std::fs::TryLockError;
 
 const LOCK_FILE: &str = "instance.lock";
 
-/// Holds the app-data lock for the complete installed-process lifetime.
-pub(crate) struct InstanceLock {
+/// Holds exclusive access to the installed app's private data directory.
+pub struct InstanceLock {
     _file: File,
 }
 
 impl InstanceLock {
-    pub(crate) fn acquire(private_root: &Path) -> Result<Self, InstanceLockError> {
+    pub fn acquire(private_root: &Path) -> Result<Self, InstanceLockError> {
         let path = private_root.join(LOCK_FILE);
         let file = OpenOptions::new()
             .create(true)
@@ -48,7 +48,7 @@ impl std::fmt::Debug for InstanceLock {
 
 /// A safe lock failure that never contains the app-data path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub(crate) enum InstanceLockError {
+pub enum InstanceLockError {
     #[error("another Sparrow instance is already using this app data")]
     AlreadyRunning,
     #[error("the Sparrow instance lock is unavailable")]
@@ -57,11 +57,9 @@ pub(crate) enum InstanceLockError {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{DirBuilderExt, symlink};
 
     use tempfile::TempDir;
-
-    use crate::config_store::ensure_private_directory;
 
     use super::*;
 
@@ -69,7 +67,7 @@ mod tests {
     fn excludes_a_second_instance_and_releases_on_drop() {
         let directory = TempDir::new().expect("temporary directory");
         let root = directory.path().join("private");
-        ensure_private_directory(&root).expect("private root opens");
+        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
 
         let first = InstanceLock::acquire(&root).expect("first lock succeeds");
         assert_eq!(
@@ -95,7 +93,7 @@ mod tests {
     fn refuses_a_symlinked_lock_without_changing_its_target() {
         let directory = TempDir::new().expect("temporary directory");
         let root = directory.path().join("private");
-        ensure_private_directory(&root).expect("private root opens");
+        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         let outside = directory.path().join("outside");
         fs::write(&outside, b"outside").expect("outside fixture writes");
         fs::set_permissions(&outside, fs::Permissions::from_mode(0o644))

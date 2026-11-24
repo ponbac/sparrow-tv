@@ -1012,7 +1012,7 @@ async fn mpv_unexpected_exit_releases_activity_and_wake_before_retry() {
     let mpv = Arc::new(FakeMpv::default());
     let wake = Arc::new(RecordingScreenWake::default());
     let manager = PlaybackManager::with_all_adapters(
-        Arc::clone(&fixture.core),
+        fixture.core.catalog().clone(),
         access,
         AudioPreferenceStore::disabled(),
         Arc::new(PassthroughPlaybackTransportSelector),

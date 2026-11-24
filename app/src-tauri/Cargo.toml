@@ -26,7 +26,7 @@ serde_json = "1"
 sparrow-bounded-blocking = { path = "../../crates/sparrow-bounded-blocking" }
 sparrow-client-contract = { path = "../../crates/sparrow-client-contract" }
 sparrow-core = { path = "../../crates/sparrow-core" }
-sparrow-snapshot-store = { path = "../../crates/sparrow-snapshot-store" }
+sparrow-installed-catalog = { path = "../../crates/sparrow-installed-catalog" }
 sparrow-source-http = { path = "../../crates/sparrow-source-http" }
 tauri = { version = "=2.11.5", features = [] }
 thiserror = "2"
@@ -39,5 +39,6 @@ rustls-platform-verifier = "=0.7.0"
 [dev-dependencies]
 async-trait = "0.1"
 chrono = "0.4"
+sparrow-snapshot-store = { path = "../../crates/sparrow-snapshot-store" }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt", "time"] }

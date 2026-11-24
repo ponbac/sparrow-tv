@@ -6,7 +6,7 @@ mod m3u;
 mod ports;
 mod xmltv;
 
-pub use core::{CoreEventStream, PlaybackActivityLease, SparrowCore};
+pub use core::{CatalogAccess, CoreEventStream, PlaybackActivityLease, SparrowCore};
 pub use domain::{
     CatalogGeneration, CatalogStatus, ChannelDetails, ChannelGroupFilter, ChannelGroupView,
     ChannelIcon, ChannelId, ChannelQuality, ChannelQuery, ChannelSummary, ChannelVariant,

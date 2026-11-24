@@ -573,7 +573,7 @@ The root redirects to `/app/`. Raw M3U/EPG download routes and the arbitrary `/p
 | `app/src/features/catalog/`, `search/`, `settings/` | Shared UI workflows through `SparrowClient` |
 | `app/src/features/playback/` | Exhaustive Playback Session reducer, mpegts.js loader, controls, telemetry |
 | `app/src-tauri/` | Tauri crate/config/capabilities plus composition root |
-| `app/src-tauri/src/config_store.rs`, `snapshot_store.rs` | Atomic installed configuration and Source Snapshot adapters |
+| `crates/sparrow-installed-catalog/`, `crates/sparrow-snapshot-store/` | Atomic installed configuration and Source Snapshot adapters |
 | `app/src-tauri/src/commands.rs`, `events.rs`, `lifecycle.rs` | IPC/event translation and lifecycle reporting |
 | `app/src-tauri/src/playback/` | Native request/handle ownership, TS selection, Audio Track preference, mpv |
 | `tests/contract/` | Shared JSON contract cases exercised through HTTP and IPC adapters |

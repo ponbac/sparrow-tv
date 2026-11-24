@@ -4,6 +4,7 @@ members = [
   "crates/sparrow-bounded-blocking",
   "crates/sparrow-client-contract",
   "crates/sparrow-core",
+  "crates/sparrow-installed-catalog",
   "crates/sparrow-server",
   "crates/sparrow-snapshot-store",
   "crates/sparrow-source-http",

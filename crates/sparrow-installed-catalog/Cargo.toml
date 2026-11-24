@@ -1,0 +1,19 @@
+[package]
+name = "sparrow-installed-catalog"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sparrow-core = { path = "../sparrow-core" }
+sparrow-snapshot-store = { path = "../sparrow-snapshot-store" }
+sparrow-source-http = { path = "../sparrow-source-http" }
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "sync"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "time"] }

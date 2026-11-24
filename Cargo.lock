@@ -3682,10 +3682,26 @@ dependencies = [
  "sparrow-bounded-blocking",
  "sparrow-client-contract",
  "sparrow-core",
+ "sparrow-installed-catalog",
  "sparrow-snapshot-store",
  "sparrow-source-http",
  "tauri",
  "tauri-build",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
+name = "sparrow-installed-catalog"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "sparrow-core",
+ "sparrow-snapshot-store",
+ "sparrow-source-http",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
