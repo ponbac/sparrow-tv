@@ -1,8 +1,10 @@
 import groovy.json.JsonSlurper
 import org.gradle.api.artifacts.dsl.LockMode
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     id("com.android.application")
+    id("org.jetbrains.kotlin.android")
 }
 
 val cargoManifest = rootProject.file("../../../Cargo.toml")
@@ -84,9 +86,19 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     sourceSets.named("main") {
+        java.srcDir(rootProject.file("../../android-playback/src/main/java"))
         res.srcDir(launcherResources)
         assets.srcDir(guideNotices)
         jniLibs.setSrcDirs(nativeLibraries.orNull?.let(::listOf).orEmpty())
+    }
+    sourceSets.named("test") {
+        java.srcDir(rootProject.file("../../android-playback/src/test/java"))
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
     }
 }
 
@@ -108,9 +120,24 @@ tasks.matching { it.name == "mergeReleaseJniLibFolders" }.configureEach {
 }
 
 dependencies {
+    val media3Version = "1.11.0"
+
     implementation("rustls:rustls-platform-verifier:$verifierVersion@aar")
-    // The verifier's AAR uses Kotlin, and the Java Activity does not apply the Kotlin plugin.
     implementation("org.jetbrains.kotlin:kotlin-stdlib:2.2.10")
+    implementation("androidx.annotation:annotation:1.10.0")
+    implementation("androidx.annotation:annotation-experimental:1.4.1")
+    implementation("androidx.media3:media3-exoplayer:$media3Version")
+    implementation("androidx.media3:media3-ui:$media3Version")
+    // The bundled audio decoder tracks the Media3 version in both Android hosts.
+    implementation("io.github.anilbeesetti:nextlib-media3ext:$media3Version-0.15.0")
+    constraints {
+        // Keep the playback UI's AndroidX runtime versions aligned with the installed app.
+        implementation("androidx.collection:collection:1.1.0")
+        implementation("androidx.core:core-ktx:1.13.1")
+        implementation("androidx.customview:customview:1.1.0")
+        implementation("androidx.lifecycle:lifecycle-runtime:2.10.0")
+    }
+    testImplementation("junit:junit:4.13.2")
 }
 
 dependencyLocking {

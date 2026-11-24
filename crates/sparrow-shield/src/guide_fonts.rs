@@ -6,10 +6,12 @@ use gpui::App;
 pub(super) fn register(app: &App) {
     let fonts: &[&[u8]] = &[
         include_bytes!("../assets/fonts/sparrow-guide-72-700.ttf"),
+        include_bytes!("../assets/fonts/sparrow-guide-76-700.ttf"),
         include_bytes!("../assets/fonts/sparrow-guide-80-600.ttf"),
         include_bytes!("../assets/fonts/sparrow-guide-80-650.ttf"),
         include_bytes!("../assets/fonts/sparrow-guide-80-700.ttf"),
         include_bytes!("../assets/fonts/sparrow-guide-82-650.ttf"),
+        include_bytes!("../assets/fonts/sparrow-guide-84-650.ttf"),
         include_bytes!("../assets/fonts/sparrow-guide-84-700.ttf"),
         include_bytes!("../assets/fonts/sparrow-guide-92-400.ttf"),
         include_bytes!("../assets/fonts/sparrow-guide-92-500.ttf"),

@@ -6,6 +6,7 @@ publish.workspace = true
 
 [dependencies]
 chrono = { version = "0.4", default-features = false }
+sparrow-bounded-blocking = { path = "../sparrow-bounded-blocking" }
 sparrow-core = { path = "../sparrow-core" }
 unicode-normalization = "0.1"
 

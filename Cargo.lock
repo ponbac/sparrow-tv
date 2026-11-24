@@ -5923,6 +5923,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sparrow-channel-icons"
+version = "0.0.0"
+dependencies = [
+ "gif",
+ "image",
+ "reqwest",
+ "thiserror 2.0.20",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "sparrow-client-contract"
 version = "0.0.0"
 dependencies = [
@@ -6049,13 +6061,18 @@ dependencies = [
  "chrono",
  "gpui-pre",
  "gpui-pre-mobile",
+ "image",
  "jni 0.22.4",
  "log",
  "ndk",
  "reqwest",
  "rustls-platform-verifier",
+ "sparrow-bounded-blocking",
+ "sparrow-channel-icons",
  "sparrow-core",
  "sparrow-installed-catalog",
+ "sparrow-installed-playback",
+ "sparrow-source-http",
  "sparrow-tv-guide",
  "tokio",
 ]
@@ -6100,6 +6117,7 @@ name = "sparrow-tv-guide"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "sparrow-bounded-blocking",
  "sparrow-core",
  "sparrow-installed-catalog",
  "tempfile",

@@ -12,10 +12,13 @@ use sparrow_tv_guide::{
     time::{elapsed_fraction, minutes_left, next_after, programme_at},
 };
 
+use crate::channel_icons::{ChannelIcons, IconImage};
+
 use super::{
-    BOARD_TOP, CANVAS_WIDTH, CARD_GAP, CELL, CELL_ELAPSED, DIM, FOCUSED_PLATE, GUTTER, ICE,
-    ICE_ELAPSED, INK, Layout, ON_ICE, ON_ICE_DIM, PANEL, PLATE, SAIRA, SAIRA_NOTICE, SAIRA_NUMBER,
-    SAIRA_TITLE, TEXT, clock_time, programme_title,
+    BOARD_TOP, CANVAS_WIDTH, CARD_GAP, CELL, CELL_ELAPSED, DIM, GUTTER, ICE, ICE_ELAPSED, INK,
+    Layout, ON_ICE, ON_ICE_DIM, PANEL, SAIRA, SAIRA_NOTICE, SAIRA_TITLE, TEXT,
+    channel_icon::{Plate, family_icon, plate},
+    clock_time, programme_title,
 };
 
 const COLUMN_WIDTH: f32 = (CANVAS_WIDTH - GUTTER * 2. - CARD_GAP * 2.) / NOW_COLUMNS as f32;
@@ -25,10 +28,18 @@ const CONTENT_WIDTH: f32 = COLUMN_WIDTH - CONTENT_X - 21.;
 const TITLE_HEIGHT: f32 = 35.65;
 const LINE_GAP: f32 = 4.;
 
-pub(super) fn render(layout: Layout, screen: &GuideScreen, now: DateTime<FixedOffset>) -> Div {
+pub(super) fn render(
+    layout: Layout,
+    screen: &GuideScreen,
+    now: DateTime<FixedOffset>,
+    icons: &ChannelIcons,
+) -> Div {
     let height = (layout.height - BOARD_TOP).max(0.);
-    let focus = screen.focus();
-    let retry_focus = focus == ScreenFocus::Board(NowFocus::Retry);
+    let focus = match screen.focus() {
+        ScreenFocus::Board(focus) => Some(focus),
+        _ => None,
+    };
+    let retry_focus = focus == Some(NowFocus::Retry);
     let mut board = layout
         .rect(0., BOARD_TOP, CANVAS_WIDTH, height)
         .overflow_hidden();
@@ -51,7 +62,16 @@ pub(super) fn render(layout: Layout, screen: &GuideScreen, now: DateTime<FixedOf
             COLUMN_WIDTH,
             CARD_HEIGHT,
         );
-        board = board.child(card(layout, rect, index, &families[index], focus, now));
+        let family = &families[index];
+        board = board.child(card(
+            layout,
+            rect,
+            family,
+            screen.variant_preferences(),
+            focus.filter(|focus| focus.family() == Some(index)),
+            now,
+            family_icon(family).and_then(|icon| icons.get(icon)),
+        ));
     }
     board = board.child(bottom_fade(layout.rect(
         0.,
@@ -121,17 +141,18 @@ pub(super) fn more_footer(layout: Layout, rect: Div, loading: bool) -> Div {
 fn card(
     layout: Layout,
     rect: Div,
-    index: usize,
     family: &GuideFamily,
-    focus: ScreenFocus,
+    preferences: &VariantPreferences,
+    focus: Option<NowFocus>,
     now: DateTime<FixedOffset>,
+    icon: Option<&IconImage>,
 ) -> Div {
-    let focused = focus == ScreenFocus::Board(NowFocus::Channel(index));
+    let focused = matches!(focus, Some(NowFocus::Channel(_)));
     let focused_chip = match focus {
-        ScreenFocus::Board(NowFocus::Variant { family, chip }) if index == family => Some(chip),
+        Some(NowFocus::Variant { chip, .. }) => Some(chip),
         _ => None,
     };
-    let (preferred, source) = family.preferred_with_schedule(&VariantPreferences::default());
+    let (preferred, source) = family.preferred_with_schedule(preferences);
     let programmes = source.programmes();
     let instant = now.to_utc();
     let live = programme_at(programmes, instant);
@@ -140,7 +161,11 @@ fn card(
     let subtitle = next
         .map(|next| format!("{} {}", clock_time(next.starts_at()), programme_title(next)))
         .or_else(|| programmes.is_empty().then(|| "No guide data.".into()));
-    let caption_height = if live.is_some() { 28. } else { 0. };
+    let caption_height = if live.is_some() || icon.is_some() {
+        28.
+    } else {
+        0.
+    };
     let last_height = if live.is_some() || subtitle.is_some() {
         26.
     } else {
@@ -172,6 +197,27 @@ fn card(
                     .bg(rgb(if focused { ICE_ELAPSED } else { CELL_ELAPSED })),
             );
         }
+    }
+    if caption_height != 0. {
+        let caption = layout.text(SAIRA, 18., 28., 400.).text_color(supporting);
+        let caption = if icon.is_some() {
+            caption
+                .flex()
+                .items_center()
+                .gap(layout.px(10.))
+                .child(
+                    div()
+                        .flex_none()
+                        .font_weight(gpui::FontWeight(600.))
+                        .text_color(if focused { rgb(ON_ICE) } else { rgba(DIM) })
+                        .child(family.number().to_string()),
+                )
+                .when(live.is_some(), |line| {
+                    line.child(div().min_w_0().truncate().child(family.title().to_owned()))
+                })
+        } else {
+            caption.truncate().child(family.title().to_owned())
+        };
         card = card.child(
             layout
                 .rect(
@@ -180,31 +226,15 @@ fn card(
                     CONTENT_WIDTH - (quality_count.max(1) as f32 * 52. + 6.),
                     28.,
                 )
-                .child(
-                    layout
-                        .text(SAIRA, 18., 28., 400.)
-                        .text_color(supporting)
-                        .truncate()
-                        .child(family.title().to_owned()),
-                ),
+                .child(caption),
         );
     }
 
     card.child(
-        layout
-            .rect(14., 23., 72., 54.)
-            .rounded(layout.px(8.))
-            .bg(rgb(if focused { FOCUSED_PLATE } else { PLATE }))
-            .pb(layout.px(2.6667))
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                layout
-                    .text(SAIRA_NUMBER, 30., 30., 400.)
-                    .text_color(if focused { rgb(TEXT) } else { rgba(DIM) })
-                    .child(family.number().to_string()),
-            ),
+        plate(layout, Plate::Now, family.number(), focused, icon)
+            .absolute()
+            .left(layout.px(14.))
+            .top(layout.px(23.)),
     )
     .child(
         layout
@@ -302,7 +332,7 @@ pub(super) fn quality_tags(
         )
 }
 
-fn quality_chip(
+pub(super) fn quality_chip(
     layout: Layout,
     quality: ChannelQuality,
     selected: bool,

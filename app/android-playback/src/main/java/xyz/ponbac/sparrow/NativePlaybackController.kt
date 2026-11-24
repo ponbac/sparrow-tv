@@ -1,11 +1,11 @@
 package xyz.ponbac.sparrow
 
+import android.app.Activity
 import android.graphics.Color
 import android.graphics.Rect
 import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
-import android.webkit.WebView
 import android.widget.FrameLayout
 import androidx.annotation.OptIn
 import androidx.media3.common.C
@@ -29,13 +29,35 @@ import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.math.max
 
+/** Main-thread placement for an attached PlayerView. Viewports are in host content pixels. */
+@OptIn(UnstableApi::class)
+internal interface NativePlaybackPlacement {
+  val televisionFullscreen: Boolean?
+  fun container(): ViewGroup?
+  fun createPlayerView(activity: Activity): PlayerView = PlayerView(activity)
+  fun mount(parent: ViewGroup, playerView: PlayerView)
+  fun unmount(parent: ViewGroup, playerView: PlayerView) = parent.removeView(playerView)
+  fun place(parent: ViewGroup, playerView: PlayerView, viewport: NativePlaybackViewport)
+  fun fillWindow(parent: ViewGroup, playerView: PlayerView)
+  fun revealContent(parent: ViewGroup, playerView: PlayerView)
+}
+
+internal enum class NativePlaybackSignal(val wire: Int) {
+  FIRST_FRAME(1),
+  NATURAL_END(2),
+  STREAM_INTERRUPTED(3),
+  PLAYER_ERROR(4),
+  AUDIO_FOCUS_LOST(5),
+}
+
 @OptIn(UnstableApi::class)
 internal class NativePlaybackController(
-  private val activity: MainActivity,
+  private val activity: Activity,
+  private val placement: NativePlaybackPlacement,
   private val forceSilent: Boolean,
+  private val lifecycleFence: NativePlaybackLifecycleFence = NativePlaybackLifecycleFence(),
 ) {
   private var host: PlaybackHost? = null
-  private val lifecycleFence = NativePlaybackLifecycleFence()
   private var pictureInPicture = false
   private var pictureInPictureCover: View? = null
   private var pictureListener: (() -> Unit)? = null
@@ -55,9 +77,18 @@ internal class NativePlaybackController(
     val identity = NativePlaybackIdentity.parse(sessionId, streamHandle) ?: return false
     val viewport =
       NativePlaybackViewport.parse(left, top, width, height, fullscreen) ?: return false
-    val controls =
-      NativePlaybackControls.parse(volume, muted, false)?.withForcedSilence(forceSilent)
-        ?: return false
+    val controls = NativePlaybackControls.parse(volume, muted, false) ?: return false
+    return start(identity, viewport, controls)
+  }
+
+  fun start(
+    identity: NativePlaybackIdentity,
+    viewport: NativePlaybackViewport,
+    controls: NativePlaybackControls,
+    reader: NativePlaybackReader? = null,
+    observer: ((NativePlaybackSignal) -> Unit)? = null,
+  ): Boolean {
+    val initial = controls.withForcedSilence(forceSilent)
     val lifecycleTicket = lifecycleFence.startTicket() ?: return false
     return onMain(
       fallback = StartOutcome(false, null, false),
@@ -65,7 +96,7 @@ internal class NativePlaybackController(
         val identityToRollback = outcome.boundIdentity
         val currentHost = host
         if (identityToRollback != null && currentHost != null) {
-          currentHost.unbind(identityToRollback, revealWebContent = true)
+          currentHost.unbind(identityToRollback, revealContent = true)
           if (outcome.createdHost && currentHost.identity == null) {
             currentHost.release()
             if (host === currentHost) {
@@ -82,7 +113,7 @@ internal class NativePlaybackController(
           NativePlaybackStartDecision.UPDATE -> {
             val current = checkNotNull(host)
             current.setViewport(identity, viewport)
-            current.setControls(identity, controls)
+            current.setControls(identity, initial)
             StartOutcome(true, null, false)
           }
           NativePlaybackStartDecision.REJECT -> StartOutcome(false, null, false)
@@ -96,7 +127,7 @@ internal class NativePlaybackController(
               if (createdHost) {
                 host = current
               }
-              if (!current.bind(identity, viewport, controls)) {
+              if (!current.bind(identity, viewport, initial, reader, observer)) {
                 if (createdHost) {
                   current.release()
                   if (host === current) {
@@ -116,9 +147,11 @@ internal class NativePlaybackController(
 
   fun status(sessionId: String, streamHandle: String): String {
     val identity = NativePlaybackIdentity.parse(sessionId, streamHandle) ?: return ""
-    return onMain("") {
-      host?.status(identity) ?: ""
-    }
+    return status(identity)
+  }
+
+  fun status(identity: NativePlaybackIdentity): String = onMain("") {
+    host?.status(identity) ?: ""
   }
 
   fun setControls(
@@ -129,13 +162,14 @@ internal class NativePlaybackController(
     paused: Boolean,
   ): Boolean {
     val identity = NativePlaybackIdentity.parse(sessionId, streamHandle) ?: return false
-    val controls =
-      NativePlaybackControls.parse(volume, muted, paused)?.withForcedSilence(forceSilent)
-        ?: return false
-    return onMain(false) {
-      host?.setControls(identity, controls) ?: false
-    }
+    val controls = NativePlaybackControls.parse(volume, muted, paused) ?: return false
+    return setControls(identity, controls)
   }
+
+  fun setControls(identity: NativePlaybackIdentity, controls: NativePlaybackControls): Boolean =
+    onMain(false) {
+      host?.setControls(identity, controls.withForcedSilence(forceSilent)) ?: false
+    }
 
   fun setViewport(
     sessionId: String,
@@ -149,16 +183,26 @@ internal class NativePlaybackController(
     val identity = NativePlaybackIdentity.parse(sessionId, streamHandle) ?: return false
     val viewport =
       NativePlaybackViewport.parse(left, top, width, height, fullscreen) ?: return false
-    return onMain(false) {
+    return setViewport(identity, viewport)
+  }
+
+  fun setViewport(identity: NativePlaybackIdentity, viewport: NativePlaybackViewport): Boolean =
+    onMain(false) {
       host?.setViewport(identity, viewport) ?: false
     }
+
+  /** Move an already revealed picture after its caller has retired the transport. */
+  fun setRetiredViewport(viewport: NativePlaybackViewport): Boolean = onMain(false) {
+    host?.setRetiredViewport(viewport) ?: false
   }
 
   fun stop(sessionId: String, streamHandle: String): Boolean {
     val identity = NativePlaybackIdentity.parse(sessionId, streamHandle) ?: return false
-    return onMain(false) {
-      host?.unbind(identity, revealWebContent = false) ?: true
-    }
+    return stop(identity, revealContent = false)
+  }
+
+  fun stop(identity: NativePlaybackIdentity, revealContent: Boolean): Boolean = onMain(false) {
+    host?.unbind(identity, revealContent) ?: true
   }
 
   fun stopSession(sessionId: String): Boolean {
@@ -166,7 +210,7 @@ internal class NativePlaybackController(
       return false
     }
     return onMain(false) {
-      host?.unbindSession(sessionId, revealWebContent = true) ?: true
+      host?.unbindSession(sessionId, revealContent = true) ?: true
     }
   }
 
@@ -175,7 +219,7 @@ internal class NativePlaybackController(
       return false
     }
     return onMain(false) {
-      host?.unbindSession(sessionId, revealWebContent = false) ?: true
+      host?.unbindSession(sessionId, revealContent = false) ?: true
     }
   }
 
@@ -218,7 +262,7 @@ internal class NativePlaybackController(
 
   /** A paused surface cannot move with a TV entering or leaving fullscreen. */
   fun revealRetiredPicture() {
-    host?.takeIf { it.identity == null }?.revealWebContent()
+    host?.takeIf { it.identity == null }?.revealContent()
   }
 
   /**
@@ -233,7 +277,7 @@ internal class NativePlaybackController(
       return
     }
     pictureInPicture = active
-    val parent = activity.window.decorView as? ViewGroup ?: return
+    val parent = placement.container() ?: return
     if (active) {
       val cover = View(activity).apply {
         setBackgroundColor(Color.BLACK)
@@ -270,11 +314,17 @@ internal class NativePlaybackController(
   }
 
   private fun createPlaybackHost(): PlaybackHost? {
-    val parent = activity.window.decorView as? ViewGroup ?: return null
+    val parent = placement.container() ?: return null
     var playerView: PlayerView? = null
     var player: ExoPlayer? = null
+    val layoutListener = View.OnLayoutChangeListener { _, left, top, right, bottom,
+        oldLeft, oldTop, oldRight, oldBottom ->
+      if (left != oldLeft || top != oldTop || right != oldRight || bottom != oldBottom) {
+        pictureListener?.invoke()
+      }
+    }
     return try {
-      val createdPlayerView = PlayerView(activity).apply {
+      val createdPlayerView = placement.createPlayerView(activity).apply {
         useController = false
         resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
         setShutterBackgroundColor(Color.BLACK)
@@ -298,20 +348,20 @@ internal class NativePlaybackController(
           override fun onVideoSizeChanged(videoSize: VideoSize) = onVideoSize(videoSize)
         },
       )
-      createdPlayerView.addOnLayoutChangeListener { _, left, top, right, bottom,
-          oldLeft, oldTop, oldRight, oldBottom ->
-        if (left != oldLeft || top != oldTop || right != oldRight || bottom != oldBottom) {
-          pictureListener?.invoke()
-        }
-      }
-      parent.addView(createdPlayerView)
-      PlaybackHost(activity, parent, createdPlayerView, createdPlayer).also {
+      createdPlayerView.addOnLayoutChangeListener(layoutListener)
+      placement.mount(parent, createdPlayerView)
+      PlaybackHost(activity, placement, parent, createdPlayerView, createdPlayer, layoutListener).also {
         it.setPictureInPicture(pictureInPicture)
       }
     } catch (_: RuntimeException) {
       runCatching { playerView?.player = null }
       runCatching { player?.release() }
-      runCatching { playerView?.let(parent::removeView) }
+      runCatching {
+        playerView?.let {
+          it.removeOnLayoutChangeListener(layoutListener)
+          placement.unmount(parent, it)
+        }
+      }
       null
     }
   }
@@ -347,10 +397,12 @@ internal class NativePlaybackController(
   )
 
   private class PlaybackHost(
-    private val activity: MainActivity,
+    private val activity: Activity,
+    private val placement: NativePlaybackPlacement,
     private val parent: ViewGroup,
     private val playerView: PlayerView,
     private val player: ExoPlayer,
+    private val layoutListener: View.OnLayoutChangeListener,
   ) {
     private var binding: PlaybackBinding? = null
     private var released = false
@@ -363,8 +415,8 @@ internal class NativePlaybackController(
      */
     private var lifecycleSuspended: Pair<NativePlaybackIdentity, String>? = null
     private var pictureInPicture = false
-    /** The page's last placement outside picture-in-picture. */
-    private var placement: NativePlaybackViewport? = null
+    /** The last viewport outside picture-in-picture. */
+    private var lastViewport: NativePlaybackViewport? = null
 
     val identity: NativePlaybackIdentity?
       get() = binding?.identity
@@ -373,17 +425,19 @@ internal class NativePlaybackController(
       identity: NativePlaybackIdentity,
       viewport: NativePlaybackViewport,
       controls: NativePlaybackControls,
+      reader: NativePlaybackReader?,
+      observer: ((NativePlaybackSignal) -> Unit)?,
     ): Boolean {
       if (released || binding != null) {
         return false
       }
       lifecycleSuspended = null
-      val created = PlaybackBinding(identity, player, controls)
+      val created = PlaybackBinding(identity, player, controls, observer)
       binding = created
       return try {
         player.addListener(created)
         player.addAnalyticsListener(created)
-        val dataSourceFactory = DataSource.Factory { NativePlaybackDataSource(identity) }
+        val dataSourceFactory = DataSource.Factory { NativePlaybackDataSource(identity, reader) }
         val mediaSource =
           DefaultMediaSourceFactory(activity)
             .setDataSourceFactory(dataSourceFactory)
@@ -404,7 +458,7 @@ internal class NativePlaybackController(
         }
         created.release()
         resetPlayer()
-        revealWebContent()
+        revealContent()
         false
       }
     }
@@ -418,7 +472,7 @@ internal class NativePlaybackController(
       val current = binding ?: return
       current.pauseForLifecycle()
       val status = current.statusJson()
-      unbind(current.identity, revealWebContent = false)
+      unbind(current.identity, revealContent = false)
       lifecycleSuspended = current.identity to status
     }
 
@@ -446,9 +500,15 @@ internal class NativePlaybackController(
       return true
     }
 
+    fun setRetiredViewport(viewport: NativePlaybackViewport): Boolean {
+      if (released || binding != null) return false
+      setViewport(viewport)
+      return true
+    }
+
     fun unbind(
       identity: NativePlaybackIdentity,
-      revealWebContent: Boolean,
+      revealContent: Boolean,
     ): Boolean {
       if (isLifecycleSuspended(identity)) {
         lifecycleSuspended = null
@@ -461,16 +521,16 @@ internal class NativePlaybackController(
       current.release()
       resetPlayer()
       // Fullscreen may have changed before the presentation finished retiring.
-      val fullscreen = activity.televisionFullscreen
-      if (revealWebContent || (fullscreen != null && fullscreen != placement?.fullscreen)) {
-        revealWebContent()
+      val fullscreen = placement.televisionFullscreen
+      if (revealContent || (fullscreen != null && fullscreen != lastViewport?.fullscreen)) {
+        revealContent()
       }
       return true
     }
 
     fun unbindSession(
       sessionId: String,
-      revealWebContent: Boolean,
+      revealContent: Boolean,
     ): Boolean {
       if (lifecycleSuspended?.first?.sessionId == sessionId) {
         lifecycleSuspended = null
@@ -479,7 +539,7 @@ internal class NativePlaybackController(
       if (current.identity.sessionId != sessionId) {
         return false
       }
-      return unbind(current.identity, revealWebContent)
+      return unbind(current.identity, revealContent)
     }
 
     fun pauseForLifecycle() {
@@ -489,10 +549,10 @@ internal class NativePlaybackController(
       binding?.pauseForLifecycle()
     }
 
-    fun revealWebContent() {
+    fun revealContent() {
       // Picture-in-picture shows only the picture; leaving it decides.
       if (!released && !pictureInPicture) {
-        directWebContentChild(parent)?.bringToFront()
+        placement.revealContent(parent, playerView)
       }
     }
 
@@ -502,15 +562,15 @@ internal class NativePlaybackController(
       }
       pictureInPicture = active
       if (active) {
-        fillWindow()
+        placement.fillWindow(parent, playerView)
         return
       }
       // A placement made inside picture-in-picture was for the small window.
-      val last = placement
+      val last = lastViewport
       if (binding != null && last != null) {
-        place(last)
+        placement.place(parent, playerView, last)
       } else {
-        revealWebContent()
+        revealContent()
       }
     }
 
@@ -532,7 +592,10 @@ internal class NativePlaybackController(
       released = true
       runCatching { playerView.player = null }
       runCatching { player.release() }
-      runCatching { parent.removeView(playerView) }
+      runCatching {
+        playerView.removeOnLayoutChangeListener(layoutListener)
+        placement.unmount(parent, playerView)
+      }
     }
 
     private fun setViewport(viewport: NativePlaybackViewport) {
@@ -540,77 +603,16 @@ internal class NativePlaybackController(
         return
       }
       if (pictureInPicture) {
-        fillWindow()
+        placement.fillWindow(parent, playerView)
         return
       }
-      placement = viewport
-      place(viewport)
-    }
-
-    private fun fillWindow() {
-      val current = playerView.layoutParams as? FrameLayout.LayoutParams
-      if (
-        current == null ||
-        current.width != ViewGroup.LayoutParams.MATCH_PARENT ||
-        current.height != ViewGroup.LayoutParams.MATCH_PARENT ||
-        current.leftMargin != 0 ||
-        current.topMargin != 0
-      ) {
-        playerView.layoutParams = FrameLayout.LayoutParams(
-          ViewGroup.LayoutParams.MATCH_PARENT,
-          ViewGroup.LayoutParams.MATCH_PARENT,
-        )
-      }
-      bringPlayerToFrontIfNeeded()
-    }
-
-    private fun place(viewport: NativePlaybackViewport) {
-      val webView = findWebView(parent) ?: return
-      val webLocation = IntArray(2)
-      val parentLocation = IntArray(2)
-      webView.getLocationInWindow(webLocation)
-      parent.getLocationInWindow(parentLocation)
-      val leftMargin = webLocation[0] - parentLocation[0] + viewport.left
-      val topMargin = webLocation[1] - parentLocation[1] + viewport.top
-      val current = playerView.layoutParams as? FrameLayout.LayoutParams
-      if (
-        current == null ||
-        current.width != viewport.width ||
-        current.height != viewport.height ||
-        current.leftMargin != leftMargin ||
-        current.topMargin != topMargin
-      ) {
-        playerView.layoutParams =
-          FrameLayout.LayoutParams(viewport.width, viewport.height).apply {
-            this.leftMargin = leftMargin
-            this.topMargin = topMargin
-          }
-      }
-      bringPlayerToFrontIfNeeded()
-    }
-
-    private fun bringPlayerToFrontIfNeeded() {
-      if (parent.childCount > 0 && parent.getChildAt(parent.childCount - 1) !== playerView) {
-        playerView.bringToFront()
-      }
+      lastViewport = viewport
+      placement.place(parent, playerView, viewport)
     }
 
     private fun resetPlayer() {
       runCatching { player.stop() }
       runCatching { player.clearMediaItems() }
-    }
-
-    companion object {
-      private fun directWebContentChild(parent: ViewGroup): View? {
-        var content: View = findWebView(parent) ?: return null
-        while (true) {
-          val ancestor = content.parent
-          if (ancestor === parent) {
-            return content
-          }
-          content = ancestor as? View ?: return null
-        }
-      }
     }
   }
 
@@ -618,6 +620,7 @@ internal class NativePlaybackController(
     val identity: NativePlaybackIdentity,
     private val player: ExoPlayer,
     initialControls: NativePlaybackControls,
+    private val observer: ((NativePlaybackSignal) -> Unit)?,
   ) : Player.Listener, AnalyticsListener {
     private var phase = if (initialControls.paused) Phase.PAUSED else Phase.STARTING
     private var controls = initialControls
@@ -627,6 +630,7 @@ internal class NativePlaybackController(
     private var audioDecoder: String? = null
     private var audioPassthrough = false
     private var released = false
+    private var firstFrameReported = false
 
     fun applyInitialControls() {
       if (released) {
@@ -704,6 +708,9 @@ internal class NativePlaybackController(
           Player.STATE_IDLE, Player.STATE_BUFFERING -> Phase.STARTING
           else -> Phase.FAILED
         }
+      if (playbackState == Player.STATE_ENDED) {
+        observer?.invoke(NativePlaybackSignal.NATURAL_END)
+      }
     }
 
     override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -722,6 +729,18 @@ internal class NativePlaybackController(
     override fun onPlayerError(error: PlaybackException) {
       if (!released) {
         phase = Phase.FAILED
+        observer?.let { notify ->
+          val interrupted = generateSequence(error.cause) { it.cause }
+            .any { it is NativePlaybackReadInterrupted }
+          notify(if (interrupted) NativePlaybackSignal.STREAM_INTERRUPTED else NativePlaybackSignal.PLAYER_ERROR)
+        }
+      }
+    }
+
+    override fun onRenderedFirstFrame() {
+      if (!released && !firstFrameReported) {
+        firstFrameReported = true
+        observer?.invoke(NativePlaybackSignal.FIRST_FRAME)
       }
     }
 
@@ -821,25 +840,9 @@ internal class NativePlaybackController(
       private const val MAX_SAFE_COUNTER = 9_007_199_254_740_991L
     }
   }
-
-  companion object {
-    private fun findWebView(view: View): WebView? {
-      if (view is WebView) {
-        return view
-      }
-      if (view is ViewGroup) {
-        for (index in 0 until view.childCount) {
-          val found = findWebView(view.getChildAt(index))
-          if (found != null) {
-            return found
-          }
-        }
-      }
-      return null
-    }
-  }
 }
 
+@OptIn(UnstableApi::class)
 internal class NativePlaybackFrameCounter {
   private var completedDecoderFrames = 0L
   private var processingOffsetFrames = 0L

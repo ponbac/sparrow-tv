@@ -40,7 +40,7 @@ Switching the whole shell to Electron or replacing the playback engine with GStr
 
 The proposed path is `Rust source resolution → libmpv → native GL framebuffer → GTK window`, with React supplying controls and the visible video rectangle. Frames do not pass through JavaScript, MSE, a canvas upload loop or a local HTTP proxy. The GTK widget and transparent WebView compose the final in-app picture.
 
-The current [mpv adapter](../../crates/sparrow-installed-playback/src/playback/mpv.rs) launches `--vo=gpu-next --gpu-context=wayland`. A GLArea integration changes the rendering path even though it retains mpv's media engine. Match actual decoder configuration, measure presentation drops as well as decoder drops, and do not assume CLI results transfer automatically.
+The current [mpv adapter](../../app/src-tauri/src/playback/mpv.rs) launches `--vo=gpu-next --gpu-context=wayland`. A GLArea integration changes the rendering path even though it retains mpv's media engine. Match actual decoder configuration, measure presentation drops as well as decoder drops, and do not assume CLI results transfer automatically.
 
 The libmpv API requires a current, consistent OpenGL context, correct framebuffer dimensions and ordered teardown. Rendering notifications must schedule GTK work instead of making unsafe calls from mpv callbacks; render-context destruction must precede mpv-core destruction. Direct hardware decode interop may need the native display handle and the appropriate GL/EGL setup. Sources: [render API](https://github.com/mpv-player/mpv/blob/master/include/mpv/render.h), [OpenGL API](https://github.com/mpv-player/mpv/blob/master/include/mpv/render_gl.h).
 

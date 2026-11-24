@@ -41,7 +41,7 @@ A category from the M3U Source used to organize Channels in the Channel Catalog.
 _Avoid_: Category, folder, bouquet
 
 **Channel Icon**:
-The image location an M3U Source names for a Channel (`tvg-logo`), kept exactly as given when it is an absolute `http` or `https` URL with a host and no credentials. Quality Variants of one guide row share the first Channel Icon named in Channel Catalog order. Sparrow passes it to clients and never fetches it.
+The image location an M3U Source names for a Channel (`tvg-logo`), kept exactly as given when it is an absolute `http` or `https` URL with a host and no credentials. Quality Variants of one guide row share the first Channel Icon named in Channel Catalog order. The Channel Catalog projects it to clients. The client may load it when displaying the Channel. The native Shield client displays PNG, JPEG, the first frame of GIF, and simple opaque lossy WebP. Unsupported images, including lossless, transparent, animated and other extended WebP, use the Channel Number or placeholder.
 _Avoid_: Logo URL, thumbnail, artwork
 
 **Channel Number**:

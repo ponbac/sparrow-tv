@@ -2,18 +2,33 @@
 
 mod band;
 mod board;
+mod channel_icon;
+mod groups;
 mod lane;
+pub(super) mod playback;
+mod search_panel;
+mod sources;
 mod timeline;
 
+use std::sync::Arc;
+
+pub(super) use channel_icon::family_icon;
+pub(super) use groups::{GroupViewport, group_filter_rect, group_sheet};
 pub(crate) use lane::LaneViewport;
+pub(super) use search_panel::search_visible_icons;
+pub(super) use search_panel::{
+    SearchFocus, SearchPanel, SearchViewport, search_editor_rect, search_panel,
+};
+pub(super) use sources::{SourceFocus, SourcePanel, source_editor_rect, sources_sheet};
 pub(crate) use timeline::RailViewport;
 
+use crate::channel_icons::ChannelIcons;
 use chrono::{DateTime, FixedOffset, Local, Utc};
 use gpui::{Div, FontWeight, IntoElement, Pixels, Size, Styled, Window, div, prelude::*, px, svg};
 use sparrow_core::{GuideProgramme, GuideWindowChannel};
 use sparrow_tv_guide::{
     GuideFamily, VariantPreferences,
-    guide_screen::{GuideMode, GuideScreen, NOW_BOARD_TOP as BOARD_TOP},
+    guide_screen::{GuideMode, GuideScreen, NOW_BOARD_TOP as BOARD_TOP, ScreenFocus},
     preview::select_programme,
 };
 
@@ -94,15 +109,29 @@ pub(super) fn surface_height(viewport: Size<Pixels>) -> f32 {
     Layout::new(viewport).height
 }
 
+pub(super) struct GuideBand<'a> {
+    pub(super) now: DateTime<FixedOffset>,
+    pub(super) preview: Option<&'a PreviewSelection>,
+    pub(super) description: Option<&'a gpui::SharedString>,
+    pub(super) docked: bool,
+    pub(super) focus: ScreenFocus,
+}
+
 pub(super) fn render(
     screen: &GuideScreen,
-    now: DateTime<FixedOffset>,
-    preview: Option<&PreviewSelection>,
-    description: Option<&gpui::SharedString>,
+    band: GuideBand<'_>,
     lanes: (&mut LaneViewport, &mut RailViewport),
     window: &mut Window,
+    icons: &ChannelIcons,
 ) -> Div {
     let layout = Layout::new(window.viewport_size());
+    let GuideBand {
+        now,
+        preview,
+        description,
+        docked,
+        focus,
+    } = band;
     let guide = div()
         .size_full()
         .relative()
@@ -112,24 +141,27 @@ pub(super) fn render(
         .font_family(SAIRA)
         .child(band::render(
             layout,
-            screen.focus(),
+            focus,
             now,
             preview,
             description,
+            icons,
+            docked,
         ));
     match screen.mode() {
         GuideMode::Now => guide
             .child(lane::render(layout, screen, lanes.0, window))
-            .child(board::render(layout, screen, now)),
+            .child(board::render(layout, screen, now, icons)),
         GuideMode::Timeline => guide
             .child(timeline::rail(layout, screen, lanes.1))
-            .child(timeline::render(layout, screen, now)),
+            .child(timeline::render(layout, screen, now, icons)),
     }
 }
 
 pub(super) struct PreviewSelection {
     pub(super) family: GuideFamily,
     cell: Option<usize>,
+    preferences: Arc<VariantPreferences>,
 }
 
 impl PreviewSelection {
@@ -137,19 +169,19 @@ impl PreviewSelection {
         Some(Self {
             family: screen.preview_family()?.clone(),
             cell: screen.preview_cell(),
+            preferences: Arc::clone(screen.variant_preferences()),
         })
+    }
+
+    pub(super) fn preferred_variant(&self) -> &GuideWindowChannel {
+        self.family.preferred_variant(&self.preferences)
     }
 
     pub(super) fn programme(
         &self,
         now: DateTime<FixedOffset>,
     ) -> Option<(&GuideWindowChannel, &GuideProgramme)> {
-        select_programme(
-            &self.family,
-            &VariantPreferences::default(),
-            self.cell,
-            now.to_utc(),
-        )
+        select_programme(&self.family, &self.preferences, self.cell, now.to_utc())
     }
 }
 
@@ -161,6 +193,6 @@ fn programme_title(programme: &GuideProgramme) -> gpui::SharedString {
     }
 }
 
-fn clock_time(instant: DateTime<Utc>) -> String {
+pub(super) fn clock_time(instant: DateTime<Utc>) -> String {
     instant.with_timezone(&Local).format("%H:%M").to_string()
 }

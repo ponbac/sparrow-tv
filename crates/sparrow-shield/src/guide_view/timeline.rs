@@ -15,9 +15,12 @@ use sparrow_tv_guide::{
     timeline_focus::TimelineFocus,
 };
 
+use crate::channel_icons::{ChannelIcons, IconImage};
+
 use super::{
-    CANVAS_WIDTH, DIM, FAINT, GUTTER, ICE, INK, Layout, MUTE, ON_ICE, PLATE, SAIRA, SAIRA_NUMBER,
-    TEXT, board, clock_time,
+    CANVAS_WIDTH, DIM, FAINT, GUTTER, ICE, INK, Layout, MUTE, ON_ICE, SAIRA, TEXT, board,
+    channel_icon::{Plate, family_icon, plate},
+    clock_time,
 };
 
 const BOARD_X: f32 = GUTTER + rail::WIDTH + 16.;
@@ -39,7 +42,12 @@ pub(super) fn rail(layout: Layout, screen: &GuideScreen, viewport: &mut RailView
     rail::render(layout, screen, viewport)
 }
 
-pub(super) fn render(layout: Layout, screen: &GuideScreen, now: DateTime<FixedOffset>) -> Div {
+pub(super) fn render(
+    layout: Layout,
+    screen: &GuideScreen,
+    now: DateTime<FixedOffset>,
+    icons: &ChannelIcons,
+) -> Div {
     let axis = screen
         .timeline()
         .unwrap_or_else(|| Timeline::new(screen.displayed_window()));
@@ -56,13 +64,15 @@ pub(super) fn render(layout: Layout, screen: &GuideScreen, now: DateTime<FixedOf
     let families = screen.families();
     let scroll = screen.scroll_offset();
     let rows = screen.visible_families(OVERSCAN_LINES).map(|index| {
+        let family = &families[index];
         render_row(
             layout,
             frame,
-            index,
-            &families[index],
+            family,
+            screen.variant_preferences(),
             TIMELINE_ROW_TOP + index as f32 * TIMELINE_ROW_PITCH - scroll,
             focus.filter(|focus| focus.family() == Some(index)),
+            family_icon(family).and_then(|icon| icons.get(icon)),
         )
     });
     let rows_bottom = TIMELINE_ROW_TOP + families.len() as f32 * TIMELINE_ROW_PITCH - scroll;
@@ -201,13 +211,14 @@ fn playhead(layout: Layout, x: f32, height: f32) -> Div {
 fn render_row(
     layout: Layout,
     frame: TimelineFrame,
-    index: usize,
     family: &GuideFamily,
+    preferences: &VariantPreferences,
     y: f32,
     focus: Option<TimelineFocus>,
+    icon: Option<&IconImage>,
 ) -> Div {
-    let (preferred, source) = family.preferred_with_schedule(&VariantPreferences::default());
-    let channel_focus = focus == Some(TimelineFocus::Channel(index));
+    let (preferred, source) = family.preferred_with_schedule(preferences);
+    let channel_focus = matches!(focus, Some(TimelineFocus::Channel(_)));
     let chip_focus = match focus {
         Some(TimelineFocus::Variant { chip, .. }) => Some(chip),
         _ => None,
@@ -238,12 +249,28 @@ fn render_row(
     };
     layout
         .rect(0., y, BOARD_WIDTH - GUTTER, TIMELINE_ROW_HEIGHT)
+        .when(icon.is_some(), |row| {
+            row.child(
+                layout
+                    .rect(0., 0., 42., TIMELINE_ROW_HEIGHT)
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .child(
+                        layout
+                            .text(SAIRA, 24., 24., 400.)
+                            .text_color(rgba(DIM))
+                            .child(family.number().to_string()),
+                    ),
+            )
+        })
         .child(channel(
             layout,
             family,
             preferred.channel().id(),
             channel_focus,
             chip_focus,
+            icon,
         ))
         .child(track)
 }
@@ -254,6 +281,7 @@ fn channel(
     preferred: &sparrow_core::ChannelId,
     focused: bool,
     focused_chip: Option<usize>,
+    icon: Option<&IconImage>,
 ) -> Div {
     let width = CHANNEL_WIDTH - CHANNEL_CONTROL_X - 16.;
     let variants = family.quality_variants().next().is_some();
@@ -267,24 +295,10 @@ fn channel(
         .rounded(layout.px(8.))
         .when(focused, |channel| channel.bg(rgb(ICE)))
         .child(
-            layout
-                .rect(6., 6.5, 76., 57.)
-                .rounded(layout.px(8.))
-                .bg(if focused {
-                    rgba(0x06121c8c)
-                } else {
-                    rgb(PLATE)
-                })
-                .flex()
-                .items_center()
-                .justify_center()
-                .pb(layout.px(2.))
-                .child(
-                    layout
-                        .text(SAIRA_NUMBER, 24., 24., 400.)
-                        .text_color(if focused { rgb(TEXT) } else { rgba(DIM) })
-                        .child(family.number().to_string()),
-                ),
+            plate(layout, Plate::Timeline, family.number(), focused, icon)
+                .absolute()
+                .left(layout.px(6.))
+                .top(layout.px(6.5)),
         )
         .child(
             layout

@@ -310,6 +310,33 @@ impl GuideScreen {
         }
     }
 
+    /// Reveals the preferred Channel in the loaded Guide, preserving its current
+    /// focusable control when returning from fullscreen.
+    pub fn restore_playback_focus(&mut self, channel: Option<&ChannelId>, preserve_origin: bool) {
+        let family = channel.and_then(|channel| {
+            self.families().iter().position(|family| {
+                family
+                    .variants()
+                    .iter()
+                    .any(|variant| variant.channel().id() == channel)
+            })
+        });
+        let current = self.focus();
+        self.cancel_pending_navigation();
+        if preserve_origin && family.is_some() && family == board_family(current) {
+            self.reveal_focus();
+        } else if let Some(index) = family.or_else(|| (!self.families().is_empty()).then_some(0)) {
+            self.move_focus(match self.mode() {
+                GuideMode::Now => ScreenFocus::Board(NowFocus::Channel(index)),
+                GuideMode::Timeline => ScreenFocus::TimelineBoard(TimelineFocus::Channel(index)),
+            });
+        } else {
+            self.move_focus(ScreenFocus::None);
+            self.recover_focus();
+        }
+        self.schedule_reads();
+    }
+
     pub fn selected_group(&self) -> Option<&ChannelGroupFilter> {
         self.selected.as_ref()
     }

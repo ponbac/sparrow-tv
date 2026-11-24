@@ -123,6 +123,12 @@ android {
     kotlinOptions {
         jvmTarget = "1.8"
     }
+    sourceSets.named("main") {
+        java.srcDir(rootProject.file("../../../android-playback/src/main/java"))
+    }
+    sourceSets.named("test") {
+        java.srcDir(rootProject.file("../../../android-playback/src/test/java"))
+    }
     buildFeatures {
         buildConfig = true
     }
