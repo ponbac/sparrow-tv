@@ -1,6 +1,9 @@
 use std::{
     collections::HashSet,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use sparrow_core::{
@@ -61,14 +64,16 @@ pub struct GuidePages {
 
 struct RetainedWindow {
     data: LoadedWindow,
+    group_source: Option<LoadedWindow>,
     status: PageStatus,
     replace_after: usize,
 }
 
+#[derive(Clone)]
 struct LoadedWindow {
     window: GuideWindow,
     page_count: usize,
-    families: Vec<GuideFamily>,
+    families: Arc<Vec<GuideFamily>>,
 }
 
 impl LoadedWindow {
@@ -76,7 +81,7 @@ impl LoadedWindow {
         Self {
             window,
             page_count: 0,
-            families: Vec::new(),
+            families: Arc::default(),
         }
     }
 }
@@ -129,28 +134,72 @@ impl GuidePages {
                 };
                 self.displayed_previous = Some(RetainedWindow {
                     status,
+                    group_source: None,
                     replace_after: prior.page_count,
                     data: prior,
                 });
             }
         } else {
-            let mut data = self
+            let source = self
                 .displayed_previous
                 .take()
-                .map_or(prior, |shown| shown.data);
-            if let Some(group) = &group {
-                data.families
-                    .retain(|family| family.group() == group.as_str());
-            }
-            self.displayed_previous = (!data.families.is_empty()).then_some(RetainedWindow {
-                data,
-                status: PageStatus::Complete,
-                replace_after: 1,
-            });
+                .map_or(prior, |shown| shown.group_source.unwrap_or(shown.data));
+            self.displayed_previous = Self::group_placeholder(source, group.as_ref());
         }
         self.group = group;
         self.selection = next_id();
         self.pager.reset(generation);
+    }
+
+    /// A group switch can display compatible rows from a pager kept in the cache.
+    pub(crate) fn keep_compatible_rows(&mut self, previous: &Self) {
+        if self.active.page_count != 0
+            || self
+                .displayed_previous
+                .as_ref()
+                .is_some_and(|prior| prior.group_source.is_none())
+            || !matches!(self.status(), PageStatus::Ready | PageStatus::Loading)
+        {
+            return;
+        }
+        let source = previous
+            .displayed_previous
+            .as_ref()
+            .map_or(&previous.active, |shown| {
+                shown.group_source.as_ref().unwrap_or(&shown.data)
+            });
+        self.displayed_previous = Self::group_placeholder(source.clone(), self.group.as_ref());
+    }
+
+    fn group_placeholder(
+        source: LoadedWindow,
+        group: Option<&ChannelGroupFilter>,
+    ) -> Option<RetainedWindow> {
+        if source.page_count == 0 {
+            return None;
+        }
+        let mut data = source.clone();
+        if let Some(group) = group {
+            data.families = Arc::new(
+                source
+                    .families
+                    .iter()
+                    .filter(|family| family.group() == group.as_str())
+                    .cloned()
+                    .collect(),
+            );
+        }
+        let status = if data.families.is_empty() {
+            PageStatus::Loading
+        } else {
+            PageStatus::Complete
+        };
+        Some(RetainedWindow {
+            data,
+            group_source: Some(source),
+            status,
+            replace_after: 1,
+        })
     }
 
     pub fn status(&self) -> PageStatus {
@@ -237,7 +286,7 @@ impl GuidePages {
         match rows {
             Ok(page) => {
                 append_families(
-                    &mut self.active.families,
+                    Arc::make_mut(&mut self.active.families),
                     page.items(),
                     &self.excluded_groups,
                 );

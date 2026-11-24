@@ -1,12 +1,12 @@
 //! Process-owned installed catalog and Activity lifecycle delivery.
 
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     path::PathBuf,
-    sync::{LazyLock, OnceLock},
+    sync::{Arc, LazyLock, OnceLock},
 };
 
-use sparrow_core::{CatalogGeneration, CatalogStatus, LifecycleSignal, SourceState};
+use sparrow_core::{CatalogAccess, CatalogStatus, CoreEvent, LifecycleSignal, SourceState};
 use sparrow_installed_catalog::InstalledCatalog;
 use tokio::{
     runtime::{Builder, Runtime},
@@ -14,10 +14,7 @@ use tokio::{
 };
 
 #[cfg(feature = "fixture")]
-use {
-    sparrow_installed_catalog::SourceConfigurationUpdate,
-    std::{sync::Arc, time::Duration},
-};
+use {sparrow_installed_catalog::SourceConfigurationUpdate, std::time::Duration};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Phase {
@@ -26,18 +23,6 @@ pub(super) enum Phase {
     Unavailable,
     Ready,
     StartupFailed,
-}
-
-impl Phase {
-    pub(super) const fn label(self) -> &'static str {
-        match self {
-            Self::Starting => "Opening Channel Catalog",
-            Self::Unconfigured => "No source configured",
-            Self::Unavailable => "Channel Catalog unavailable",
-            Self::Ready => "Channel Catalog ready",
-            Self::StartupFailed => "Channel Catalog could not open",
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -74,13 +59,62 @@ pub(super) struct Snapshot {
 }
 
 struct Process {
+    catalog: OnceLock<Arc<InstalledCatalog>>,
     worker: OnceLock<Option<Worker>>,
-    snapshot: watch::Sender<Snapshot>,
+    publication: watch::Sender<Publication>,
+}
+
+/// The Guide's typed catalog state and the activity that owns each active window.
+pub(super) struct Publication {
+    snapshot: Snapshot,
+    active_activities: HashMap<u64, u64>,
+    next_activation: u64,
+    pub(super) status: Option<Arc<CatalogStatus>>,
+    pub(super) status_revision: u64,
+}
+
+impl Publication {
+    pub(super) fn activation(&self, host: u64) -> Option<u64> {
+        self.active_activities.get(&host).copied()
+    }
+
+    pub(super) fn phase(&self) -> Phase {
+        self.snapshot.phase
+    }
+
+    fn set_status(&mut self, status: CatalogStatus, reconcile: bool) -> bool {
+        if self.status.as_deref() == Some(&status) && !reconcile {
+            return false;
+        }
+        let generation = status.generation();
+        if generation
+            != self
+                .status
+                .as_ref()
+                .and_then(|previous| previous.generation())
+        {
+            self.snapshot.generation_changes = self.snapshot.generation_changes.wrapping_add(1);
+        }
+        self.snapshot.refreshing = matches!(status.m3u(), SourceState::Refreshing { .. })
+            || matches!(status.epg(), Some(SourceState::Refreshing { .. }));
+        self.snapshot.phase = if generation.is_some() {
+            Phase::Ready
+        } else if !status.configuration().is_configured() {
+            Phase::Unconfigured
+        } else if self.snapshot.refreshing {
+            Phase::Starting
+        } else {
+            Phase::Unavailable
+        };
+        self.status = Some(Arc::new(status));
+        self.status_revision = self.status_revision.wrapping_add(1);
+        true
+    }
 }
 
 struct Worker {
     commands: mpsc::UnboundedSender<Command>,
-    _runtime: Runtime,
+    runtime: Runtime,
 }
 
 enum Command {
@@ -88,6 +122,7 @@ enum Command {
         id: u64,
         active: bool,
     },
+    ReconcileStatus,
     #[cfg(feature = "fixture")]
     Seed,
     #[cfg(feature = "fixture")]
@@ -95,14 +130,21 @@ enum Command {
 }
 
 static PROCESS: LazyLock<Process> = LazyLock::new(|| Process {
+    catalog: OnceLock::new(),
     worker: OnceLock::new(),
-    snapshot: watch::channel(Snapshot {
-        phase: Phase::Starting,
-        generation_changes: 0,
-        active: false,
-        refreshing: false,
-        https: HttpsProbe::Idle,
-        seed: FixtureSeed::Idle,
+    publication: watch::channel(Publication {
+        snapshot: Snapshot {
+            phase: Phase::Starting,
+            generation_changes: 0,
+            active: false,
+            refreshing: false,
+            https: HttpsProbe::Idle,
+            seed: FixtureSeed::Idle,
+        },
+        active_activities: HashMap::new(),
+        next_activation: 0,
+        status: None,
+        status_revision: 0,
     })
     .0,
 });
@@ -125,10 +167,7 @@ pub(super) fn start(data_dir: PathBuf) {
         modify_snapshot(|state| state.phase = Phase::Starting);
         let (commands, pending) = mpsc::unbounded_channel();
         runtime.spawn(run(data_dir, pending));
-        Some(Worker {
-            commands,
-            _runtime: runtime,
-        })
+        Some(Worker { commands, runtime })
     });
 }
 
@@ -159,15 +198,29 @@ pub(super) fn set_start_failed() {
     }
 }
 
-pub(super) fn subscribe() -> watch::Receiver<Snapshot> {
-    PROCESS.snapshot.subscribe()
+pub(super) fn subscribe() -> watch::Receiver<Publication> {
+    PROCESS.publication.subscribe()
+}
+
+pub(super) fn reconcile_status() {
+    if let Some(Some(worker)) = PROCESS.worker.get() {
+        let _ = worker.commands.send(Command::ReconcileStatus);
+    }
 }
 
 pub(super) fn diagnostics() -> (Snapshot, usize) {
     (
-        *PROCESS.snapshot.borrow(),
-        PROCESS.snapshot.receiver_count(),
+        PROCESS.publication.borrow().snapshot,
+        PROCESS.publication.receiver_count(),
     )
+}
+
+pub(super) fn read<R: Send + 'static>(
+    read: impl FnOnce(&CatalogAccess) -> R + Send + 'static,
+) -> Option<tokio::task::JoinHandle<R>> {
+    let worker = PROCESS.worker.get()?.as_ref()?;
+    let core = PROCESS.catalog.get()?.core().clone();
+    Some(worker.runtime.spawn_blocking(move || read(&core)))
 }
 
 async fn run(data_dir: PathBuf, mut commands: mpsc::UnboundedReceiver<Command>) {
@@ -181,53 +234,70 @@ async fn run(data_dir: PathBuf, mut commands: mpsc::UnboundedReceiver<Command>) 
         startup_failed();
         return;
     };
+    let _ = PROCESS.catalog.set(Arc::clone(&catalog));
     let core = catalog.core();
     let mut events = core.subscribe();
-    let mut last_generation = None;
-    // An older Activity may stop after its replacement has already started.
-    let mut active_activities = HashSet::new();
     core.report_lifecycle(LifecycleSignal::Started);
-    let initial = catalog.status();
-    publish_status(&initial, &mut last_generation);
+    publish_status(catalog.status(), false);
 
     loop {
         tokio::select! {
             command = commands.recv() => match command {
                 Some(Command::ActivityActive { id, active }) => {
-                    let was_active = !active_activities.is_empty();
-                    if active {
-                        active_activities.insert(id);
-                    } else {
-                        active_activities.remove(&id);
-                    }
-                    let is_active = !active_activities.is_empty();
-                    if is_active != was_active {
-                        let signal = if is_active { LifecycleSignal::Resumed } else { LifecycleSignal::Suspended };
-                        core.report_lifecycle(signal);
-                        modify_snapshot(|state| state.active = is_active);
-                    }
+                    publish_activity(core, id, active);
                 }
+                Some(Command::ReconcileStatus) => publish_status(core.status(), true),
                 #[cfg(feature = "fixture")]
                 Some(Command::Seed) => seed_fixture(&catalog),
                 #[cfg(feature = "fixture")]
                 Some(Command::CheckHttps) => check_platform_https(),
                 None => break,
             },
-            event = events.recv() => {
-                if event.is_none() {
-                    break;
-                }
-                publish_status(&core.status(), &mut last_generation);
+            event = events.recv() => match event {
+                // The event can be queued behind a reconciliation or resume that
+                // already published newer state. Read the latest status here.
+                Some(CoreEvent::CatalogStatusChanged { .. }) => publish_status(core.status(), false),
+                Some(_) => {}
+                None => break,
             }
         }
     }
 }
 
+fn publish_activity(core: &CatalogAccess, id: u64, active: bool) {
+    PROCESS.publication.send_if_modified(|state| {
+        let was_active = state.snapshot.active;
+        if active == state.active_activities.contains_key(&id) {
+            return false;
+        }
+        if active {
+            state.next_activation = state.next_activation.wrapping_add(1);
+            state.active_activities.insert(id, state.next_activation);
+        } else {
+            state.active_activities.remove(&id);
+        }
+        // An older Activity may stop after its replacement has already started.
+        state.snapshot.active = !state.active_activities.is_empty();
+        if state.snapshot.active != was_active {
+            let signal = if state.snapshot.active {
+                LifecycleSignal::Resumed
+            } else {
+                LifecycleSignal::Suspended
+            };
+            core.report_lifecycle(signal);
+        }
+        if active {
+            state.set_status(core.status(), false);
+        }
+        true
+    });
+}
+
 fn modify_snapshot(update: impl FnOnce(&mut Snapshot)) {
-    PROCESS.snapshot.send_if_modified(|state| {
-        let previous = *state;
-        update(state);
-        *state != previous
+    PROCESS.publication.send_if_modified(|state| {
+        let previous = state.snapshot;
+        update(&mut state.snapshot);
+        state.snapshot != previous
     });
 }
 
@@ -236,31 +306,15 @@ fn startup_failed() {
     modify_snapshot(|state| state.phase = Phase::StartupFailed);
 }
 
-fn publish_status(status: &CatalogStatus, last_generation: &mut Option<CatalogGeneration>) {
-    let generation = status.generation();
-    let generation_changed = generation != *last_generation;
-    *last_generation = generation;
-    modify_snapshot(|state| {
-        state.refreshing = matches!(status.m3u(), SourceState::Refreshing { .. })
-            || matches!(status.epg(), Some(SourceState::Refreshing { .. }));
-        state.phase = if generation.is_some() {
-            Phase::Ready
-        } else if !status.configuration().is_configured() {
-            Phase::Unconfigured
-        } else if state.refreshing {
-            Phase::Starting
-        } else {
-            Phase::Unavailable
-        };
-        if generation_changed {
-            state.generation_changes += 1;
-        }
-    });
+fn publish_status(status: CatalogStatus, reconcile: bool) {
+    PROCESS
+        .publication
+        .send_if_modified(|state| state.set_status(status, reconcile));
 }
 
 #[cfg(feature = "fixture")]
 fn seed_fixture(catalog: &Arc<InstalledCatalog>) {
-    if PROCESS.snapshot.borrow().seed == FixtureSeed::Running {
+    if PROCESS.publication.borrow().snapshot.seed == FixtureSeed::Running {
         return;
     }
     modify_snapshot(|state| state.seed = FixtureSeed::Running);
@@ -313,7 +367,7 @@ fn fixture_ready(status: &CatalogStatus) -> bool {
 
 #[cfg(feature = "fixture")]
 fn check_platform_https() {
-    if PROCESS.snapshot.borrow().https == HttpsProbe::Running {
+    if PROCESS.publication.borrow().snapshot.https == HttpsProbe::Running {
         return;
     }
     modify_snapshot(|state| state.https = HttpsProbe::Running);

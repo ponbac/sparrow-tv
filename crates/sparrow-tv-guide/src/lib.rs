@@ -3,9 +3,11 @@
 mod board_focus;
 mod families;
 pub mod now_focus;
+pub mod now_screen;
 mod pages;
 pub mod time;
 pub mod timeline_focus;
+mod viewport;
 
 pub use board_focus::BoardView;
 

@@ -2,7 +2,9 @@
 #![cfg(target_os = "android")]
 
 mod catalog;
-mod startup_view;
+mod guide_fonts;
+mod guide_surface;
+mod now_view;
 
 use std::{
     collections::HashMap,
@@ -32,7 +34,6 @@ static DIAGNOSTICS: Mutex<RendererSnapshot> = Mutex::new(RendererSnapshot {
     software: None,
     initial_window_ms: None,
     started: None,
-    focus: startup_view::Panel::Catalog,
 });
 
 #[derive(Clone, Copy)]
@@ -44,7 +45,6 @@ struct RendererSnapshot {
     software: Option<bool>,
     initial_window_ms: Option<u128>,
     started: Option<Instant>,
-    focus: startup_view::Panel,
 }
 
 #[derive(Default)]
@@ -83,20 +83,6 @@ fn init_logging() {
     });
 }
 
-fn renderer_status_label() -> &'static str {
-    let snapshot = *DIAGNOSTICS.lock().unwrap();
-    if snapshot.graphics_failed {
-        return "Graphics unavailable";
-    }
-    match snapshot.renderer {
-        Some(host::GpuOutcome::Vulkan) => "Vulkan renderer ready",
-        Some(host::GpuOutcome::Gl | host::GpuOutcome::GlAfterVulkanFailed) => {
-            "OpenGL renderer ready"
-        }
-        _ => "Starting graphics",
-    }
-}
-
 fn start_renderer() {
     START_RENDERER.get_or_init(|| {
         let (closed, mut destroyed) = mpsc::unbounded_channel();
@@ -109,7 +95,7 @@ fn start_renderer() {
             }
         });
         host::on_open_window(|id, cx| {
-            if let Some(window) = startup_view::open(cx) {
+            if let Some(window) = guide_surface::open(id, cx) {
                 cx.global_mut::<ActivityWindows>().0.insert(id, window);
                 let mut diagnostics = DIAGNOSTICS.lock().unwrap();
                 diagnostics.graphics_failed = false;
@@ -123,6 +109,7 @@ fn start_renderer() {
         host::start(move |cx| {
             // Android can destroy the last Activity and relaunch in this process.
             cx.set_quit_mode(QuitMode::Explicit);
+            guide_fonts::register(cx);
             cx.set_global(ActivityWindows::default());
             cx.spawn(async move |cx| {
                 while let Some(id) = destroyed.recv().await {
@@ -257,8 +244,9 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeSnaps
 ) -> jstring {
     let renderer = *DIAGNOSTICS.lock().unwrap();
     let (catalog, subscriptions) = catalog::diagnostics();
+    let guide = *guide_surface::GUIDE_DIAGNOSTICS.lock().unwrap();
     let snapshot = format!(
-        "sparrow-shield-v1 phase={:?} generation_changes={} active={} refreshing={} https={:?} seed={:?} renderer={:?} graphics_failed={} software={:?} initial_window_ms={:?} focus={:?} gpui_windows={} windows_opened={} catalog_subscriptions={}",
+        "sparrow-shield-v2 phase={:?} generation_changes={} active={} refreshing={} https={:?} seed={:?} renderer={:?} graphics_failed={} software={:?} initial_window_ms={:?} gpui_windows={} windows_opened={} catalog_subscriptions={} focus={} channel={:?} group_index={:?} chip_index={:?} first_row={} scroll_offset_units={} loaded_families={} page_status={:?}",
         catalog.phase,
         catalog.generation_changes,
         catalog.active,
@@ -269,10 +257,17 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeSnaps
         renderer.graphics_failed,
         renderer.software,
         renderer.initial_window_ms,
-        renderer.focus,
         renderer.gpui_windows,
         renderer.windows_opened,
         subscriptions,
+        guide.focus,
+        guide.channel,
+        guide.group_index,
+        guide.chip_index,
+        guide.first_row,
+        guide.scroll_offset_units,
+        guide.loaded_families,
+        guide.page_status,
     );
     env.with_env_no_catch(|env| Ok::<_, Error>(JString::from_str(env, snapshot)?.into_raw()))
         .resolve::<LogErrorAndDefault>()

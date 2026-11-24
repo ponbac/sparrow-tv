@@ -47,6 +47,14 @@ val stageLauncherResources = tasks.register<Sync>("stageLauncherResources") {
     into(launcherResources)
 }
 
+val guideNotices = layout.buildDirectory.dir("generated/guide-notices")
+val stageGuideNotices = tasks.register<Sync>("stageGuideNotices") {
+    val guideAssets = rootProject.file("../../../crates/sparrow-shield/assets")
+    from(guideAssets.resolve("fonts/OFL-Saira.txt"))
+    from(guideAssets.resolve("icons/LICENSE-Lucide.txt"))
+    into(guideNotices.map { it.dir("licenses") })
+}
+
 android {
     namespace = "xyz.ponbac.sparrow.shield"
     compileSdk = 36
@@ -77,12 +85,13 @@ android {
     }
     sourceSets.named("main") {
         res.srcDir(launcherResources)
+        assets.srcDir(guideNotices)
         jniLibs.setSrcDirs(nativeLibraries.orNull?.let(::listOf).orEmpty())
     }
 }
 
 tasks.named("preBuild") {
-    dependsOn(stageLauncherResources)
+    dependsOn(stageLauncherResources, stageGuideNotices)
 }
 
 val verifyNativeLibrary = tasks.register("verifyNativeLibrary") {

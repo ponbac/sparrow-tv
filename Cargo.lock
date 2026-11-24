@@ -6030,6 +6030,7 @@ version = "0.0.0"
 dependencies = [
  "android-activity",
  "android_logger",
+ "chrono",
  "gpui-pre",
  "gpui-pre-mobile",
  "jni 0.22.4",
@@ -6039,6 +6040,7 @@ dependencies = [
  "rustls-platform-verifier",
  "sparrow-core",
  "sparrow-installed-catalog",
+ "sparrow-tv-guide",
  "tokio",
 ]
 

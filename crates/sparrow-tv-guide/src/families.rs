@@ -1,11 +1,15 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use sparrow_core::{ChannelQuality, GuideProgramme, GuideWindowChannel};
 use unicode_normalization::UnicodeNormalization;
 
 /// One Channel row and its adjacent Quality Variants in catalog order.
+#[derive(Clone)]
 pub struct GuideFamily {
-    variants: Vec<GuideWindowChannel>,
+    variants: Arc<Vec<GuideWindowChannel>>,
 }
 
 impl GuideFamily {
@@ -32,7 +36,7 @@ impl GuideFamily {
     pub fn preferred_variant(&self, preferences: &VariantPreferences) -> &GuideWindowChannel {
         let wanted = preferences.quality(self.group(), self.title());
         let mut best = &self.variants[0];
-        for variant in &self.variants {
+        for variant in self.variants.iter() {
             let quality = variant_quality(variant);
             if quality.is_some() && quality == wanted {
                 return variant;
@@ -44,17 +48,32 @@ impl GuideFamily {
         best
     }
 
-    /// Shows the preferred variant's Programmes, falling back in catalog order.
-    pub fn programmes(&self, preferences: &VariantPreferences) -> &[GuideProgramme] {
-        let preferred = self.preferred_variant(preferences);
-        if !preferred.programmes().is_empty() {
-            return preferred.programmes();
-        }
+    pub fn quality_variants(&self) -> impl Iterator<Item = &GuideWindowChannel> {
         self.variants
             .iter()
-            .map(GuideWindowChannel::programmes)
-            .find(|programmes| !programmes.is_empty())
-            .unwrap_or_default()
+            .filter(|row| variant_quality(row).is_some())
+    }
+
+    /// Selects a variant for display and the row supplying its best available schedule.
+    pub fn preferred_with_schedule(
+        &self,
+        preferences: &VariantPreferences,
+    ) -> (&GuideWindowChannel, &GuideWindowChannel) {
+        let preferred = self.preferred_variant(preferences);
+        let source = if preferred.programmes().is_empty() {
+            self.variants
+                .iter()
+                .find(|row| !row.programmes().is_empty())
+                .unwrap_or(preferred)
+        } else {
+            preferred
+        };
+        (preferred, source)
+    }
+
+    /// Shows the preferred variant's Programmes, falling back in catalog order.
+    pub fn programmes(&self, preferences: &VariantPreferences) -> &[GuideProgramme] {
+        self.preferred_with_schedule(preferences).1.programmes()
     }
 }
 
@@ -88,10 +107,10 @@ pub(crate) fn append_families(
         if let Some(family) = families.last_mut()
             && family.number() == channel.number()
         {
-            family.variants.push(row.clone());
+            Arc::make_mut(&mut family.variants).push(row.clone());
         } else {
             families.push(GuideFamily {
-                variants: vec![row.clone()],
+                variants: Arc::new(vec![row.clone()]),
             });
         }
     }
