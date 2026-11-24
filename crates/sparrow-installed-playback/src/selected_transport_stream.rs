@@ -132,6 +132,26 @@ pub struct AudioTrack {
 }
 
 impl AudioTrack {
+    pub fn id(&self) -> &AudioTrackId {
+        &self.id
+    }
+
+    pub fn display_name(&self) -> &str {
+        self.label
+            .as_deref()
+            .or(self.language.as_deref())
+            .unwrap_or(match self.codec {
+                AudioCodec::Mpeg1Audio | AudioCodec::Mpeg2Audio => "MPEG audio",
+                AudioCodec::AacAdts | AudioCodec::AacLatm => "AAC",
+                AudioCodec::Ac3 => "Dolby Digital",
+                AudioCodec::Eac3 => "Dolby Digital Plus",
+            })
+    }
+
+    pub fn selected(&self) -> bool {
+        self.selected
+    }
+
     #[cfg(test)]
     pub(crate) fn fixture(
         id: AudioTrackId,

@@ -300,6 +300,12 @@ pub enum PlaybackRestartIntent {
     SelectAudio(AudioTrackId),
 }
 
+pub(crate) enum NativePlaybackOpen {
+    Start(ChannelId),
+    Reopen,
+    Restart(NativeStreamHandle, PlaybackRestartIntent),
+}
+
 /// Owns the only native provider connection and serializes all stream lifecycle
 /// transitions behind bounded, cancellation-aware queues.
 pub struct PlaybackManager {
@@ -438,18 +444,48 @@ impl PlaybackManager {
         session_id: PlaybackSessionId,
         channel_id: ChannelId,
     ) -> Result<StartedPlayback, PlaybackManagerError> {
+        self.admit_native_open(session_id, NativePlaybackOpen::Start(channel_id))
+            .await?
+            .await
+    }
+
+    /// Enqueues the open before returning its separate, cancellable reply.
+    /// A subsequent suspension can then cancel the open even before transport
+    /// negotiation or the first provider response completes.
+    pub(crate) async fn admit_native_open(
+        &self,
+        session_id: PlaybackSessionId,
+        request: NativePlaybackOpen,
+    ) -> Result<
+        impl Future<Output = Result<StartedPlayback, PlaybackManagerError>> + Send + use<>,
+        PlaybackManagerError,
+    > {
         let (reply, response) = oneshot::channel();
-        self.controls
-            .send(ControlCommand::Start {
+        let command = match request {
+            NativePlaybackOpen::Start(channel_id) => ControlCommand::Start {
                 session_id,
                 channel_id,
                 reply,
-            })
+            },
+            NativePlaybackOpen::Reopen => ControlCommand::Reopen { session_id, reply },
+            NativePlaybackOpen::Restart(expected_stream_handle, intent) => {
+                ControlCommand::Restart {
+                    session_id,
+                    expected_stream_handle,
+                    intent,
+                    reply,
+                }
+            }
+        };
+        self.controls
+            .send(command)
             .await
             .map_err(|_| PlaybackManagerError::Unavailable)?;
-        response
-            .await
-            .map_err(|_| PlaybackManagerError::Unavailable)?
+        Ok(async move {
+            response
+                .await
+                .map_err(|_| PlaybackManagerError::Unavailable)?
+        })
     }
 
     pub async fn read(
@@ -542,14 +578,9 @@ impl PlaybackManager {
         &self,
         session_id: PlaybackSessionId,
     ) -> Result<StartedPlayback, PlaybackManagerError> {
-        let (reply, response) = oneshot::channel();
-        self.controls
-            .send(ControlCommand::Reopen { session_id, reply })
+        self.admit_native_open(session_id, NativePlaybackOpen::Reopen)
+            .await?
             .await
-            .map_err(|_| PlaybackManagerError::Unavailable)?;
-        response
-            .await
-            .map_err(|_| PlaybackManagerError::Unavailable)?
     }
 
     pub async fn restart(
@@ -558,19 +589,12 @@ impl PlaybackManager {
         expected_stream_handle: NativeStreamHandle,
         intent: PlaybackRestartIntent,
     ) -> Result<StartedPlayback, PlaybackManagerError> {
-        let (reply, response) = oneshot::channel();
-        self.controls
-            .send(ControlCommand::Restart {
-                session_id,
-                expected_stream_handle,
-                intent,
-                reply,
-            })
-            .await
-            .map_err(|_| PlaybackManagerError::Unavailable)?;
-        response
-            .await
-            .map_err(|_| PlaybackManagerError::Unavailable)?
+        self.admit_native_open(
+            session_id,
+            NativePlaybackOpen::Restart(expected_stream_handle, intent),
+        )
+        .await?
+        .await
     }
 
     pub async fn stop(

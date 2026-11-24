@@ -24,6 +24,7 @@ impl MpvVolume {
         }
     }
 
+    #[cfg(any(target_os = "linux", test))]
     const fn percent(self) -> u8 {
         self.0
     }
@@ -57,6 +58,7 @@ pub(super) struct MpvProcess {
 }
 
 impl MpvProcess {
+    #[cfg(any(target_os = "linux", test))]
     pub(super) fn controlled(
         exited: MpvExitFuture,
         control: ControlProcess,
@@ -102,6 +104,7 @@ impl Drop for MpvProcess {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum MpvExit {
+    #[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
     Terminated,
 }
 
