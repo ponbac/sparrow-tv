@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashSet};
 use sparrow_core::{
     CatalogGeneration, ChannelDirection, ChannelGroupFilter, ChannelQuality, ChannelQuery,
     ChannelSummary, CoreError, InputField, InputReason, PageCursor, PageLimit, PageRequest,
-    SourceConfigurationInput, SparrowCore,
+    RefreshTrigger, SourceConfigurationInput, SourceKind, SparrowCore,
 };
 use support::{MemorySnapshotStore, ScriptedSource, adapters};
 
@@ -321,6 +321,48 @@ async fn number_lookup_and_zap_return_complete_families_and_reject_stale_generat
     assert_eq!(
         replacement.adjacent_channel_family(generation, 1, Next, &HashSet::new()),
         Err(CoreError::StaleCursor { current }),
+    );
+}
+
+#[tokio::test]
+async fn playback_channel_lookup_and_zap_follow_the_channel_after_a_reorder() {
+    use ChannelDirection::{Next, Previous};
+
+    let first = "#EXTINF:-1,First\nhttps://media.fixture.invalid/first.ts\n";
+    let playing = "#EXTINF:-1,Playing\nhttps://media.fixture.invalid/playing.ts\n";
+    let last = "#EXTINF:-1,Last\nhttps://media.fixture.invalid/last.ts\n";
+    let (core, source) = browse_core(format!("#EXTM3U\n{first}{playing}{last}").as_bytes()).await;
+    let channels = core
+        .list_channels(ChannelQuery::all(PageRequest::first(page_limit(10))))
+        .unwrap();
+    let tuned = &channels.items()[1];
+    assert_eq!(tuned.number(), 2);
+
+    source.replace_bytes(SourceKind::M3u, format!("#EXTM3U\n{last}{first}{playing}"));
+    core.refresh(RefreshTrigger::Manual).await;
+
+    let current = core.status().generation().unwrap();
+    assert_ne!(current, channels.generation());
+    let number = core.channel_number(current, tuned.id()).unwrap().unwrap();
+    let family = core.channel_family(current, number).unwrap().unwrap();
+    assert_eq!(family.number(), 3);
+    assert_eq!(family.variants()[0].id(), tuned.id());
+    assert_eq!(
+        core.adjacent_channel_family(current, number, Previous, &HashSet::new())
+            .unwrap()
+            .unwrap()
+            .variants()[0]
+            .id(),
+        channels.items()[0].id()
+    );
+    assert!(
+        core.adjacent_channel_family(current, number, Next, &HashSet::new())
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        core.channel_number(channels.generation(), tuned.id()),
+        Err(CoreError::StaleCursor { current })
     );
 }
 

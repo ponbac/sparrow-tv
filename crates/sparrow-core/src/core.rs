@@ -278,6 +278,16 @@ impl CatalogAccess {
         self.query_catalog(|catalog| catalog.channels_page(&query))
     }
 
+    /// Resolves a Channel Identifier to its Channel Number in the requested
+    /// publication. An absent Channel yields no number.
+    pub fn channel_number(
+        &self,
+        expected: CatalogGeneration,
+        id: &ChannelId,
+    ) -> Result<Option<u32>, CoreError> {
+        self.query_generation(expected, |catalog| catalog.channel_number(id))
+    }
+
     /// Returns all Quality Variants for a Channel Number in the requested
     /// publication. An absent number yields no family. A different published
     /// generation yields [`CoreError::StaleCursor`].

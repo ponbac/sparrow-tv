@@ -65,7 +65,7 @@ impl GuideSurface {
         let revision = self.playback.tune_revision;
         let activation = self.activation;
         let Some(query) = catalog::playback_query(move |core| {
-            let channel_number = core.channel(&channel).ok()?.number();
+            let channel_number = core.channel_number(generation, &channel).ok()??;
             let family = core.channel_family(generation, channel_number).ok()??;
             let selected = family
                 .variants()
@@ -158,13 +158,14 @@ impl GuideSurface {
         else {
             return;
         };
-        let number = subject.number;
+        let channel_id = subject.channel.clone();
         let Some(generation) = self.screen.generation() else {
             return;
         };
         let excluded = self.screen.exclusions().clone();
         let preferences = self.screen.variant_preferences().clone();
         let Some(query) = catalog::playback_query(move |core| {
+            let number = core.channel_number(generation, &channel_id).ok()??;
             let family = core
                 .adjacent_channel_family(generation, number, direction, &excluded)
                 .ok()??;

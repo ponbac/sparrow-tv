@@ -145,6 +145,11 @@ impl ChannelCatalog {
         )
     }
 
+    pub(crate) fn channel_number(&self, id: &ChannelId) -> Option<u32> {
+        let index = self.flat.channel_index_by_digest(&id.digest())?;
+        Some(self.flat.channels_hot()[index].number.get())
+    }
+
     pub(crate) fn channel_family(&self, number: u32) -> Option<ChannelFamily> {
         let index = self.flat.channel_index_by_number(number)?;
         Some(self.project_channel_family(index))

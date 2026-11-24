@@ -103,7 +103,7 @@ impl PlaybackUi {
     pub(super) fn focused_dock_channel(&self) -> Option<u32> {
         self.shown()
             .filter(|_| self.dock_focused())
-            .map(|target| target.number)
+            .map(|target| self.shown_number(target))
     }
 
     fn shown(&self) -> Option<&TvTuneTarget> {
@@ -111,6 +111,17 @@ impl PlaybackUi {
             .pending_zap
             .as_ref()
             .or(self.state.selected.as_ref())
+    }
+
+    fn subject_for(&self, target: &TvTuneTarget) -> Option<&PlaybackSubject> {
+        self.subject
+            .as_ref()
+            .filter(|subject| subject.id == target.channel)
+    }
+
+    fn shown_number(&self, target: &TvTuneTarget) -> u32 {
+        self.subject_for(target)
+            .map_or(target.number, |subject| subject.family.number())
     }
 
     fn cancel_zap(&mut self) {
@@ -126,10 +137,7 @@ impl PlaybackUi {
         render: impl FnOnce(&PlaybackOverlay<'_>) -> R,
     ) -> Option<R> {
         let selected = self.shown()?;
-        let subject = self
-            .subject
-            .as_ref()
-            .filter(|subject| subject.id == selected.channel);
+        let subject = self.subject_for(selected);
         let cursor = subject
             .and_then(|subject| subject.schedule.as_ref())
             .map(Page::items)
@@ -185,7 +193,7 @@ impl PlaybackUi {
             _ => None,
         };
         Some(render(&PlaybackOverlay {
-            channel_number: selected.number,
+            channel_number: self.shown_number(selected),
             channel_name: subject.map_or("", |subject| &subject.title),
             programme,
             clock: &clock,
@@ -334,21 +342,22 @@ impl GuideSurface {
     }
 
     pub(super) fn refresh_playback_subject(&mut self, cx: &mut Context<Self>) {
-        let Some(target) = self.playback.shown().cloned() else {
+        let Some(channel_id) = self.playback.shown().map(|target| target.channel.clone()) else {
             self.playback.subject = None;
             return;
         };
         let Some(generation) = self.screen.generation() else {
             return;
         };
-        let now = self.now.to_utc();
-        let from = now;
+        let from = self.now.to_utc();
+        let requested_channel = channel_id.clone();
         let Some(query) = catalog::playback_query(move |core| {
-            let family = core.channel_family(generation, target.number).ok()??;
+            let number = core.channel_number(generation, &channel_id).ok()??;
+            let family = core.channel_family(generation, number).ok()??;
             let channel = family
                 .variants()
                 .iter()
-                .find(|channel| channel.id() == &target.channel)?;
+                .find(|channel| channel.id() == &channel_id)?;
             let title = channel_title(channel).to_owned();
             let limit = PageRequest::first(PageLimit::new(4).ok()?);
             let schedule = family_order(channel, family.variants())
@@ -360,7 +369,7 @@ impl GuideSurface {
                 })
                 .find(|page| page.generation() == generation && !page.items().is_empty());
             Some(PlaybackSubject {
-                id: target.channel,
+                id: channel_id,
                 title,
                 family,
                 schedule,
@@ -375,6 +384,8 @@ impl GuideSurface {
             let _ = view.update(cx, |view, cx| {
                 if request == view.playback.subject_request
                     && view.screen.generation() == Some(generation)
+                    && view.playback.shown().map(|target| &target.channel)
+                        == Some(&requested_channel)
                 {
                     view.playback.subject = subject;
                     cx.notify();
