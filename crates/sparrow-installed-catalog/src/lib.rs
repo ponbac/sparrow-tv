@@ -15,7 +15,7 @@ use sparrow_core::{
 };
 use sparrow_snapshot_store::{AtomicFileSnapshotStore, InstanceLock, InstanceLockError};
 use sparrow_source_http::HttpSourceAccess;
-use tokio::sync::Mutex;
+use tokio::{runtime::Handle, sync::Mutex};
 
 pub use config_store::{ConfigurationStoreError, ensure_private_directory};
 
@@ -26,6 +26,7 @@ const SNAPSHOT_DIRECTORY: &str = "snapshots-v1";
 
 pub struct InstalledCatalog {
     core: SparrowCore,
+    runtime: Handle,
     private_root: PathBuf,
     configuration_store: SourceConfigurationStore,
     configuration_mutation: Arc<Mutex<()>>,
@@ -69,6 +70,15 @@ impl InstalledCatalog {
         self.core.catalog()
     }
 
+    /// Reads the current view and activates background source automation on the
+    /// catalog runtime, including when the host calls from its UI thread.
+    pub fn status(&self) -> CatalogStatus {
+        let status = self.core().status();
+        let _runtime = self.runtime.enter();
+        self.core().activate_automation();
+        status
+    }
+
     pub fn private_root(&self) -> &Path {
         &self.private_root
     }
@@ -101,6 +111,7 @@ impl InstalledCatalog {
 
 impl PreparedInstalledCatalog {
     pub async fn finish_open(self) -> Result<Arc<InstalledCatalog>, CatalogStartupError> {
+        let runtime = Handle::current();
         let source =
             Arc::new(HttpSourceAccess::new().map_err(|_| CatalogStartupError::SourceAdapter)?);
         let snapshot_dir = self.private_root.join(SNAPSHOT_DIRECTORY);
@@ -119,6 +130,7 @@ impl PreparedInstalledCatalog {
         .map_err(|_| CatalogStartupError::Core)?;
         Ok(Arc::new(InstalledCatalog {
             core,
+            runtime,
             private_root: self.private_root,
             configuration_store: self.configuration_store,
             configuration_mutation: Arc::new(Mutex::new(())),

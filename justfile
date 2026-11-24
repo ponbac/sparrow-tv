@@ -117,3 +117,10 @@ android-catalog-accept:
 
 android-playback-accept:
     cd app && test -n "${ANDROID_SERIAL:?ANDROID_SERIAL is required}" && bun run accept:android:playback -- --apk "${ANDROID_PLAYBACK_ACCEPTANCE_APK:?ANDROID_PLAYBACK_ACCEPTANCE_APK is required}" --output "${ANDROID_PLAYBACK_ACCEPTANCE_OUTPUT:?ANDROID_PLAYBACK_ACCEPTANCE_OUTPUT is required}"
+
+# Build the separate ARM64 Shield development package.
+build-shield-host:
+    bash scripts/debug/build-shield-host.sh
+
+check-shield-host:
+    bash scripts/debug/build-shield-host.sh check

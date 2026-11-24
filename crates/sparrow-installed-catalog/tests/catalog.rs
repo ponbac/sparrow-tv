@@ -1,5 +1,6 @@
 use std::{
     future::{Future, poll_fn},
+    sync::Arc,
     task::Poll,
     time::Duration,
 };
@@ -155,10 +156,79 @@ async fn started_replacement_publishes_the_catalog_when_its_caller_stops_waiting
     assert_eq!(catalog.core().status().generation(), Some(generation));
 }
 
+#[test]
+fn a_status_read_from_a_plain_thread_refreshes_the_saved_source() {
+    let directory = tempdir().unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let start_runtime = || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    };
+    let source = format!("http://{}/catalog.m3u", listener.local_addr().unwrap());
+    start_runtime().block_on(async {
+        let unavailable = TcpListener::from_std(listener.try_clone().unwrap()).unwrap();
+        let reply = tokio::spawn(serve_fixture_response(unavailable, "503 Unavailable", ""));
+        let catalog = InstalledCatalog::prepare(directory.path())
+            .unwrap()
+            .finish_open()
+            .await
+            .unwrap();
+        let change = SourceConfigurationUpdate::parse(source, None).unwrap();
+        let status = timeout(
+            Duration::from_secs(5),
+            catalog.replace_configuration(change),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        reply.await.unwrap();
+        assert!(status.configuration().is_configured());
+        assert!(status.generation().is_none());
+    });
+
+    start_runtime().block_on(async {
+        let listener = TcpListener::from_std(listener).unwrap();
+        let reply = tokio::spawn(serve_catalog_fixture(listener));
+        let catalog = InstalledCatalog::prepare(directory.path())
+            .unwrap()
+            .finish_open()
+            .await
+            .unwrap();
+        let mut events = catalog.core().subscribe();
+        let ui_catalog = Arc::clone(&catalog);
+        let initial = std::thread::spawn(move || ui_catalog.status())
+            .join()
+            .unwrap();
+        assert!(initial.configuration().is_configured());
+        assert!(initial.generation().is_none());
+        let generation = timeout(Duration::from_secs(5), async {
+            loop {
+                if let CoreEvent::CatalogPublished { generation, .. } = events
+                    .recv()
+                    .await
+                    .expect("catalog event stream stays open")
+                {
+                    break generation;
+                }
+            }
+        })
+        .await
+        .expect("the status read starts a refresh on the catalog runtime");
+        reply.await.unwrap();
+        assert_eq!(catalog.core().status().generation(), Some(generation));
+    });
+}
+
 async fn serve_catalog_fixture(listener: TcpListener) {
     const M3U: &str =
         "#EXTM3U\n#EXTINF:-1 group-title=\"News\",Test News\nhttp://127.0.0.1:9/live\n";
+    serve_fixture_response(listener, "200 OK", M3U).await;
+}
 
+async fn serve_fixture_response(listener: TcpListener, status: &str, body: &str) {
     let (mut connection, _) = listener.accept().await.unwrap();
     let mut request = String::new();
     BufReader::new(&mut connection)
@@ -167,8 +237,8 @@ async fn serve_catalog_fixture(listener: TcpListener) {
         .unwrap();
     assert!(request.starts_with("GET /catalog.m3u "));
     let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{M3U}",
-        M3U.len()
+        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
     );
     connection.write_all(response.as_bytes()).await.unwrap();
 }

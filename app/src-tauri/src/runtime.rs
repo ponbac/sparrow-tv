@@ -246,9 +246,7 @@ impl InstalledRuntime {
     }
 
     pub(crate) fn status(&self) -> sparrow_core::CatalogStatus {
-        let status = self.core().status();
-        self.core().activate_automation();
-        status
+        self.catalog.status()
     }
 
     pub(crate) async fn replace_configuration(
