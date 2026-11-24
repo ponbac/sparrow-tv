@@ -4,7 +4,7 @@
 mod catalog;
 mod guide_fonts;
 mod guide_surface;
-mod now_view;
+mod guide_view;
 
 use std::{
     collections::HashMap,
@@ -246,7 +246,7 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeSnaps
     let (catalog, subscriptions) = catalog::diagnostics();
     let guide = *guide_surface::GUIDE_DIAGNOSTICS.lock().unwrap();
     let snapshot = format!(
-        "sparrow-shield-v2 phase={:?} generation_changes={} active={} refreshing={} https={:?} seed={:?} renderer={:?} graphics_failed={} software={:?} initial_window_ms={:?} gpui_windows={} windows_opened={} catalog_subscriptions={} focus={} channel={:?} group_index={:?} chip_index={:?} first_row={} scroll_offset_units={} loaded_families={} page_status={:?}",
+        "sparrow-shield-v3 phase={:?} generation_changes={} active={} refreshing={} https={:?} seed={:?} renderer={:?} graphics_failed={} software={:?} initial_window_ms={:?} gpui_windows={} windows_opened={} catalog_subscriptions={} mode={:?} focus={} channel={:?} group_index={:?} chip_index={:?} programme_index={:?} pan_minutes={:?} first_row={} scroll_offset_units={} loaded_families={} page_status={:?}",
         catalog.phase,
         catalog.generation_changes,
         catalog.active,
@@ -260,10 +260,13 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeSnaps
         renderer.gpui_windows,
         renderer.windows_opened,
         subscriptions,
+        guide.mode,
         guide.focus,
         guide.channel,
         guide.group_index,
         guide.chip_index,
+        guide.programme_index,
+        guide.pan_minutes,
         guide.first_row,
         guide.scroll_offset_units,
         guide.loaded_families,

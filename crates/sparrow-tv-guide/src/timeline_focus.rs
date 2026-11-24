@@ -86,6 +86,18 @@ impl TimelineNavigation {
         movement(self.down.settle(focus, board))
     }
 
+    /// Keeps a deferred move attached to the same Programme after the row is rebuilt.
+    pub(crate) fn rebase_programme(
+        &mut self,
+        prior: TimelineFocus,
+        current: Option<TimelineFocus>,
+    ) {
+        self.down.rebase_origin(
+            prior,
+            current.and_then(|focus| focus.family().map(|family| (focus, family))),
+        );
+    }
+
     /// Restores board focus after the previously focused control was replaced.
     pub fn recover(&mut self, board: BoardView) -> TimelineMove {
         self.cancel_pending();

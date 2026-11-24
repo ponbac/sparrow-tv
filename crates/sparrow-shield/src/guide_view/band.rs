@@ -2,14 +2,14 @@ use chrono::{DateTime, FixedOffset};
 use gpui::{Div, div, linear_color_stop, linear_gradient, prelude::*, rgb, rgba, svg};
 use sparrow_tv_guide::{
     VariantPreferences,
-    now_screen::{NowScreen, ScreenFocus, ToolbarFocus},
-    time::{elapsed_fraction, minutes_left},
+    guide_screen::{ScreenFocus, ToolbarFocus},
+    preview::{PreviewTiming, following_programmes, preview_timing},
 };
 
 use super::{
-    CANVAS_WIDTH, CELL, CELL_ELAPSED, DIM, FAINT, GUTTER, ICE, Layout, ON_ICE, SAIRA, SAIRA_CLOCK,
-    SAIRA_NUMBER, SAIRA_PREVIEW, SAIRA_TITLE, TEXT, board::quality_tags, clock_time,
-    preview_programme, programme_title,
+    CANVAS_WIDTH, CELL, CELL_ELAPSED, DIM, FAINT, GUTTER, ICE, Layout, ON_ICE, PreviewSelection,
+    SAIRA, SAIRA_CLOCK, SAIRA_NUMBER, SAIRA_PREVIEW, SAIRA_TITLE, TEXT, board::quality_tags,
+    clock_time, programme_title,
 };
 
 const POSTER_WIDTH: f32 = 336.;
@@ -20,15 +20,16 @@ const NO_GUIDE_DATA: &str = "No guide data. The channel still plays.";
 
 pub(super) fn render(
     layout: Layout,
-    screen: &NowScreen,
+    focus: ScreenFocus,
     now: DateTime<FixedOffset>,
+    shown: Option<&PreviewSelection>,
     description: Option<&gpui::SharedString>,
 ) -> Div {
     div()
-        .child(poster(layout, screen))
-        .child(toolbar(layout, screen.focus(), now))
-        .when_some(screen.preview_family(), |band, family| {
-            band.child(preview(layout, screen, family, now, description))
+        .child(poster(layout, shown.map(|preview| &preview.family)))
+        .child(toolbar(layout, focus, now))
+        .when_some(shown, |band, shown| {
+            band.child(preview(layout, shown, now, description))
         })
 }
 
@@ -95,7 +96,7 @@ fn toolbar(layout: Layout, focus: ScreenFocus, now: DateTime<FixedOffset>) -> Di
         )
 }
 
-fn poster(layout: Layout, screen: &NowScreen) -> Div {
+fn poster(layout: Layout, family: Option<&sparrow_tv_guide::GuideFamily>) -> Div {
     let poster = layout
         .rect(GUTTER, BAND_TOP, POSTER_WIDTH, 404.)
         .rounded(layout.px(8.))
@@ -120,7 +121,7 @@ fn poster(layout: Layout, screen: &NowScreen) -> Div {
                 .border(layout.px(1.))
                 .border_color(rgba(FAINT)),
         );
-    let Some(family) = screen.preview_family() else {
+    let Some(family) = family else {
         return poster.child(
             layout
                 .rect(30., 290., 276., 84.)
@@ -156,12 +157,12 @@ fn poster(layout: Layout, screen: &NowScreen) -> Div {
 
 fn preview(
     layout: Layout,
-    screen: &NowScreen,
-    family: &sparrow_tv_guide::GuideFamily,
+    shown: &PreviewSelection,
     now: DateTime<FixedOffset>,
     description: Option<&gpui::SharedString>,
 ) -> Div {
-    let highlighted = preview_programme(screen, now);
+    let family = &shown.family;
+    let highlighted = shown.programme(now);
     let preferred = family.preferred_variant(&VariantPreferences::default());
     let metadata = layout
         .text(SAIRA, 20., 30., 400.)
@@ -221,9 +222,11 @@ fn preview(
     };
     let starts = programme.starts_at();
     let ends = programme.ends_at();
-    let meter = if starts <= now {
-        let elapsed = elapsed_fraction(programme, now.to_utc()) as f32;
-        meter
+    let meter = match preview_timing(programme, now.to_utc()) {
+        PreviewTiming::Live {
+            elapsed_fraction,
+            minutes_left,
+        } => meter
             .child(clock_time(starts))
             .child(
                 div()
@@ -234,7 +237,7 @@ fn preview(
                     .bg(rgba(FAINT))
                     .child(
                         layout
-                            .rect(0., 0., 264. * elapsed, 6.)
+                            .rect(0., 0., 264. * elapsed_fraction as f32, 6.)
                             .rounded_l(layout.px(3.))
                             .bg(rgb(ICE)),
                     ),
@@ -244,16 +247,12 @@ fn preview(
                 div()
                     .font_weight(gpui::FontWeight(600.))
                     .text_color(rgb(TEXT))
-                    .child(format!(
-                        "{} min left",
-                        minutes_left(programme, now.to_utc())
-                    )),
-            )
-    } else {
-        let minutes = ((starts - now.to_utc()).num_seconds() as f64 / 60.)
-            .round()
-            .max(1.) as i64;
-        meter
+                    .child(format!("{minutes_left} min left")),
+            ),
+        PreviewTiming::Upcoming {
+            in_minutes,
+            duration_minutes,
+        } => meter
             .child(
                 div()
                     .flex()
@@ -266,48 +265,56 @@ fn preview(
                 div()
                     .font_weight(gpui::FontWeight(600.))
                     .text_color(rgb(TEXT))
-                    .child(format!("in {}", duration(minutes))),
+                    .child(format!("in {}", duration(in_minutes))),
             )
             .child(
                 div()
                     .text_color(rgba(super::MUTE))
-                    .child(format!("· {}", duration((ends - starts).num_minutes()))),
+                    .child(format!("· {}", duration(duration_minutes))),
+            ),
+        PreviewTiming::Ended { duration_minutes } => meter
+            .child(
+                div()
+                    .flex()
+                    .gap(layout.px(5.))
+                    .child("Ended")
+                    .child(div().text_color(rgb(TEXT)).child(clock_time(ends))),
             )
+            .child(
+                div()
+                    .text_color(rgba(super::MUTE))
+                    .child(format!("· {}", duration(duration_minutes))),
+            ),
     };
-    let later = source
-        .programmes()
-        .iter()
-        .filter(|later| later.starts_at() >= programme.ends_at())
-        .take(3)
-        .map(|later| {
-            layout
-                .text(SAIRA, 20., 20., 400.)
-                .h(layout.px(34.))
-                .border_t(layout.px(1.))
-                .border_color(rgba(FAINT))
-                .flex()
-                .items_center()
-                .gap(layout.px(12.))
-                .child(
-                    div()
-                        .w(layout.px(72.))
-                        .flex_none()
-                        .font_weight(gpui::FontWeight(600.))
-                        .text_color(rgb(ICE))
-                        .child(clock_time(later.starts_at())),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .font_weight(gpui::FontWeight(600.))
-                        .child(programme_title(later)),
-                )
-                .child(div().text_color(rgba(DIM)).child(duration(
-                    (later.ends_at() - later.starts_at()).num_minutes(),
-                )))
-        });
+    let later = following_programmes(source, programme).map(|later| {
+        layout
+            .text(SAIRA, 20., 20., 400.)
+            .h(layout.px(34.))
+            .border_t(layout.px(1.))
+            .border_color(rgba(FAINT))
+            .flex()
+            .items_center()
+            .gap(layout.px(12.))
+            .child(
+                div()
+                    .w(layout.px(72.))
+                    .flex_none()
+                    .font_weight(gpui::FontWeight(600.))
+                    .text_color(rgb(ICE))
+                    .child(clock_time(later.starts_at())),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .font_weight(gpui::FontWeight(600.))
+                    .child(programme_title(later)),
+            )
+            .child(div().text_color(rgba(DIM)).child(duration(
+                (later.ends_at() - later.starts_at()).num_minutes(),
+            )))
+    });
     preview
         .child(meter)
         .child(

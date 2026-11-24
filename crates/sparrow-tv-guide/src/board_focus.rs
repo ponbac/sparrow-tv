@@ -93,6 +93,18 @@ impl<const COLUMNS: usize, F: Copy + Eq, A> DownSteps<COLUMNS, F, A> {
         self.resolve(pending, board)
     }
 
+    pub(crate) fn rebase_origin(&mut self, prior: F, current: Option<(F, usize)>) {
+        let pending = self
+            .pending
+            .take()
+            .filter(|pending| pending.origin == prior);
+        if let (Some(mut pending), Some((origin, family))) = (pending, current) {
+            pending.origin = origin;
+            pending.family = family;
+            self.pending = Some(pending);
+        }
+    }
+
     pub(crate) fn clear(&mut self) {
         self.pending = None;
     }

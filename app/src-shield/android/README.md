@@ -1,6 +1,6 @@
 # Shield development APK
 
-The Shield host opens the installed Channel Catalog and draws the Now Guide on a GPUI surface. Timeline, Playback Sessions, and the remaining controls follow in separate changes. Future controls retain their D-pad stops and report when an action is unavailable.
+The Shield host opens the installed Channel Catalog and draws the Now and Timeline Guide views on a GPUI surface. Playback Sessions and the remaining controls follow in separate changes. Future controls retain their D-pad stops and report when an action is unavailable.
 
 With Java 17, `ANDROID_HOME`, NDK 29 and the `aarch64-linux-android` Rust target available, run from the workspace root.
 
@@ -31,7 +31,7 @@ The Activity dump reports catalog phase, process-local generation changes, lifec
 adb reverse --remove tcp:18108
 ```
 
-`initial_window_ms` records the first successful window open. `windows_opened` counts all successful opens in the process. D-pad arrows move among the Toolbar, Channel Group lane and Now cards. The Activity dump includes focus kind, Channel Number, first partially visible row, scroll offset in 1920-wide reference units and loaded family count. The snapshot begins with `sparrow-shield-v2`. Home reattaches the host's surface, and Back followed by relaunch opens a new Activity over the same process catalog.
+`initial_window_ms` records the first successful window open. `windows_opened` counts all successful opens in the process. D-pad arrows move among the Toolbar, Channel Group lane, Now cards and Timeline cells. Center on the Now/Timeline control switches views. The Activity dump includes focus kind, Channel Number, first partially visible row, scroll offset in 1920-wide reference units and loaded family count. The `sparrow-shield-v3` snapshot identifies the view switch as `focus=Phase` and also reports mode, focused Programme index and the Timeline’s pan in minutes. Home reattaches the host's surface, and Back followed by relaunch opens a new Activity over the same process catalog.
 
 Update the Gradle locks after an intentional dependency change.
 
