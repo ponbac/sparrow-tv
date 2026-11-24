@@ -350,12 +350,13 @@ fn dispatch_lifecycle_signal(app: &tauri::AppHandle, signal: sparrow_core::Lifec
         return;
     };
     let app = app.clone();
-    let dispatch = slot.dispatch_lifecycle(signal, move |event| {
-        let _ = app.emit("sparrow://playback-lifecycle", event);
-    });
-    tauri::async_runtime::spawn(async move {
-        let _ = dispatch.await;
-    });
+    drop(slot.dispatch_lifecycle(
+        tauri::async_runtime::handle().inner(),
+        signal,
+        move |event| {
+            let _ = app.emit("sparrow://playback-lifecycle", event);
+        },
+    ));
 }
 
 #[cfg(all(test, target_os = "linux"))]

@@ -12,10 +12,7 @@ use sparrow_installed_catalog::SourceConfigurationUpdate;
 use sparrow_installed_playback::{
     AudioTrackId, MpvPlaybackControl, MpvVolume, NativeStreamHandle, PlaybackRestartIntent,
     PlaybackSessionId,
-};
-
-use crate::android_playback::{
-    AndroidPlaybackControls, AndroidPlaybackIdentity, AndroidPlaybackViewport,
+    android::{AndroidPlaybackControls, AndroidPlaybackIdentity, AndroidPlaybackViewport},
 };
 
 use super::dto::ClientErrorDto;

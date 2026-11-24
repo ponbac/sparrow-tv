@@ -4,11 +4,14 @@
 //! Audio Track, and returns a correlated stream handle. Device shells own
 //! presentation, visibility signals and the platform screen-wake adapter.
 
+pub mod android;
 mod audio_preferences;
+mod lifecycle;
 mod playback;
 mod screen_wake;
 mod selected_transport_stream;
 
+pub use lifecycle::LifecycleOrder;
 pub use playback::{
     InstalledPlaybackStart, MpvFailure, MpvPlaybackControl, MpvPlaybackSession, MpvVolume,
     NativeStreamHandle, PlaybackManager, PlaybackManagerError, PlaybackRestartIntent,

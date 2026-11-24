@@ -13,9 +13,8 @@ pub(crate) use sparrow_client_contract::{
 use sparrow_installed_playback::{
     AudioSelection, AudioTrack, InstalledPlaybackStart, PlaybackManagerError, PreferenceStatus,
     StartedPlayback,
+    android::{AndroidPlaybackAudio, AndroidPlaybackPhase, AndroidPlaybackStatus},
 };
-
-use crate::android_playback::{AndroidPlaybackAudio, AndroidPlaybackPhase, AndroidPlaybackStatus};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]

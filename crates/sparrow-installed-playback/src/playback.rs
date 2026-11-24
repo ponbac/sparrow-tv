@@ -45,7 +45,7 @@ const COMMAND_CAPACITY: usize = 16;
 const READ_CAPACITY: usize = 16;
 const MAX_STOP_TOMBSTONES: usize = 64;
 const MAX_SUSPEND_INTENTS: usize = 64;
-const MAX_NATIVE_PULL_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_NATIVE_PULL_BYTES: usize = 64 * 1024;
 const SESSION_ID_PREFIX: &str = "play1_";
 const SESSION_ID_NONCE_HEX_BYTES: usize = 32;
 const MAX_SESSION_ID_BYTES: usize = 64;
@@ -457,11 +457,23 @@ impl PlaybackManager {
         session_id: PlaybackSessionId,
         stream_handle: NativeStreamHandle,
     ) -> Result<Vec<u8>, PlaybackManagerError> {
+        self.read_at_most(session_id, stream_handle, MAX_NATIVE_PULL_BYTES)
+            .await
+    }
+
+    pub(crate) async fn read_at_most(
+        &self,
+        session_id: PlaybackSessionId,
+        stream_handle: NativeStreamHandle,
+        maximum: usize,
+    ) -> Result<Vec<u8>, PlaybackManagerError> {
+        debug_assert!((1..=MAX_NATIVE_PULL_BYTES).contains(&maximum));
         let (reply, response) = oneshot::channel();
         self.reads
             .send(ReadCommand {
                 session_id,
                 stream_handle,
+                maximum,
                 reply,
             })
             .await
@@ -766,6 +778,7 @@ enum PlaybackLifecycle {
 struct ReadCommand {
     session_id: PlaybackSessionId,
     stream_handle: NativeStreamHandle,
+    maximum: usize,
     reply: oneshot::Sender<Result<Vec<u8>, PlaybackManagerError>>,
 }
 
@@ -2411,7 +2424,7 @@ impl PlaybackActor {
             return ActorState::Streaming(streaming);
         }
         ActorState::Reading(ReadingState {
-            pending: Box::pin(PendingRead::new(streaming.stream)),
+            pending: Box::pin(PendingRead::new(streaming.stream, read.maximum)),
             session: streaming.session,
             reply: read.reply,
         })
@@ -2773,12 +2786,14 @@ enum PendingOpenError {
 
 struct PendingRead {
     stream: Option<StreamInstance>,
+    maximum: usize,
 }
 
 impl PendingRead {
-    fn new(stream: StreamInstance) -> Self {
+    fn new(stream: StreamInstance, maximum: usize) -> Self {
         Self {
             stream: Some(stream),
+            maximum,
         }
     }
 }
@@ -2787,9 +2802,10 @@ impl Future for PendingRead {
     type Output = ReadCompletion;
 
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        let maximum = self.maximum;
         let stream = self.stream.as_mut().expect("pending read owns stream");
         if !stream.remainder.is_empty() {
-            let take = stream.remainder.len().min(MAX_NATIVE_PULL_BYTES);
+            let take = stream.remainder.len().min(maximum);
             let bytes = stream.remainder.split_to(take).to_vec();
             let stream = self.stream.take().expect("pending read owns stream");
             return Poll::Ready(ReadCompletion::Chunk(bytes, stream));
@@ -2801,7 +2817,7 @@ impl Future for PendingRead {
                 Poll::Pending
             }
             Some(Ok(mut bytes)) => {
-                let take = bytes.len().min(MAX_NATIVE_PULL_BYTES);
+                let take = bytes.len().min(maximum);
                 let chunk = bytes.split_to(take).to_vec();
                 stream.remainder = bytes;
                 let stream = self.stream.take().expect("pending read owns stream");
