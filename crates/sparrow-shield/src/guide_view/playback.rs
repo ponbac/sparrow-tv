@@ -71,12 +71,7 @@ pub(crate) enum PlaybackStage {
 
 impl PlaybackOverlay<'_> {
     fn show_field(&self) -> bool {
-        self.tuning_field()
-            || self.still.is_some()
-            || matches!(
-                self.stage,
-                PlaybackStage::Tuning | PlaybackStage::Reconnecting
-            )
+        self.tuning_field() || self.still.is_some() || self.stage == PlaybackStage::Reconnecting
     }
 }
 
@@ -102,6 +97,7 @@ pub(crate) struct PlaybackOverlay<'a> {
     pub(crate) first_picture: Option<Instant>,
     pub(crate) signal_landing: Option<(Instant, PlaybackStage)>,
     pub(crate) reduce_motion: bool,
+    pub(crate) hold_started: Option<Instant>,
     pub(crate) still: Option<&'a std::sync::Arc<gpui::RenderImage>>,
     pub(crate) attempt: u8,
     pub(crate) audio_track: Option<&'a str>,
@@ -353,7 +349,13 @@ pub(crate) fn docked_playback(viewport: Size<Pixels>, playback: &PlaybackOverlay
         .child(
             layout
                 .rect(left, top - 5., width, 5.)
-                .bg(rgb(if playback.tuning_field() { ICE } else { TALLY })),
+                .bg(rgb(match playback.stage {
+                    PlaybackStage::Reconnecting => AMBER,
+                    PlaybackStage::Failed => ERROR,
+                    PlaybackStage::Paused | PlaybackStage::Stopping => FAINT,
+                    PlaybackStage::Playing if !playback.tuning_field() => TALLY,
+                    _ => ICE,
+                })),
         )
         .child(caption)
 }

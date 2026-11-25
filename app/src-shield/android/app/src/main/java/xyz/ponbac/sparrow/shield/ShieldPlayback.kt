@@ -185,8 +185,9 @@ class ShieldPlayback(
   ): Boolean {
     val identity = NativePlaybackIdentity.parse(session, stream) ?: return false
     val presentation = Presentation(generation, identity)
-    if (destroyed || host != hostId) return false
+    if (destroyed || host != hostId || generation <= 0 || request <= 0) return false
     return main.post {
+      if (destroyed) return@post
       val surface = placement.pictureSurface()
       fun complete(pixels: ByteArray?, width: Int = 0, height: Int = 0) {
         val valid = !destroyed && binding?.presentation == presentation
@@ -197,8 +198,16 @@ class ShieldPlayback(
         return@post
       }
       val scale = minOf(1f, 640f / surface.width, 360f / surface.height)
-      val bitmap = Bitmap.createBitmap(maxOf(1, (surface.width * scale).toInt()),
-        maxOf(1, (surface.height * scale).toInt()), Bitmap.Config.ARGB_8888)
+      val bitmap = try {
+        Bitmap.createBitmap(
+          maxOf(1, (surface.width * scale).toInt()),
+          maxOf(1, (surface.height * scale).toInt()),
+          Bitmap.Config.ARGB_8888,
+        )
+      } catch (_: RuntimeException) {
+        complete(null)
+        return@post
+      }
       try {
         PixelCopy.request(surface, bitmap, { result ->
           try {
@@ -209,11 +218,13 @@ class ShieldPlayback(
               bgra.asIntBuffer().put(colors)
               complete(bgra.array(), bitmap.width, bitmap.height)
             } else complete(null)
+          } catch (_: RuntimeException) {
+            complete(null)
           } finally {
             bitmap.recycle()
           }
         }, main)
-      } catch (_: IllegalArgumentException) {
+      } catch (_: RuntimeException) {
         bitmap.recycle()
         complete(null)
       }

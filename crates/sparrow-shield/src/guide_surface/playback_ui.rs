@@ -44,6 +44,7 @@ mod tuning;
 #[derive(Default)]
 pub(super) struct PlaybackUi {
     still: Option<std::sync::Arc<gpui::RenderImage>>,
+    hold_started: Option<Instant>,
     release_still: Option<gpui::Task<()>>,
     state: TvPlaybackSnapshot,
     start_origin: Option<PlaybackStage>,
@@ -107,6 +108,7 @@ impl PlayerMenu {
 
 impl PlaybackUi {
     pub(super) fn drop_still(&mut self, cx: &mut gpui::App) {
+        self.hold_started = None;
         if let Some(image) = self.still.take() {
             cx.drop_image(image, None);
         }
@@ -165,9 +167,6 @@ impl PlaybackUi {
 
     fn stage(&self) -> PlaybackStage {
         match self.state.phase {
-            TvPlaybackPhase::Starting if self.start_origin == Some(PlaybackStage::Reconnecting) => {
-                PlaybackStage::Reconnecting
-            }
             TvPlaybackPhase::Idle | TvPlaybackPhase::Starting | TvPlaybackPhase::ReplacingAudio => {
                 PlaybackStage::Tuning
             }
@@ -286,6 +285,7 @@ impl PlaybackUi {
             }),
             reduce_motion,
             still: self.still.as_ref(),
+            hold_started: self.hold_started,
             attempt: self.state.recovery_attempts,
             audio_track: self.selected_audio_track().map(AudioTrack::display_name),
             quality: selected.quality.map(quality_name),
@@ -306,6 +306,12 @@ impl PlaybackUi {
         reduce_motion: bool,
     ) -> Option<Div> {
         self.overlay(now, reduce_motion, |overlay| {
+            if overlay.still.is_some()
+                && let Some(handoff) = self.state.still_handoff.clone()
+            {
+                window.on_next_frame(move |_, _| handoff.painted());
+            }
+
             if self.fullscreen() {
                 let actions = if self.controls_visible {
                     self.fullscreen_actions()
@@ -355,7 +361,14 @@ impl PlaybackUi {
 }
 
 impl GuideSurface {
-    pub(super) fn playback_update(&mut self, snapshot: TvPlaybackSnapshot, cx: &mut Context<Self>) {
+    pub(super) fn playback_update(
+        &mut self,
+        mut snapshot: TvPlaybackSnapshot,
+        cx: &mut Context<Self>,
+    ) {
+        if snapshot.visible_host != Some(self.host) {
+            snapshot.still_handoff = None;
+        }
         let prior_subject = self.playback.shown().map(|target| target.channel.clone());
         let was_fullscreen = self.playback.fullscreen();
         let began_playing = self.playback.state.phase != TvPlaybackPhase::Playing
@@ -391,7 +404,7 @@ impl GuideSurface {
             };
             self.playback.signal_landing = lands.then(|| (Instant::now(), outgoing));
         }
-        // Both retry and resume pass through Starting while the transport is rebound.
+        // A resume passes through Starting and must not replay the tuning landing.
         self.playback.start_origin = if snapshot.phase == TvPlaybackPhase::Starting
             && snapshot.selected == self.playback.state.selected
         {
@@ -408,6 +421,7 @@ impl GuideSurface {
         {
             self.playback.release_still = None;
             self.playback.drop_still(cx);
+            self.playback.hold_started = Some(Instant::now());
             self.playback.still = image::RgbaImage::from_raw(
                 frame.width,
                 frame.height,
@@ -422,7 +436,7 @@ impl GuideSurface {
                 // Keep the GPUI underlay through the native first-frame reveal.
                 self.playback.release_still = Some(cx.spawn(async move |view, cx| {
                     cx.background_executor()
-                        .timer(Duration::from_millis(240))
+                        .timer(crate::picture_reveal_duration())
                         .await;
                     let _ = view.update(cx, |view, cx| {
                         view.playback.drop_still(cx);
