@@ -52,6 +52,7 @@ const DESK_FOOTER_SPACE: f32 = 96.;
 const INCLUDE_WIDTH: f32 = 140.6;
 
 pub(in super::super) struct SearchPanel<'a> {
+    pub(in super::super) choice: sparrow_installed_catalog::GuideBackdrop,
     pub(in super::super) state: &'a SearchState,
     pub(in super::super) display_term: &'a str,
     pub(in super::super) focus: SearchFocus,
@@ -74,7 +75,7 @@ pub(in super::super) fn search_panel<'a>(
     viewport: &mut SearchViewport,
     icons: &ChannelIcons,
 ) -> (Option<Div>, Vec<&'a ChannelIcon>) {
-    let layout = Layout::new(size);
+    let layout = Layout::for_guide(size, panel.choice);
     let (surface, visible_icons) = match panel.state.view() {
         SearchView::Closed => {
             *viewport = SearchViewport::default();
@@ -308,7 +309,7 @@ fn inline_popup(
     layout
         .rect(geometry.x, INLINE_POPUP_Y, geometry.width, slice.height)
         .rounded(layout.px(12.))
-        .bg(rgb(PANEL))
+        .bg(layout.surface(PANEL))
         .shadow(vec![
             BoxShadow::new(layout.px(0.), layout.px(24.), rgba(0x00000073).into())
                 .blur_radius(layout.px(60.)),
@@ -438,7 +439,7 @@ fn desk<'a>(
     let (list, visible_icons) = desk_list(layout, panel, first, icons);
     let sheet = layout
         .rect(DESK_X, 0., DESK_WIDTH, layout.height)
-        .bg(rgb(PANEL))
+        .bg(layout.surface(PANEL))
         .text_color(rgb(TEXT))
         .shadow(vec![
             BoxShadow::new(layout.px(-30.), layout.px(0.), rgba(0x00000066).into())

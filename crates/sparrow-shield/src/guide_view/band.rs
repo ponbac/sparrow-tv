@@ -9,7 +9,7 @@ use crate::channel_icons::ChannelIcons;
 
 use super::{
     CANVAS_WIDTH, CELL, CELL_ELAPSED, DIM, FAINT, GUTTER, GuideBand, ICE, Layout, ON_ICE,
-    PreviewSelection, SAIRA, SAIRA_CLOCK, SAIRA_PREVIEW, SAIRA_TITLE, TEXT,
+    PreviewSelection, SAIRA, SAIRA_CLOCK, SAIRA_PREVIEW, SAIRA_TITLE,
     board::quality_tags,
     channel_icon::{Plate, family_icon, plate},
     clock_time,
@@ -31,6 +31,7 @@ pub(super) fn render(layout: Layout, band: GuideBand<'_>, icons: &ChannelIcons) 
         description,
         docked,
         inline_search,
+        ..
     } = band;
     div()
         .when(!docked, |band| {
@@ -69,7 +70,7 @@ fn toolbar(
             .when(!inline_search, |search| {
                 search
                     .rounded_full()
-                    .bg(rgb(CELL))
+                    .bg(layout.surface(CELL))
                     .when(search_focus, |search| {
                         search.border(layout.px(3.)).border_color(rgb(ICE))
                     })
@@ -81,20 +82,24 @@ fn toolbar(
                     .child(layout.icon(
                         include_bytes!("../../assets/icons/search.svg"),
                         22.,
-                        rgba(DIM),
+                        layout.secondary(DIM),
                     ))
                     .child(
                         layout
                             .text(SAIRA, 20., 28., 400.)
-                            .text_color(rgba(DIM))
+                            .text_color(layout.secondary(DIM))
                             .truncate()
                             .child("Search channels and programmes"),
                     )
             });
-    let sources_ink = if sources_focus { ON_ICE } else { TEXT };
+    let sources_ink = if sources_focus {
+        rgb(ON_ICE)
+    } else {
+        layout.guide_text()
+    };
     let sources = layout
         .text(SAIRA, 20., 28., 500.)
-        .text_color(rgb(sources_ink))
+        .text_color(sources_ink)
         .h(layout.px(48.))
         .px(layout.px(16.))
         .rounded_full()
@@ -102,11 +107,14 @@ fn toolbar(
         .flex()
         .items_center()
         .gap(layout.px(9.))
+        .when(layout.translucent && !sources_focus, |sources| {
+            sources.bg(layout.surface(super::INK))
+        })
         .when(sources_focus, |sources| sources.bg(rgb(ICE)))
         .child(layout.icon(
             include_bytes!("../../assets/icons/sources.svg"),
             22.,
-            rgb(sources_ink),
+            sources_ink,
         ))
         .child("Sources");
     layout
@@ -120,6 +128,13 @@ fn toolbar(
             layout
                 .text(SAIRA_CLOCK, 30., 30., 600.)
                 .ml(layout.px(6.))
+                .when(layout.translucent, |clock| {
+                    clock
+                        .px(layout.px(12.))
+                        .py(layout.px(7.))
+                        .rounded_full()
+                        .bg(layout.surface(super::INK))
+                })
                 .flex_none()
                 .child(clock_time(now.to_utc())),
         )
@@ -135,8 +150,8 @@ fn poster(
         .rounded(layout.px(8.))
         .bg(linear_gradient(
             160.,
-            linear_color_stop(rgb(CELL_ELAPSED), 0.),
-            linear_color_stop(rgb(CELL), 1.),
+            linear_color_stop(layout.surface(CELL_ELAPSED), 0.),
+            linear_color_stop(layout.surface(CELL), 1.),
         ))
         .overflow_hidden()
         .child(
@@ -202,7 +217,7 @@ fn preview(
     let metadata = layout
         .text(SAIRA, 20., 30., 400.)
         .w_full()
-        .text_color(rgba(DIM))
+        .text_color(layout.secondary(DIM))
         .flex()
         .items_center()
         .gap(layout.px(12.))
@@ -215,7 +230,7 @@ fn preview(
         .child(
             div()
                 .font_weight(gpui::FontWeight(600.))
-                .text_color(rgb(TEXT))
+                .text_color(layout.guide_text())
                 .min_w_0()
                 .truncate()
                 .child(family.title().to_owned()),
@@ -234,6 +249,13 @@ fn preview(
     );
     let heading = layout
         .text(SAIRA_PREVIEW, 66., 68.64, 700.)
+        .when(layout.translucent, |heading| {
+            heading.self_start().max_w_full().shadow(vec![
+                gpui::BoxShadow::new(layout.px(0.), layout.px(0.), gpui::rgba(0x060c16d9).into())
+                    .blur_radius(layout.px(24.))
+                    .spread_radius(layout.px(5.)),
+            ])
+        })
         .mt(layout.px(4.))
         .truncate()
         .child(title);
@@ -269,7 +291,7 @@ fn preview(
         .text(SAIRA, 20., 24., 400.)
         .h(layout.px(30.))
         .mt(layout.px(10.))
-        .text_color(rgba(DIM))
+        .text_color(layout.secondary(DIM))
         .flex()
         .items_center()
         .gap(layout.px(14.));
@@ -302,7 +324,7 @@ fn preview(
             .child(
                 div()
                     .font_weight(gpui::FontWeight(600.))
-                    .text_color(rgb(TEXT))
+                    .text_color(layout.guide_text())
                     .child(format!("{minutes_left} min left")),
             ),
         PreviewTiming::Upcoming {
@@ -310,35 +332,35 @@ fn preview(
             duration_minutes,
         } => meter
             .child(
-                div()
-                    .flex()
-                    .gap(layout.px(5.))
-                    .child("Starts")
-                    .child(div().text_color(rgb(TEXT)).child(clock_time(starts))),
+                div().flex().gap(layout.px(5.)).child("Starts").child(
+                    div()
+                        .text_color(layout.guide_text())
+                        .child(clock_time(starts)),
+                ),
             )
-            .child(div().text_color(rgba(super::MUTE)).child("·"))
+            .child(div().text_color(layout.secondary(super::MUTE)).child("·"))
             .child(
                 div()
                     .font_weight(gpui::FontWeight(600.))
-                    .text_color(rgb(TEXT))
+                    .text_color(layout.guide_text())
                     .child(format!("in {}", duration(in_minutes))),
             )
             .child(
                 div()
-                    .text_color(rgba(super::MUTE))
+                    .text_color(layout.secondary(super::MUTE))
                     .child(format!("· {}", duration(duration_minutes))),
             ),
         PreviewTiming::Ended { duration_minutes } => meter
             .child(
-                div()
-                    .flex()
-                    .gap(layout.px(5.))
-                    .child("Ended")
-                    .child(div().text_color(rgb(TEXT)).child(clock_time(ends))),
+                div().flex().gap(layout.px(5.)).child("Ended").child(
+                    div()
+                        .text_color(layout.guide_text())
+                        .child(clock_time(ends)),
+                ),
             )
             .child(
                 div()
-                    .text_color(rgba(super::MUTE))
+                    .text_color(layout.secondary(super::MUTE))
                     .child(format!("· {}", duration(duration_minutes))),
             ),
     };
@@ -367,7 +389,7 @@ fn preview(
                     .font_weight(gpui::FontWeight(600.))
                     .child(programme_title(later)),
             )
-            .child(div().text_color(rgba(DIM)).child(duration(
+            .child(div().text_color(layout.secondary(DIM)).child(duration(
                 (later.ends_at() - later.starts_at()).num_minutes(),
             )))
     });
@@ -379,7 +401,7 @@ fn preview(
                 .h(layout.px(52.))
                 .w(layout.px(768.))
                 .mt(layout.px(12.))
-                .text_color(rgba(DIM))
+                .text_color(layout.secondary(DIM))
                 .whitespace_normal()
                 .line_clamp(2)
                 .child(description.cloned().unwrap_or_default()),

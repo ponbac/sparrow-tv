@@ -102,6 +102,9 @@ pub(super) struct GuideSurface {
     group_viewport: guide_view::GroupViewport,
     loaded_exclusions: bool,
     pending_exclusions: Option<u64>,
+    pending_backdrop: Option<sparrow_installed_catalog::GuideBackdrop>,
+    backdrop_save: Option<gpui::Task<()>>,
+    backdrop_motion: guide_view::BackdropMotion,
     editor_generation: u64,
     active_editor: Option<(u64, TextTarget)>,
     search: SearchFlow,
@@ -246,6 +249,9 @@ impl GuideSurface {
             group_viewport: guide_view::GroupViewport::default(),
             loaded_exclusions: false,
             pending_exclusions: None,
+            pending_backdrop: None,
+            backdrop_save: None,
+            backdrop_motion: Default::default(),
             editor_generation: 0,
             active_editor: None,
             search: SearchFlow::new(None),
@@ -963,10 +969,15 @@ fn publish_diagnostics(screen: &GuideScreen, focused_dock: Option<u32>) {
 }
 
 impl GuideSurface {
-    fn render_search(&mut self, window: &Window) -> Option<Div> {
+    fn render_search(
+        &mut self,
+        window: &Window,
+        choice: sparrow_installed_catalog::GuideBackdrop,
+    ) -> Option<Div> {
         let (surface, search_icons) = guide_view::search_panel(
             window.viewport_size(),
             guide_view::SearchPanel {
+                choice,
                 state: self.search.state(),
                 display_term: self.search.term(),
                 focus: self.search.focus(),
@@ -997,7 +1008,15 @@ impl GuideSurface {
             .filter_map(guide_view::family_icon);
         self.icons.reconcile(
             self.screen.generation(),
-            preview.into_iter().chain(search_icons).chain(guide_icons),
+            self.playback
+                .channel_icon()
+                .filter(|_| {
+                    guide_visible && choice == sparrow_installed_catalog::GuideBackdrop::ChannelTint
+                })
+                .into_iter()
+                .chain(preview)
+                .chain(search_icons)
+                .chain(guide_icons),
         );
         surface
     }
@@ -1046,10 +1065,30 @@ impl Render for GuideSurface {
             return root.children(player);
         }
         let selected = self.playback.docked() || self.playback.fullscreen();
-        let search = self.render_search(window);
+        let choice = self.pending_backdrop.unwrap_or_else(catalog::backdrop);
+        let search = self.render_search(window, choice);
+        let icon = if selected {
+            self.playback.channel_icon()
+        } else {
+            self.presented_preview
+                .as_ref()
+                .and_then(|p| guide_view::family_icon(&p.family))
+        };
+        let tint = icon
+            .and_then(|i| self.icons.get(i))
+            .and_then(|image| image.tint);
+        let backdrop = self.backdrop_motion.render(
+            choice,
+            tint,
+            window,
+            cx.reduce_motion()
+                || self.activation.is_none()
+                || self.search.state().view() == SearchView::Desk,
+        );
         let guide = guide_view::render(
             &self.screen,
             guide_view::GuideBand {
+                choice,
                 now: self.now,
                 preview: self.presented_preview.as_ref(),
                 description: self.description.as_ref(),
@@ -1064,6 +1103,7 @@ impl Render for GuideSurface {
             (&mut self.now_lane, &mut self.timeline_rail),
             window,
             &self.icons,
+            backdrop,
         );
         let drift = window.viewport_size().width * (36. / 1920. * frame.fullscreen);
         let opacity = (1. - frame.fullscreen * 1.45).max(0.);
@@ -1077,6 +1117,7 @@ impl Render for GuideSurface {
                     .children(guide_view::group_sheet(
                         window.viewport_size(),
                         &self.screen,
+                        choice,
                         &mut self.group_viewport,
                         self.active_editor
                             .is_some_and(|(_, target)| target == TextTarget::GroupFilter),

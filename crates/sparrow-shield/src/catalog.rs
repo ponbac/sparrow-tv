@@ -83,6 +83,10 @@ struct Process {
 }
 
 enum PreferenceWrite {
+    Backdrop {
+        choice: sparrow_installed_catalog::GuideBackdrop,
+        completed: oneshot::Sender<bool>,
+    },
     Group {
         sequence: u64,
         change: GuidePreferenceChange,
@@ -422,6 +426,26 @@ pub(super) fn subscribe_group_writes() -> watch::Receiver<u64> {
     PROCESS.group_revision.subscribe()
 }
 
+pub(super) fn backdrop() -> sparrow_installed_catalog::GuideBackdrop {
+    PROCESS
+        .catalog
+        .get()
+        .map(|catalog| catalog.guide_preferences().backdrop())
+        .unwrap_or_default()
+}
+
+pub(super) fn save_backdrop(
+    choice: sparrow_installed_catalog::GuideBackdrop,
+) -> Option<oneshot::Receiver<bool>> {
+    let worker = PROCESS.worker.get()?.as_ref()?;
+    let (completed, result) = oneshot::channel();
+    worker
+        .preference_changes
+        .try_send(PreferenceWrite::Backdrop { choice, completed })
+        .ok()?;
+    Some(result)
+}
+
 pub(super) fn save_group_visibility(
     change: GuidePreferenceChange,
 ) -> Option<(u64, oneshot::Receiver<bool>)> {
@@ -533,6 +557,13 @@ async fn write_preferences(
 ) {
     while let Some(request) = requests.recv().await {
         match request {
+            PreferenceWrite::Backdrop { choice, completed } => {
+                let saved = catalog
+                    .update_guide_preferences(vec![GuidePreferenceChange::SetBackdrop(choice)])
+                    .await
+                    .is_ok();
+                let _ = completed.send(saved);
+            }
             PreferenceWrite::Group {
                 sequence,
                 change,

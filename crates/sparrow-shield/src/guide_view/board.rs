@@ -115,7 +115,7 @@ pub(super) fn bottom_fade(rect: Div) -> Div {
 
 pub(super) fn retained_footer(layout: Layout, rect: Div, focused: bool) -> Div {
     rect.rounded(layout.px(8.))
-        .bg(rgb(PANEL))
+        .bg(layout.surface(PANEL))
         .px(layout.px(18.))
         .flex()
         .items_center()
@@ -189,7 +189,7 @@ fn card(
     let mut card = rect
         .rounded(layout.px(8.))
         .overflow_hidden()
-        .bg(rgb(if focused { ICE } else { CELL }));
+        .bg(layout.surface(if focused { ICE } else { CELL }));
     if let Some(live) = live {
         let width = COLUMN_WIDTH * elapsed_fraction(live, instant) as f32;
         if width > 0. {
@@ -197,7 +197,7 @@ fn card(
                 layout
                     .rect(0., 0., width, CARD_HEIGHT)
                     .rounded_l(layout.px(8.))
-                    .bg(rgb(if focused { ICE_ELAPSED } else { CELL_ELAPSED })),
+                    .bg(layout.surface(if focused { ICE_ELAPSED } else { CELL_ELAPSED })),
             );
         }
     }
@@ -421,7 +421,7 @@ fn action(layout: Layout, label: &'static str, focused: bool) -> Div {
         .h(layout.px(54.))
         .px(layout.px(24.))
         .rounded_full()
-        .bg(rgb(if focused { ICE } else { CELL_ELAPSED }))
+        .bg(layout.surface(if focused { ICE } else { CELL_ELAPSED }))
         .text_color(rgb(if focused { ON_ICE } else { TEXT }))
         .flex()
         .items_center()

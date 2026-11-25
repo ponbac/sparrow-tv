@@ -58,6 +58,7 @@ struct Completion {
 
 pub(super) struct IconImage {
     render_image: Arc<RenderImage>,
+    pub(super) tint: Option<u32>,
     source_dimensions: (u32, u32),
     charged_bytes: usize,
 }
@@ -76,11 +77,25 @@ impl IconImage {
         let (width, height, bgra) = decoded.into_bgra();
         // Charge the retained pixel storage plus the sprite's texel allocation.
         let charged_bytes = bgra.capacity() + bgra.len();
+        let mut sums = [0_u64; 3];
+        let mut weight = 0;
+        for pixel in bgra.as_chunks::<4>().0 {
+            let alpha = u64::from(pixel[3]);
+            weight += alpha;
+            for (sum, component) in sums.iter_mut().zip(pixel) {
+                *sum += alpha * u64::from(*component);
+            }
+        }
+        let tint = (weight > 0).then(|| {
+            let [b, g, r] = sums.map(|sum| (sum / weight) as u32);
+            r << 16 | g << 8 | b
+        });
         let pixels = RgbaImage::from_raw(width, height, bgra)?;
         Some(Self {
             render_image: Arc::new(RenderImage::new([Frame::new(pixels)])),
             source_dimensions,
             charged_bytes,
+            tint,
         })
     }
 }
