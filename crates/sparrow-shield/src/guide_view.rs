@@ -7,6 +7,7 @@ mod groups;
 mod lane;
 pub(super) mod playback;
 mod search_panel;
+mod setup;
 mod sources;
 mod timeline;
 
@@ -16,6 +17,7 @@ pub(super) use channel_icon::family_icon;
 pub(super) use groups::{GroupViewport, group_filter_rect, group_sheet};
 pub(crate) use lane::LaneViewport;
 pub(super) use search_panel::{SearchPanel, SearchViewport, search_editor_rect, search_panel};
+pub(super) use setup::{SetupPanel, render as setup_screen, setup_editor_rect};
 pub(super) use sources::{SourceFocus, SourcePanel, source_editor_rect, sources_sheet};
 pub(crate) use timeline::RailViewport;
 

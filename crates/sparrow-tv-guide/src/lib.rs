@@ -8,6 +8,7 @@ pub mod now_focus;
 mod pages;
 pub mod preview;
 pub mod search;
+pub mod setup;
 pub mod time;
 pub mod timeline_focus;
 mod viewport;

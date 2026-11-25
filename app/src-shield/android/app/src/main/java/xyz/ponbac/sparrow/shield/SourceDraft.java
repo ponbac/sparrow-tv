@@ -7,6 +7,8 @@ final class SourceDraft {
     private static final int BEGUN = 0;
     private static final int BEGIN_REJECTED = 1;
     private static final int SAVE_REJECTED = 2;
+    /** A field event that reports an emptied field. Editor events use 0 to 3. */
+    static final int CLEARED = 4;
 
     interface Listener {
         void onStatus(long session, long attempt, int status);
@@ -25,7 +27,8 @@ final class SourceDraft {
         this.listener = listener;
     }
 
-    void begin(long session, boolean started) {
+    /** Opens a draft, prefilled with saved locations when the caller passes them. */
+    void begin(long session, boolean started, String m3u, String epg) {
         if (session == generation && session > 0) {
             // An active session has already reported Begun. A closed one stays closed.
             return;
@@ -40,6 +43,8 @@ final class SourceDraft {
         }
         close(session);
         draft = new Draft();
+        draft.text[M3U] = m3u == null ? "" : m3u;
+        draft.text[EPG] = epg == null ? "" : epg;
         listener.onStatus(session, 0, BEGUN);
     }
 
@@ -66,6 +71,31 @@ final class SourceDraft {
                     (id, event, text) -> editFinished(current, session, id, field, event, text))) {
             current.editorGeneration = editorGeneration;
             current.field = field;
+            return;
+        }
+        listener.onField(session, editorGeneration, field,
+                editor.rejectionEvent(editorGeneration, started), hasText(current.text[field]));
+    }
+
+    /** Empties one field. Requests retired by a stop, or older than the last edit, change nothing. */
+    void clear(long session, long editorGeneration, int field, boolean started) {
+        if (dismissed(session)) {
+            return;
+        }
+        Draft current = session == generation ? draft : null;
+        boolean validField = field == M3U || field == EPG;
+        if (current == null || !validField) {
+            listener.onField(session, editorGeneration, field, TvTextEditor.REJECTED, false);
+            return;
+        }
+        boolean fresh = editorGeneration > current.lastEditorRequest;
+        if (fresh) {
+            current.lastEditorRequest = editorGeneration;
+        }
+        if (started && fresh && !editor.retired(editorGeneration) && current.pendingSaveAttempt == 0
+                && !editor.isOpen()) {
+            current.text[field] = "";
+            listener.onField(session, editorGeneration, field, CLEARED, false);
             return;
         }
         listener.onField(session, editorGeneration, field,

@@ -15,7 +15,7 @@ use sparrow_core::{
     RefreshOutcome, RefreshReport, RefreshSkipReason, RefreshTrigger, SourceState,
 };
 use sparrow_installed_catalog::{
-    GuidePreferenceChange, InstalledCatalog, SourceConfigurationUpdate,
+    GuidePreferenceChange, InstalledCatalog, SavedSourceLocations, SourceConfigurationUpdate,
 };
 use sparrow_installed_playback::tv::TvPlaybackCommand;
 use sparrow_tv_guide::VariantPreferences;
@@ -283,10 +283,11 @@ pub(super) enum SourceSaveFailure {
     Unavailable,
 }
 
+/// Saves the draft and returns the catalog status once its first refresh ends.
 pub(super) fn save_sources(
     m3u: String,
     epg: Option<String>,
-) -> Option<tokio::task::JoinHandle<Result<(), SourceSaveFailure>>> {
+) -> Option<tokio::task::JoinHandle<Result<CatalogStatus, SourceSaveFailure>>> {
     let worker = PROCESS.worker.get()?.as_ref()?;
     let catalog = Arc::clone(PROCESS.catalog.get()?);
     Some(worker.runtime.spawn(async move {
@@ -312,26 +313,40 @@ pub(super) fn save_sources(
         } else {
             None
         };
-        catalog
+        let status = catalog
             .replace_configuration(update)
             .await
             .map_err(|_| SourceSaveFailure::Unavailable)?;
         reconcile_status();
-        Ok(())
+        Ok(status)
     }))
 }
 
-pub(super) fn refresh_sources() -> Option<tokio::task::JoinHandle<&'static str>> {
+/// The saved Source Configuration, for prefilling a draft. `Err` means the
+/// private record could not be read, which differs from nothing saved.
+pub(super) fn saved_source_locations()
+-> Option<tokio::task::JoinHandle<Result<Option<SavedSourceLocations>, ()>>> {
+    let worker = PROCESS.worker.get()?.as_ref()?;
+    let catalog = Arc::clone(PROCESS.catalog.get()?);
+    Some(
+        worker
+            .runtime
+            .spawn(async move { catalog.saved_source_locations().await.map_err(|_| ()) }),
+    )
+}
+
+/// Refreshes the sources now and reports how it went.
+pub(super) fn refresh_now() -> Option<tokio::task::JoinHandle<RefreshReport>> {
     let worker = PROCESS.worker.get()?.as_ref()?;
     let core = PROCESS.catalog.get()?.core().clone();
     Some(worker.runtime.spawn(async move {
         let report = core.refresh(RefreshTrigger::Manual).await;
         reconcile_status();
-        refresh_summary(&report)
+        report
     }))
 }
 
-fn refresh_summary(report: &RefreshReport) -> &'static str {
+pub(super) fn refresh_summary(report: &RefreshReport) -> &'static str {
     match report.m3u() {
         RefreshOutcome::Failed { .. } => "The channel source couldn’t refresh.",
         _ if matches!(report.epg(), Some(RefreshOutcome::Failed { .. })) => {
