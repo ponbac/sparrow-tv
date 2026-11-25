@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use gpui::{App, BackgroundExecutor, RenderImage};
+use gpui::{App, BackgroundExecutor, RenderImage, Task};
 use image::{Frame, RgbaImage};
 use sparrow_channel_icons::{
     ChannelIconClient, DecodedChannelIcon,
@@ -32,6 +32,7 @@ pub(super) struct ChannelIcons {
 pub(super) struct IconUpdates {
     completions: mpsc::Receiver<Completion>,
     wakeup: watch::Receiver<Wakeup>,
+    admission_timer: Option<Task<()>>,
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -99,6 +100,7 @@ impl ChannelIcons {
             IconUpdates {
                 completions: receiver,
                 wakeup: wakeups,
+                admission_timer: None,
             },
         )
     }
@@ -210,11 +212,19 @@ impl IconUpdates {
     ) -> Option<IconBatch> {
         let first = loop {
             let admission = self.wakeup.borrow_and_update().admission_at;
+            if let Some(admission) = admission {
+                let remaining = admission.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Some(IconBatch(Vec::new()));
+                }
+                // GPUI's dispatcher still runs a dropped timer. Keep one armed
+                // through deadline updates and re-check eligibility when it fires.
+                self.admission_timer
+                    .get_or_insert_with(|| background.timer(remaining));
+            }
             let wait_for_admission = async {
-                if let Some(admission) = admission {
-                    background
-                        .timer(admission.saturating_duration_since(Instant::now()))
-                        .await;
+                if let Some(timer) = &mut self.admission_timer {
+                    timer.await;
                 } else {
                     pending::<()>().await;
                 }
@@ -222,7 +232,7 @@ impl IconUpdates {
             tokio::select! {
                 changed = self.wakeup.changed() => { changed.ok()?; }
                 result = self.completions.recv() => break result?,
-                () = wait_for_admission => return Some(IconBatch(Vec::new())),
+                () = wait_for_admission => self.admission_timer = None,
             }
         };
 

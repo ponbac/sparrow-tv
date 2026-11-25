@@ -33,7 +33,7 @@ class ShieldPlayback(
 ) {
   private val main = Handler(Looper.getMainLooper())
   private val lifecycle = NativePlaybackLifecycleFence()
-  private val placement = ShieldPlaybackPlacement(activity, root, guide)
+  private val placement = ShieldPlaybackPlacement(root, guide)
   private val controller = NativePlaybackController(
     activity, placement, forceSilent = false,
     lifecycleFence = lifecycle,
@@ -359,24 +359,28 @@ class ShieldPlayback(
 /** The picture surface stays above GPUI's SurfaceView and below the Android editor. */
 @OptIn(UnstableApi::class)
 private class ShieldPlaybackPlacement(
-  activity: Activity,
   private val root: FrameLayout,
   private val guide: SurfaceView,
 ) : NativePlaybackPlacement {
-  private val player = PlayerView(activity).apply {
-    (videoSurfaceView as SurfaceView).setZOrderMediaOverlay(true)
-    visibility = View.INVISIBLE
-    root.addView(this, FrameLayout.LayoutParams(1, 1))
-  }
+  private var mountedPlayer: PlayerView? = null
 
   // Rust supplies the explicit bounds in both modes. Media3 retains its view.
   override val televisionFullscreen: Boolean? = null
   override fun container(): ViewGroup = root
-  override fun createPlayerView(activity: Activity): PlayerView = player
-  override fun mount(parent: ViewGroup, playerView: PlayerView) = Unit
+
+  override fun createPlayerView(activity: Activity): PlayerView = PlayerView(activity).apply {
+    (videoSurfaceView as SurfaceView).setZOrderMediaOverlay(true)
+    visibility = View.INVISIBLE
+  }
+
+  override fun mount(parent: ViewGroup, playerView: PlayerView) {
+    parent.addView(playerView, parent.indexOfChild(guide) + 1, FrameLayout.LayoutParams(1, 1))
+    mountedPlayer = playerView
+  }
 
   fun hideUntilPlaced() {
     // Keep the SurfaceView attached so a retained frame can return after layout.
+    val player = mountedPlayer ?: return
     val params = player.layoutParams as FrameLayout.LayoutParams
     val right = maxOf(player.right, params.leftMargin + params.width)
     player.translationX = -(right + root.width).toFloat()
@@ -399,7 +403,10 @@ private class ShieldPlaybackPlacement(
 
   override fun fillWindow(parent: ViewGroup, playerView: PlayerView) = Unit // TV has no PiP.
 
-  override fun unmount(parent: ViewGroup, playerView: PlayerView) = revealContent(parent, playerView)
+  override fun unmount(parent: ViewGroup, playerView: PlayerView) {
+    if (mountedPlayer === playerView) mountedPlayer = null
+    parent.removeView(playerView)
+  }
 
   override fun revealContent(parent: ViewGroup, playerView: PlayerView) {
     playerView.visibility = View.INVISIBLE

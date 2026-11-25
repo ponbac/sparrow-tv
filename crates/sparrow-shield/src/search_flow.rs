@@ -13,9 +13,20 @@ use sparrow_tv_guide::{
     },
 };
 
-use crate::guide_view::SearchFocus;
-
 const PREFETCH_TAIL_ROWS: usize = 6;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SearchFocus {
+    Field,
+    Clear,
+    Close,
+    Desk,
+    Retry,
+    IncludeHidden,
+    Channel(u32),
+    Programme(usize),
+    More,
+}
 
 pub(super) enum SearchEffect {
     None,
@@ -176,10 +187,16 @@ impl SearchFlow {
             SearchFocus::Retry if self.state.status() == SearchStatus::ReconcileGeneration => {
                 SearchEffect::ReconcileGeneration
             }
-            SearchFocus::Retry => self
-                .state
-                .retry()
-                .map_or(SearchEffect::None, SearchEffect::Read),
+            SearchFocus::Retry => {
+                let Some(read) = self.state.retry() else {
+                    return SearchEffect::None;
+                };
+                self.focus = self
+                    .last_channel()
+                    .filter(|_| self.state.status() == SearchStatus::Ready)
+                    .unwrap_or(SearchFocus::Field);
+                SearchEffect::Read(read)
+            }
             SearchFocus::IncludeHidden => {
                 self.state.set_include_hidden(!self.state.include_hidden());
                 self.advance_hidden()

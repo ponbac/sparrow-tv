@@ -15,10 +15,7 @@ use std::sync::Arc;
 pub(super) use channel_icon::family_icon;
 pub(super) use groups::{GroupViewport, group_filter_rect, group_sheet};
 pub(crate) use lane::LaneViewport;
-pub(super) use search_panel::search_visible_icons;
-pub(super) use search_panel::{
-    SearchFocus, SearchPanel, SearchViewport, search_editor_rect, search_panel,
-};
+pub(super) use search_panel::{SearchPanel, SearchViewport, search_editor_rect, search_panel};
 pub(super) use sources::{SourceFocus, SourcePanel, source_editor_rect, sources_sheet};
 pub(crate) use timeline::RailViewport;
 
@@ -114,6 +111,7 @@ pub(super) struct GuideBand<'a> {
     pub(super) preview: Option<&'a PreviewSelection>,
     pub(super) description: Option<&'a gpui::SharedString>,
     pub(super) docked: bool,
+    pub(super) inline_search: bool,
     pub(super) focus: ScreenFocus,
 }
 
@@ -125,13 +123,7 @@ pub(super) fn render(
     icons: &ChannelIcons,
 ) -> Div {
     let layout = Layout::new(window.viewport_size());
-    let GuideBand {
-        now,
-        preview,
-        description,
-        docked,
-        focus,
-    } = band;
+    let now = band.now;
     let guide = div()
         .size_full()
         .relative()
@@ -139,15 +131,7 @@ pub(super) fn render(
         .bg(gpui::rgb(INK))
         .text_color(gpui::rgb(TEXT))
         .font_family(SAIRA)
-        .child(band::render(
-            layout,
-            focus,
-            now,
-            preview,
-            description,
-            icons,
-            docked,
-        ));
+        .child(band::render(layout, band, icons));
     match screen.mode() {
         GuideMode::Now => guide
             .child(lane::render(layout, screen, lanes.0, window))

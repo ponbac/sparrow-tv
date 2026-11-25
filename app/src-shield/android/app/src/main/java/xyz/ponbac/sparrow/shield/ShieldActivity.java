@@ -204,7 +204,7 @@ public final class ShieldActivity extends Activity implements SurfaceHolder.Call
                     && editor.open(generation, mode, x, y, width, height, initialText,
                     (token, event, text) -> nativeEditorEvent(hostId, token, event, text));
             if (!opened) {
-                nativeEditorEvent(hostId, generation, TvTextEditor.REJECTED, "");
+                nativeEditorEvent(hostId, generation, editor.rejectionEvent(generation, started), "");
             }
         });
     }

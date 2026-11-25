@@ -8,8 +8,8 @@ use sparrow_tv_guide::{
 use crate::channel_icons::ChannelIcons;
 
 use super::{
-    CANVAS_WIDTH, CELL, CELL_ELAPSED, DIM, FAINT, GUTTER, ICE, Layout, ON_ICE, PreviewSelection,
-    SAIRA, SAIRA_CLOCK, SAIRA_PREVIEW, SAIRA_TITLE, TEXT,
+    CANVAS_WIDTH, CELL, CELL_ELAPSED, DIM, FAINT, GUTTER, GuideBand, ICE, Layout, ON_ICE,
+    PreviewSelection, SAIRA, SAIRA_CLOCK, SAIRA_PREVIEW, SAIRA_TITLE, TEXT,
     board::quality_tags,
     channel_icon::{Plate, family_icon, plate},
     clock_time,
@@ -23,20 +23,20 @@ pub(super) const TOOLBAR_HEIGHT: f32 = 58.;
 const IDLE_PREVIEW_X: f32 = GUTTER + POSTER_WIDTH + 44.;
 const NO_GUIDE_DATA: &str = "No guide data. The channel still plays.";
 
-pub(super) fn render(
-    layout: Layout,
-    focus: ScreenFocus,
-    now: DateTime<FixedOffset>,
-    shown: Option<&PreviewSelection>,
-    description: Option<&gpui::SharedString>,
-    icons: &ChannelIcons,
-    docked: bool,
-) -> Div {
+pub(super) fn render(layout: Layout, band: GuideBand<'_>, icons: &ChannelIcons) -> Div {
+    let GuideBand {
+        focus,
+        now,
+        preview: shown,
+        description,
+        docked,
+        inline_search,
+    } = band;
     div()
         .when(!docked, |band| {
             band.child(poster(layout, shown.map(|preview| &preview.family), icons))
         })
-        .child(toolbar(layout, focus, now, docked))
+        .child(toolbar(layout, focus, now, docked, inline_search))
         .when_some(shown, |band, shown| {
             band.child(preview(layout, shown, now, description, icons, docked))
         })
@@ -51,36 +51,46 @@ pub(super) fn panel_bounds(docked: bool) -> (f32, f32) {
     (left, CANVAS_WIDTH - GUTTER - left)
 }
 
-fn toolbar(layout: Layout, focus: ScreenFocus, now: DateTime<FixedOffset>, docked: bool) -> Div {
+fn toolbar(
+    layout: Layout,
+    focus: ScreenFocus,
+    now: DateTime<FixedOffset>,
+    docked: bool,
+    inline_search: bool,
+) -> Div {
     let (left, width) = panel_bounds(docked);
     let search_focus = focus == ScreenFocus::Toolbar(ToolbarFocus::Search);
     let sources_focus = focus == ScreenFocus::Toolbar(ToolbarFocus::Sources);
-    let search = div()
-        .h(layout.px(TOOLBAR_HEIGHT))
-        .flex_1()
-        .min_w_0()
-        .rounded_full()
-        .bg(rgb(CELL))
-        .when(search_focus, |search| {
-            search.border(layout.px(3.)).border_color(rgb(ICE))
-        })
-        .flex()
-        .items_center()
-        .pl(layout.px(if search_focus { 17. } else { 20. }))
-        .pr(layout.px(8.))
-        .gap(layout.px(12.))
-        .child(layout.icon(
-            include_bytes!("../../assets/icons/search.svg"),
-            22.,
-            rgba(DIM),
-        ))
-        .child(
-            layout
-                .text(SAIRA, 20., 28., 400.)
-                .text_color(rgba(DIM))
-                .truncate()
-                .child("Search channels and programmes"),
-        );
+    let search =
+        div()
+            .h(layout.px(TOOLBAR_HEIGHT))
+            .flex_1()
+            .min_w_0()
+            .when(!inline_search, |search| {
+                search
+                    .rounded_full()
+                    .bg(rgb(CELL))
+                    .when(search_focus, |search| {
+                        search.border(layout.px(3.)).border_color(rgb(ICE))
+                    })
+                    .flex()
+                    .items_center()
+                    .pl(layout.px(if search_focus { 17. } else { 20. }))
+                    .pr(layout.px(8.))
+                    .gap(layout.px(12.))
+                    .child(layout.icon(
+                        include_bytes!("../../assets/icons/search.svg"),
+                        22.,
+                        rgba(DIM),
+                    ))
+                    .child(
+                        layout
+                            .text(SAIRA, 20., 28., 400.)
+                            .text_color(rgba(DIM))
+                            .truncate()
+                            .child("Search channels and programmes"),
+                    )
+            });
     let sources_ink = if sources_focus { ON_ICE } else { TEXT };
     let sources = layout
         .text(SAIRA, 20., 28., 500.)

@@ -75,13 +75,17 @@ fn decode_raster(bytes: &[u8]) -> Result<DecodedChannelIcon, ChannelIconError> {
     limits.max_image_height = Some(MAX_SOURCE_EDGE);
     limits.max_alloc = Some(MAX_DECODER_BYTES);
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
-    reader.limits(limits);
-    let decoder = reader.into_decoder().map_err(image_error)?;
+    reader.limits(limits.clone());
+    let mut decoder = reader.into_decoder().map_err(image_error)?;
     let (width, height) = decoder.dimensions();
     check_dimensions(width, height)?;
     if format == ImageFormat::Gif {
         check_gif_frame(bytes)?;
     }
+
+    // into_decoder applies the limits without charging the output buffer.
+    limits.reserve(decoder.total_bytes()).map_err(image_error)?;
+    decoder.set_limits(limits).map_err(image_error)?;
 
     // The single-image decoder reads the first frame of an animated format.
     let mut image = DynamicImage::from_decoder(decoder).map_err(image_error)?;

@@ -25,7 +25,6 @@ import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
-import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.math.max
 
@@ -675,16 +674,12 @@ internal class NativePlaybackController(
         } else {
           max(0L, player.bufferedPosition - player.currentPosition)
         }
-      return String.format(
-        Locale.ROOT,
-        "{\"state\":\"%s\",\"decodedFrames\":%d,\"droppedFrames\":%d,\"bufferedDurationMs\":%d,\"silent\":%s,\"audio\":\"%s\"}",
-        phase.wire,
-        renderedFrames.value().coerceAtMost(MAX_SAFE_COUNTER),
-        droppedFrames.coerceAtMost(MAX_SAFE_COUNTER),
-        bufferedDuration.coerceAtMost(MAX_SAFE_COUNTER),
-        controls.muted || controls.volume == 0.0f,
-        nativePlaybackAudio(audioTracks, audioDecoder, audioPassthrough).wire,
-      )
+      val decoded = renderedFrames.value().coerceAtMost(MAX_SAFE_COUNTER)
+      val dropped = droppedFrames.coerceAtMost(MAX_SAFE_COUNTER)
+      val buffered = bufferedDuration.coerceAtMost(MAX_SAFE_COUNTER)
+      val silent = controls.muted || controls.volume == 0.0f
+      val audio = nativePlaybackAudio(audioTracks, audioDecoder, audioPassthrough).wire
+      return """{"state":"${phase.wire}","decodedFrames":$decoded,"droppedFrames":$dropped,"bufferedDurationMs":$buffered,"silent":$silent,"audio":"$audio"}"""
     }
 
     fun release() {

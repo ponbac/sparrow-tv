@@ -123,6 +123,7 @@ impl GuideSurface {
             SourcePanel {
                 status: status.as_deref(),
                 focus: source.focus,
+                editing: source.editor.is_some(),
                 has_m3u: source.has_m3u,
                 has_epg: source.has_epg,
                 saving: source.pending.is_some(),
@@ -230,8 +231,6 @@ impl GuideSurface {
                     let rect = guide_view::source_editor_rect(
                         window.viewport_size(),
                         window.scale_factor(),
-                        source.focus,
-                        source.diagnostics.as_deref(),
                     );
                     source.feedback = if rect.is_some_and(|rect| {
                         activity::edit_source(self.host, source.session, generation, field, rect)

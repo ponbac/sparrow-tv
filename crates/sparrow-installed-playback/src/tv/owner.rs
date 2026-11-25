@@ -35,7 +35,6 @@ const STALL_TIMEOUT: Duration = Duration::from_secs(10);
 const EARLY_STALL: Duration = Duration::from_secs(20);
 const STABLE_TIME: Duration = Duration::from_secs(60);
 
-#[derive(Default)]
 struct Viewports {
     docked: Option<AndroidPlaybackViewport>,
     fullscreen: Option<AndroidPlaybackViewport>,
@@ -183,6 +182,8 @@ impl Owner {
 
     fn publish(&self, published: &watch::Sender<Snapshot>) {
         published.send_if_modified(|snapshot| {
+            // Sampled status is available to diagnostics on demand.
+            snapshot.status = self.snapshot.status;
             if snapshot == &self.snapshot {
                 return false;
             }
@@ -234,10 +235,10 @@ impl Owner {
                 docked,
                 fullscreen,
             } => {
-                let view = self.viewports.entry(host).or_default();
-                let changed = (view.docked, view.fullscreen) != (docked, fullscreen);
-                *view = Viewports { docked, fullscreen };
-                if changed && self.snapshot.visible_host == Some(host) {
+                let previous = self.current_viewport();
+                self.viewports
+                    .insert(host, Viewports { docked, fullscreen });
+                if self.current_viewport() != previous {
                     self.update_viewport().await;
                 }
             }
@@ -1183,8 +1184,11 @@ impl Owner {
             if fullscreen {
                 self.cancel_zap();
             }
+            let previous = self.current_viewport();
             self.snapshot.controls.fullscreen = fullscreen;
-            self.update_viewport().await;
+            if self.current_viewport() != previous {
+                self.update_viewport().await;
+            }
         }
     }
 

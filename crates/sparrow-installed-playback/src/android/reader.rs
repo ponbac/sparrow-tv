@@ -41,7 +41,7 @@ impl AndroidMedia3Reader {
                     // Unread bytes stay with the actor's exact StreamInstance.
                     // A retired loader cannot serve or overwrite another stream.
                     let next = playback
-                        .read_at_most(
+                        .read_media3(
                             identity.session_id().clone(),
                             identity.stream_handle().clone(),
                             maximum - returned.len(),

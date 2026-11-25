@@ -68,7 +68,8 @@ final class SourceDraft {
             current.field = field;
             return;
         }
-        listener.onField(session, editorGeneration, field, TvTextEditor.REJECTED, hasText(current.text[field]));
+        listener.onField(session, editorGeneration, field,
+                editor.rejectionEvent(editorGeneration, started), hasText(current.text[field]));
     }
 
     private void editFinished(Draft current, long session, long editorGeneration, int field,

@@ -13,7 +13,7 @@ use sparrow_tv_guide::{
     time::minutes_left,
 };
 
-use crate::channel_icons::ChannelIcons;
+use crate::{channel_icons::ChannelIcons, search_flow::SearchFocus};
 
 use super::{
     CANVAS_WIDTH, CELL, CELL_ELAPSED, DIM, FAINT, ICE, INK, Layout, MUTE, ON_ICE, ON_ICE_DIM,
@@ -51,19 +51,6 @@ const DESK_PITCH: f32 = DESK_ROW_HEIGHT + 4.;
 const DESK_FOOTER_SPACE: f32 = 96.;
 const INCLUDE_WIDTH: f32 = 140.6;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in super::super) enum SearchFocus {
-    Field,
-    Clear,
-    Close,
-    Desk,
-    Retry,
-    IncludeHidden,
-    Channel(u32),
-    Programme(usize),
-    More,
-}
-
 pub(in super::super) struct SearchPanel<'a> {
     pub(in super::super) state: &'a SearchState,
     pub(in super::super) display_term: &'a str,
@@ -81,57 +68,28 @@ pub(in super::super) struct SearchViewport {
     desk_first: usize,
 }
 
-pub(in super::super) fn search_panel(
+pub(in super::super) fn search_panel<'a>(
     size: Size<Pixels>,
-    panel: SearchPanel<'_>,
+    panel: SearchPanel<'a>,
     viewport: &mut SearchViewport,
     icons: &ChannelIcons,
-) -> Option<Div> {
+) -> (Option<Div>, Vec<&'a ChannelIcon>) {
     let layout = Layout::new(size);
-    match panel.state.view() {
+    let (surface, visible_icons) = match panel.state.view() {
         SearchView::Closed => {
             *viewport = SearchViewport::default();
-            None
+            return (None, Vec::new());
         }
         SearchView::Inline => {
             viewport.desk_first = 0;
-            Some(inline(layout, &panel, &mut viewport.inline_first, icons))
+            inline(layout, &panel, &mut viewport.inline_first, icons)
         }
         SearchView::Desk => {
             viewport.inline_first = 0;
-            Some(desk(layout, &panel, &mut viewport.desk_first, icons))
+            desk(layout, &panel, &mut viewport.desk_first, icons)
         }
-    }
-}
-
-/// Selects the Channel Icons for rows that intersect the Search viewport.
-pub(in super::super) fn search_visible_icons<'a>(
-    size: Size<Pixels>,
-    state: &'a SearchState,
-    term: &str,
-    focus: SearchFocus,
-    viewport: &SearchViewport,
-) -> Vec<&'a ChannelIcon> {
-    let layout = Layout::new(size);
-    match state.view() {
-        SearchView::Inline => {
-            let rows = inline_rows(state, term);
-            let slice = inline_slice(layout, focus, &rows, viewport.inline_first);
-            rows[slice.visible]
-                .iter()
-                .filter_map(InlineRow::icon)
-                .collect()
-        }
-        SearchView::Desk if state.status() == SearchStatus::Ready => {
-            let rows = state.channels();
-            let slice = desk_slice(layout, focus, rows, state.has_more(), viewport.desk_first);
-            rows[slice.visible]
-                .iter()
-                .filter_map(|hit| hit.channel().icon())
-                .collect()
-        }
-        SearchView::Closed | SearchView::Desk => Vec::new(),
-    }
+    };
+    (Some(surface), visible_icons)
 }
 
 struct InlineGeometry {
@@ -186,22 +144,35 @@ pub(in super::super) fn search_editor_rect(
     }
 }
 
-fn inline(layout: Layout, panel: &SearchPanel<'_>, first: &mut usize, icons: &ChannelIcons) -> Div {
-    let mut overlay = div().absolute().size_full();
+fn inline<'a>(
+    layout: Layout,
+    panel: &SearchPanel<'a>,
+    first: &mut usize,
+    icons: &ChannelIcons,
+) -> (Div, Vec<&'a ChannelIcon>) {
+    let mut overlay = div().absolute().inset_0();
     let geometry = InlineGeometry::new(layout, panel.docked);
     let rows = inline_rows(panel.state, panel.display_term);
-    if !rows.is_empty() {
+    let visible_icons = if rows.is_empty() {
+        *first = 0;
+        Vec::new()
+    } else {
+        let slice = inline_slice(layout, panel.focus, &rows, *first);
+        *first = slice.rendered.start;
+        let visible_icons = rows[slice.visible.clone()]
+            .iter()
+            .filter_map(InlineRow::icon)
+            .collect();
         overlay = overlay.bg(rgba(0x060a12b8)).child(inline_popup(
             layout,
             &geometry,
             panel.focus,
             &rows,
-            first,
+            slice,
             icons,
         ));
-    } else {
-        *first = 0;
-    }
+        visible_icons
+    };
     let field_focus = panel.focus == SearchFocus::Field || panel.editing;
     let rim = if field_focus { 3. } else { 0. };
     let field = field(
@@ -233,7 +204,7 @@ fn inline(layout: Layout, panel: &SearchPanel<'_>, first: &mut usize, icons: &Ch
                 )),
         )
     });
-    overlay.child(field)
+    (overlay.child(field), visible_icons)
 }
 
 enum InlineRow<'a> {
@@ -331,11 +302,9 @@ fn inline_popup(
     geometry: &InlineGeometry,
     focus: SearchFocus,
     rows: &[InlineRow<'_>],
-    first: &mut usize,
+    slice: SearchSlice,
     icons: &ChannelIcons,
 ) -> Div {
-    let slice = inline_slice(layout, focus, rows, *first);
-    *first = slice.rendered.start;
     layout
         .rect(geometry.x, INLINE_POPUP_Y, geometry.width, slice.height)
         .rounded(layout.px(12.))
@@ -435,7 +404,12 @@ fn inline_row(
         )
 }
 
-fn desk(layout: Layout, panel: &SearchPanel<'_>, first: &mut usize, icons: &ChannelIcons) -> Div {
+fn desk<'a>(
+    layout: Layout,
+    panel: &SearchPanel<'a>,
+    first: &mut usize,
+    icons: &ChannelIcons,
+) -> (Div, Vec<&'a ChannelIcon>) {
     let close_focus = panel.focus == SearchFocus::Close;
     let filter_width = desk_field_width(panel.state, panel.has_exclusions);
     let toolbar = layout
@@ -461,6 +435,7 @@ fn desk(layout: Layout, panel: &SearchPanel<'_>, first: &mut usize, icons: &Chan
             ))
         });
 
+    let (list, visible_icons) = desk_list(layout, panel, first, icons);
     let sheet = layout
         .rect(DESK_X, 0., DESK_WIDTH, layout.height)
         .bg(rgb(PANEL))
@@ -508,12 +483,11 @@ fn desk(layout: Layout, panel: &SearchPanel<'_>, first: &mut usize, icons: &Chan
             panel.focus == SearchFocus::Field || panel.editing,
             true,
         ))
-        .child(desk_list(layout, panel, first, icons));
-    div()
-        .absolute()
-        .size_full()
-        .bg(rgba(0x050910b3))
-        .child(sheet)
+        .child(list);
+    (
+        div().absolute().inset_0().bg(rgba(0x050910b3)).child(sheet),
+        visible_icons,
+    )
 }
 
 fn desk_field_width(state: &SearchState, has_exclusions: bool) -> f32 {
@@ -585,12 +559,12 @@ fn desk_slice(
     }
 }
 
-fn desk_list(
+fn desk_list<'a>(
     layout: Layout,
-    panel: &SearchPanel<'_>,
+    panel: &SearchPanel<'a>,
     first: &mut usize,
     icons: &ChannelIcons,
-) -> Div {
+) -> (Div, Vec<&'a ChannelIcon>) {
     let height = (layout.height - DESK_LIST_Y).max(0.);
     let list = layout
         .rect(DESK_PADDING, DESK_LIST_Y, DESK_CONTENT_WIDTH, height)
@@ -604,7 +578,7 @@ fn desk_list(
             SearchStatus::ReconcileGeneration => Some("Search again"),
             _ => None,
         };
-        return list.child(
+        let notice = list.child(
             div()
                 .flex()
                 .flex_col()
@@ -627,12 +601,17 @@ fn desk_list(
                     ))
                 }),
         );
+        return (notice, Vec::new());
     }
     let rows = panel.state.channels();
     let slice = desk_slice(layout, panel.focus, rows, panel.state.has_more(), *first);
     *first = slice.rendered.start;
     let footer_y = (rows.len() - *first) as f32 * DESK_PITCH + 8.;
-    list.children(rows[slice.rendered].iter().enumerate().map(|(index, hit)| {
+    let visible_icons = rows[slice.visible]
+        .iter()
+        .filter_map(|hit| hit.channel().icon())
+        .collect();
+    let list = list.children(rows[slice.rendered].iter().enumerate().map(|(index, hit)| {
         desk_row(layout, panel, hit, index as f32 * DESK_PITCH, icons)
     }))
     .when(footer_y < height, |list| {
@@ -663,7 +642,8 @@ fn desk_list(
                 linear_color_stop(rgba(PANEL << 8), 0.),
                 linear_color_stop(rgb(PANEL), 0.7),
             )),
-    )
+    );
+    (list, visible_icons)
 }
 
 fn desk_row(

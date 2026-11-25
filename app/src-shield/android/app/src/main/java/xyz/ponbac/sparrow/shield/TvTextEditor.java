@@ -4,6 +4,7 @@ import android.os.Build;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextWatcher;
+import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
@@ -64,6 +65,10 @@ final class TvTextEditor {
         retireRequest(latestRequest.get());
     }
 
+    int rejectionEvent(long requestedGeneration, boolean started) {
+        return !started || requestedGeneration <= retiredRequest.get() ? CANCELED : REJECTED;
+    }
+
     boolean open(long nextGeneration, int mode, int x, int y, int width, int height,
                  String initialText, Listener listener) {
         if (nextGeneration <= retiredRequest.get() || nextGeneration < generation
@@ -80,6 +85,7 @@ final class TvTextEditor {
                 return false;
             }
             input.setLayoutParams(bounds);
+            input.fitTextToField(height);
             return true;
         }
         if (input != null) {
@@ -93,6 +99,13 @@ final class TvTextEditor {
             field.setTextClassifier(TextClassifier.NO_OP);
         }
         field.setSingleLine(true);
+        // The Guide draws the field and focus outline around this text area.
+        field.setBackground(null);
+        field.setPadding(0, 0, 0, 0);
+        field.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        field.setIncludeFontPadding(false);
+        field.setTextColor(0xffeef3f8);
+        field.fitTextToField(height);
         field.setImeOptions(EditorInfo.IME_ACTION_DONE | EditorInfo.IME_FLAG_NO_EXTRACT_UI
                 | EditorInfo.IME_FLAG_NO_FULLSCREEN | EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING);
         field.setSaveEnabled(false);
@@ -191,6 +204,10 @@ final class TvTextEditor {
             super(root.getContext());
             this.mode = mode;
             this.listener = listener;
+        }
+
+        void fitTextToField(int height) {
+            setTextSize(TypedValue.COMPLEX_UNIT_PX, height * (21f / 56f));
         }
 
         @Override

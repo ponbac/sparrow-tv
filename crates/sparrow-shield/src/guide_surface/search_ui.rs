@@ -1,37 +1,13 @@
-use gpui::{Context, Div, Window};
+use gpui::{Context, Window};
 use sparrow_tv_guide::{
     PageUpdate,
     search::{SEARCH_DEBOUNCE, SearchRead},
 };
 
 use super::{GuideSurface, SearchDebounce, TextTarget};
-use crate::{
-    catalog,
-    guide_view::{self, SearchPanel},
-    search_flow::SearchEffect,
-};
+use crate::{catalog, guide_view, search_flow::SearchEffect};
 
 impl GuideSurface {
-    pub(super) fn search_panel(&mut self, window: &Window) -> Option<Div> {
-        guide_view::search_panel(
-            window.viewport_size(),
-            SearchPanel {
-                state: self.search.state(),
-                display_term: self.search.term(),
-                focus: self.search.focus(),
-                editing: self
-                    .active_editor
-                    .is_some_and(|(_, target)| target == TextTarget::Search),
-                has_exclusions: self.search.has_exclusions(),
-                docked: self.playback.docked(),
-                families: self.screen.families(),
-                now: self.now.to_utc(),
-            },
-            &mut self.search_viewport,
-            &self.icons,
-        )
-    }
-
     pub(super) fn sync_search_preferences(&mut self, cx: &mut Context<Self>) {
         let effect = self.search.set_preferences(
             self.screen.exclusions().clone(),

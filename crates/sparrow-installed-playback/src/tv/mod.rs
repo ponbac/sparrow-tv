@@ -288,6 +288,8 @@ impl TvPlaybackRunner {
         self.commands.clone()
     }
 
+    /// Observes Playback Session changes. Diagnostic-only samples remain
+    /// available in the latest value without a notification.
     pub fn subscribe(&self) -> watch::Receiver<TvPlaybackSnapshot> {
         self.snapshot.clone()
     }

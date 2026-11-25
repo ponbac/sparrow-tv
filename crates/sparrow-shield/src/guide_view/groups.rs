@@ -15,6 +15,9 @@ const LEFT: f32 = CANVAS_WIDTH - WIDTH;
 const PADDING: f32 = 30.;
 const FILTER_Y: f32 = 116.;
 const FILTER_HEIGHT: f32 = 56.;
+const FILTER_PADDING: f32 = 20.;
+const FILTER_ICON_SIZE: f32 = 22.;
+const FILTER_GAP: f32 = 12.;
 const LIST_Y: f32 = 190.;
 const ROW_HEIGHT: f32 = 60.;
 const ROW_PITCH: f32 = ROW_HEIGHT + 4.;
@@ -28,25 +31,28 @@ fn filter_width(can_restore: bool) -> f32 {
     WIDTH - PADDING * 2. - if can_restore { 248. } else { 136. }
 }
 
-/// Android's editor overlays the same field drawn by the Guide.
+/// Android's editor occupies the field's text area.
 pub(in super::super) fn group_filter_rect(
     size: Size<Pixels>,
     pixel_scale: f32,
     can_restore: bool,
 ) -> [i32; 4] {
     let scale = Layout::new(size).scale * pixel_scale;
+    let text_inset = FILTER_PADDING + FILTER_ICON_SIZE + FILTER_GAP;
     [
-        ((LEFT + PADDING) * scale).round() as i32,
-        (FILTER_Y * scale).round() as i32,
-        (filter_width(can_restore) * scale).round() as i32,
-        (FILTER_HEIGHT * scale).round() as i32,
+        LEFT + PADDING + text_inset,
+        FILTER_Y,
+        filter_width(can_restore) - text_inset - FILTER_PADDING,
+        FILTER_HEIGHT,
     ]
+    .map(|length| (length * scale).round() as i32)
 }
 
 pub(in super::super) fn group_sheet(
     viewport_size: Size<Pixels>,
     screen: &GuideScreen,
     viewport: &mut GroupViewport,
+    editing: bool,
 ) -> Option<Div> {
     let Some(chooser) = screen.group_chooser() else {
         viewport.first = 0;
@@ -186,10 +192,12 @@ pub(in super::super) fn group_sheet(
     } else {
         format!("{shown} shown, {hidden} hidden")
     };
-    let filter_focused = focus == GroupChooserFocus::Filter;
+    let filter_focused = focus == GroupChooserFocus::Filter || editing;
+    let filter_border = if filter_focused { 3. } else { 2. };
     let sheet = layout
         .rect(LEFT, 0., WIDTH, layout.height)
         .bg(rgb(PANEL))
+        .text_color(rgb(TEXT))
         .overflow_hidden()
         .child(
             layout.rect(PADDING, 30., WIDTH - 130., 48.).child(
@@ -218,7 +226,7 @@ pub(in super::super) fn group_sheet(
                 .rect(PADDING, FILTER_Y, filter_width, FILTER_HEIGHT)
                 .rounded_full()
                 .bg(rgb(INK))
-                .border(layout.px(if filter_focused { 3. } else { 2. }))
+                .border(layout.px(filter_border))
                 .border_color(if filter_focused {
                     rgb(ICE)
                 } else {
@@ -226,30 +234,32 @@ pub(in super::super) fn group_sheet(
                 })
                 .flex()
                 .items_center()
-                .px(layout.px(20.))
-                .gap(layout.px(12.))
+                .px(layout.px(FILTER_PADDING - filter_border))
+                .gap(layout.px(FILTER_GAP))
                 .child(layout.icon(
                     include_bytes!("../../assets/icons/search.svg"),
-                    22.,
+                    FILTER_ICON_SIZE,
                     rgba(DIM),
                 ))
-                .child(
-                    layout
-                        .text(SAIRA, 21., 28., 400.)
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_color(if chooser.filter().is_empty() {
-                            rgba(MUTE)
-                        } else {
-                            rgb(TEXT)
-                        })
-                        .child(if chooser.filter().is_empty() {
-                            "Find a group".to_owned()
-                        } else {
-                            chooser.filter().to_owned()
-                        }),
-                ),
+                .when(!editing, |filter| {
+                    filter.child(
+                        layout
+                            .text(SAIRA, 21., 28., 400.)
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(if chooser.filter().is_empty() {
+                                rgba(MUTE)
+                            } else {
+                                rgb(TEXT)
+                            })
+                            .child(if chooser.filter().is_empty() {
+                                "Find a group".to_owned()
+                            } else {
+                                chooser.filter().to_owned()
+                            }),
+                    )
+                }),
         )
         .child(
             layout

@@ -83,6 +83,7 @@ async fn media3_buffered_bytes_are_released_with_the_exact_transport_generation(
             StreamStep::Chunk(Bytes::from_static(b"next")),
             StreamStep::Chunk(Bytes::from_static(b"stream")),
         ]),
+        OpenPlan::Stream(vec![StreamStep::Chunk(Bytes::from_static(b"fresh"))]),
     ]);
     let manager = Arc::new(PlaybackManager::with_access(
         Arc::clone(&fixture.core),
@@ -117,6 +118,20 @@ async fn media3_buffered_bytes_are_released_with_the_exact_transport_generation(
         pull(&replacement, usize::MAX).await.unwrap().unwrap(),
         b"ream"
     );
+    assert!(
+        pull(&replacement, 1)
+            .await
+            .unwrap()
+            .expect("the read following partial data reports EOF")
+            .is_empty()
+    );
+
+    let fresh = manager
+        .reopen(replacement.session_id().clone())
+        .await
+        .expect("the session reopens after EOF");
+    assert!(pull(&replacement, 1).await.unwrap().is_err());
+    assert_eq!(pull(&fresh, 5).await.unwrap().unwrap(), b"fresh");
 }
 
 #[tokio::test]

@@ -82,11 +82,8 @@ pub(crate) struct PlaybackOverlay<'a> {
     pub(crate) programme: Option<PlaybackProgramme<'a>>,
     pub(crate) clock: &'a str,
     pub(crate) stage: PlaybackStage,
-    pub(crate) muted: bool,
     pub(crate) audio_track: Option<&'a str>,
     pub(crate) quality: Option<&'a str>,
-    pub(crate) can_change_quality: bool,
-    pub(crate) can_restart: bool,
     pub(crate) copy_label: &'static str,
     /// The runner's display message, filtered before reaching the view.
     pub(crate) feedback: Option<&'a str>,
@@ -153,16 +150,6 @@ fn picture_reference(layout: Layout, placement: PlaybackLayout) -> [f32; 4] {
     }
 }
 
-pub(crate) fn fullscreen_actions(playback: &PlaybackOverlay<'_>) -> Vec<PlaybackControl> {
-    actions(
-        playback.stage,
-        playback.muted,
-        playback.audio_track.is_some(),
-        playback.can_change_quality,
-        playback.can_restart,
-    )
-}
-
 pub(crate) fn picker(
     viewport: Size<Pixels>,
     focused: usize,
@@ -205,7 +192,7 @@ pub(crate) fn picker(
         )
 }
 
-fn actions(
+pub(crate) fn fullscreen_actions(
     stage: PlaybackStage,
     muted: bool,
     show_audio_track: bool,
@@ -309,14 +296,16 @@ pub(crate) fn docked_playback(viewport: Size<Pixels>, playback: &PlaybackOverlay
         })
         .child(layout.icon(EXPAND, 20., rgba(secondary)));
     div()
+        .absolute()
+        .inset_0()
         .child(layout.rect(left, top - 5., width, 5.).bg(rgb(TALLY)))
         .child(caption)
 }
 
 pub(crate) fn fullscreen_playback(
     viewport: Size<Pixels>,
-    controls_visible: bool,
     playback: &PlaybackOverlay<'_>,
+    actions: &[PlaybackControl],
 ) -> Div {
     let layout = Layout::new(viewport);
     let root = div()
@@ -326,7 +315,7 @@ pub(crate) fn fullscreen_playback(
         .font_family(SAIRA)
         .text_color(rgb(TEXT))
         .bg(rgb(INK));
-    if !controls_visible {
+    if actions.is_empty() {
         return root;
     }
     let [_, _, _, picture_height] = picture_reference(
@@ -351,6 +340,7 @@ pub(crate) fn fullscreen_playback(
                 layout,
                 layout.height - picture_height,
                 playback,
+                actions,
             )),
     )
 }
@@ -513,8 +503,12 @@ fn progress(layout: Layout, programme: &PlaybackProgramme<'_>, stage: PlaybackSt
         )
 }
 
-fn fullscreen_controls(layout: Layout, height: f32, playback: &PlaybackOverlay<'_>) -> Div {
-    let controls = fullscreen_actions(playback);
+fn fullscreen_controls(
+    layout: Layout,
+    height: f32,
+    playback: &PlaybackOverlay<'_>,
+    controls: &[PlaybackControl],
+) -> Div {
     let leading = controls
         .iter()
         .position(|action| *action == PlaybackControl::ExitFullscreen)

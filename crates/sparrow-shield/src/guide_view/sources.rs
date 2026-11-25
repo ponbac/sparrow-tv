@@ -21,6 +21,9 @@ const SUMMARY_HEIGHT: f32 = 60.;
 const DIAGNOSTICS_TEXT_Y: f32 = DIAGNOSTICS_Y + SUMMARY_HEIGHT + 12.;
 const DIAGNOSTICS_LINE_HEIGHT: f32 = 27.;
 const FIELD_HEIGHT: f32 = 56.;
+const FIELD_LABEL_HEIGHT: f32 = 30.;
+const FIELD_PADDING: f32 = 19.;
+const FOCUSED_FIELD_BORDER: f32 = 3.;
 const ERROR: u32 = 0xff8a75;
 const CHEVRON_DOWN: &[u8] = include_bytes!("../../assets/icons/chevron-down.svg");
 const CHEVRON_UP: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg>"#;
@@ -73,7 +76,7 @@ impl SourcePositions {
         }
     }
 
-    fn scroll(self, content_height: f32, focus: SourceFocus) -> f32 {
+    fn scroll(self, content_height: f32, focus: SourceFocus, editing: bool) -> f32 {
         let (top, height) = match focus {
             SourceFocus::Close | SourceFocus::Refresh => return 0.,
             SourceFocus::Diagnostics => (DIAGNOSTICS_Y, SUMMARY_HEIGHT),
@@ -83,6 +86,11 @@ impl SourcePositions {
             SourceFocus::Epg => (self.epg, FIELD_HEIGHT),
             SourceFocus::Save => (self.save, BUTTON_HEIGHT),
         };
+        // Keep the label and editor at the top of the content so the TV
+        // keyboard can cover the rest of the drawer without covering the text.
+        if editing && matches!(focus, SourceFocus::M3u | SourceFocus::Epg) {
+            return top - FIELD_LABEL_HEIGHT;
+        }
         (top + height + 12. - content_height).clamp(0., top)
     }
 }
@@ -90,6 +98,7 @@ impl SourcePositions {
 pub(in super::super) struct SourcePanel<'a> {
     pub(in super::super) status: Option<&'a CatalogStatus>,
     pub(in super::super) focus: SourceFocus,
+    pub(in super::super) editing: bool,
     pub(in super::super) has_m3u: bool,
     pub(in super::super) has_epg: bool,
     pub(in super::super) saving: bool,
@@ -105,26 +114,19 @@ pub(in super::super) struct SourcePanel<'a> {
 pub(in super::super) fn source_editor_rect(
     size: Size<Pixels>,
     pixel_scale: f32,
-    focus: SourceFocus,
-    diagnostics: Option<&str>,
 ) -> Option<[i32; 4]> {
     let layout = Layout::new(size);
-    let positions = SourcePositions::new(diagnostics);
-    let field_top = match focus {
-        SourceFocus::M3u => positions.m3u,
-        SourceFocus::Epg => positions.epg,
-        _ => return None,
-    };
-    let top = CONTENT_Y + field_top - positions.scroll(layout.height - CONTENT_Y, focus);
+    let top = CONTENT_Y + FIELD_LABEL_HEIGHT;
     let height = FIELD_HEIGHT.min(layout.height - top);
     if height <= 0. {
         return None;
     }
     let scale = layout.scale * pixel_scale;
+    let text_inset = FOCUSED_FIELD_BORDER + FIELD_PADDING;
     Some([
-        ((LEFT + PADDING) * scale).round() as i32,
+        ((LEFT + PADDING + text_inset) * scale).round() as i32,
         (top * scale).round() as i32,
-        (CONTENT_WIDTH * scale).round() as i32,
+        ((CONTENT_WIDTH - 2. * text_inset) * scale).round() as i32,
         (height * scale).round() as i32,
     ])
 }
@@ -133,7 +135,7 @@ pub(in super::super) fn sources_sheet(size: Size<Pixels>, panel: SourcePanel<'_>
     let layout = Layout::new(size);
     let content_height = layout.height - CONTENT_Y;
     let positions = SourcePositions::new(panel.diagnostics);
-    let scroll = positions.scroll(content_height, panel.focus);
+    let scroll = positions.scroll(content_height, panel.focus, panel.editing);
     let header_subtitle = panel
         .feedback
         .unwrap_or("Source locations stay on this device. Only their status is shown here.");
@@ -224,6 +226,7 @@ pub(in super::super) fn sources_sheet(size: Size<Pixels>, panel: SourcePanel<'_>
             "https://…/channels.m3u",
             panel.has_m3u,
             panel.focus == SourceFocus::M3u,
+            panel.editing && panel.focus == SourceFocus::M3u,
         ))
         .child(source_field(
             layout,
@@ -232,6 +235,7 @@ pub(in super::super) fn sources_sheet(size: Size<Pixels>, panel: SourcePanel<'_>
             "https://…/guide.xml",
             panel.has_epg,
             panel.focus == SourceFocus::Epg,
+            panel.editing && panel.focus == SourceFocus::Epg,
         ))
         .child(
             layout
@@ -391,30 +395,38 @@ fn source_field(
     placeholder: &'static str,
     filled: bool,
     focused: bool,
+    editing: bool,
 ) -> Div {
     layout
-        .rect(0., top - 30., CONTENT_WIDTH, FIELD_HEIGHT + 30.)
+        .rect(
+            0.,
+            top - FIELD_LABEL_HEIGHT,
+            CONTENT_WIDTH,
+            FIELD_HEIGHT + FIELD_LABEL_HEIGHT,
+        )
         .child(layout.text(SAIRA, 18., 24., 600.).child(label))
         .child(
             layout
-                .rect(0., 30., CONTENT_WIDTH, FIELD_HEIGHT)
+                .rect(0., FIELD_LABEL_HEIGHT, CONTENT_WIDTH, FIELD_HEIGHT)
                 .rounded_full()
                 .bg(rgb(INK))
-                .border(layout.px(if focused { 3. } else { 2. }))
+                .border(layout.px(if focused { FOCUSED_FIELD_BORDER } else { 2. }))
                 .border_color(if focused { rgb(ICE) } else { rgba(FAINT) })
                 .flex()
                 .items_center()
-                .px(layout.px(19.))
-                .child(
-                    layout
-                        .text(SAIRA, 21., 28., 400.)
-                        .text_color(if filled { rgb(TEXT) } else { rgba(MUTE) })
-                        .child(if filled {
-                            "Location entered"
-                        } else {
-                            placeholder
-                        }),
-                ),
+                .px(layout.px(FIELD_PADDING))
+                .when(!editing, |field| {
+                    field.child(
+                        layout
+                            .text(SAIRA, 21., 28., 400.)
+                            .text_color(if filled { rgb(TEXT) } else { rgba(MUTE) })
+                            .child(if filled {
+                                "Location entered"
+                            } else {
+                                placeholder
+                            }),
+                    )
+                }),
         )
 }
 

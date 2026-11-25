@@ -898,6 +898,51 @@ async fn pausing_retires_the_live_status() {
 }
 
 #[tokio::test]
+async fn frame_samples_update_diagnostics_without_notifying_viewers() {
+    let (fixture, mut owner) = setup();
+    let (published, mut updates) = watch::channel(Snapshot::default());
+    visible(&mut owner, 1).await;
+    tune(&mut owner, target(1)).await;
+    owner.on_deadline(owner.status_at.unwrap()).await;
+    owner.publish(&published);
+    assert_eq!(updates.borrow_and_update().phase, Phase::Playing);
+
+    fixture.0.lock().unwrap().frame_count = Some(2);
+    owner.on_deadline(owner.status_at.unwrap()).await;
+    owner.publish(&published);
+
+    assert_eq!(updates.borrow().status.unwrap().decoded_frames(), 2);
+    assert!(!updates.has_changed().unwrap());
+
+    owner.command(Command::Pause).await;
+    owner.publish(&published);
+    assert!(updates.has_changed().unwrap());
+    let snapshot = updates.borrow_and_update();
+    assert_eq!(snapshot.phase, Phase::Paused(TvPauseCause::User));
+    assert!(snapshot.status.is_none());
+}
+
+#[tokio::test]
+async fn changing_the_inactive_viewport_keeps_the_current_picture_in_place() {
+    let (fixture, mut owner) = setup();
+    visible(&mut owner, 1).await;
+    let key = tune(&mut owner, target(1)).await;
+    let before = fixture.calls().len();
+
+    owner
+        .command(Command::SetViewports {
+            host: 1,
+            docked: AndroidPlaybackViewport::parse(40, 24, 640, 360, false).ok(),
+            fullscreen: None,
+        })
+        .await;
+
+    assert_eq!(fixture.calls().len(), before);
+    owner.command(Command::Fullscreen).await;
+    assert_eq!(&fixture.calls()[before..], &[Call::Viewport(key, None)]);
+}
+
+#[tokio::test]
 async fn missing_geometry_hides_the_exact_live_or_retained_picture() {
     let (fixture, mut owner) = setup();
     visible(&mut owner, 1).await;

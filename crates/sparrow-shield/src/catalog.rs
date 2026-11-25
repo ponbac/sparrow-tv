@@ -79,6 +79,7 @@ struct Process {
     searches: BoundedBlocking,
     variant_preferences: watch::Sender<Arc<VariantPreferences>>,
     playback_queries: BoundedBlocking,
+    playback_subject_queries: BoundedBlocking,
 }
 
 enum PreferenceWrite {
@@ -171,6 +172,7 @@ static PROCESS: LazyLock<Process> = LazyLock::new(|| Process {
     searches: BoundedBlocking::serial(),
     variant_preferences: watch::channel(Arc::new(VariantPreferences::default())).0,
     playback_queries: BoundedBlocking::serial(),
+    playback_subject_queries: BoundedBlocking::serial(),
     publication: watch::channel(Publication {
         snapshot: Snapshot {
             phase: Phase::Starting,
@@ -378,9 +380,22 @@ pub(super) fn prefer_variant(
 pub(super) fn playback_query<T: Send + 'static>(
     query: impl FnOnce(&CatalogAccess) -> T + Send + 'static,
 ) -> Option<tokio::task::JoinHandle<Option<T>>> {
+    bounded_read(&PROCESS.playback_queries, query)
+}
+
+pub(super) fn playback_subject_query<T: Send + 'static>(
+    query: impl FnOnce(&CatalogAccess) -> T + Send + 'static,
+) -> Option<tokio::task::JoinHandle<Option<T>>> {
+    bounded_read(&PROCESS.playback_subject_queries, query)
+}
+
+fn bounded_read<T: Send + 'static>(
+    requests: &BoundedBlocking,
+    query: impl FnOnce(&CatalogAccess) -> T + Send + 'static,
+) -> Option<tokio::task::JoinHandle<Option<T>>> {
     let worker = PROCESS.worker.get()?.as_ref()?;
     let catalog = PROCESS.catalog.get()?.core().clone();
-    let requests = PROCESS.playback_queries.clone();
+    let requests = requests.clone();
     Some(
         worker
             .runtime
@@ -452,7 +467,6 @@ async fn run(
     let _ = PROCESS.catalog.set(Arc::clone(&catalog));
     let core = catalog.core();
     let mut events = core.subscribe();
-    core.report_lifecycle(LifecycleSignal::Started);
     publish_status(catalog.status(), false);
 
     loop {

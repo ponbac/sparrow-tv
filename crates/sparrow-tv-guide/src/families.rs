@@ -38,8 +38,11 @@ impl GuideFamily {
 
     /// Selects the viewer's available Quality Variant or the highest quality.
     pub fn preferred_variant(&self, preferences: &VariantPreferences) -> &GuideWindowChannel {
-        let wanted = preferences.quality(self.group(), self.title());
         let mut best = &self.variants[0];
+        if self.variants.len() == 1 {
+            return best;
+        }
+        let wanted = preferences.quality(self.group(), self.title());
         for variant in self.variants.iter() {
             let quality = variant_quality(variant);
             if quality.is_some() && quality == wanted {

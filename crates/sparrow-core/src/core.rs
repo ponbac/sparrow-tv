@@ -216,7 +216,7 @@ impl SparrowCore {
         if defer_epg {
             *core
                 .runtime
-                .pending_epg_restore
+                .deferred_epg_restore
                 .lock()
                 .expect("recovery state poisoned") =
                 core.runtime.ready_configuration(SourceKind::Epg);
@@ -534,7 +534,7 @@ struct CoreRuntime {
     shutdown: watch::Sender<bool>,
     events: broadcast::Sender<CoreEvent>,
     automation_started: AtomicBool,
-    pending_epg_restore: Mutex<Option<ConfigurationContext>>,
+    deferred_epg_restore: Mutex<Option<ConfigurationContext>>,
     cache_on_start: AtomicBool,
     cache_worker: Mutex<CacheWorkerState>,
     cache_revision: Arc<AtomicU64>,
@@ -780,7 +780,7 @@ impl CoreRuntime {
             shutdown: watch::channel(false).0,
             events,
             automation_started: AtomicBool::new(false),
-            pending_epg_restore: Mutex::new(None),
+            deferred_epg_restore: Mutex::new(None),
             cache_on_start: AtomicBool::new(false),
             cache_worker: Mutex::new(CacheWorkerState::default()),
             cache_revision: Arc::new(AtomicU64::new(0)),
@@ -1070,11 +1070,13 @@ impl CoreRuntime {
             self.queue_catalog_cache(false);
         }
         let pending = self
-            .pending_epg_restore
+            .deferred_epg_restore
             .lock()
             .expect("recovery state poisoned")
-            .take();
+            .clone();
         if let Some(context) = pending {
+            // M3U can refresh independently of the deferred EPG snapshot.
+            self.spawn_refresh(RefreshTrigger::Startup);
             let weak = Arc::downgrade(self);
             let adapters = self.adapters.clone();
             // Run deferred EPG recovery on an async task (never holding a
@@ -1087,6 +1089,10 @@ impl CoreRuntime {
                     recover_source(&adapters, source, EPG_DECODED_LIMIT, xmltv::parse, true).await;
                 if let Some(runtime) = weak.upgrade() {
                     runtime.restore_epg_snapshot(&context, recovered).await;
+                    *runtime
+                        .deferred_epg_restore
+                        .lock()
+                        .expect("recovery state poisoned") = None;
                     runtime.launch_automation();
                 }
             });
@@ -1338,7 +1344,18 @@ impl CoreRuntime {
         };
         let runtime = Arc::clone(self);
         handle.spawn(async move {
-            let _ = runtime.refresh(trigger).await;
+            // Deferred recovery owns the first EPG refresh so its saved
+            // freshness and validators are available. M3U work can proceed.
+            let restoring_epg = runtime
+                .deferred_epg_restore
+                .lock()
+                .expect("recovery state poisoned")
+                .is_some();
+            if restoring_epg {
+                let _ = runtime.refresh_source(SourceKind::M3u, trigger).await;
+            } else {
+                let _ = runtime.refresh(trigger).await;
+            }
         });
     }
 

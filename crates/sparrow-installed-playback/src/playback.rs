@@ -493,15 +493,26 @@ impl PlaybackManager {
         session_id: PlaybackSessionId,
         stream_handle: NativeStreamHandle,
     ) -> Result<Vec<u8>, PlaybackManagerError> {
-        self.read_at_most(session_id, stream_handle, MAX_NATIVE_PULL_BYTES)
+        self.read_transport(session_id, stream_handle, MAX_NATIVE_PULL_BYTES, false)
             .await
     }
 
-    pub(crate) async fn read_at_most(
+    pub(crate) async fn read_media3(
         &self,
         session_id: PlaybackSessionId,
         stream_handle: NativeStreamHandle,
         maximum: usize,
+    ) -> Result<Vec<u8>, PlaybackManagerError> {
+        self.read_transport(session_id, stream_handle, maximum, true)
+            .await
+    }
+
+    async fn read_transport(
+        &self,
+        session_id: PlaybackSessionId,
+        stream_handle: NativeStreamHandle,
+        maximum: usize,
+        repeat_eof: bool,
     ) -> Result<Vec<u8>, PlaybackManagerError> {
         debug_assert!((1..=MAX_NATIVE_PULL_BYTES).contains(&maximum));
         let (reply, response) = oneshot::channel();
@@ -510,6 +521,7 @@ impl PlaybackManager {
                 session_id,
                 stream_handle,
                 maximum,
+                repeat_eof,
                 reply,
             })
             .await
@@ -803,6 +815,7 @@ struct ReadCommand {
     session_id: PlaybackSessionId,
     stream_handle: NativeStreamHandle,
     maximum: usize,
+    repeat_eof: bool,
     reply: oneshot::Sender<Result<Vec<u8>, PlaybackManagerError>>,
 }
 
@@ -912,7 +925,19 @@ impl PlaybackActor {
                 ActorState::Dormant(session) => match self.next_command().await {
                     Some(ActorCommand::Control(command)) => self.control_dormant(session, command),
                     Some(ActorCommand::Read(command)) => {
-                        let _ = command.reply.send(Err(PlaybackManagerError::Cancelled));
+                        // Media3 may have received the final bytes after a coalesced
+                        // pull encountered EOF. Report EOF for that generation only.
+                        let result = if command.repeat_eof
+                            && self.foreground
+                            && session.dormant_reason == Some(DormantReason::EndOfInput)
+                            && command.session_id == session.id
+                            && session.last_stream_handle.as_ref() == Some(&command.stream_handle)
+                        {
+                            Ok(Vec::new())
+                        } else {
+                            Err(PlaybackManagerError::Cancelled)
+                        };
+                        let _ = command.reply.send(result);
                         ActorState::Dormant(session)
                     }
                     None => return,
@@ -1767,7 +1792,10 @@ impl PlaybackActor {
             ControlCommand::ControlMpv {
                 session_id, reply, ..
             } if session_id == session.id
-                && matches!(session.dormant_reason, Some(DormantReason::Failed)) =>
+                && matches!(
+                    session.dormant_reason,
+                    Some(DormantReason::Failed | DormantReason::EndOfInput)
+                ) =>
             {
                 let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::Terminated)));
                 ActorState::Dormant(session)
@@ -1783,7 +1811,11 @@ impl PlaybackActor {
                 if session_id == session.id
                     && matches!(
                         session.dormant_reason,
-                        Some(DormantReason::Failed | DormantReason::Suspended)
+                        Some(
+                            DormantReason::Failed
+                                | DormantReason::EndOfInput
+                                | DormantReason::Suspended
+                        )
                     ) =>
             {
                 self.begin_mpv_open(session, reply)
@@ -2470,7 +2502,7 @@ impl PlaybackActor {
                 reading.reply,
                 Ok(Vec::new()),
                 reading.session,
-                DormantReason::Failed,
+                DormantReason::EndOfInput,
             ),
             ReadCompletion::Failed(error) => self.reply_with_dormant(
                 reading.reply,
@@ -2736,6 +2768,7 @@ struct MpvPlayingState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DormantReason {
+    EndOfInput,
     Failed,
     Suspended,
 }

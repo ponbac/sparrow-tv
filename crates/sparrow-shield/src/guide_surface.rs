@@ -2,8 +2,8 @@ use std::{collections::HashSet, sync::Mutex, time::Duration};
 
 use chrono::{DateTime, FixedOffset, Local, Timelike, Utc};
 use gpui::{
-    AnyWindowHandle, App, Context, FocusHandle, IntoElement, KeyDownEvent, Render, SharedString,
-    Task, Window, WindowOptions, div, prelude::*, px, rgb,
+    AnyWindowHandle, App, Context, Div, FocusHandle, IntoElement, KeyDownEvent, Render,
+    SharedString, Task, Window, WindowOptions, div, prelude::*, px, rgb,
 };
 use sparrow_core::{CatalogStatus, ChannelGroupView, CoreError, GuideWindowChannel, Page};
 use sparrow_tv_guide::{
@@ -896,21 +896,27 @@ fn publish_diagnostics(screen: &GuideScreen, focused_dock: Option<u32>) {
 }
 
 impl GuideSurface {
-    fn reconcile_icons(&mut self, window: &Window) {
-        if self.activation.is_none() {
-            return;
-        }
-        if self.playback.fullscreen() {
-            self.icons.hide();
-            return;
-        }
-        let search_icons = guide_view::search_visible_icons(
+    fn render_search(&mut self, window: &Window) -> Option<Div> {
+        let (surface, search_icons) = guide_view::search_panel(
             window.viewport_size(),
-            self.search.state(),
-            self.search.term(),
-            self.search.focus(),
-            &self.search_viewport,
+            guide_view::SearchPanel {
+                state: self.search.state(),
+                display_term: self.search.term(),
+                focus: self.search.focus(),
+                editing: self
+                    .active_editor
+                    .is_some_and(|(_, target)| target == TextTarget::Search),
+                has_exclusions: self.search.has_exclusions(),
+                docked: self.playback.docked(),
+                families: self.screen.families(),
+                now: self.now.to_utc(),
+            },
+            &mut self.search_viewport,
+            &self.icons,
         );
+        if self.activation.is_none() {
+            return surface;
+        }
         let guide_visible = self.search.state().view() != SearchView::Desk;
         let preview = self
             .presented_preview
@@ -926,6 +932,7 @@ impl GuideSurface {
             self.screen.generation(),
             preview.into_iter().chain(search_icons).chain(guide_icons),
         );
+        surface
     }
 }
 
@@ -935,7 +942,6 @@ impl Render for GuideSurface {
             .set_surface_height(guide_view::surface_height(window.viewport_size()));
         self.update_playback_viewports(window);
         self.schedule_preview_frame(window, cx);
-        self.reconcile_icons(window);
         publish_diagnostics(&self.screen, self.playback.focused_dock_channel());
         *WORKFLOW_DIAGNOSTICS.lock().unwrap() = WorkflowDiagnostics {
             search: self.search.state().view(),
@@ -953,8 +959,10 @@ impl Render for GuideSurface {
             .on_key_down(cx.listener(Self::key));
         let player = self.playback.render(window, self.now.to_utc());
         if self.playback.fullscreen() {
+            self.icons.hide();
             return root.children(player);
         }
+        let search = self.render_search(window);
         root.child(guide_view::render(
             &self.screen,
             guide_view::GuideBand {
@@ -962,6 +970,7 @@ impl Render for GuideSurface {
                 preview: self.presented_preview.as_ref(),
                 description: self.description.as_ref(),
                 docked: self.playback.docked(),
+                inline_search: self.search.state().view() == SearchView::Inline,
                 focus: if self.playback.dock_focused() {
                     ScreenFocus::None
                 } else {
@@ -977,9 +986,11 @@ impl Render for GuideSurface {
             window.viewport_size(),
             &self.screen,
             &mut self.group_viewport,
+            self.active_editor
+                .is_some_and(|(_, target)| target == TextTarget::GroupFilter),
         ))
         .children(self.sources_sheet(window))
-        .children(self.search_panel(window))
+        .children(search)
         .when_some(self.feedback, |surface, message| {
             surface.child(
                 div()
