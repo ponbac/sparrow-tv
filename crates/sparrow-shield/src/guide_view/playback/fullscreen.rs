@@ -74,7 +74,12 @@ impl FullscreenMotion {
         let Some(flight) = &self.flight else {
             return self.target;
         };
-        let t = (now.duration_since(flight.start).as_secs_f32() / flight.seconds).min(1.);
+        let t = now.duration_since(flight.start).as_secs_f32() / flight.seconds;
+        // The late caption ramp can round just below one. Returning the exact
+        // endpoint lets frame() retire the transition and stop requesting draws.
+        if t >= 1. {
+            return self.target;
+        }
         let ease = 1. - (1. - t).powi(flight.power);
         let mix = |from, to, weight: f32| from * (1. - weight) + to * weight;
         let chrome = |from, early| {
