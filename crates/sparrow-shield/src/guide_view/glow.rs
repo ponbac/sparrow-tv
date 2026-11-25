@@ -4,10 +4,10 @@ use std::{cell::RefCell, rc::Rc, sync::Arc};
 use gpui::{Div, RenderImage, Rgba, canvas, prelude::*};
 use image::{Frame, RgbaImage};
 
+use super::Layout;
+
 const WIDTH: u32 = 96;
 const HEIGHT: u32 = 54;
-
-use super::Layout;
 
 #[derive(Clone, Default)]
 pub(super) struct Glow(Rc<RefCell<Option<Sprite>>>);

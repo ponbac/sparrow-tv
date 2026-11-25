@@ -576,6 +576,9 @@ private class ShieldPlaybackPlacement(
   }
 
   override fun place(parent: ViewGroup, playerView: PlayerView, viewport: NativePlaybackViewport) {
+    if (guide.width > 0 && guide.height > 0) {
+      (playerView.videoSurfaceView as SurfaceView).holder.setFixedSize(guide.width, guide.height)
+    }
     val x = guide.left + viewport.left
     val y = guide.top + viewport.top
     val current = playerView.layoutParams as FrameLayout.LayoutParams

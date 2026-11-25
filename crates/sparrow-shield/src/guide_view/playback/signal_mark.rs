@@ -42,7 +42,13 @@ pub(super) fn render(layout: Layout, playback: &PlaybackOverlay<'_>, focused: bo
             if playback.reduce_motion {
                 return steady(layout, frame, color).into_any_element();
             }
-            searching(layout, frame, color, period, id)
+            let animation = Animation::new(Duration::from_millis(period)).repeat();
+            let animation = if stage == PlaybackStage::Reconnecting {
+                animation.with_max_fps(24.)
+            } else {
+                animation
+            };
+            searching(layout, frame, color, animation, id)
         }
         PlaybackStage::Playing => {
             if let Some((start, outgoing)) = playback
@@ -132,20 +138,22 @@ fn arcs(
         .opacity(opacity)
 }
 
-fn searching(layout: Layout, frame: Div, color: u32, period: u64, id: &'static str) -> AnyElement {
+fn searching(
+    layout: Layout,
+    frame: Div,
+    color: u32,
+    animation: Animation,
+    id: &'static str,
+) -> AnyElement {
     frame
-        .with_animation(
-            id,
-            Animation::new(Duration::from_millis(period)).repeat(),
-            move |frame, t| {
-                let inner = pulse(t);
-                let outer = pulse((t + 0.8).fract());
-                frame
-                    .child(arcs(layout, INNER, color, 1., 0.32 + 0.68 * inner))
-                    .child(arcs(layout, OUTER, color, 1., 0.32 + 0.68 * outer))
-                    .child(dot(layout, color, 7.5 + 2.5 * inner))
-            },
-        )
+        .with_animation(id, animation, move |frame, t| {
+            let inner = pulse(t);
+            let outer = pulse((t + 0.8).fract());
+            frame
+                .child(arcs(layout, INNER, color, 1., 0.32 + 0.68 * inner))
+                .child(arcs(layout, OUTER, color, 1., 0.32 + 0.68 * outer))
+                .child(dot(layout, color, 7.5 + 2.5 * inner))
+        })
         .into_any_element()
 }
 

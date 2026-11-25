@@ -192,11 +192,14 @@ pub(super) fn field(
     if reduce_motion || stage == PlaybackStage::Failed {
         frame.child(draw(field, 0.))
     } else {
-        frame.child(field.with_animation(
-            "tuning-field",
-            Animation::new(Duration::from_millis(if hold { 1700 } else { 4800 })).repeat(),
-            draw,
-        ))
+        let animation =
+            Animation::new(Duration::from_millis(if hold { 1700 } else { 4800 })).repeat();
+        let animation = if stage == PlaybackStage::Reconnecting {
+            animation.with_max_fps(24.)
+        } else {
+            animation
+        };
+        frame.child(field.with_animation("tuning-field", animation, draw))
     }
 }
 

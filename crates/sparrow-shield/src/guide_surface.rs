@@ -225,7 +225,6 @@ impl GuideSurface {
                 if view
                     .update(cx, |view, cx| {
                         if view.icons.apply(batch, cx) {
-                            view.sections.icons_changed();
                             cx.notify();
                         }
                     })
@@ -241,7 +240,6 @@ impl GuideSurface {
                 let preferences = variants.borrow_and_update().clone();
                 if view
                     .update(cx, |view, cx| {
-                        view.sections.catalog_changed();
                         view.screen.set_variant_preferences(preferences);
                         view.sync_search_preferences(cx);
                         view.sync_view(cx);
@@ -370,7 +368,6 @@ impl GuideSurface {
                 self.loaded_exclusions = true;
                 self.screen.set_group_exclusions(exclusions);
             }
-            self.sections.catalog_changed();
             self.status_revision = Some(revision);
             self.screen.catalog_status(status);
             self.setup_catalog(status, cx);
@@ -846,7 +843,6 @@ impl GuideSurface {
             ReadResult::Guide(request, result) => self.screen.guide_completed(request, result),
         };
         if update != PageUpdate::Superseded {
-            self.sections.catalog_changed();
             self.sync_view(cx);
         }
     }
@@ -918,7 +914,6 @@ impl GuideSurface {
         selection: Option<guide_view::PreviewSelection>,
         cx: &Context<Self>,
     ) {
-        self.sections.preview_changed();
         self.presented_preview = selection;
         let key = self
             .desired_preview
@@ -1209,12 +1204,17 @@ impl Render for GuideSurface {
         let glow = self
             .playback
             .ambient
-            .layer(window.viewport_size(), picture, cx.reduce_motion());
-        if frame.fullscreen >= 1. {
-            self.arrival.leave();
-            self.icons.hide();
+            .layer(window, picture, cx.reduce_motion());
+        let opacity = (1. - frame.fullscreen * 1.45).max(0.);
+        if opacity == 0. {
+            if frame.fullscreen >= 1. {
+                self.arrival.leave();
+                self.icons.hide();
+            }
             return root
-                .when(frame.band > 0., |root| root.child(glow))
+                .when(frame.fullscreen < 1. || frame.band > 0., |root| {
+                    root.child(glow())
+                })
                 .children(player);
         }
         let viewport = window.viewport_size();
@@ -1254,22 +1254,28 @@ impl Render for GuideSurface {
         );
         let guide = self.sections.guide(
             &self.screen,
-            self.playback.dock_focused(),
-            selected,
-            self.search.state().view() == SearchView::Inline,
-            self.description.clone(),
-            choice,
+            self.presented_preview.as_ref(),
+            self.description.as_ref(),
+            &self.icons,
+            sections::GuideFrame {
+                viewport,
+                layout: guide_view::Layout::for_guide(viewport, choice),
+                minute: minute.sample(),
+                wave,
+                slide,
+                docked: selected,
+                inline_search: self.search.state().view() == SearchView::Inline,
+                band_focus: if self.playback.dock_focused() {
+                    ScreenFocus::None
+                } else {
+                    self.screen.focus()
+                },
+            },
             minute,
-            self.minute_tick
-                .as_ref()
-                .is_some_and(guide_view::MinuteTick::visible),
-            (wave, slide),
-            viewport,
         );
-        let opacity = (1. - frame.fullscreen * 1.45).max(0.);
-        let mut glow = Some(glow);
+
         root.child(backdrop.opacity(wave.backdrop_opacity()))
-            .when(frame.fullscreen == 0., |root| root.children(glow.take()))
+            .child(glow())
             .child(guide)
             .when(frame.fullscreen > 0., |root| {
                 root.child(
@@ -1279,7 +1285,7 @@ impl Render for GuideSurface {
                         .bg(rgb(guide_view::INK))
                         .opacity(1. - opacity),
                 )
-                .children(glow)
+                .child(glow().opacity(1. - opacity))
             })
             .children(self.arrival.landing(viewport, wave))
             .children(player)

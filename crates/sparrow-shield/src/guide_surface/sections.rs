@@ -21,28 +21,29 @@ impl Render for SectionView {
         let section = self
             .owner
             .update(cx, |owner, cx| {
-                let layout = Layout::for_guide(window.viewport_size(), owner.backdrop());
-                let (wave, slide) = owner.sections.motion;
-                let minute = guide_view::MinuteFrame::new(
-                    owner.now,
-                    owner.minute_tick.as_ref(),
-                    !cx.reduce_motion(),
-                    window,
-                );
+                let frame = owner
+                    .sections
+                    .frame
+                    .expect("Guide frame set before children render");
+                let layout = frame.layout;
+                let wave = frame.wave;
+                let slide = frame.slide;
+                let minute = frame.minute.frame(owner.minute_tick.as_ref());
                 let section = match self.section {
                     Section::Band => guide_view::band::render(
                         layout,
                         guide_view::GuideBand {
                             minute,
-                            preview: owner.presented_preview.as_ref(),
+                            preview: owner
+                                .sections
+                                .band
+                                .key
+                                .as_ref()
+                                .and_then(|key| key.preview.as_ref()),
                             description: owner.description.as_ref(),
-                            docked: owner.playback.docked() || owner.playback.fullscreen(),
-                            inline_search: owner.search.state().view() == SearchView::Inline,
-                            focus: if owner.playback.dock_focused() {
-                                ScreenFocus::None
-                            } else {
-                                owner.screen.focus()
-                            },
+                            docked: frame.docked,
+                            inline_search: frame.inline_search,
+                            focus: frame.band_focus,
                         },
                         &owner.icons,
                         wave,
@@ -145,7 +146,7 @@ struct BandInputs {
     docked: bool,
     inline_search: bool,
     translucent: bool,
-    preview: u64,
+    preview: Option<guide_view::PreviewSelection>,
     description: Option<SharedString>,
     now: i64,
     icons: u64,
@@ -158,7 +159,6 @@ struct LaneInputs {
     focus: Option<LaneFocus>,
     translucent: bool,
     catalog: u64,
-    groups: usize,
 }
 
 #[derive(PartialEq)]
@@ -171,20 +171,28 @@ struct BoardInputs {
     catalog: u64,
     page: Option<PageStatus>,
     notice: Option<sparrow_tv_guide::guide_screen::ScreenNotice>,
-    families: usize,
     now: i64,
     axis: i64,
     icons: u64,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct GuideFrame {
+    pub viewport: gpui::Size<gpui::Pixels>,
+    pub layout: Layout,
+    pub minute: guide_view::MinuteSample,
+    pub wave: Wave,
+    pub slide: SlideFrame,
+    pub docked: bool,
+    pub inline_search: bool,
+    pub band_focus: ScreenFocus,
 }
 
 pub(super) struct Sections {
     band: Cached<BandInputs>,
     lane: Cached<LaneInputs>,
     board: Cached<BoardInputs>,
-    motion: (Wave, SlideFrame),
-    catalog_revision: u64,
-    icon_revision: u64,
-    preview_revision: u64,
+    frame: Option<GuideFrame>,
 }
 
 impl Sections {
@@ -193,47 +201,38 @@ impl Sections {
             band: Cached::new(Section::Band, cx),
             lane: Cached::new(Section::Lane, cx),
             board: Cached::new(Section::Board, cx),
-            motion: (Wave::REST, SlideFrame::SETTLED),
-            catalog_revision: 0,
-            icon_revision: 0,
-            preview_revision: 0,
+            frame: None,
         }
     }
 }
 
 impl Sections {
-    pub(super) fn icons_changed(&mut self) {
-        self.icon_revision = self.icon_revision.wrapping_add(1);
-    }
-    pub(super) fn catalog_changed(&mut self) {
-        self.catalog_revision = self.catalog_revision.wrapping_add(1);
-    }
-    pub(super) fn preview_changed(&mut self) {
-        self.preview_revision = self.preview_revision.wrapping_add(1);
-    }
-
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn guide(
         &mut self,
         screen: &GuideScreen,
-        dock_focused: bool,
-        docked: bool,
-        inline_search: bool,
-        description: Option<SharedString>,
-        choice: sparrow_installed_catalog::GuideBackdrop,
-        minute: guide_view::MinuteFrame<'_>,
-        ticking: bool,
-        (wave, slide): (Wave, SlideFrame),
-        viewport: gpui::Size<gpui::Pixels>,
+        preview: Option<&guide_view::PreviewSelection>,
+        description: Option<&SharedString>,
+        icons: &ChannelIcons,
+        frame: GuideFrame,
+        minute: guide_view::MinuteFrame,
     ) -> Div {
-        self.motion = (wave, slide);
-        let layout = Layout::for_guide(viewport, choice);
-        let translucent = choice != sparrow_installed_catalog::GuideBackdrop::Flat;
+        self.frame = Some(frame);
+        let GuideFrame {
+            viewport,
+            layout,
+            wave,
+            slide,
+            docked,
+            inline_search,
+            ..
+        } = frame;
+        let ticking = minute.ticking();
+        let translucent = layout.translucent;
         let arriving = wave != Wave::REST;
         let sliding = slide != SlideFrame::SETTLED;
         let focus = screen.focus();
-        let toolbar = match focus {
-            ScreenFocus::Toolbar(t) if !dock_focused => Some(t),
+        let toolbar = match frame.band_focus {
+            ScreenFocus::Toolbar(t) => Some(t),
             _ => None,
         };
         let lane = match focus {
@@ -251,10 +250,10 @@ impl Sections {
                 docked,
                 inline_search,
                 translucent,
-                preview: self.preview_revision,
-                description,
+                preview: preview.cloned(),
+                description: description.cloned(),
                 now,
-                icons: self.icon_revision,
+                icons: icons.revision(),
             },
             arriving || ticking,
             viewport,
@@ -265,8 +264,7 @@ impl Sections {
                 selected: screen.selected_lane(),
                 focus: lane,
                 translucent,
-                catalog: self.catalog_revision,
-                groups: screen.groups().len(),
+                catalog: screen.content_revision(),
             },
             arriving || sliding,
             viewport,
@@ -278,13 +276,12 @@ impl Sections {
                 selected: screen.selected_lane(),
                 scroll: screen.scroll_offset(),
                 translucent,
-                catalog: self.catalog_revision,
+                catalog: screen.content_revision(),
                 page: screen.page_status(),
                 notice: screen.notice(),
-                families: screen.families().len(),
                 now,
                 axis: screen.timeline().map_or(0, |t| t.starts_at().timestamp()),
-                icons: self.icon_revision,
+                icons: icons.revision(),
             },
             arriving || sliding || ticking,
             viewport,

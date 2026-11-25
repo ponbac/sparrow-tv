@@ -23,6 +23,7 @@ const NOTIFICATION_BATCH: Duration = Duration::from_millis(24);
 
 /// Owns decoded images and outstanding requests for one Guide window.
 pub(super) struct ChannelIcons {
+    revision: u64,
     generation: Option<CatalogGeneration>,
     cache: IconCache<IconImage>,
     requests: HashMap<RequestId, AbortOnDrop>,
@@ -140,6 +141,7 @@ impl ChannelIcons {
         let (wakeup, wakeups) = watch::channel(Wakeup::default());
         (
             Self {
+                revision: 0,
                 generation: None,
                 cache: IconCache::default(),
                 requests: HashMap::new(),
@@ -152,6 +154,10 @@ impl ChannelIcons {
                 admission_timer: None,
             },
         )
+    }
+
+    pub(super) fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub(super) fn note_navigation(&mut self) {
@@ -172,6 +178,7 @@ impl ChannelIcons {
             let retired = self.cache.reset_generation();
             self.cancel(retired);
             self.generation = generation;
+            self.revision = self.revision.wrapping_add(1);
             self.publish_wakeup(Instant::now());
         }
     }
@@ -218,6 +225,9 @@ impl ChannelIcons {
             }
         }
         self.fill(now);
+        if changed {
+            self.revision = self.revision.wrapping_add(1);
+        }
         changed
     }
 

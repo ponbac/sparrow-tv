@@ -34,6 +34,8 @@ const STATUS_INTERVAL: Duration = Duration::from_millis(250);
 const START_TIMEOUT: Duration = Duration::from_secs(15);
 const STALL_TIMEOUT: Duration = Duration::from_secs(10);
 const EARLY_STALL: Duration = Duration::from_secs(20);
+const FIRST_STILL_DELAY: Duration = Duration::from_millis(825);
+const STILL_INTERVAL: Duration = Duration::from_secs(2);
 const STABLE_TIME: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
@@ -1089,7 +1091,17 @@ impl Owner {
             }
         };
         self.snapshot.status = Some(status);
-        self.status_at = Some(now + STATUS_INTERVAL);
+        // Align the status poll with the first still so it can sample just
+        // after the picture lands, independently of the watchdog cadence.
+        let next_poll = now + STATUS_INTERVAL;
+        self.status_at = Some(
+            self.session
+                .as_ref()
+                .and_then(|session| session.first_frame)
+                .map(|first| first + FIRST_STILL_DELAY)
+                .filter(|deadline| *deadline > now)
+                .map_or(next_poll, |deadline| deadline.min(next_poll)),
+        );
         match status.phase() {
             // A terminal sample can arrive before its exact callback. Leave
             // classification to that event or to the watchdog if it never arrives.
@@ -1107,23 +1119,29 @@ impl Owner {
             AndroidPlaybackPhase::Starting | AndroidPlaybackPhase::Playing => {
                 let visible = self.current_viewport().is_some();
                 let mut sample = false;
-                if let Some(session) = &mut self.session
-                    && status.decoded_frames() > session.decoded
-                {
+                if let Some(session) = &mut self.session {
+                    let advanced = status.decoded_frames() > session.decoded;
                     sample = visible
                         && self.snapshot.phase == Phase::Playing
-                        && status.phase() == AndroidPlaybackPhase::Playing
-                        && session.first_frame.is_some_and(|first| {
-                            now.saturating_duration_since(first) >= Duration::from_millis(1500)
-                        })
-                        && session.sampled_at.is_none_or(|last| {
-                            now.saturating_duration_since(last) >= Duration::from_secs(2)
-                        });
+                        && match session.sampled_at {
+                            // The first-picture callback already confirms a usable surface.
+                            // Media3 may batch its next decoded-frame count.
+                            None => session
+                                .first_frame
+                                .is_some_and(|first| now >= first + FIRST_STILL_DELAY),
+                            Some(last) => {
+                                status.phase() == AndroidPlaybackPhase::Playing
+                                    && advanced
+                                    && now >= last + STILL_INTERVAL
+                            }
+                        };
                     if sample {
                         session.sampled_at = Some(now);
                     }
-                    session.decoded = status.decoded_frames();
-                    session.last_frame = Some(now);
+                    if advanced {
+                        session.decoded = status.decoded_frames();
+                        session.last_frame = Some(now);
+                    }
                 }
                 if sample
                     && let Some(frame) = self.capture_frame(key).await

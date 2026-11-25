@@ -7,7 +7,7 @@ use sparrow_core::{ChannelQuality, GuideProgramme, GuideWindowChannel};
 use unicode_normalization::UnicodeNormalization;
 
 /// One Channel row and its adjacent Quality Variants in catalog order.
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct GuideFamily {
     variants: Arc<Vec<GuideWindowChannel>>,
 }

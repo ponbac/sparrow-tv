@@ -12,7 +12,7 @@ mod group_slide;
 mod groups;
 pub(super) mod lane;
 mod minute;
-pub(crate) use minute::{MinuteFrame, MinuteTick};
+pub(crate) use minute::{MinuteFrame, MinuteSample, MinuteTick};
 pub(super) mod playback;
 mod search_panel;
 mod setup;
@@ -70,7 +70,7 @@ const SAIRA_NUMBER: &str = "Sparrow Guide 110";
 
 #[derive(Clone, Copy)]
 pub(super) struct Layout {
-    translucent: bool,
+    pub(super) translucent: bool,
     scale: f32,
     height: f32,
 }
@@ -158,6 +158,7 @@ pub(super) struct GuideBand<'a> {
     pub(super) focus: ScreenFocus,
 }
 
+#[derive(Clone, Eq, PartialEq)]
 pub(super) struct PreviewSelection {
     pub(super) family: GuideFamily,
     cell: Option<usize>,

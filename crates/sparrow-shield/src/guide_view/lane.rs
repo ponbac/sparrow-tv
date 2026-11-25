@@ -42,28 +42,26 @@ pub(crate) struct LaneViewport {
     generation: Option<CatalogGeneration>,
     widths: std::collections::HashMap<(SharedString, Option<SharedString>), f32>,
     measured_scale: f32,
-    first: usize,
-    clipped: f32,
-    group_reveal: GroupReveal,
+    scroll: LaneScroll,
     ink: super::group_slide::GroupInk,
 }
 
-impl LaneViewport {
+#[derive(Default)]
+struct LaneScroll {
+    first: usize,
+    clipped: f32,
+    group_reveal: GroupReveal,
+}
+
+impl LaneScroll {
     fn update(
         &mut self,
-        generation: Option<CatalogGeneration>,
         selected: usize,
         focused: Option<usize>,
         count: usize,
         available: f32,
-        width: impl Fn(usize) -> f32,
+        width: impl FnMut(usize) -> f32,
     ) {
-        if self.generation != generation {
-            *self = Self {
-                generation,
-                ..Self::default()
-            };
-        }
         if self.first >= count {
             self.first = 0;
             self.clipped = 0.;
@@ -76,7 +74,13 @@ impl LaneViewport {
         }
     }
 
-    fn reveal(&mut self, index: usize, last: usize, available: f32, width: impl Fn(usize) -> f32) {
+    fn reveal(
+        &mut self,
+        index: usize,
+        last: usize,
+        available: f32,
+        mut width: impl FnMut(usize) -> f32,
+    ) {
         if index < self.first || (index == self.first && self.clipped > 0.) {
             self.first = index;
             self.clipped = 0.;
@@ -261,28 +265,30 @@ fn groups(
     let mut row = layout
         .rect(x, CONTROL_Y, available, CONTROL_HEIGHT + 16.)
         .overflow_hidden();
-    let mut widths = std::mem::take(&mut viewport.widths);
-    if viewport.generation != screen.generation() || viewport.measured_scale != layout.scale {
-        widths.clear();
+    if viewport.generation != screen.generation() {
+        *viewport = LaneViewport {
+            generation: screen.generation(),
+            ..Default::default()
+        };
     }
-    let widths = std::cell::RefCell::new(widths);
-    let measure_pill = |pill: &GroupPill| {
-        *widths
-            .borrow_mut()
+    if viewport.measured_scale != layout.scale {
+        viewport.widths.clear();
+        viewport.measured_scale = layout.scale;
+    }
+    let mut measure_pill = |pill: &GroupPill| {
+        *viewport
+            .widths
             .entry((pill.label.clone(), pill.count.clone()))
             .or_insert_with(|| pill.width(layout, window))
     };
-    viewport.update(
-        screen.generation(),
-        selected,
-        focused,
-        groups.len() + 1,
-        available,
-        |index| measure_pill(&pill(index)).min(available),
-    );
-    let mut left = -viewport.clipped;
+    viewport
+        .scroll
+        .update(selected, focused, groups.len() + 1, available, |index| {
+            measure_pill(&pill(index)).min(available)
+        });
+    let mut left = -viewport.scroll.clipped;
     let mut pills = Vec::new();
-    for index in viewport.first..=groups.len() {
+    for index in viewport.scroll.first..=groups.len() {
         let pill = pill(index);
         let content_width = measure_pill(&pill);
         let width = content_width.min(available);
@@ -290,7 +296,7 @@ fn groups(
             wave.enter(
                 layout,
                 rect,
-                118. + 20. * (index - viewport.first) as f32,
+                118. + 20. * (index - viewport.scroll.first) as f32,
                 0.,
                 16.,
             )
@@ -316,8 +322,6 @@ fn groups(
             break;
         }
     }
-    viewport.widths = widths.into_inner();
-    viewport.measured_scale = layout.scale;
     row.children(pills)
 }
 
@@ -424,28 +428,28 @@ fn measure(layout: Layout, window: &Window, label: &SharedString, size: f32, wei
 
 #[cfg(test)]
 mod tests {
-    use super::{GROUP_GAP, LaneViewport};
+    use super::{GROUP_GAP, LaneScroll};
 
     #[test]
     fn horizontal_lane_reveals_the_selected_group_then_keeps_the_focused_group_visible() {
-        let mut viewport = LaneViewport::default();
+        let mut viewport = LaneScroll::default();
         let width = |_| 80.;
         let available = 256.;
         let scroll =
-            |viewport: &LaneViewport| viewport.first as f32 * (80. + GROUP_GAP) + viewport.clipped;
+            |viewport: &LaneScroll| viewport.first as f32 * (80. + GROUP_GAP) + viewport.clipped;
 
-        viewport.update(None, 12, None, 20, available, width);
+        viewport.update(12, None, 20, available, width);
         assert_eq!(scroll(&viewport), 880.);
-        viewport.update(None, 12, Some(11), 20, available, width);
+        viewport.update(12, Some(11), 20, available, width);
         assert_eq!(scroll(&viewport), 880.);
 
-        viewport.update(None, 12, Some(16), 20, available, width);
+        viewport.update(12, Some(16), 20, available, width);
         assert_eq!(scroll(&viewport), 1216.);
-        viewport.update(None, 12, Some(16), 21, available, width);
+        viewport.update(12, Some(16), 21, available, width);
         assert_eq!(scroll(&viewport), 1216.);
-        viewport.update(None, 12, None, 21, available, width);
+        viewport.update(12, None, 21, available, width);
         assert_eq!(scroll(&viewport), 1216.);
-        viewport.update(None, 12, None, 22, available, width);
+        viewport.update(12, None, 22, available, width);
         assert_eq!(scroll(&viewport), 960.);
     }
 }

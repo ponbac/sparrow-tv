@@ -79,6 +79,25 @@ pub(crate) struct MinuteFrame<'a> {
     motion: bool,
 }
 
+/// A single clock reading shared by all cached sections in this draw.
+#[derive(Clone, Copy)]
+pub(crate) struct MinuteSample {
+    now: DateTime<FixedOffset>,
+    seconds: f32,
+    motion: bool,
+}
+
+impl MinuteSample {
+    pub(crate) fn frame(self, tick: Option<&MinuteTick>) -> MinuteFrame<'_> {
+        MinuteFrame {
+            now: self.now,
+            seconds: self.seconds,
+            motion: self.motion,
+            tick,
+        }
+    }
+}
+
 fn ease_out(t: f32) -> f32 {
     1. - (1. - t).powi(3)
 }
@@ -108,6 +127,18 @@ impl<'a> MinuteFrame<'a> {
             tick,
             seconds,
             motion,
+        }
+    }
+
+    pub(crate) fn ticking(self) -> bool {
+        self.tick.is_some_and(MinuteTick::visible)
+    }
+
+    pub(crate) fn sample(self) -> MinuteSample {
+        MinuteSample {
+            now: self.now,
+            seconds: self.seconds,
+            motion: self.motion,
         }
     }
 
