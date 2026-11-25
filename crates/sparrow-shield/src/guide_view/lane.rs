@@ -273,24 +273,27 @@ fn groups(
         let pill = pill(index);
         let content_width = pill.width(layout, window);
         let width = content_width.min(available);
+        let enter = |rect| {
+            wave.enter(
+                layout,
+                rect,
+                118. + 20. * (index - viewport.first) as f32,
+                0.,
+                16.,
+            )
+        };
         if selected == index {
             let [x, w] = viewport.ink.bounds(selected, [left, width], slide);
-            row = row.child(super::group_slide::GroupInk::pill(layout.rect(
+            row = row.child(enter(super::group_slide::GroupInk::pill(layout.rect(
                 x,
                 0.,
                 w,
                 CONTROL_HEIGHT,
-            )));
+            ))));
         }
         pills.push(pill.render(
             layout,
-            wave.enter(
-                layout,
-                layout.rect(left, 0., width, CONTROL_HEIGHT),
-                118. + 20. * (index - viewport.first) as f32,
-                0.,
-                16.,
-            ),
+            enter(layout.rect(left, 0., width, CONTROL_HEIGHT)),
             selected == index,
             focused == Some(index),
             content_width > available,
