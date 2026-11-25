@@ -9,8 +9,8 @@ use sparrow_tv_guide::{
 };
 
 use super::super::{
-    CELL, CELL_ELAPSED, DIM, ICE, ICE_ELAPSED, Layout, ON_ICE, ON_ICE_DIM, SAIRA, TEXT, clock_time,
-    programme_title,
+    CELL, CELL_ELAPSED, DIM, ICE, ICE_ELAPSED, Layout, ON_ICE, ON_ICE_DIM, SAIRA, TEXT, WASH,
+    clock_time, programme_title,
 };
 use super::{RIGHT_FADE_WIDTH, TRACK_WIDTH, TimelineFrame};
 
@@ -19,7 +19,6 @@ const CELL_HEIGHT: f32 = TIMELINE_ROW_HEIGHT - 8.;
 const INSET_Y: f32 = 4.;
 const CLIP_POINT: f32 = 12.;
 const CORNER_RADIUS: f32 = 8.;
-const WASH: u32 = 0x243858;
 
 fn geometry(
     placement: ProgrammePlacement,

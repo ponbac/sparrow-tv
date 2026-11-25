@@ -46,6 +46,7 @@ const CARD_GAP: f32 = 11.;
 pub(super) const INK: u32 = 0x0a111e;
 const PANEL: u32 = 0x0f1828;
 const CELL: u32 = 0x131d30;
+const WASH: u32 = 0x243858;
 const CELL_ELAPSED: u32 = 0x1a2842;
 const PLATE: u32 = 0x22324f;
 const FOCUSED_PLATE: u32 = 0x39637a;
