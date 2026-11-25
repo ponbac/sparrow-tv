@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 336 404">
+  <defs>
+    <radialGradient id="flare" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="1" gradientTransform="translate(336 0) scale(403.2 363.6)">
+      <stop offset="0" stop-color="white" stop-opacity=".14"/>
+      <stop offset=".6" stop-color="white" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="336" height="404" rx="8" fill="url(#flare)"/>
+</svg>

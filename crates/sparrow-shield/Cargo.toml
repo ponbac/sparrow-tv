@@ -13,13 +13,20 @@ fixture = ["dep:reqwest"]
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6", features = ["native-activity"] }
 android_logger = "0.15"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 gpui = { package = "gpui-pre", version = "=0.3.8", default-features = false }
 gpui-mobile = { package = "gpui-pre-mobile", git = "https://github.com/longbridge/gpui-mobile", rev = "f9fe5a76f0e05ed8e5725ba692d5406bea168ac9", default-features = false }
+image = { version = "0.25.10", default-features = false }
 jni = "0.22"
 ndk = { version = "0.9", features = ["nativewindow"] }
 log = "0.4"
 reqwest = { version = "0.13.4", optional = true }
 rustls-platform-verifier = "=0.7.0"
+sparrow-channel-icons = { path = "../sparrow-channel-icons" }
+sparrow-bounded-blocking = { path = "../sparrow-bounded-blocking" }
 sparrow-core = { path = "../sparrow-core" }
 sparrow-installed-catalog = { path = "../sparrow-installed-catalog" }
+sparrow-installed-playback = { path = "../sparrow-installed-playback" }
+sparrow-source-http = { path = "../sparrow-source-http" }
+sparrow-tv-guide = { path = "../sparrow-tv-guide" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }

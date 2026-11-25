@@ -5,14 +5,11 @@ use sparrow_installed_catalog::CatalogStartupError;
 mod agent_control;
 mod android_lifecycle;
 mod android_playback;
-mod audio_preferences;
 mod ipc;
-mod playback;
 #[cfg(all(target_os = "linux", feature = "linux-playback-lab"))]
 mod playback_lab;
 mod runtime;
 mod screen_wake;
-mod selected_transport_stream;
 
 /// Runs the installed Sparrow shell.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -353,12 +350,13 @@ fn dispatch_lifecycle_signal(app: &tauri::AppHandle, signal: sparrow_core::Lifec
         return;
     };
     let app = app.clone();
-    let dispatch = slot.dispatch_lifecycle(signal, move |event| {
-        let _ = app.emit("sparrow://playback-lifecycle", event);
-    });
-    tauri::async_runtime::spawn(async move {
-        let _ = dispatch.await;
-    });
+    drop(slot.dispatch_lifecycle(
+        tauri::async_runtime::handle().inner(),
+        signal,
+        move |event| {
+            let _ = app.emit("sparrow://playback-lifecycle", event);
+        },
+    ));
 }
 
 #[cfg(all(test, target_os = "linux"))]

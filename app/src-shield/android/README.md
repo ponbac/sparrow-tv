@@ -1,6 +1,6 @@
 # Shield development APK
 
-The Shield host opens the installed Channel Catalog and shows catalog readiness on a GPUI surface. The Now and Timeline screens follow in separate changes.
+The Shield development app opens the installed Channel Catalog and provides the Now and Timeline Guide, Channel and Programme Search, Channel Group visibility, and Source Configuration. Media3 presents Playback Sessions in the Guide or fullscreen. The development APK uses its own Android package and data directory.
 
 With Java 17, `ANDROID_HOME`, NDK 29 and the `aarch64-linux-android` Rust target available, run from the workspace root.
 
@@ -25,13 +25,28 @@ adb shell am broadcast -n xyz.ponbac.sparrow.shield/.FixtureReceiver \
 adb shell dumpsys activity xyz.ponbac.sparrow.shield/.ShieldActivity --sparrow-guide
 ```
 
-The Activity dump reports catalog phase, process-local generation changes, lifecycle, probe state, graphics backend, live GPUI windows, catalog subscriptions and panel focus. The fixture receiver requires Android’s `DUMP` permission. Launch the Activity before sending either command. Poll the dump until the seed and probe finish. A complete seed requires both a Channel Catalog and a validated EPG Source. Remove the reverse when the seed has settled.
+The Activity dump reports catalog phase, process-local generation changes, lifecycle, probe state, graphics backend, live GPUI windows, catalog subscriptions and Guide focus. The fixture receiver requires Android’s `DUMP` permission. Launch the Activity before sending either command. Poll the dump until the seed and probe finish. A complete seed requires both a Channel Catalog and a validated EPG Source. Keep the fixture reachable while testing playback of its synthetic streams. Remove the reverse for offline catalog tests.
 
 ```sh
 adb reverse --remove tcp:18108
 ```
 
-`initial_window_ms` records the first successful window open. `windows_opened` counts all successful opens in the process. Left and Right switch between catalog and graphics readiness. Home reattaches the host's surface, and Back followed by relaunch opens a new Activity over the same process catalog.
+`initial_window_ms` records the first successful window open. `windows_opened` counts all successful opens in the process. D-pad arrows move among the Toolbar, Channel Group lane, Now cards and Timeline cells. Center on the Now/Timeline control switches views. The Activity dump includes focus kind, Channel Number, first partially visible row, scroll offset in 1920-wide reference units and loaded family count. The `sparrow-shield-v3` snapshot also reports mode, focused Programme index and the Timeline’s pan in minutes. Home reattaches the host's surface, and Back followed by relaunch opens a new Activity over the same process catalog.
+
+Center on a Channel starts playback. A fresh Center press on the playing Channel opens fullscreen. Channel keys browse the visible catalog in Channel Number order. Back closes the editor or panel first, then leaves fullscreen, then closes the Activity. Home suspends playback when Android hides the Activity. The app resumes only a visibility-owned pause.
+
+The dump includes Search result counts, the hidden Channel Group count, panel state, Playback Session phase, Channel Number, fullscreen, and decoded frames. Source locations, Search terms and Channel names stay out of the dump.
+
+## Code map
+
+| Behavior | Source |
+| --- | --- |
+| Guide focus, paging, Search and group selection | [sparrow-tv-guide](../../../crates/sparrow-tv-guide) |
+| Source Configuration and durable Guide preferences | [sparrow-installed-catalog](../../../crates/sparrow-installed-catalog) |
+| Playback Session timers, recovery and transport | [sparrow-installed-playback](../../../crates/sparrow-installed-playback) |
+| Activity, GPUI layout and JNI glue | [sparrow-shield](../../../crates/sparrow-shield) |
+| Shared Media3 player, transport reader and audio focus | [Android playback](../../android-playback) |
+| Channel Icon fetch and decode bounds | [sparrow-channel-icons](../../../crates/sparrow-channel-icons) |
 
 Update the Gradle locks after an intentional dependency change.
 

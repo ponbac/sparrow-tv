@@ -58,40 +58,11 @@ impl SourceConfigurationStore {
     pub(crate) fn load(
         &self,
     ) -> Result<Option<StoredSourceConfiguration>, ConfigurationStoreError> {
-        let path = self.root.join(CONFIGURATION_FILE);
-        let metadata = match fs::symlink_metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(_) => return Err(ConfigurationStoreError::Unavailable),
+        let Some(bytes) =
+            read_private_file(&self.root.join(CONFIGURATION_FILE), MAX_CONFIGURATION_BYTES)?
+        else {
+            return Ok(None);
         };
-        validate_private_regular_file(&metadata)?;
-        if metadata.len() > MAX_CONFIGURATION_BYTES {
-            return Err(ConfigurationStoreError::Corrupt);
-        }
-
-        let mut file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(&path)
-            .map_err(|_| ConfigurationStoreError::Unavailable)?;
-        let opened_metadata = file
-            .metadata()
-            .map_err(|_| ConfigurationStoreError::Unavailable)?;
-        validate_private_regular_file(&opened_metadata)?;
-        if opened_metadata.len() > MAX_CONFIGURATION_BYTES {
-            return Err(ConfigurationStoreError::Corrupt);
-        }
-        let mut bytes = Vec::with_capacity(
-            usize::try_from(opened_metadata.len()).map_err(|_| ConfigurationStoreError::Corrupt)?,
-        );
-        Read::by_ref(&mut file)
-            .take(MAX_CONFIGURATION_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|_| ConfigurationStoreError::Unavailable)?;
-        if bytes.len() as u64 > MAX_CONFIGURATION_BYTES {
-            return Err(ConfigurationStoreError::Corrupt);
-        }
-
         let record: ConfigurationRecord =
             serde_json::from_slice(&bytes).map_err(|_| ConfigurationStoreError::Corrupt)?;
         if record.version != CONFIGURATION_VERSION
@@ -122,8 +93,6 @@ impl SourceConfigurationStore {
         {
             return Err(ConfigurationStoreError::Corrupt);
         }
-        ensure_private_directory(&self.root)?;
-
         let bytes = serde_json::to_vec(&ConfigurationRecord {
             version: CONFIGURATION_VERSION,
             m3u_location: configuration.m3u_location.clone(),
@@ -134,13 +103,9 @@ impl SourceConfigurationStore {
             return Err(ConfigurationStoreError::Corrupt);
         }
 
-        let pending = self.root.join(PENDING_FILE);
-        remove_abandoned_pending(&pending)?;
-        let result = write_and_activate(&self.root, &pending, &bytes);
-        if result.is_err() {
-            let _ = fs::remove_file(&pending);
-        }
-        result
+        let directory =
+            activate_private_file(&self.root, CONFIGURATION_FILE, PENDING_FILE, &bytes)?;
+        sync_private_directory(&directory)
     }
 }
 
@@ -152,11 +117,69 @@ struct ConfigurationRecord {
     epg_location: Option<String>,
 }
 
-fn write_and_activate(
+pub(crate) fn read_private_file(
+    path: &Path,
+    max_bytes: u64,
+) -> Result<Option<Vec<u8>>, ConfigurationStoreError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(ConfigurationStoreError::Unavailable),
+    };
+    validate_private_regular_file(&metadata)?;
+    if metadata.len() > max_bytes {
+        return Err(ConfigurationStoreError::Corrupt);
+    }
+
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|_| ConfigurationStoreError::Unavailable)?;
+    let opened_metadata = file
+        .metadata()
+        .map_err(|_| ConfigurationStoreError::Unavailable)?;
+    validate_private_regular_file(&opened_metadata)?;
+    if opened_metadata.len() > max_bytes {
+        return Err(ConfigurationStoreError::Corrupt);
+    }
+    let mut bytes = Vec::with_capacity(
+        usize::try_from(opened_metadata.len()).map_err(|_| ConfigurationStoreError::Corrupt)?,
+    );
+    Read::by_ref(&mut file)
+        .take(max_bytes + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ConfigurationStoreError::Unavailable)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(ConfigurationStoreError::Corrupt);
+    }
+    Ok(Some(bytes))
+}
+
+/// Returns the directory handle after the new record is active. A later
+/// directory sync failure does not undo the rename.
+pub(crate) fn activate_private_file(
     root: &Path,
-    pending: &Path,
+    active_name: &str,
+    pending_name: &str,
     bytes: &[u8],
-) -> Result<(), ConfigurationStoreError> {
+) -> Result<File, ConfigurationStoreError> {
+    ensure_private_directory(root)?;
+    let pending = root.join(pending_name);
+    remove_abandoned_pending(&pending)?;
+    let result = write_and_activate(&root.join(active_name), &pending, root, bytes);
+    if result.is_err() {
+        let _ = fs::remove_file(&pending);
+    }
+    result
+}
+
+fn write_and_activate(
+    active: &Path,
+    pending: &Path,
+    root: &Path,
+    bytes: &[u8],
+) -> Result<File, ConfigurationStoreError> {
     let mut file = OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -168,10 +191,21 @@ fn write_and_activate(
     file.sync_all().map_err(map_write_error)?;
     drop(file);
 
-    fs::rename(pending, root.join(CONFIGURATION_FILE)).map_err(map_write_error)?;
-    File::open(root)
-        .and_then(|directory| directory.sync_all())
+    let directory = open_private_directory(root)?;
+    fs::rename(pending, active).map_err(map_write_error)?;
+    Ok(directory)
+}
+
+pub(crate) fn open_private_directory(root: &Path) -> Result<File, ConfigurationStoreError> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_DIRECTORY)
+        .open(root)
         .map_err(map_write_error)
+}
+
+pub(crate) fn sync_private_directory(directory: &File) -> Result<(), ConfigurationStoreError> {
+    directory.sync_all().map_err(map_write_error)
 }
 
 fn remove_abandoned_pending(path: &Path) -> Result<(), ConfigurationStoreError> {

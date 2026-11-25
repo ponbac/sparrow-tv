@@ -1,16 +1,16 @@
-use std::{ops::Range, sync::Arc};
+use std::{collections::HashSet, ops::Range, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use url::Url;
 
 use crate::{
     domain::{
-        CHANNEL_ID_PREFIX, CatalogGeneration, ChannelDetails, ChannelGroupView, ChannelIcon,
-        ChannelId, ChannelQuality, ChannelQuery, ChannelSummary, ChannelVariant, CoreError,
-        CursorQueryHash, GuideProgramme, GuideWindowChannel, GuideWindowQuery, Page, PageLimit,
-        PageRequest, PageTextArena, ProgrammeSearchHit, ProgrammeSummary, ResolvedPlaybackSource,
-        ScheduleQuery, SearchRequest, SearchResults, SearchTerm, SecretPlaybackLocation,
-        SelectionPrefix, SourceConfiguration, TextSlot,
+        CHANNEL_ID_PREFIX, CatalogGeneration, ChannelDetails, ChannelDirection, ChannelFamily,
+        ChannelGroupView, ChannelIcon, ChannelId, ChannelQuality, ChannelQuery, ChannelSummary,
+        ChannelVariant, CoreError, CursorQueryHash, GuideProgramme, GuideWindowChannel,
+        GuideWindowQuery, Page, PageLimit, PageRequest, PageTextArena, ProgrammeSearchHit,
+        ProgrammeSummary, ResolvedPlaybackSource, ScheduleQuery, SearchRequest, SearchResults,
+        SearchTerm, SecretPlaybackLocation, SelectionPrefix, SourceConfiguration, TextSlot,
     },
     m3u::ParsedChannel,
     ports::{CatalogCacheMapping, SnapshotCandidate, SnapshotStore},
@@ -145,6 +145,55 @@ impl ChannelCatalog {
         )
     }
 
+    pub(crate) fn channel_number(&self, id: &ChannelId) -> Option<u32> {
+        let index = self.flat.channel_index_by_digest(&id.digest())?;
+        Some(self.flat.channels_hot()[index].number.get())
+    }
+
+    pub(crate) fn channel_family(&self, number: u32) -> Option<ChannelFamily> {
+        let index = self.flat.channel_index_by_number(number)?;
+        Some(self.project_channel_family(index))
+    }
+
+    pub(crate) fn adjacent_channel_family(
+        &self,
+        number: u32,
+        direction: ChannelDirection,
+        excluded_groups: &HashSet<String>,
+    ) -> Option<ChannelFamily> {
+        let anchor = self.flat.channel_index_by_number(number)?;
+        let current = self.flat.channel_family_range(anchor);
+        let mut index = match direction {
+            ChannelDirection::Previous => current.start.checked_sub(1)?,
+            ChannelDirection::Next => current.end,
+        };
+        let channels = self.flat.channels_hot();
+        while let Some(channel) = channels.get(index) {
+            let group_index = channel.group_index.get() as usize;
+            if !excluded_groups.contains(self.flat.group_name(group_index)) {
+                return Some(self.project_channel_family(index));
+            }
+
+            // Group records cover contiguous runs, so an excluded group costs
+            // one lookup regardless of how many Channels it contains.
+            let group = &self.flat.groups()[group_index];
+            index = match direction {
+                ChannelDirection::Previous => {
+                    (group.channel_start.get() as usize).checked_sub(1)?
+                }
+                ChannelDirection::Next => group.channel_end.get() as usize,
+            };
+        }
+        None
+    }
+
+    fn project_channel_family(&self, index: usize) -> ChannelFamily {
+        ChannelFamily::new(
+            self.generation(),
+            self.project_channels_range(self.flat.channel_family_range(index)),
+        )
+    }
+
     pub(crate) fn channel(&self, id: &ChannelId) -> Result<ChannelDetails, CoreError> {
         let index = self
             .flat
@@ -200,10 +249,10 @@ impl ChannelCatalog {
         )
     }
 
-    /// Selects the Programmes of one schedule that end after `from`, in start
-    /// order. A long Programme can outlast shorter ones that start after it,
-    /// so the selection is not a contiguous range and every candidate is
-    /// checked.
+    /// Selects a page prefix in start order, plus one match to detect continuation.
+    /// A long Programme can outlast shorter ones that start after it, so the
+    /// overlap index gives the first possible match but subsequent entries must
+    /// still be checked individually.
     fn programmes_ending_after(
         &self,
         schedule: &Range<usize>,
@@ -212,22 +261,20 @@ impl ChannelCatalog {
     ) -> SelectionPrefix {
         let first_possible = self.flat.first_possible_overlap(schedule, from);
         let entries = self.flat.schedule_entries();
+        let programmes = self.flat.matched_programmes_hot();
+        let from = (from.timestamp(), from.timestamp_subsec_nanos());
         let mut indices = Vec::with_capacity(prefix_len.min(schedule.end - first_possible));
-        let mut total_len = 0;
         for (offset, entry) in entries[first_possible..schedule.end].iter().enumerate() {
-            let index = first_possible + offset;
-            if self
-                .flat
-                .matched_programme_ends_at(entry.matched_prog_index.get() as usize)
-                > from
-            {
-                total_len += 1;
-                if indices.len() < prefix_len {
-                    indices.push(index);
+            let programme = &programmes[entry.matched_prog_index.get() as usize];
+            if (programme.ends_at_secs.get(), programme.ends_at_nanos.get()) > from {
+                if indices.len() == prefix_len {
+                    return SelectionPrefix::new(indices, prefix_len + 1);
                 }
+                indices.push(first_possible + offset);
             }
         }
-        SelectionPrefix::new(indices, total_len)
+        let match_count = indices.len();
+        SelectionPrefix::new(indices, match_count)
     }
 
     pub(crate) fn guide_window(

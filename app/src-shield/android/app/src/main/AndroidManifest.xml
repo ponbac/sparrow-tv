@@ -17,8 +17,10 @@
         <activity
             android:name=".ShieldActivity"
             android:configChanges="orientation|keyboardHidden|keyboard|navigation|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
+            android:enableOnBackInvokedCallback="true"
             android:exported="true"
-            android:launchMode="singleTask">
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustNothing|stateAlwaysHidden">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />

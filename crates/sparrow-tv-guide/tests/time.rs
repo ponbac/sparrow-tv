@@ -3,8 +3,9 @@ mod support;
 use chrono::{DateTime, FixedOffset, Offset, TimeDelta, TimeZone, Utc};
 use sparrow_core::{ChannelQuery, GuideProgramme, GuideWindowQuery, PageLimit, PageRequest};
 use sparrow_tv_guide::time::{
-    GuideWindow, ProgrammeFocus, ProgrammePlacement, ProgrammeStep, Timeline, elapsed_fraction,
-    minutes_left, next_after, programme_at,
+    GuideWindow, ProgrammeCellAppearance, ProgrammeCellContent, ProgrammeFocus, ProgrammePlacement,
+    ProgrammeStep, Timeline, elapsed_fraction, minutes_left, next_after, programme_at,
+    timeline_day_label,
 };
 
 #[test]
@@ -37,6 +38,30 @@ fn guide_window_advances_through_the_repeated_wall_clock_hour() {
         second_window.starts_at(),
         first_window.starts_at() + TimeDelta::hours(1)
     );
+}
+
+#[test]
+fn timeline_day_follows_local_midnight_and_the_offset_at_each_instant() {
+    let utc = |day, hour, minute| {
+        Utc.with_ymd_and_hms(2026, 11, day, hour, minute, 0)
+            .unwrap()
+    };
+    let daylight = FixedOffset::west_opt(4 * 3600).unwrap();
+    let standard = FixedOffset::west_opt(5 * 3600).unwrap();
+    let now = utc(1, 3, 45).with_timezone(&daylight);
+    for (visible, offset, label) in [
+        (utc(1, 3, 30), daylight, "Today"),
+        (utc(1, 4, 0), daylight, "Tomorrow"),
+        (utc(1, 6, 30), standard, "Tomorrow"),
+        // At this instant the previous offset would label it Monday, before midnight locally.
+        (utc(2, 4, 30), standard, "Tomorrow"),
+        (utc(2, 5, 0), standard, "Monday"),
+    ] {
+        assert_eq!(
+            timeline_day_label(visible.with_timezone(&offset), now),
+            label
+        );
+    }
 }
 
 #[tokio::test]
@@ -90,6 +115,7 @@ async fn timeline_steps_past_a_sliver_at_the_start_and_pans_to_later_cells() {
         Some(ProgrammePlacement {
             left_fraction: 0.0,
             width_fraction: 5.0 / 120.0,
+            full_width_fraction: 5.0 / 120.0,
             cut_at_start: true,
         })
     );
@@ -114,6 +140,7 @@ async fn timeline_steps_past_a_sliver_at_the_start_and_pans_to_later_cells() {
         Some(ProgrammePlacement {
             left_fraction: 0.75,
             width_fraction: 0.25,
+            full_width_fraction: 0.5,
             cut_at_start: false,
         })
     );
@@ -121,6 +148,77 @@ async fn timeline_steps_past_a_sliver_at_the_start_and_pans_to_later_cells() {
     timeline.reveal(&programmes[4]);
     assert_eq!(timeline.starts_at(), at(360));
     assert_eq!(timeline.ends_at(), at(480));
+}
+
+#[tokio::test]
+async fn timeline_clips_placement_but_keeps_the_actual_extent_and_elapsed_end() {
+    let programmes = load_schedule(&[
+        ("Left cut", -60, 60),
+        ("Right cut", 115, 180),
+        ("After the track", 120, 135),
+    ])
+    .await;
+    let timeline = Timeline::new(GuideWindow::at(at(0), Utc.fix(), false));
+    let left = &programmes[0];
+    let right = &programmes[1];
+    let after = &programmes[2];
+
+    assert_eq!(
+        timeline.placement(right),
+        Some(ProgrammePlacement {
+            left_fraction: 115.0 / 120.0,
+            width_fraction: 5.0 / 120.0,
+            full_width_fraction: 65.0 / 120.0,
+            cut_at_start: false,
+        })
+    );
+    assert_eq!(
+        timeline
+            .placement(right)
+            .unwrap()
+            .cell_appearance(1218., false),
+        Some(ProgrammeCellAppearance {
+            width: 653.75,
+            content: ProgrammeCellContent::Text,
+        })
+    );
+    assert_eq!(timeline.elapsed_fraction(left, at(30)), Some(0.5));
+    assert_eq!(timeline.elapsed_fraction(right, at(117)), Some(2.0 / 65.0));
+    assert_eq!(timeline.elapsed_fraction(right, at(0)), Some(0.0));
+    assert_eq!(timeline.elapsed_fraction(right, at(185)), Some(1.0));
+    assert_eq!(timeline.placement(after), None);
+    assert_eq!(timeline.elapsed_fraction(after, at(125)), None);
+}
+
+#[test]
+fn timeline_narrow_cells_draw_only_for_cut_tails_or_focus() {
+    use ProgrammeCellContent::{Chevron, Text};
+
+    // The six-unit gap makes 96 units of scheduled time the exact text cutoff.
+    let cases = [
+        (6., true, true, None),
+        (95.5, false, false, None),
+        (96., false, false, None),
+        (96., true, false, Some((90., Chevron))),
+        (96., false, true, Some((90., Chevron))),
+        (96.5, false, false, Some((90.5, Text))),
+    ];
+    for (scheduled_width, cut_at_start, focused, expected) in cases {
+        const TRACK_WIDTH: f32 = 192.;
+        let fraction = scheduled_width / f64::from(TRACK_WIDTH);
+        let placement = ProgrammePlacement {
+            left_fraction: 0.,
+            width_fraction: fraction,
+            full_width_fraction: fraction,
+            cut_at_start,
+        };
+
+        assert_eq!(
+            placement.cell_appearance(TRACK_WIDTH, focused),
+            expected.map(|(width, content)| ProgrammeCellAppearance { width, content }),
+            "scheduled_width={scheduled_width}, cut={cut_at_start}, focused={focused}",
+        );
+    }
 }
 
 #[tokio::test]
@@ -139,12 +237,17 @@ async fn clock_reanchor_keeps_the_visible_time_and_restores_focus_within_the_sam
     let second_bulletin = ProgrammeFocus::at(&old_row, 2).unwrap();
     timeline.reanchor(GuideWindow::at(at(30), Utc.fix(), false));
     assert_eq!(
+        timeline.exact_focus(&old_row[1..], &second_bulletin),
+        Some(1)
+    );
+    assert_eq!(
         timeline.restore_focus(&old_row[1..], &second_bulletin),
         Some(1)
     );
     assert_eq!(timeline.starts_at(), at(60));
 
     let expired = ProgrammeFocus::at(&programmes, 0).unwrap();
+    assert_eq!(timeline.exact_focus(&programmes, &expired), None);
     assert_eq!(timeline.restore_focus(&programmes, &expired), Some(1));
     assert_eq!(timeline.starts_at(), at(30));
     assert_eq!(timeline.restore_focus(&[], &expired), None);
@@ -155,15 +258,20 @@ fn at(minutes: i64) -> DateTime<Utc> {
 }
 
 async fn load_programmes() -> Vec<GuideProgramme> {
-    let m3u = "#EXTM3U\n#EXTINF:-1 tvg-id=\"test\",Test\nhttp://127.0.0.1:9/live\n";
-    let mut epg = "<tv><channel id=\"test\"><display-name>Test</display-name></channel>".to_owned();
-    for (title, start, end) in [
+    load_schedule(&[
         ("Lead-out", -55, 5),
         ("Feature", 5, 60),
         ("Bulletin", 65, 80),
         ("Afternoon", 150, 210),
         ("Far programme", 450, 470),
-    ] {
+    ])
+    .await
+}
+
+async fn load_schedule(slots: &[(&str, i64, i64)]) -> Vec<GuideProgramme> {
+    let m3u = "#EXTM3U\n#EXTINF:-1 tvg-id=\"test\",Test\nhttp://127.0.0.1:9/live\n";
+    let mut epg = "<tv><channel id=\"test\"><display-name>Test</display-name></channel>".to_owned();
+    for &(title, start, end) in slots {
         let start = at(start).format("%Y%m%d%H%M%S +0000");
         let end = at(end).format("%Y%m%d%H%M%S +0000");
         epg.push_str(&format!("<programme channel=\"test\" start=\"{start}\" stop=\"{end}\"><title>{title}</title></programme>"));

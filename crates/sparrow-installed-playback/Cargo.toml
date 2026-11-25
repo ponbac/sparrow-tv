@@ -1,0 +1,24 @@
+[package]
+name = "sparrow-installed-playback"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+blake3 = "1"
+bytes = "1"
+futures-util = "0.3"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sparrow-core = { path = "../sparrow-core" }
+sparrow-installed-catalog = { path = "../sparrow-installed-catalog" }
+sparrow-source-http = { path = "../sparrow-source-http" }
+thiserror = "2"
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
+
+[dev-dependencies]
+async-trait = "0.1"
+chrono = "0.4"
+sparrow-snapshot-store = { path = "../sparrow-snapshot-store" }
+tempfile = "3"

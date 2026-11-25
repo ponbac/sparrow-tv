@@ -883,6 +883,43 @@ impl ChannelSummary {
     }
 }
 
+/// Direction through visible families in Channel Catalog order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChannelDirection {
+    Previous,
+    Next,
+}
+
+/// One Channel Number and its full set of Channels from a single publication.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChannelFamily {
+    generation: CatalogGeneration,
+    variants: Arc<[ChannelSummary]>,
+}
+
+impl ChannelFamily {
+    pub(crate) fn new(generation: CatalogGeneration, variants: Arc<[ChannelSummary]>) -> Self {
+        debug_assert!(!variants.is_empty());
+        Self {
+            generation,
+            variants,
+        }
+    }
+
+    pub const fn generation(&self) -> CatalogGeneration {
+        self.generation
+    }
+
+    pub fn number(&self) -> u32 {
+        self.variants[0].number()
+    }
+
+    /// All Channels in the family, in Channel Catalog order.
+    pub fn variants(&self) -> &[ChannelSummary] {
+        &self.variants
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChannelDetails {
     id: ChannelId,
@@ -1115,21 +1152,25 @@ pub struct Page<T> {
     next: Option<PageCursor>,
 }
 
-/// A bounded selection prefix paired with its full unmaterialized length.
+/// A prefix of matching indices with the number of known matches. The count
+/// can be a lower bound once an extra match proves that a continuation exists.
 pub(crate) struct SelectionPrefix {
     indices: Vec<usize>,
-    total_len: usize,
+    available_len: usize,
 }
 
 impl SelectionPrefix {
-    pub(crate) fn new(indices: Vec<usize>, total_len: usize) -> Self {
-        debug_assert!(indices.len() <= total_len);
-        Self { indices, total_len }
+    pub(crate) fn new(indices: Vec<usize>, available_len: usize) -> Self {
+        debug_assert!(indices.len() <= available_len);
+        Self {
+            indices,
+            available_len,
+        }
     }
 
     #[cfg(test)]
-    pub(crate) const fn total_len(&self) -> usize {
-        self.total_len
+    pub(crate) const fn available_len(&self) -> usize {
+        self.available_len
     }
 }
 
@@ -1193,9 +1234,9 @@ impl<T> Page<T> {
         debug_assert!(selection.indices.iter().all(|index| *index < source_len));
         debug_assert_eq!(
             selection.indices.len(),
-            selection.total_len.min(required_prefix_len)
+            selection.available_len.min(required_prefix_len)
         );
-        let window = page_window(generation, selection.total_len, request, query)?;
+        let window = page_window(generation, selection.available_len, request, query)?;
         let items = project_indices(&selection.indices[window.range]);
 
         Ok(Self {

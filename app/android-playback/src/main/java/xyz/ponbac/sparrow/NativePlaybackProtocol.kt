@@ -1,0 +1,286 @@
+package xyz.ponbac.sparrow
+
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+
+internal const val ACCEPTANCE_SILENT_EXTRA = "xyz.ponbac.sparrow.ACCEPTANCE_SILENT"
+internal const val NATIVE_PLAYBACK_RELEASE_TIMEOUT_MS = 1_000L
+
+@ConsistentCopyVisibility
+internal data class NativePlaybackIdentity private constructor(
+  val sessionId: String,
+  val streamHandle: String,
+) {
+  companion object {
+    private val sessionPattern = Regex("^play1_[0-9a-f]{32}_[0-9a-f]+$")
+    private val streamPattern = Regex("^stream1_[0-9a-f]{16}$")
+
+    fun isValidSessionId(sessionId: String): Boolean =
+      sessionId.length <= 64 && sessionPattern.matches(sessionId)
+
+    fun parse(sessionId: String, streamHandle: String): NativePlaybackIdentity? {
+      if (
+        !isValidSessionId(sessionId) ||
+          !streamPattern.matches(streamHandle)
+      ) {
+        return null
+      }
+      return NativePlaybackIdentity(sessionId, streamHandle)
+    }
+  }
+}
+
+@ConsistentCopyVisibility
+internal data class NativePlaybackViewport private constructor(
+  val left: Int,
+  val top: Int,
+  val width: Int,
+  val height: Int,
+  val fullscreen: Boolean,
+) {
+  companion object {
+    private const val MAX_COORDINATE = 32_768
+    private const val MAX_EXTENT = 32_768
+
+    fun parse(
+      left: Int,
+      top: Int,
+      width: Int,
+      height: Int,
+      fullscreen: Boolean,
+    ): NativePlaybackViewport? {
+      if (
+        left !in 0..MAX_COORDINATE ||
+          top !in 0..MAX_COORDINATE ||
+          width !in 1..MAX_EXTENT ||
+          height !in 1..MAX_EXTENT
+      ) {
+        return null
+      }
+      return NativePlaybackViewport(left, top, width, height, fullscreen)
+    }
+  }
+}
+
+@ConsistentCopyVisibility
+internal data class NativePlaybackControls private constructor(
+  val volume: Float,
+  val muted: Boolean,
+  val paused: Boolean,
+) {
+  companion object {
+    fun parse(volume: Float, muted: Boolean, paused: Boolean): NativePlaybackControls? {
+      if (!volume.isFinite() || volume !in 0.0f..1.0f) {
+        return null
+      }
+      return NativePlaybackControls(volume, muted, paused)
+    }
+  }
+}
+
+internal fun NativePlaybackControls.withForcedSilence(forceSilent: Boolean): NativePlaybackControls =
+  if (forceSilent) {
+    checkNotNull(NativePlaybackControls.parse(0.0f, true, paused))
+  } else {
+    this
+  }
+
+/** What the player made of the audio tracks in the transport it was given. */
+internal enum class NativePlaybackAudioTracks {
+  UNKNOWN,
+  ABSENT,
+  UNDECODABLE,
+  SELECTED,
+}
+
+/** What the player is doing with the Audio Track, as the status reports it. */
+internal enum class NativePlaybackAudio(val wire: String) {
+  PENDING("pending"),
+  DEVICE_DECODER("device-decoder"),
+  BUNDLED_DECODER("bundled-decoder"),
+  UNDECODABLE("undecodable"),
+  ABSENT("absent"),
+}
+
+/** Every decoder of the bundled FFmpeg library names itself with this prefix. */
+internal const val BUNDLED_AUDIO_DECODER_PREFIX = "ffmpeg"
+
+/**
+ * A selected track is heard once a decoder has started on it, or once the
+ * audio output has taken it undecoded: an HDMI route that accepts the codec is
+ * handed the track as it is, and no decoder ever starts in the player. Until
+ * either happens it is pending. The decoder's name never leaves this function.
+ */
+internal fun nativePlaybackAudio(
+  tracks: NativePlaybackAudioTracks,
+  decoderName: String?,
+  passthrough: Boolean,
+): NativePlaybackAudio = when (tracks) {
+  NativePlaybackAudioTracks.UNKNOWN -> NativePlaybackAudio.PENDING
+  NativePlaybackAudioTracks.ABSENT -> NativePlaybackAudio.ABSENT
+  NativePlaybackAudioTracks.UNDECODABLE -> NativePlaybackAudio.UNDECODABLE
+  NativePlaybackAudioTracks.SELECTED -> when {
+    decoderName == null ->
+      if (passthrough) NativePlaybackAudio.DEVICE_DECODER else NativePlaybackAudio.PENDING
+    decoderName.startsWith(BUNDLED_AUDIO_DECODER_PREFIX) -> NativePlaybackAudio.BUNDLED_DECODER
+    else -> NativePlaybackAudio.DEVICE_DECODER
+  }
+}
+
+internal enum class NativePlaybackStartDecision {
+  CREATE,
+  UPDATE,
+  REJECT,
+}
+
+internal fun nativePlaybackStartDecision(
+  owned: NativePlaybackIdentity?,
+  requested: NativePlaybackIdentity,
+): NativePlaybackStartDecision = when {
+  owned == null -> NativePlaybackStartDecision.CREATE
+  owned == requested -> NativePlaybackStartDecision.UPDATE
+  else -> NativePlaybackStartDecision.REJECT
+}
+
+/**
+ * Main-thread lifecycle fence for presentation starts posted by JNI workers.
+ *
+ * A ticket is captured before a start is posted. Pausing invalidates every
+ * outstanding ticket, and resuming does not revive one, so a runnable delayed
+ * across even a quick pause/resume cycle still fails closed.
+ */
+internal class NativePlaybackLifecycleFence {
+  private val lock = Any()
+  private var revision = Any()
+  private var suspended = true
+
+  fun startTicket(): Ticket? = synchronized(lock) {
+    if (suspended) null else Ticket(revision)
+  }
+
+  fun permits(ticket: Ticket): Boolean = synchronized(lock) {
+    !suspended && ticket.revision === revision
+  }
+
+  fun suspend() = synchronized(lock) {
+    suspended = true
+    revision = Any()
+  }
+
+  fun resume() = synchronized(lock) {
+    revision = Any()
+    suspended = false
+  }
+
+  class Ticket internal constructor(internal val revision: Any)
+}
+
+/**
+ * Coordinates one posted UI-thread operation with its bounded caller wait.
+ *
+ * Cancellation and execution claim the request under the same lock. If the
+ * timeout wins before execution, the posted runnable becomes a no-op. If the
+ * operation was already running, its result is rolled back on the UI thread
+ * before the runnable returns. This keeps a timed-out native start from
+ * publishing an unowned player.
+ */
+internal class NativePlaybackMainThreadRequest<T>(
+  private val fallback: T,
+) {
+  private val lock = Any()
+  private val completed = CountDownLatch(1)
+  private var state = State.PENDING
+  private var result = fallback
+
+  fun execute(
+    operation: () -> T,
+    rollback: (T) -> Unit = {},
+  ) {
+    synchronized(lock) {
+      if (state != State.PENDING) {
+        completed.countDown()
+        return
+      }
+      state = State.RUNNING
+    }
+
+    val produced = try {
+      operation()
+    } catch (_: RuntimeException) {
+      fallback
+    }
+    val cancelled = synchronized(lock) {
+      if (state == State.CANCELLED) {
+        result = fallback
+        state = State.COMPLETED
+        true
+      } else {
+        result = produced
+        state = State.COMPLETED
+        false
+      }
+    }
+    if (cancelled) {
+      try {
+        rollback(produced)
+      } catch (_: RuntimeException) {
+        // Rollback is best-effort and must not strand the waiting caller.
+      }
+    }
+    completed.countDown()
+  }
+
+  fun await(timeout: Long, unit: TimeUnit): T {
+    try {
+      if (completed.await(timeout, unit)) {
+        return synchronized(lock) { result }
+      }
+    } catch (_: InterruptedException) {
+      Thread.currentThread().interrupt()
+    }
+
+    return synchronized(lock) {
+      if (state == State.COMPLETED) {
+        result
+      } else {
+        state = State.CANCELLED
+        fallback
+      }
+    }
+  }
+
+  private enum class State {
+    PENDING,
+    RUNNING,
+    CANCELLED,
+    COMPLETED,
+  }
+}
+
+/**
+ * The picture-in-picture window's shape for a video of this size, as a
+ * numerator and denominator. Android refuses ratios beyond 2.39:1 either way,
+ * so wider or taller pictures are letterboxed at that limit, and a picture of
+ * unknown size gets 16:9.
+ */
+internal fun pictureInPictureAspect(
+  width: Int,
+  height: Int,
+  pixelWidthHeightRatio: Float,
+): Pair<Int, Int> {
+  if (width <= 0 || height <= 0 || !(pixelWidthHeightRatio > 0f)) {
+    return 16 to 9
+  }
+  val ratio = width.toDouble() * pixelWidthHeightRatio / height
+  if (!ratio.isFinite()) {
+    return 16 to 9
+  }
+  val numerator = Math.round(ratio * ASPECT_DENOMINATOR).toInt()
+  return when {
+    numerator * 100L >= ASPECT_DENOMINATOR * 239L -> 239 to 100
+    numerator * 239L <= ASPECT_DENOMINATOR * 100L -> 100 to 239
+    else -> numerator to ASPECT_DENOMINATOR
+  }
+}
+
+private const val ASPECT_DENOMINATOR = 1_000

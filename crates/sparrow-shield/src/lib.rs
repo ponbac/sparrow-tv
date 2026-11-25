@@ -1,8 +1,15 @@
 //! Android entry points for the Sparrow Shield development host.
 #![cfg(target_os = "android")]
 
+mod activity;
+mod android_player;
 mod catalog;
-mod startup_view;
+mod channel_icons;
+mod guide_fonts;
+mod guide_surface;
+mod guide_view;
+mod playback;
+mod search_flow;
 
 use std::{
     collections::HashMap,
@@ -24,6 +31,8 @@ use tokio::sync::mpsc;
 
 static INITIALIZE_LOGS: Once = Once::new();
 static START_RENDERER: OnceLock<mpsc::UnboundedSender<host::HostId>> = OnceLock::new();
+static ACTIVITY_EVENTS: OnceLock<mpsc::UnboundedSender<(host::HostId, activity::Event)>> =
+    OnceLock::new();
 static DIAGNOSTICS: Mutex<RendererSnapshot> = Mutex::new(RendererSnapshot {
     renderer: None,
     graphics_failed: false,
@@ -32,7 +41,6 @@ static DIAGNOSTICS: Mutex<RendererSnapshot> = Mutex::new(RendererSnapshot {
     software: None,
     initial_window_ms: None,
     started: None,
-    focus: startup_view::Panel::Catalog,
 });
 
 #[derive(Clone, Copy)]
@@ -44,7 +52,6 @@ struct RendererSnapshot {
     software: Option<bool>,
     initial_window_ms: Option<u128>,
     started: Option<Instant>,
-    focus: startup_view::Panel,
 }
 
 #[derive(Default)]
@@ -69,6 +76,9 @@ fn init_logging() {
         // An unwind would kill the detached GPUI thread and leave its Activity alive.
         // Panic payloads can include transport context. Only log the Rust location.
         std::panic::set_hook(Box::new(|panic| {
+            if sparrow_channel_icons::is_contained_icon_decode_panic() {
+                return;
+            }
             if let Some(location) = panic.location() {
                 let file = Path::new(location.file())
                     .file_name()
@@ -83,23 +93,11 @@ fn init_logging() {
     });
 }
 
-fn renderer_status_label() -> &'static str {
-    let snapshot = *DIAGNOSTICS.lock().unwrap();
-    if snapshot.graphics_failed {
-        return "Graphics unavailable";
-    }
-    match snapshot.renderer {
-        Some(host::GpuOutcome::Vulkan) => "Vulkan renderer ready",
-        Some(host::GpuOutcome::Gl | host::GpuOutcome::GlAfterVulkanFailed) => {
-            "OpenGL renderer ready"
-        }
-        _ => "Starting graphics",
-    }
-}
-
 fn start_renderer() {
     START_RENDERER.get_or_init(|| {
         let (closed, mut destroyed) = mpsc::unbounded_channel();
+        let (activity_events, mut activity_updates) = mpsc::unbounded_channel();
+        let _ = ACTIVITY_EVENTS.set(activity_events);
         DIAGNOSTICS.lock().unwrap().started = Some(Instant::now());
         host::on_gpu_outcome(|outcome| {
             let mut diagnostics = DIAGNOSTICS.lock().unwrap();
@@ -109,8 +107,9 @@ fn start_renderer() {
             }
         });
         host::on_open_window(|id, cx| {
-            if let Some(window) = startup_view::open(cx) {
+            if let Some(window) = guide_surface::open(id, cx) {
                 cx.global_mut::<ActivityWindows>().0.insert(id, window);
+                activity::enable_key_routing(id);
                 let mut diagnostics = DIAGNOSTICS.lock().unwrap();
                 diagnostics.graphics_failed = false;
                 diagnostics.gpui_windows = cx.windows().len();
@@ -123,6 +122,7 @@ fn start_renderer() {
         host::start(move |cx| {
             // Android can destroy the last Activity and relaunch in this process.
             cx.set_quit_mode(QuitMode::Explicit);
+            guide_fonts::register(cx);
             cx.set_global(ActivityWindows::default());
             cx.spawn(async move |cx| {
                 while let Some(id) = destroyed.recv().await {
@@ -132,6 +132,23 @@ fn start_renderer() {
                         if let Some(window) = cx.global_mut::<ActivityWindows>().0.remove(&id) {
                             let _ = window.update(cx, |_, window, _| window.remove_window());
                             DIAGNOSTICS.lock().unwrap().gpui_windows = cx.windows().len();
+                        }
+                    });
+                }
+            })
+            .detach();
+            cx.spawn(async move |cx| {
+                while let Some((id, event)) = activity_updates.recv().await {
+                    cx.update(|cx| {
+                        let window = cx
+                            .global::<ActivityWindows>()
+                            .0
+                            .get(&id)
+                            .and_then(AnyWindowHandle::downcast::<guide_surface::GuideSurface>);
+                        if let Some(window) = window {
+                            let _ = window.update(cx, |view, window, cx| {
+                                view.activity_event(event, window, cx);
+                            });
                         }
                     });
                 }
@@ -183,6 +200,16 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeCatal
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeRegisterHost<'local>(
+    mut env: EnvUnowned<'local>,
+    owner: JObject<'local>,
+    id: i64,
+) {
+    env.with_env_no_catch(|env| activity::register(env, id as u64, &owner))
+        .resolve::<LogErrorAndDefault>();
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeSurface<'local>(
     env: EnvUnowned<'local>,
     _: JObject<'local>,
@@ -231,12 +258,195 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeDestr
     _: EnvUnowned,
     _: JObject,
     id: i64,
+    finishing: jboolean,
 ) {
     let id = id as host::HostId;
+    catalog::host_destroyed(id, finishing);
+    activity::unregister(id);
     host::host_destroyed(id);
     if let Some(closed) = START_RENDERER.get() {
         let _ = closed.send(id);
     }
+}
+
+fn enqueue_activity(id: i64, event: activity::Event) {
+    if let Some(events) = ACTIVITY_EVENTS.get() {
+        let _ = events.send((id as u64, event));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeBack(
+    _: EnvUnowned,
+    _: JObject,
+    id: i64,
+) {
+    enqueue_activity(id, activity::Event::Back);
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeHostKey(
+    _: EnvUnowned,
+    _: JObject,
+    id: i64,
+    code: i32,
+    action: i32,
+    modifiers: i32,
+    repeat: i32,
+) {
+    const ALT_CTRL_META: i32 = 0x02 | 0x1000 | 0x10000;
+    let guide_shortcut = matches!(code, 19..=22) && modifiers & ALT_CTRL_META != 0;
+    if action == 0 && !guide_shortcut {
+        enqueue_activity(id, activity::Event::Key { code, repeat });
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeEditorEvent<'local>(
+    mut env: EnvUnowned<'local>,
+    _: JObject<'local>,
+    id: i64,
+    generation: i64,
+    event: i32,
+    text: JString<'local>,
+) {
+    env.with_env_no_catch(|env| -> Result<(), Error> {
+        let edit = match event {
+            0 => activity::Edit::Changed(text.try_to_string(env)?),
+            1 => activity::Edit::Committed(text.try_to_string(env)?),
+            2 => activity::Edit::Cancelled,
+            3 => activity::Edit::Rejected,
+            _ => return Ok(()),
+        };
+        enqueue_activity(
+            id,
+            activity::Event::Edited {
+                generation: generation as u64,
+                edit,
+            },
+        );
+        Ok(())
+    })
+    .resolve::<LogErrorAndDefault>();
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeSourceDraftStatus(
+    _: EnvUnowned,
+    _: JObject,
+    id: i64,
+    session: i64,
+    attempt: i64,
+    status: i32,
+) {
+    enqueue_activity(
+        id,
+        activity::Event::Source {
+            session: session as u64,
+            update: activity::SourceEvent::DraftStatus {
+                attempt: attempt as u64,
+                status,
+            },
+        },
+    );
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeSourceClipboardResult(
+    _: EnvUnowned,
+    _: JObject,
+    id: i64,
+    session: i64,
+    attempt: i64,
+    copied: jboolean,
+) {
+    enqueue_activity(
+        id,
+        activity::Event::Source {
+            session: session as u64,
+            update: activity::SourceEvent::Copied {
+                attempt: attempt as u64,
+                copied,
+            },
+        },
+    );
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativePlaybackClipboardResult(
+    _: EnvUnowned,
+    _: JObject,
+    id: i64,
+    attempt: i64,
+    copied: jboolean,
+) {
+    enqueue_activity(
+        id,
+        activity::Event::PlaybackDiagnosticsCopied {
+            attempt: attempt as u64,
+            copied,
+        },
+    );
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeSourceFieldEvent(
+    _: EnvUnowned,
+    _: JObject,
+    id: i64,
+    session: i64,
+    generation: i64,
+    field: i32,
+    event: i32,
+    has_text: jboolean,
+) {
+    enqueue_activity(
+        id,
+        activity::Event::Source {
+            session: session as u64,
+            update: activity::SourceEvent::Field {
+                generation: generation as u64,
+                field,
+                event,
+                has_text,
+            },
+        },
+    );
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeSaveSourceDraft<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _: JObject<'local>,
+    id: i64,
+    session: i64,
+    attempt: i64,
+    m3u: JString<'local>,
+    epg: JString<'local>,
+) {
+    env.with_env_no_catch(|env| -> Result<(), Error> {
+        let m3u = m3u.try_to_string(env)?;
+        let epg = if epg.is_null() {
+            None
+        } else {
+            Some(epg.try_to_string(env)?)
+        };
+        enqueue_activity(
+            id,
+            activity::Event::Source {
+                session: session as u64,
+                update: activity::SourceEvent::Submit {
+                    attempt: attempt as u64,
+                    m3u,
+                    epg,
+                },
+            },
+        );
+        Ok(())
+    })
+    .resolve::<LogErrorAndDefault>();
 }
 
 #[unsafe(no_mangle)]
@@ -257,8 +467,11 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeSnaps
 ) -> jstring {
     let renderer = *DIAGNOSTICS.lock().unwrap();
     let (catalog, subscriptions) = catalog::diagnostics();
+    let guide = *guide_surface::GUIDE_DIAGNOSTICS.lock().unwrap();
+    let workflows = *guide_surface::WORKFLOW_DIAGNOSTICS.lock().unwrap();
+    let (playback, playback_channel, fullscreen, decoded_frames) = playback::diagnostics();
     let snapshot = format!(
-        "sparrow-shield-v1 phase={:?} generation_changes={} active={} refreshing={} https={:?} seed={:?} renderer={:?} graphics_failed={} software={:?} initial_window_ms={:?} focus={:?} gpui_windows={} windows_opened={} catalog_subscriptions={}",
+        "sparrow-shield-v3 phase={:?} generation_changes={} active={} refreshing={} https={:?} seed={:?} renderer={:?} graphics_failed={} software={:?} initial_window_ms={:?} gpui_windows={} windows_opened={} catalog_subscriptions={} mode={:?} focus={} channel={:?} group_index={:?} chip_index={:?} programme_index={:?} pan_minutes={:?} first_row={} scroll_offset_units={} loaded_families={} page_status={:?} search={:?} channel_results={} programme_results={} hidden_groups={} groups_open={} sources_open={} editor_open={} playback={} playback_channel={:?} fullscreen={} decoded_frames={}",
         catalog.phase,
         catalog.generation_changes,
         catalog.active,
@@ -269,10 +482,31 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeSnaps
         renderer.graphics_failed,
         renderer.software,
         renderer.initial_window_ms,
-        renderer.focus,
         renderer.gpui_windows,
         renderer.windows_opened,
         subscriptions,
+        guide.mode,
+        guide.focus,
+        guide.channel,
+        guide.group_index,
+        guide.chip_index,
+        guide.programme_index,
+        guide.pan_minutes,
+        guide.first_row,
+        guide.scroll_offset_units,
+        guide.loaded_families,
+        guide.page_status,
+        workflows.search,
+        workflows.channel_results,
+        workflows.programme_results,
+        workflows.hidden_groups,
+        workflows.groups_open,
+        workflows.sources_open,
+        workflows.editor_open,
+        playback,
+        playback_channel,
+        fullscreen,
+        decoded_frames,
     );
     env.with_env_no_catch(|env| Ok::<_, Error>(JString::from_str(env, snapshot)?.into_raw()))
         .resolve::<LogErrorAndDefault>()

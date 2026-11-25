@@ -1,26 +1,10 @@
 use std::sync::Arc;
 
-/// Narrow platform seam for the one Android screen-wake flag owned by playback.
-pub(crate) trait ScreenWake: Send + Sync + 'static {
-    /// Applies the latest playback-owned wake intent. Calls must be idempotent.
-    fn set_active(&self, active: bool) -> Result<(), ()>;
-}
-
-#[cfg(any(not(target_os = "android"), test))]
-#[derive(Default)]
-pub(crate) struct NoopScreenWake;
-
-#[cfg(any(not(target_os = "android"), test))]
-impl ScreenWake for NoopScreenWake {
-    fn set_active(&self, _active: bool) -> Result<(), ()> {
-        Ok(())
-    }
-}
-
-#[cfg(any(not(target_os = "android"), test))]
-pub(crate) fn noop_screen_wake() -> Arc<dyn ScreenWake> {
-    Arc::new(NoopScreenWake)
-}
+use sparrow_installed_playback::ScreenWake;
+#[cfg(target_os = "android")]
+use sparrow_installed_playback::ScreenWakeError;
+#[cfg(not(target_os = "android"))]
+use sparrow_installed_playback::noop_screen_wake;
 
 #[cfg(target_os = "android")]
 pub(crate) fn platform_screen_wake(_app: tauri::AppHandle) -> Arc<dyn ScreenWake> {
@@ -37,20 +21,20 @@ struct AndroidScreenWake;
 
 #[cfg(target_os = "android")]
 impl ScreenWake for AndroidScreenWake {
-    fn set_active(&self, active: bool) -> Result<(), ()> {
+    fn set_active(&self, active: bool) -> Result<(), ScreenWakeError> {
         set_android_keep_screen_on(active)
     }
 }
 
 #[cfg(target_os = "android")]
-fn set_android_keep_screen_on(active: bool) -> Result<(), ()> {
+fn set_android_keep_screen_on(active: bool) -> Result<(), ScreenWakeError> {
     use jni::{
         jni_sig, jni_str,
         objects::{Global, JObject, JValue},
     };
     use tauri::tao::platform::android::prelude::main_android_context;
 
-    let context = main_android_context().ok_or(())?;
+    let context = main_android_context().ok_or(ScreenWakeError)?;
     // SAFETY: Tao owns this process-lifetime JavaVM handle. `from_raw` creates
     // a non-owning Rust view and the closure does not outlive the attachment.
     let java_vm = unsafe { jni::JavaVM::from_raw(context.java_vm.cast()) };
@@ -70,6 +54,6 @@ fn set_android_keep_screen_on(active: bool) -> Result<(), ()> {
                 )?
                 .z()
         })
-        .map_err(|_| ())?;
-    applied.then_some(()).ok_or(())
+        .map_err(|_| ScreenWakeError)?;
+    applied.then_some(()).ok_or(ScreenWakeError)
 }

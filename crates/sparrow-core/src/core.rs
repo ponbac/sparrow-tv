@@ -1,6 +1,7 @@
 use arc_swap::ArcSwap;
 use futures_util::{FutureExt, StreamExt};
 use std::{
+    collections::HashSet,
     io::{self, BufRead, Read},
     ops::Deref,
     panic::{AssertUnwindSafe, resume_unwind},
@@ -14,12 +15,13 @@ use tokio::sync::{Mutex as AsyncMutex, Notify, broadcast, oneshot, watch};
 use crate::{
     catalog::ChannelCatalog,
     domain::{
-        CatalogStatus, ChannelDetails, ChannelGroupView, ChannelId, ChannelQuery, ChannelSummary,
-        CoreError, CoreEvent, GuideWindowChannel, GuideWindowQuery, LifecycleSignal, Page,
-        PageRequest, ProgrammeSummary, RefreshOutcome, RefreshReport, RefreshTrigger,
-        ResolvedPlaybackSource, SafeFailure, ScheduleQuery, SearchRequest, SearchResults,
-        SearchTerm, SnapshotOperation, SnapshotRecoveryDiagnostic, SnapshotRecoveryReason,
-        SourceAccessError, SourceConfiguration, SourceConfigurationInput, SourceKind, SourceState,
+        CatalogGeneration, CatalogStatus, ChannelDetails, ChannelDirection, ChannelFamily,
+        ChannelGroupView, ChannelId, ChannelQuery, ChannelSummary, CoreError, CoreEvent,
+        GuideWindowChannel, GuideWindowQuery, LifecycleSignal, Page, PageRequest, ProgrammeSummary,
+        RefreshOutcome, RefreshReport, RefreshTrigger, ResolvedPlaybackSource, SafeFailure,
+        ScheduleQuery, SearchRequest, SearchResults, SearchTerm, SnapshotOperation,
+        SnapshotRecoveryDiagnostic, SnapshotRecoveryReason, SourceAccessError, SourceConfiguration,
+        SourceConfigurationInput, SourceKind, SourceState,
     },
     m3u,
     ports::{
@@ -214,7 +216,7 @@ impl SparrowCore {
         if defer_epg {
             *core
                 .runtime
-                .pending_epg_restore
+                .deferred_epg_restore
                 .lock()
                 .expect("recovery state poisoned") =
                 core.runtime.ready_configuration(SourceKind::Epg);
@@ -274,6 +276,42 @@ impl CatalogAccess {
     /// names alphabetically.
     pub fn list_channels(&self, query: ChannelQuery) -> Result<Page<ChannelSummary>, CoreError> {
         self.query_catalog(|catalog| catalog.channels_page(&query))
+    }
+
+    /// Resolves a Channel Identifier to its Channel Number in the requested
+    /// publication. An absent Channel yields no number.
+    pub fn channel_number(
+        &self,
+        expected: CatalogGeneration,
+        id: &ChannelId,
+    ) -> Result<Option<u32>, CoreError> {
+        self.query_generation(expected, |catalog| catalog.channel_number(id))
+    }
+
+    /// Returns all Quality Variants for a Channel Number in the requested
+    /// publication. An absent number yields no family. A different published
+    /// generation yields [`CoreError::StaleCursor`].
+    pub fn channel_family(
+        &self,
+        expected: CatalogGeneration,
+        number: u32,
+    ) -> Result<Option<ChannelFamily>, CoreError> {
+        self.query_generation(expected, |catalog| catalog.channel_family(number))
+    }
+
+    /// Finds one adjacent visible family in whole-catalog order. The starting
+    /// family may itself be hidden. At either end there is no neighbor. A
+    /// different published generation yields [`CoreError::StaleCursor`].
+    pub fn adjacent_channel_family(
+        &self,
+        expected: CatalogGeneration,
+        number: u32,
+        direction: ChannelDirection,
+        excluded_groups: &HashSet<String>,
+    ) -> Result<Option<ChannelFamily>, CoreError> {
+        self.query_generation(expected, |catalog| {
+            catalog.adjacent_channel_family(number, direction, excluded_groups)
+        })
     }
 
     pub fn channel(&self, id: &ChannelId) -> Result<ChannelDetails, CoreError> {
@@ -401,6 +439,20 @@ impl CatalogAccess {
         }
     }
 
+    fn query_generation<T>(
+        &self,
+        expected: CatalogGeneration,
+        query: impl FnOnce(&ChannelCatalog) -> T,
+    ) -> Result<T, CoreError> {
+        self.query_catalog(|catalog| {
+            let current = catalog.generation();
+            if current != expected {
+                return Err(CoreError::StaleCursor { current });
+            }
+            Ok(query(catalog))
+        })
+    }
+
     fn query_catalog<T>(
         &self,
         query: impl FnOnce(&ChannelCatalog) -> Result<T, CoreError>,
@@ -482,7 +534,7 @@ struct CoreRuntime {
     shutdown: watch::Sender<bool>,
     events: broadcast::Sender<CoreEvent>,
     automation_started: AtomicBool,
-    pending_epg_restore: Mutex<Option<ConfigurationContext>>,
+    deferred_epg_restore: Mutex<Option<ConfigurationContext>>,
     cache_on_start: AtomicBool,
     cache_worker: Mutex<CacheWorkerState>,
     cache_revision: Arc<AtomicU64>,
@@ -728,7 +780,7 @@ impl CoreRuntime {
             shutdown: watch::channel(false).0,
             events,
             automation_started: AtomicBool::new(false),
-            pending_epg_restore: Mutex::new(None),
+            deferred_epg_restore: Mutex::new(None),
             cache_on_start: AtomicBool::new(false),
             cache_worker: Mutex::new(CacheWorkerState::default()),
             cache_revision: Arc::new(AtomicU64::new(0)),
@@ -1018,11 +1070,13 @@ impl CoreRuntime {
             self.queue_catalog_cache(false);
         }
         let pending = self
-            .pending_epg_restore
+            .deferred_epg_restore
             .lock()
             .expect("recovery state poisoned")
-            .take();
+            .clone();
         if let Some(context) = pending {
+            // M3U can refresh independently of the deferred EPG snapshot.
+            self.spawn_refresh(RefreshTrigger::Startup);
             let weak = Arc::downgrade(self);
             let adapters = self.adapters.clone();
             // Run deferred EPG recovery on an async task (never holding a
@@ -1035,6 +1089,10 @@ impl CoreRuntime {
                     recover_source(&adapters, source, EPG_DECODED_LIMIT, xmltv::parse, true).await;
                 if let Some(runtime) = weak.upgrade() {
                     runtime.restore_epg_snapshot(&context, recovered).await;
+                    *runtime
+                        .deferred_epg_restore
+                        .lock()
+                        .expect("recovery state poisoned") = None;
                     runtime.launch_automation();
                 }
             });
@@ -1286,7 +1344,18 @@ impl CoreRuntime {
         };
         let runtime = Arc::clone(self);
         handle.spawn(async move {
-            let _ = runtime.refresh(trigger).await;
+            // Deferred recovery owns the first EPG refresh so its saved
+            // freshness and validators are available. M3U work can proceed.
+            let restoring_epg = runtime
+                .deferred_epg_restore
+                .lock()
+                .expect("recovery state poisoned")
+                .is_some();
+            if restoring_epg {
+                let _ = runtime.refresh_source(SourceKind::M3u, trigger).await;
+            } else {
+                let _ = runtime.refresh(trigger).await;
+            }
         });
     }
 

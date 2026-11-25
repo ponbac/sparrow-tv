@@ -34,7 +34,8 @@ class MainActivity : TauriActivity() {
   private var pictureInPicture: PictureInPicturePlayback? = null
   private val nativePlayback by lazy {
     NativePlaybackController(
-      this,
+      activity = this,
+      placement = WebViewPlaybackPlacement(this),
       forceSilent =
         BuildConfig.DEBUG && intent?.getBooleanExtra(ACCEPTANCE_SILENT_EXTRA, false) == true,
     )

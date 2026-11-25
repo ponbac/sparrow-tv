@@ -768,6 +768,33 @@ fn structural_validator_rejects_short_tables_flag_mismatch_bad_urls_and_corrupt_
 }
 
 #[test]
+fn reopened_catalog_rejects_numbers_that_violate_the_family_index() {
+    use std::mem::offset_of;
+
+    let built = rich_catalog(generation(1));
+    let base = built.as_bytes();
+    let start = section_offset(base, Section::ChannelsHot);
+    let reopen = |bytes| {
+        ChannelCatalog::from_cache_mapping(
+            crate::ports::CatalogCacheMapping::new(bytes),
+            generation(1),
+        )
+    };
+    assert!(reopen(base.to_vec()).is_some());
+
+    let mut out_of_order = base.to_vec();
+    let number = start + 4 * size_of::<ChannelHot>() + offset_of!(ChannelHot, number);
+    out_of_order[number..number + 4].copy_from_slice(&1_u32.to_le_bytes());
+    assert!(reopen(out_of_order).is_none());
+
+    // Give the last variant of family 2 the same quality as its predecessor.
+    let mut repeated_quality = base.to_vec();
+    let quality = start + 4 * size_of::<ChannelHot>() + offset_of!(ChannelHot, quality);
+    repeated_quality[quality] = repeated_quality[quality - size_of::<ChannelHot>()];
+    assert!(reopen(repeated_quality).is_none());
+}
+
+#[test]
 fn catalog_generation_covers_configuration_m3u_and_optional_epg_content() {
     let first_configuration = configuration();
     let other_configuration = SourceConfiguration::parse(SourceConfigurationInput::new(
@@ -944,7 +971,7 @@ fn ranked_selection_keeps_only_the_requested_prefix_and_counts_every_match() {
         super::ranked_channel_selection(&cat.flat, &mut matcher, 5, &super::never_cancelled)
             .expect("an uncancelled ranking succeeds");
 
-    assert_eq!(selection.total_len(), 9);
+    assert_eq!(selection.available_len(), 9);
     // Notice channels are clustered by first-seen group ("Other", "News", "Newsroom",
     // "Daily News", "Goodnews"), so check ranked order via channel names & groups.
     let first_five = cat
@@ -1003,8 +1030,11 @@ fn schedule_overlap_index_preserves_long_running_programmes_and_resets_per_chann
 
     let a_from_50 = cat
         .schedule(
-            &ScheduleQuery::new(ch_a, PageRequest::first(PageLimit::new(10).unwrap()))
-                .with_from(instant(50)),
+            &ScheduleQuery::new(
+                ch_a.clone(),
+                PageRequest::first(PageLimit::new(10).unwrap()),
+            )
+            .with_from(instant(50)),
         )
         .unwrap();
     assert_eq!(a_from_50.items().len(), 1);
@@ -1017,6 +1047,27 @@ fn schedule_overlap_index_preserves_long_running_programmes_and_resets_per_chann
         )
         .unwrap();
     assert!(b_from_50.items().is_empty());
+
+    // The short Programme ending at the filter boundary does not consume a
+    // position. The continuation reaches the next match, then ends.
+    let limit = PageLimit::new(1).unwrap();
+    let first = cat
+        .schedule(
+            &ScheduleQuery::new(ch_a.clone(), PageRequest::first(limit)).with_from(instant(20)),
+        )
+        .unwrap();
+    assert_eq!(first.items()[0].ends_at(), instant(100));
+    let next = cat
+        .schedule(
+            &ScheduleQuery::new(
+                ch_a,
+                PageRequest::after(first.next().unwrap().clone(), limit),
+            )
+            .with_from(instant(20)),
+        )
+        .unwrap();
+    assert_eq!(next.items()[0].ends_at(), instant(30));
+    assert!(next.next().is_none());
 }
 
 #[test]
