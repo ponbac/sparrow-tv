@@ -321,8 +321,13 @@ impl PlaybackUi {
                 .first_picture
                 .filter(|_| self.state.pending_zap.is_none()),
             reduce_motion,
-            still: self.still.as_ref(),
-            hold_started: self.hold_started,
+            still: self
+                .still
+                .as_ref()
+                .filter(|_| self.state.pending_zap.is_none()),
+            hold_started: self
+                .hold_started
+                .filter(|_| self.state.pending_zap.is_none()),
             attempt: self.state.recovery_attempts,
             audio_track: self.selected_audio_track().map(AudioTrack::display_name),
             quality: selected.quality.map(quality_name),
