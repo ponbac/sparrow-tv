@@ -64,7 +64,12 @@ pub(super) fn render(
     // Geometry past the track's clip cannot affect its image unless it rounds
     // back into view. Bound the painted shape even for very long programmes.
     let paint_width = full_width.min(TRACK_WIDTH - left + CORNER_RADIUS);
-    let text_width = full_width.min(TRACK_WIDTH - left + RIGHT_FADE_WIDTH);
+    let fade = if layout.translucent {
+        0.
+    } else {
+        RIGHT_FADE_WIDTH
+    };
+    let text_width = full_width.min(TRACK_WIDTH - left + fade);
     let cell = layout.rect(left, top, text_width, height).child(
         layout
             .rect(0., 0., paint_width, CELL_HEIGHT)

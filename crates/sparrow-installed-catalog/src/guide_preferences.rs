@@ -23,6 +23,7 @@ use crate::config_store::{
 
 const PREFERENCES_FILE: &str = "guide-preferences.json";
 const PENDING_FILE: &str = ".guide-preferences.pending";
+const APPEARANCE_FILE: &str = "appearance-v1.json";
 const VERSION: u8 = 1;
 const MAX_GROUP_BYTES: usize = 1024;
 const MAX_FAMILY_UTF16: usize = 4096;
@@ -44,14 +45,14 @@ pub enum GuideBackdrop {
 /// A Guide preference snapshot. Names and family keys stay out of diagnostics.
 #[derive(Clone, Default, Eq, PartialEq)]
 pub struct GuidePreferences {
-    backdrop: GuideBackdrop,
+    appearance: AppearanceRecord,
     excluded_groups: HashSet<String>,
     variant_preferences: HashMap<String, ChannelQuality>,
 }
 
 impl GuidePreferences {
     pub const fn backdrop(&self) -> GuideBackdrop {
-        self.backdrop
+        self.appearance.backdrop
     }
 
     pub fn excluded_groups(&self) -> &HashSet<String> {
@@ -76,7 +77,6 @@ impl GuidePreferences {
 
     fn apply(&mut self, change: GuidePreferenceChange) -> Result<(), GuidePreferenceError> {
         match change {
-            GuidePreferenceChange::SetBackdrop(value) => self.backdrop = value,
             GuidePreferenceChange::SetGroupVisibility { name, hidden } => {
                 if !valid_group(&name) {
                     return Err(GuidePreferenceError::Invalid);
@@ -122,7 +122,6 @@ impl GuidePreferences {
 
 /// Changes are applied in order to the latest active snapshot in one write.
 pub enum GuidePreferenceChange {
-    SetBackdrop(GuideBackdrop),
     SetGroupVisibility {
         name: String,
         hidden: bool,
@@ -157,6 +156,19 @@ impl From<ConfigurationStoreError> for GuidePreferenceError {
             ConfigurationStoreError::UnsafeLayout => Self::UnsafeLayout,
             ConfigurationStoreError::Corrupt => Self::Invalid,
         }
+    }
+}
+
+/// Each operation replaces one private record atomically. Earlier Guide builds
+/// reject unknown fields in their record, so Appearance has its own file.
+pub enum GuidePreferenceWrite {
+    Guide(Vec<GuidePreferenceChange>),
+    SetBackdrop(GuideBackdrop),
+}
+
+impl From<Vec<GuidePreferenceChange>> for GuidePreferenceWrite {
+    fn from(changes: Vec<GuidePreferenceChange>) -> Self {
+        Self::Guide(changes)
     }
 }
 
@@ -201,13 +213,20 @@ impl GuidePreferenceStore {
             Err(ConfigurationStoreError::Corrupt) => None,
             Err(error) => return Err(error.into()),
         };
-        let recovered = record
+        let mut recovered = record
             .as_deref()
             .and_then(|bytes| serde_json::from_slice::<PreferenceRecord<'_>>(bytes).ok())
-            .and_then(PreferenceRecord::into_preferences);
-        if let Some(recovered) =
-            recovered.filter(|preferences| *preferences != GuidePreferences::default())
-        {
+            .and_then(PreferenceRecord::into_preferences)
+            .unwrap_or_default();
+        recovered.appearance = match read_private_file(&root.join(APPEARANCE_FILE), 4096) {
+            Ok(bytes) => bytes
+                .as_deref()
+                .and_then(|bytes| serde_json::from_slice(bytes).ok())
+                .unwrap_or_default(),
+            Err(ConfigurationStoreError::Corrupt) => AppearanceRecord::default(),
+            Err(error) => return Err(error.into()),
+        };
+        if recovered != GuidePreferences::default() {
             self.active.send_replace(Arc::new(recovered));
         }
         let _ = self.loaded.set(());
@@ -217,7 +236,7 @@ impl GuidePreferenceStore {
     pub(crate) fn update(
         &self,
         root: &Path,
-        changes: Vec<GuidePreferenceChange>,
+        changes: GuidePreferenceWrite,
     ) -> Result<Arc<GuidePreferences>, GuidePreferenceError> {
         self.update_with_directory_sync(root, changes, sync_private_directory)
     }
@@ -225,14 +244,23 @@ impl GuidePreferenceStore {
     fn update_with_directory_sync(
         &self,
         root: &Path,
-        changes: Vec<GuidePreferenceChange>,
+        changes: GuidePreferenceWrite,
         sync_directory: impl FnOnce(&File) -> Result<(), ConfigurationStoreError>,
     ) -> Result<Arc<GuidePreferences>, GuidePreferenceError> {
         let previous = self.load(root)?;
         let mut next = (*previous).clone();
-        for change in changes {
-            next.apply(change)?;
-        }
+        let appearance = match changes {
+            GuidePreferenceWrite::Guide(changes) => {
+                for change in changes {
+                    next.apply(change)?;
+                }
+                false
+            }
+            GuidePreferenceWrite::SetBackdrop(value) => {
+                next.appearance.backdrop = value;
+                true
+            }
+        };
         let (next, synced) = if next == *previous {
             if !self.directory_sync_pending.load(Ordering::Relaxed) {
                 return Ok(previous);
@@ -241,8 +269,16 @@ impl GuidePreferenceStore {
             let directory = open_private_directory(root)?;
             (previous, sync_directory(&directory))
         } else {
-            let bytes = encode_record(&next, MAX_RECORD_BYTES)?;
-            let directory = activate_private_file(root, PREFERENCES_FILE, PENDING_FILE, &bytes)?;
+            let (filename, bytes) = if appearance {
+                (
+                    APPEARANCE_FILE,
+                    serde_json::to_vec(&next.appearance)
+                        .map_err(|_| GuidePreferenceError::Unavailable)?,
+                )
+            } else {
+                (PREFERENCES_FILE, encode_record(&next, MAX_RECORD_BYTES)?)
+            };
+            let directory = activate_private_file(root, filename, PENDING_FILE, &bytes)?;
             let synced = sync_directory(&directory);
             let next = Arc::new(next);
             // The new record is already active even if its durability is uncertain.
@@ -282,13 +318,17 @@ fn valid_family(family: &str) -> bool {
     family.encode_utf16().count() <= MAX_FAMILY_UTF16
 }
 
+#[derive(Clone, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default)]
+struct AppearanceRecord {
+    backdrop: GuideBackdrop,
+}
+
 // The v1 WebView keys and each value's field names are kept for a future importer.
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct PreferenceRecord<'a> {
     version: u8,
-    #[serde(default, rename = "sparrow.backdrop:v1")]
-    backdrop: GuideBackdrop,
     #[serde(rename = "sparrow.board-group-exclusions:v1")]
     groups: GroupRecord<'a>,
     #[serde(rename = "sparrow.variant-preferences:v1")]
@@ -339,7 +379,7 @@ impl PreferenceRecord<'_> {
             return None;
         }
         Some(GuidePreferences {
-            backdrop: self.backdrop,
+            appearance: AppearanceRecord::default(),
             excluded_groups: self
                 .groups
                 .excluded
@@ -375,7 +415,6 @@ impl<'a> From<&'a GuidePreferences> for PreferenceRecord<'a> {
         variants.sort_unstable_by(|left, right| left.family.cmp(&right.family));
         Self {
             version: VERSION,
-            backdrop: preferences.backdrop,
             groups: GroupRecord { excluded },
             variants: VariantRecord {
                 preferences: variants,
@@ -418,7 +457,7 @@ mod tests {
             hidden: true,
         };
 
-        let failed = store.update_with_directory_sync(root.path(), vec![hide()], |_| {
+        let failed = store.update_with_directory_sync(root.path(), vec![hide()].into(), |_| {
             Err(ConfigurationStoreError::Capacity)
         });
         assert_eq!(failed.err(), Some(GuidePreferenceError::Capacity));
@@ -430,7 +469,7 @@ mod tests {
 
         let mut retried = false;
         let saved = store
-            .update_with_directory_sync(root.path(), vec![hide()], |directory| {
+            .update_with_directory_sync(root.path(), vec![hide()].into(), |directory| {
                 retried = true;
                 sync_private_directory(directory)
             })
