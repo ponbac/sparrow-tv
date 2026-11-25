@@ -51,6 +51,7 @@ pub(in super::super) fn group_filter_rect(
 pub(in super::super) fn group_sheet(
     viewport_size: Size<Pixels>,
     screen: &GuideScreen,
+    choice: sparrow_installed_catalog::GuideBackdrop,
     viewport: &mut GroupViewport,
     editing: bool,
 ) -> Option<Div> {
@@ -58,7 +59,7 @@ pub(in super::super) fn group_sheet(
         viewport.first = 0;
         return None;
     };
-    let layout = Layout::new(viewport_size);
+    let layout = Layout::for_guide(viewport_size, choice);
     let focus = chooser.focus();
     let rows = chooser.matches().len() + 1;
     let capacity = ((layout.height - LIST_Y - 60.) / ROW_PITCH).floor().max(1.) as usize;
@@ -196,7 +197,7 @@ pub(in super::super) fn group_sheet(
     let filter_border = if filter_focused { 3. } else { 2. };
     let sheet = layout
         .rect(LEFT, 0., WIDTH, layout.height)
-        .bg(rgb(PANEL))
+        .bg(layout.surface(PANEL))
         .text_color(rgb(TEXT))
         .overflow_hidden()
         .child(

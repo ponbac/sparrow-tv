@@ -29,14 +29,30 @@ const MAX_FAMILY_UTF16: usize = 4096;
 const MAX_RECORD_ITEMS: usize = 10_000;
 const MAX_RECORD_BYTES: usize = 16 * 1024 * 1024;
 
+/// Device-wide appearance of the Shield Guide.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GuideBackdrop {
+    Flat,
+    #[default]
+    NordicGradient,
+    ChannelTint,
+    AuroraDrift,
+}
+
 /// A Guide preference snapshot. Names and family keys stay out of diagnostics.
 #[derive(Clone, Default, Eq, PartialEq)]
 pub struct GuidePreferences {
+    backdrop: GuideBackdrop,
     excluded_groups: HashSet<String>,
     variant_preferences: HashMap<String, ChannelQuality>,
 }
 
 impl GuidePreferences {
+    pub const fn backdrop(&self) -> GuideBackdrop {
+        self.backdrop
+    }
+
     pub fn excluded_groups(&self) -> &HashSet<String> {
         &self.excluded_groups
     }
@@ -59,6 +75,7 @@ impl GuidePreferences {
 
     fn apply(&mut self, change: GuidePreferenceChange) -> Result<(), GuidePreferenceError> {
         match change {
+            GuidePreferenceChange::SetBackdrop(value) => self.backdrop = value,
             GuidePreferenceChange::SetGroupVisibility { name, hidden } => {
                 if !valid_group(&name) {
                     return Err(GuidePreferenceError::Invalid);
@@ -104,6 +121,7 @@ impl GuidePreferences {
 
 /// Changes are applied in order to the latest active snapshot in one write.
 pub enum GuidePreferenceChange {
+    SetBackdrop(GuideBackdrop),
     SetGroupVisibility {
         name: String,
         hidden: bool,
@@ -268,6 +286,8 @@ fn valid_family(family: &str) -> bool {
 #[serde(deny_unknown_fields)]
 struct PreferenceRecord<'a> {
     version: u8,
+    #[serde(default, rename = "sparrow.backdrop:v1")]
+    backdrop: GuideBackdrop,
     #[serde(rename = "sparrow.board-group-exclusions:v1")]
     groups: GroupRecord<'a>,
     #[serde(rename = "sparrow.variant-preferences:v1")]
@@ -318,6 +338,7 @@ impl PreferenceRecord<'_> {
             return None;
         }
         Some(GuidePreferences {
+            backdrop: self.backdrop,
             excluded_groups: self
                 .groups
                 .excluded
@@ -353,6 +374,7 @@ impl<'a> From<&'a GuidePreferences> for PreferenceRecord<'a> {
         variants.sort_unstable_by(|left, right| left.family.cmp(&right.family));
         Self {
             version: VERSION,
+            backdrop: preferences.backdrop,
             groups: GroupRecord { excluded },
             variants: VariantRecord {
                 preferences: variants,

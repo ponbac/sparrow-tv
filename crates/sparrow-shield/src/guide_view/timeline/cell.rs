@@ -127,9 +127,9 @@ fn cell_fill(
             let path = cut.then(|| left_cut(bounds, layout.px(CLIP_POINT), radius));
             let paint = |window: &mut Window, color| {
                 if let Some(path) = path.as_ref().and_then(|path| path.as_ref()) {
-                    window.paint_path(path.clone(), rgb(color));
+                    window.paint_path(path.clone(), layout.surface(color));
                 } else {
-                    window.paint_quad(fill(bounds, rgb(color)).corner_radii(radius));
+                    window.paint_quad(fill(bounds, layout.surface(color)).corner_radii(radius));
                 }
             };
             paint(window, fill_color);

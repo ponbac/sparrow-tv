@@ -19,7 +19,9 @@ use sparrow_source_http::HttpSourceAccess;
 use tokio::{runtime::Handle, sync::Mutex};
 
 pub use config_store::{ConfigurationStoreError, SavedSourceLocations, ensure_private_directory};
-pub use guide_preferences::{GuidePreferenceChange, GuidePreferenceError, GuidePreferences};
+pub use guide_preferences::{
+    GuideBackdrop, GuidePreferenceChange, GuidePreferenceError, GuidePreferences,
+};
 
 use config_store::{SourceConfigurationStore, StoredSourceConfiguration};
 use guide_preferences::GuidePreferenceStore;

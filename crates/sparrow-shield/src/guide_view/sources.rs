@@ -13,7 +13,8 @@ const PADDING: f32 = 30.;
 const CONTENT_WIDTH: f32 = WIDTH - 2. * PADDING;
 const CONTENT_Y: f32 = 116.;
 const BUTTON_HEIGHT: f32 = 48.;
-const CARD_Y: f32 = BUTTON_HEIGHT + 12.;
+const STATUS_Y: f32 = BUTTON_HEIGHT + 16.;
+const CARD_Y: f32 = STATUS_Y + BUTTON_HEIGHT + 12.;
 const CARD_HEIGHT: f32 = 112.;
 const GUIDE_CARD_Y: f32 = CARD_Y + CARD_HEIGHT + 4.;
 const DIAGNOSTICS_Y: f32 = GUIDE_CARD_Y + CARD_HEIGHT + 4.;
@@ -33,6 +34,7 @@ const CHECK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in super::super) enum SourceFocus {
     Close,
+    Backdrop,
     Refresh,
     Diagnostics,
     DiagnosticText,
@@ -78,7 +80,7 @@ impl SourcePositions {
 
     fn scroll(self, content_height: f32, focus: SourceFocus, editing: bool) -> f32 {
         let (top, height) = match focus {
-            SourceFocus::Close | SourceFocus::Refresh => return 0.,
+            SourceFocus::Close | SourceFocus::Backdrop | SourceFocus::Refresh => return 0.,
             SourceFocus::Diagnostics => (DIAGNOSTICS_Y, SUMMARY_HEIGHT),
             SourceFocus::DiagnosticText => (DIAGNOSTICS_TEXT_Y, self.diagnostics_height),
             SourceFocus::CopyDiagnostics => (self.copy, BUTTON_HEIGHT),
@@ -96,6 +98,7 @@ impl SourcePositions {
 }
 
 pub(in super::super) struct SourcePanel<'a> {
+    pub(in super::super) backdrop: sparrow_installed_catalog::GuideBackdrop,
     pub(in super::super) status: Option<&'a CatalogStatus>,
     pub(in super::super) focus: SourceFocus,
     pub(in super::super) editing: bool,
@@ -132,7 +135,7 @@ pub(in super::super) fn source_editor_rect(
 }
 
 pub(in super::super) fn sources_sheet(size: Size<Pixels>, panel: SourcePanel<'_>) -> Div {
-    let layout = Layout::new(size);
+    let layout = Layout::for_guide(size, panel.backdrop);
     let content_height = layout.height - CONTENT_Y;
     let positions = SourcePositions::new(panel.diagnostics);
     let scroll = positions.scroll(content_height, panel.focus, panel.editing);
@@ -146,8 +149,29 @@ pub(in super::super) fn sources_sheet(size: Size<Pixels>, panel: SourcePanel<'_>
     let section = layout
         .rect(0., -scroll, CONTENT_WIDTH, positions.save + BUTTON_HEIGHT)
         .child(
+            action_frame(
+                layout,
+                layout.rect(0., 0., CONTENT_WIDTH, BUTTON_HEIGHT),
+                panel.focus == SourceFocus::Backdrop,
+            )
+            .justify_between()
+            .child(layout.text(SAIRA, 22., 30., 600.).child("Backdrop"))
+            .child(
+                layout
+                    .text(SAIRA, 21., 30., 500.)
+                    .child(match panel.backdrop {
+                        sparrow_installed_catalog::GuideBackdrop::Flat => "Flat  ›",
+                        sparrow_installed_catalog::GuideBackdrop::NordicGradient => {
+                            "Nordic gradient  ›"
+                        }
+                        sparrow_installed_catalog::GuideBackdrop::ChannelTint => "Channel tint  ›",
+                        sparrow_installed_catalog::GuideBackdrop::AuroraDrift => "Aurora drift  ›",
+                    }),
+            ),
+        )
+        .child(
             layout
-                .rect(0., 0., CONTENT_WIDTH, BUTTON_HEIGHT)
+                .rect(0., STATUS_Y, CONTENT_WIDTH, BUTTON_HEIGHT)
                 .flex()
                 .items_center()
                 .justify_between()
@@ -256,7 +280,7 @@ pub(in super::super) fn sources_sheet(size: Size<Pixels>, panel: SourcePanel<'_>
         );
     let sheet = layout
         .rect(LEFT, 0., WIDTH, layout.height)
-        .bg(rgb(PANEL))
+        .bg(layout.surface(PANEL))
         .text_color(rgb(TEXT))
         .overflow_hidden()
         .child(

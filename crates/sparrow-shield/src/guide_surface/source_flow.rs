@@ -308,6 +308,7 @@ impl GuideSurface {
         Some(guide_view::sources_sheet(
             window.viewport_size(),
             SourcePanel {
+                backdrop: self.pending_backdrop.unwrap_or_else(catalog::backdrop),
                 status: status.as_deref(),
                 focus: source.focus,
                 editing: matches!(source.request, Some(FieldRequest::Edit(..))),
@@ -404,13 +405,15 @@ impl GuideSurface {
         match key {
             ScreenKey::Arrow(direction) => {
                 source.focus = match (source.focus, direction) {
-                    (SourceFocus::Close, Direction::Down) if configured => SourceFocus::Refresh,
-                    (SourceFocus::Close | SourceFocus::Refresh, Direction::Down)
+                    (SourceFocus::Close, Direction::Down) => SourceFocus::Backdrop,
+                    (SourceFocus::Backdrop, Direction::Up) => SourceFocus::Close,
+                    (SourceFocus::Backdrop, Direction::Down) if configured => SourceFocus::Refresh,
+                    (SourceFocus::Backdrop | SourceFocus::Refresh, Direction::Down)
                         if status.is_some() =>
                     {
                         SourceFocus::Diagnostics
                     }
-                    (SourceFocus::Close | SourceFocus::Refresh, Direction::Down) => {
+                    (SourceFocus::Backdrop | SourceFocus::Refresh, Direction::Down) => {
                         SourceFocus::M3u
                     }
                     (SourceFocus::Diagnostics, Direction::Down) if source.diagnostics.is_some() => {
@@ -438,11 +441,35 @@ impl GuideSurface {
                     (
                         SourceFocus::M3u | SourceFocus::Refresh | SourceFocus::Diagnostics,
                         Direction::Up,
-                    ) => SourceFocus::Close,
+                    ) => SourceFocus::Backdrop,
                     (focus, _) => focus,
                 };
             }
             ScreenKey::Activate => match source.focus {
+                SourceFocus::Backdrop => {
+                    use sparrow_installed_catalog::GuideBackdrop::*;
+                    let choice = match self.pending_backdrop.unwrap_or_else(catalog::backdrop) {
+                        Flat => NordicGradient,
+                        NordicGradient => ChannelTint,
+                        ChannelTint => AuroraDrift,
+                        AuroraDrift => Flat,
+                    };
+                    if let Some(saved) = catalog::save_backdrop(choice) {
+                        self.pending_backdrop = Some(choice);
+                        self.backdrop_save = Some(cx.spawn(async move |view, cx| {
+                            let success = saved.await.unwrap_or(false);
+                            let _ = view.update(cx, |view, cx| {
+                                view.pending_backdrop = None;
+                                if !success {
+                                    view.show_feedback(Some("Couldn’t save backdrop."), cx);
+                                }
+                                cx.notify();
+                            });
+                        }));
+                    } else {
+                        source.feedback = Some("Couldn’t save backdrop.");
+                    }
+                }
                 SourceFocus::Close => self.close_sources(cx),
                 SourceFocus::Refresh if configured => self.request_source_refresh(cx),
 
