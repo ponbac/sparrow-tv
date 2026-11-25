@@ -93,6 +93,7 @@ pub(super) struct Owner {
     transport: Arc<dyn Transport>,
     presentation: Arc<dyn TvPresentation>,
     gate: AndroidPresentationGate,
+    pub(super) published: watch::Sender<Snapshot>,
     snapshot: Snapshot,
     session: Option<Session>,
     nonce: u128,
@@ -122,6 +123,7 @@ impl Owner {
             transport,
             presentation,
             gate: AndroidPresentationGate::default(),
+            published: watch::Sender::new(Snapshot::default()),
             snapshot: Snapshot::default(),
             session: None,
             nonce,
@@ -140,11 +142,7 @@ impl Owner {
         }
     }
 
-    pub(super) async fn run(
-        mut self,
-        mut commands: mpsc::Receiver<Command>,
-        published: watch::Sender<Snapshot>,
-    ) {
+    pub(super) async fn run(mut self, mut commands: mpsc::Receiver<Command>) {
         loop {
             self.release_completed_source_change();
             // Drain actions queued during cleanup before starting a replacement.
@@ -157,11 +155,11 @@ impl Owner {
             if commands.is_closed() && commands.is_empty() {
                 break;
             }
-            self.publish(&published);
+            self.publish();
             if self.drive().await {
                 continue;
             }
-            self.publish(&published);
+            self.publish();
             let deadline = self.next_deadline();
             let opening = self
                 .session
@@ -180,8 +178,8 @@ impl Owner {
         let _ = self.stop_session().await;
     }
 
-    fn publish(&self, published: &watch::Sender<Snapshot>) {
-        published.send_if_modified(|snapshot| {
+    fn publish(&self) {
+        self.published.send_if_modified(|snapshot| {
             // Sampled status is available to diagnostics on demand.
             snapshot.status = self.snapshot.status;
             if snapshot == &self.snapshot {
@@ -822,6 +820,7 @@ impl Owner {
             return;
         }
         self.snapshot.first_picture.get_or_insert(now.into_std());
+        self.snapshot.recovery_frame = None;
         self.snapshot.phase = Phase::Playing;
         self.snapshot.last_played = Some(session.target.clone());
     }
@@ -879,22 +878,37 @@ impl Owner {
             self.snapshot.quality_fallback = Some(quality);
             return;
         }
+        if retryable
+            && let Some(session) = self.session.as_ref()
+            && session.first_frame.is_some()
+            && let Some(key) = session.active_picture()
+        {
+            self.snapshot.recovery_frame = tokio::time::timeout(
+                std::time::Duration::from_millis(180),
+                self.presentation.capture_frame(key.clone()),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok);
+        }
         let attempt = self.snapshot.recovery_attempts;
         if let Some(delay) = RECOVERY
             .get(usize::from(attempt))
             .filter(|_| retryable && self.session.is_some())
         {
-            self.snapshot.phase = Phase::Pausing;
-            let stop = if self
-                .session
-                .as_ref()
-                .is_some_and(|session| session.attempted_picture.is_some())
-            {
-                TvPresentationStop::ClearPicture
-            } else {
-                TvPresentationStop::RetainPicture
+            self.snapshot.recovery_attempts = attempt + 1;
+            self.snapshot.phase = Phase::Recovering {
+                attempt: attempt + 1,
+                failure,
             };
-            if self.suspend_session(stop, None).await.is_err() {
+            // Prepare the GPUI underlay while the native surface still covers it.
+            self.publish();
+            // Recovery replaces the native surface with the sampled still or tuning field.
+            if self
+                .suspend_session(TvPresentationStop::ClearPicture, None)
+                .await
+                .is_err()
+            {
                 self.cleanup_unconfirmed();
                 return;
             }
@@ -914,11 +928,6 @@ impl Owner {
                 return;
             }
             self.retry_at = Some(now.max(Instant::now()) + *delay);
-            self.snapshot.recovery_attempts = attempt + 1;
-            self.snapshot.phase = Phase::Recovering {
-                attempt: attempt + 1,
-                failure,
-            };
         } else {
             self.finish_failure(failure).await;
         }
@@ -1061,6 +1070,7 @@ impl Owner {
         self.cancel_deadlines();
         self.audio_request = None;
         self.snapshot.first_picture = None;
+        self.snapshot.recovery_frame = None;
         self.snapshot.selected = Some(target);
         self.snapshot.controls.fullscreen = fullscreen;
         self.snapshot.recovery_attempts = 0;

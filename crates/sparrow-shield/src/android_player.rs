@@ -23,7 +23,7 @@ use sparrow_installed_playback::{
     },
     tv::{
         TvHostId, TvPlaybackCommand, TvPresentation, TvPresentationEvent, TvPresentationFuture,
-        TvPresentationKey, TvPresentationStop,
+        TvPresentationKey, TvPresentationStop, TvRecoveryFrame,
     },
 };
 use tokio::sync::oneshot;
@@ -70,6 +70,7 @@ struct Pending {
 }
 
 struct Ack {
+    frame: Option<Arc<TvRecoveryFrame>>,
     applied: bool,
     status: Option<AndroidPlaybackStatus>,
 }
@@ -77,6 +78,7 @@ struct Ack {
 impl Ack {
     fn activity_released(kind: CallKind) -> Self {
         Self {
+            frame: None,
             applied: kind == CallKind::Stop,
             status: None,
         }
@@ -96,6 +98,7 @@ enum CallKind {
     Sample = 4,
     Stop = 5,
     Wake = 6,
+    Capture = 7,
 }
 
 enum Call {
@@ -104,6 +107,7 @@ enum Call {
     Controls(AndroidPlaybackControls),
     Sample,
     Stop(bool),
+    Capture,
 }
 
 impl Call {
@@ -113,6 +117,7 @@ impl Call {
             Self::Viewport(_) => CallKind::Viewport,
             Self::Controls(_) => CallKind::Controls,
             Self::Sample => CallKind::Sample,
+            Self::Capture => CallKind::Capture,
             Self::Stop(_) => CallKind::Stop,
         }
     }
@@ -157,6 +162,10 @@ impl Call {
                         jni_sig!("(JJJLjava/lang/String;Ljava/lang/String;FZZ)Z"),
                     )
                 }
+                Self::Capture => (
+                    jni_str!("capturePlaybackFrame"),
+                    jni_sig!("(JJJLjava/lang/String;Ljava/lang/String;)Z"),
+                ),
                 Self::Sample => (
                     jni_str!("samplePlayback"),
                     jni_sig!("(JJJLjava/lang/String;Ljava/lang/String;)Z"),
@@ -474,6 +483,17 @@ impl TvPresentation for AndroidPlayer {
         })
     }
 
+    fn capture_frame(&self, key: TvPresentationKey) -> TvPresentationFuture<Arc<TvRecoveryFrame>> {
+        let bridge = Arc::clone(&self.inner);
+        Box::pin(async move {
+            bridge
+                .apply(key, Call::Capture)
+                .await?
+                .frame
+                .ok_or(AndroidPlaybackError)
+        })
+    }
+
     fn status(&self, key: TvPresentationKey) -> TvPresentationFuture<AndroidPlaybackStatus> {
         let bridge = Arc::clone(&self.inner);
         Box::pin(async move {
@@ -529,9 +549,54 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldPlayback_nativePlayb
             generation as u64,
             request as u64,
             kind,
-            Ack { applied, status },
+            Ack {
+                applied,
+                status,
+                frame: None,
+            },
         );
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldPlayback_nativePlaybackFrame<'local>(
+    mut env: EnvUnowned<'local>,
+    _: JObject<'local>,
+    host: i64,
+    generation: i64,
+    request: i64,
+    width: i32,
+    height: i32,
+    pixels: JByteArray<'local>,
+) {
+    let Some(playback) = crate::playback::get() else {
+        return;
+    };
+    let frame = if (1..=640).contains(&width) && (1..=360).contains(&height) && !pixels.is_null() {
+        env.with_env_no_catch(|env| env.convert_byte_array(&pixels).map(Some))
+            .resolve::<LogErrorAndDefault>()
+            .filter(|bytes| bytes.len() == (width * height * 4) as usize)
+            .map(|bgra| {
+                Arc::new(TvRecoveryFrame {
+                    width: width as u32,
+                    height: height as u32,
+                    bgra,
+                })
+            })
+    } else {
+        None
+    };
+    playback.player.acknowledge(
+        host as u64,
+        generation as u64,
+        request as u64,
+        CallKind::Capture as i32,
+        Ack {
+            applied: frame.is_some(),
+            frame,
+            status: None,
+        },
+    );
 }
 
 #[unsafe(no_mangle)]

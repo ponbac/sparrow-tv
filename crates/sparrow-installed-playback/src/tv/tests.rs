@@ -647,12 +647,12 @@ async fn stopping_a_pending_open_releases_it_without_starting_a_presentation() {
 async fn source_change_confirms_release_and_fences_tune_until_the_guard_drops() {
     let (fixture, owner) = setup();
     let (commands, inbox) = mpsc::channel(32);
-    let (published, snapshot) = watch::channel(Snapshot::default());
+    let snapshot = owner.published.subscribe();
     let runner = super::super::TvPlaybackRunner {
         commands: commands.clone(),
         snapshot,
     };
-    let owner_task = tokio::spawn(owner.run(inbox, published));
+    let owner_task = tokio::spawn(owner.run(inbox));
     runner.host_visibility(1, true).await.unwrap();
     commands
         .send(Command::SetViewports {
@@ -842,6 +842,7 @@ async fn decoder_deadlines_use_first_frame_progress_and_reset_recovery_after_six
     owner.on_deadline(first + Duration::from_secs(69)).await;
     assert_eq!(owner.snapshot.phase, Phase::Playing);
     owner.on_deadline(first + Duration::from_secs(70)).await;
+    assert!(fixture.0.lock().unwrap().retained_picture.is_none());
     assert_eq!(
         owner.snapshot.phase,
         Phase::Recovering {
@@ -900,22 +901,22 @@ async fn pausing_retires_the_live_status() {
 #[tokio::test]
 async fn frame_samples_update_diagnostics_without_notifying_viewers() {
     let (fixture, mut owner) = setup();
-    let (published, mut updates) = watch::channel(Snapshot::default());
+    let mut updates = owner.published.subscribe();
     visible(&mut owner, 1).await;
     tune(&mut owner, target(1)).await;
     owner.on_deadline(owner.status_at.unwrap()).await;
-    owner.publish(&published);
+    owner.publish();
     assert_eq!(updates.borrow_and_update().phase, Phase::Playing);
 
     fixture.0.lock().unwrap().frame_count = Some(2);
     owner.on_deadline(owner.status_at.unwrap()).await;
-    owner.publish(&published);
+    owner.publish();
 
     assert_eq!(updates.borrow().status.unwrap().decoded_frames(), 2);
     assert!(!updates.has_changed().unwrap());
 
     owner.command(Command::Pause).await;
-    owner.publish(&published);
+    owner.publish();
     assert!(updates.has_changed().unwrap());
     let snapshot = updates.borrow_and_update();
     assert_eq!(snapshot.phase, Phase::Paused(TvPauseCause::User));

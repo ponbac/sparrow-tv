@@ -167,6 +167,8 @@ impl GuideSurface {
         let now = Local::now().fixed_offset();
         let mut screen = GuideScreen::new(now.to_utc(), *now.offset(), HashSet::new());
         screen.set_surface_height(guide_view::surface_height(window.viewport_size()));
+        cx.on_release(|view, cx| view.playback.drop_still(cx))
+            .detach();
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
 

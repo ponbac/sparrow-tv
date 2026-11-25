@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 use super::super::CELL_ELAPSED;
 use super::{ICE, INK, Layout, SAIRA, signal_mark};
 use gpui::{
-    Animation, AnimationExt, AnyElement, BoxShadow, Div, Transformation, div, linear_color_stop,
-    linear_gradient, percentage, prelude::*, rgb, rgba, svg,
+    Animation, AnimationExt, AnyElement, BoxShadow, Div, StyledImage, Transformation, div,
+    linear_color_stop, linear_gradient, percentage, prelude::*, rgb, rgba, svg,
 };
 
 pub(super) const LOCK: Duration = Duration::from_millis(800);
@@ -18,13 +18,17 @@ pub(super) fn field(
     layout: Layout,
     bounds: [f32; 4],
     placement: FieldPlacement,
-    reduce_motion: bool,
+    playback: &super::PlaybackOverlay,
 ) -> Div {
     let [x, y, w, h] = bounds;
     let (diameter, scale, label) = match placement {
         FieldPlacement::Fullscreen => (196., 3.2, 28.),
         FieldPlacement::Docked => (136., 2.2, 22.),
     };
+    let reduce_motion = playback.reduce_motion;
+    let image = playback.still.cloned();
+    let stage = playback.stage;
+    let attempt = playback.attempt;
     let frame = layout.rect(x, y, w, h).overflow_hidden();
     let frame = match placement {
         FieldPlacement::Fullscreen => frame,
@@ -85,6 +89,24 @@ pub(super) fn field(
                 linear_color_stop(rgb(CELL_ELAPSED), 0.),
                 linear_color_stop(rgb(INK), 1.),
             )))
+            .when_some(image.clone(), |field, image| {
+                field
+                    .child(gpui::img(image).absolute().size_full().grayscale(true))
+                    .child(div().absolute().inset_0().bg(rgba(0x00000080)))
+            })
+            .when(
+                stage == super::PlaybackStage::Reconnecting && !reduce_motion,
+                |field| {
+                    let band = h * 0.12;
+                    field.child(layout.rect(0., (h + band) * phase - band, w, band).bg(
+                        linear_gradient(
+                            180.,
+                            linear_color_stop(rgba(ICE << 8), 0.),
+                            linear_color_stop(rgba(ICE << 8 | 88), 1.),
+                        ),
+                    ))
+                },
+            )
             .child(
                 div()
                     .absolute()
@@ -99,7 +121,13 @@ pub(super) fn field(
                         layout
                             .text(SAIRA, label, label + 6., 500.)
                             .text_color(rgb(super::TEXT))
-                            .child("Tuning"),
+                            .child(match stage {
+                                super::PlaybackStage::Reconnecting => {
+                                    format!("Reconnecting · attempt {attempt}")
+                                }
+                                super::PlaybackStage::Failed => stage.label().to_owned(),
+                                _ => "Tuning".to_owned(),
+                            }),
                     ),
             )
     };
