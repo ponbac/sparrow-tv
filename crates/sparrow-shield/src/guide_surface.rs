@@ -1182,7 +1182,7 @@ impl Render for GuideSurface {
             self.arrival.leave();
             self.icons.hide();
             return root
-                .when(self.ambient_exposed(), |root| root.child(glow))
+                .when(frame.band > 0., |root| root.child(glow))
                 .children(player);
         }
         let viewport = window.viewport_size();
