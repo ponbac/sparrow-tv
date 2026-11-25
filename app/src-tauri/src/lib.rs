@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
+use sparrow_installed_catalog::CatalogStartupError;
+
 mod agent_control;
 mod android_lifecycle;
 mod android_playback;
 mod audio_preferences;
-mod config_store;
-mod instance_lock;
 mod ipc;
 mod playback;
 #[cfg(all(target_os = "linux", feature = "linux-playback-lab"))]
@@ -32,11 +32,11 @@ pub fn run() {
 
             #[cfg(target_os = "android")]
             initialize_android_certificate_verifier()
-                .map_err(|_| runtime::InstalledStartupError::SourceAdapter)?;
+                .map_err(|_| CatalogStartupError::SourceAdapter)?;
             let app_data = app
                 .path()
                 .app_data_dir()
-                .map_err(|_| runtime::InstalledStartupError::AppData)?;
+                .map_err(|_| CatalogStartupError::AppData)?;
             let prepared = runtime::InstalledRuntime::prepare(app_data)?;
             let screen_wake = screen_wake::platform_screen_wake(app.handle().clone());
             #[cfg(target_os = "android")]

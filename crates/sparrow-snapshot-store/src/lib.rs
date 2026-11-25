@@ -5,6 +5,8 @@
 
 mod catalog_cache;
 mod disk;
+#[cfg(unix)]
+mod instance_lock;
 mod layout;
 mod manifest;
 
@@ -21,6 +23,9 @@ use sparrow_core::{
     SnapshotStore, SourceKind, StoreError, ValidatedStage,
 };
 
+#[cfg(unix)]
+pub use instance_lock::{InstanceLock, InstanceLockError};
+
 /// A two-slot, crash-safe Source Snapshot store rooted in private app data.
 pub struct AtomicFileSnapshotStore {
     disk: Arc<DiskStore>,
@@ -31,12 +36,28 @@ impl AtomicFileSnapshotStore {
     /// Opens or creates the private snapshot directory and removes abandoned
     /// transient files from an earlier process.
     pub fn open(root: impl AsRef<Path>) -> Result<Self, SnapshotStoreOpenError> {
-        DiskStore::open(root.as_ref())
-            .map(|disk| Self {
-                disk: Arc::new(disk),
-                catalog_cache: catalog_cache::CatalogCache::new(root.as_ref()),
-            })
-            .map_err(SnapshotStoreOpenError::from)
+        let root = root.as_ref();
+        Ok(Self::from_disk(root, DiskStore::open(root)?))
+    }
+
+    /// Retains the installed instance lock through startup cleanup and every disk operation.
+    #[cfg(unix)]
+    pub fn open_for_instance(
+        root: impl AsRef<Path>,
+        instance_lock: InstanceLock,
+    ) -> Result<Self, SnapshotStoreOpenError> {
+        let root = root.as_ref();
+        Ok(Self::from_disk(
+            root,
+            DiskStore::open_for_instance(root, instance_lock)?,
+        ))
+    }
+
+    fn from_disk(root: &Path, disk: DiskStore) -> Self {
+        Self {
+            disk: Arc::new(disk),
+            catalog_cache: catalog_cache::CatalogCache::new(root),
+        }
     }
 }
 

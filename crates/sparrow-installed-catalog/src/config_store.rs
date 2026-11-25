@@ -43,7 +43,6 @@ impl StoredSourceConfiguration {
     }
 }
 
-#[derive(Clone)]
 pub(crate) struct SourceConfigurationStore {
     root: PathBuf,
 }
@@ -186,7 +185,7 @@ fn remove_abandoned_pending(path: &Path) -> Result<(), ConfigurationStoreError> 
     }
 }
 
-pub(crate) fn ensure_private_directory(path: &Path) -> Result<(), ConfigurationStoreError> {
+pub fn ensure_private_directory(path: &Path) -> Result<(), ConfigurationStoreError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() || !metadata.is_dir() {
@@ -243,7 +242,7 @@ fn map_write_error(error: io::Error) -> ConfigurationStoreError {
 
 /// A safe storage failure that never retains a path or source location.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub(crate) enum ConfigurationStoreError {
+pub enum ConfigurationStoreError {
     #[error("source configuration storage is unavailable")]
     Unavailable,
     #[error("source configuration storage has insufficient capacity")]

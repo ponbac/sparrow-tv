@@ -1,8 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
-    fs,
-    os::unix::fs::PermissionsExt,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc, Mutex as StdMutex, OnceLock,
         atomic::{AtomicU64, Ordering},
@@ -11,22 +9,16 @@ use std::{
 
 use sparrow_bounded_blocking::{BlockingTaskCancellation, BoundedBlocking};
 use sparrow_core::{
-    ChannelSummary, CoreAdapters, CoreError, Page, PageRequest, ProgrammeSummary, RefreshReport,
-    RefreshTrigger, SearchRequest, SearchResults, SearchTerm, SparrowCore, SystemClock,
+    CatalogAccess, ChannelSummary, CoreError, Page, PageRequest, ProgrammeSummary, RefreshReport,
+    RefreshTrigger, SearchRequest, SearchResults, SearchTerm,
 };
-use sparrow_snapshot_store::AtomicFileSnapshotStore;
+use sparrow_installed_catalog::{CatalogStartupError, InstalledCatalog, PreparedInstalledCatalog};
 use sparrow_source_http::HttpPlaybackAccess;
-use sparrow_source_http::HttpSourceAccess;
 use tokio::sync::{Mutex, Notify, watch};
 
 use crate::{
     android_playback,
     audio_preferences::AudioPreferenceStore,
-    config_store::{
-        ConfigurationStoreError, SourceConfigurationStore, StoredSourceConfiguration,
-        ensure_private_directory,
-    },
-    instance_lock::{InstanceLock, InstanceLockError},
     ipc::{
         dto::{CatalogStatusDto, ClientErrorDto, CoreEventDto},
         input::{PlaybackEngineInput, SearchRequestId, SourceConfigurationInputDto},
@@ -42,8 +34,6 @@ use crate::{
 #[cfg(test)]
 use crate::screen_wake::noop_screen_wake;
 
-const PRIVATE_DIRECTORY: &str = "private-v1";
-const SNAPSHOT_DIRECTORY: &str = "snapshots-v1";
 const MAX_TRACKED_SEARCH_REQUESTS: usize = 64;
 
 /// Process-lifetime rendezvous between early WebView invokes and runtime startup.
@@ -127,20 +117,17 @@ impl InstalledRuntimeSlot {
     }
 }
 
-/// The complete on-device catalog composition managed by Tauri.
+/// The installed Tauri application and its platform-specific services.
 pub(crate) struct InstalledRuntime {
     #[cfg(target_os = "linux")]
     linux_playback: LinuxPlaybackEngine,
     playback: Arc<PlaybackManager>,
-    core: Arc<SparrowCore>,
-    configuration_store: SourceConfigurationStore,
-    configuration_mutation: Mutex<()>,
     searches: BoundedBlocking,
     search_cancellations: SearchCancellationRegistry,
     subscriptions: SubscriptionRegistry,
     android_presentation: AndroidPresentationGate,
     lifecycle_revision: AtomicU64,
-    _instance_lock: InstanceLock,
+    catalog: Arc<InstalledCatalog>,
 }
 
 #[cfg(target_os = "linux")]
@@ -189,10 +176,7 @@ pub(crate) struct InstalledLifecycleEvent {
 pub(crate) struct PreparedInstalledRuntime {
     #[cfg(target_os = "linux")]
     linux_playback: LinuxPlaybackEngine,
-    private_root: PathBuf,
-    instance_lock: InstanceLock,
-    configuration_store: SourceConfigurationStore,
-    configuration: Option<sparrow_core::SourceConfiguration>,
+    catalog: PreparedInstalledCatalog,
 }
 
 impl InstalledRuntime {
@@ -206,21 +190,10 @@ impl InstalledRuntime {
     ) -> Result<PreparedInstalledRuntime, InstalledStartupError> {
         #[cfg(target_os = "linux")]
         let linux_playback = LinuxPlaybackEngine::configured()?;
-        prepare_app_data(&app_data)?;
-        let private_root = app_data.join(PRIVATE_DIRECTORY);
-        ensure_private_directory(&private_root).map_err(InstalledStartupError::from)?;
-        let instance_lock =
-            InstanceLock::acquire(&private_root).map_err(InstalledStartupError::from)?;
-        let configuration_store =
-            SourceConfigurationStore::open(&private_root).map_err(InstalledStartupError::from)?;
-        let configuration = load_persisted_configuration(&configuration_store)?;
         Ok(PreparedInstalledRuntime {
             #[cfg(target_os = "linux")]
             linux_playback,
-            private_root,
-            instance_lock,
-            configuration_store,
-            configuration,
+            catalog: InstalledCatalog::prepare(&app_data)?,
         })
     }
 
@@ -231,34 +204,15 @@ impl InstalledRuntime {
         let PreparedInstalledRuntime {
             #[cfg(target_os = "linux")]
             linux_playback,
-            private_root,
-            instance_lock,
-            configuration_store,
-            configuration,
+            catalog,
         } = prepared;
-
-        let source =
-            Arc::new(HttpSourceAccess::new().map_err(|_| InstalledStartupError::SourceAdapter)?);
-        let snapshot_dir = private_root.join(SNAPSHOT_DIRECTORY);
-        let snapshots = Arc::new(
-            tokio::task::spawn_blocking(move || AtomicFileSnapshotStore::open(snapshot_dir))
-                .await
-                .map_err(|_| InstalledStartupError::SnapshotAdapter)?
-                .map_err(|_| InstalledStartupError::SnapshotAdapter)?,
-        );
-        let core = Arc::new(
-            SparrowCore::bootstrap_installed(
-                configuration,
-                CoreAdapters::new(source, snapshots, Arc::new(SystemClock)),
-            )
-            .await
-            .map_err(|_| InstalledStartupError::Core)?,
-        );
+        let catalog = catalog.finish_open().await?;
+        let private_root = catalog.private_root().to_path_buf();
         let playback_access =
             HttpPlaybackAccess::new().map_err(|_| InstalledStartupError::PlaybackAdapter)?;
         let audio_preferences = AudioPreferenceStore::open(&private_root);
         let playback = Arc::new(PlaybackManager::new_with_screen_wake(
-            Arc::clone(&core),
+            catalog.core().clone(),
             playback_access,
             audio_preferences,
             private_root,
@@ -269,15 +223,12 @@ impl InstalledRuntime {
             #[cfg(target_os = "linux")]
             linux_playback,
             playback,
-            core,
-            configuration_store,
-            configuration_mutation: Mutex::new(()),
             searches: BoundedBlocking::serial(),
             search_cancellations: SearchCancellationRegistry::default(),
             subscriptions: SubscriptionRegistry::default(),
             android_presentation: AndroidPresentationGate::default(),
             lifecycle_revision: AtomicU64::new(0),
-            _instance_lock: instance_lock,
+            catalog,
         })
     }
 
@@ -290,13 +241,13 @@ impl InstalledRuntime {
         Self::finish_open(prepared, screen_wake).await
     }
 
-    pub(crate) fn core(&self) -> &SparrowCore {
-        &self.core
+    pub(crate) fn core(&self) -> &CatalogAccess {
+        self.catalog.core()
     }
 
     pub(crate) fn status(&self) -> sparrow_core::CatalogStatus {
-        let status = self.core.status();
-        self.core.activate_automation();
+        let status = self.core().status();
+        self.core().activate_automation();
         status
     }
 
@@ -304,18 +255,16 @@ impl InstalledRuntime {
         &self,
         input: SourceConfigurationInputDto,
     ) -> Result<CatalogStatusDto, ClientErrorDto> {
-        let (stored, configuration) = input.validate()?;
-        let _mutation = self.configuration_mutation.lock().await;
-        self.persist_configuration(stored).await?;
-        let status = self
-            .core
-            .replace_source_configuration(Some(configuration))
-            .await;
-        Ok(CatalogStatusDto::from(status))
+        let configuration = input.validate()?;
+        self.catalog
+            .replace_configuration(configuration)
+            .await
+            .map(CatalogStatusDto::from)
+            .map_err(|_| ClientErrorDto::service_unavailable())
     }
 
     pub(crate) async fn refresh(&self) -> RefreshReport {
-        self.core.refresh(RefreshTrigger::Manual).await
+        self.core().refresh(RefreshTrigger::Manual).await
     }
 
     pub(crate) async fn search(
@@ -363,7 +312,7 @@ impl InstalledRuntime {
         job: Job,
     ) -> Result<Output, ClientErrorDto>
     where
-        Job: FnOnce(Arc<SparrowCore>, BlockingTaskCancellation) -> Result<Output, CoreError>
+        Job: FnOnce(CatalogAccess, BlockingTaskCancellation) -> Result<Output, CoreError>
             + Send
             + 'static,
         Output: Send + 'static,
@@ -376,7 +325,7 @@ impl InstalledRuntime {
             return Err(ClientErrorDto::service_unavailable());
         }
 
-        let core = Arc::clone(&self.core);
+        let core = self.catalog.core().clone();
         let result = self
             .searches
             .run_with_cancellation(registration.cancellation(), move |cancellation| {
@@ -388,22 +337,12 @@ impl InstalledRuntime {
         result.map_err(ClientErrorDto::from)
     }
 
-    async fn persist_configuration(
-        &self,
-        configuration: StoredSourceConfiguration,
-    ) -> Result<(), ClientErrorDto> {
-        let store = self.configuration_store.clone();
-        tokio::task::spawn_blocking(move || store.save(&configuration))
-            .await
-            .map_err(|_| ClientErrorDto::service_unavailable())?
-            .map_err(|_| ClientErrorDto::service_unavailable())
-    }
-
     pub(crate) fn subscribe(
         &self,
         events: tauri::ipc::Channel<CoreEventDto>,
     ) -> Result<String, ClientErrorDto> {
-        self.subscriptions.subscribe(Arc::clone(&self.core), events)
+        self.subscriptions
+            .subscribe(self.catalog.core().clone(), events)
     }
 
     pub(crate) fn unsubscribe(&self, subscription_id: &str) {
@@ -615,7 +554,7 @@ impl InstalledRuntime {
     ) -> Result<Option<InstalledLifecycleEvent>, PlaybackManagerError> {
         match signal {
             sparrow_core::LifecycleSignal::Started => {
-                self.core.report_lifecycle(signal);
+                self.core().report_lifecycle(signal);
                 Ok(None)
             }
             sparrow_core::LifecycleSignal::Suspended => {
@@ -627,7 +566,7 @@ impl InstalledRuntime {
                         android_playback::suspend_all,
                     )
                     .await;
-                self.core.report_lifecycle(signal);
+                self.core().report_lifecycle(signal);
                 cleanup?;
                 self.lifecycle_event("suspended").map(Some)
             }
@@ -635,7 +574,7 @@ impl InstalledRuntime {
                 self.android_presentation
                     .transport_transition(self.playback.resume_for_lifecycle())
                     .await?;
-                self.core.report_lifecycle(signal);
+                self.core().report_lifecycle(signal);
                 self.lifecycle_event("resumed").map(Some)
             }
         }
@@ -968,61 +907,13 @@ impl Drop for SearchRegistration<'_> {
     }
 }
 
-fn load_persisted_configuration(
-    store: &SourceConfigurationStore,
-) -> Result<Option<sparrow_core::SourceConfiguration>, InstalledStartupError> {
-    let stored = match store.load() {
-        Ok(stored) => stored,
-        Err(ConfigurationStoreError::Corrupt) => return Ok(None),
-        Err(error) => return Err(InstalledStartupError::from(error)),
-    };
-    Ok(stored
-        .and_then(|stored| SparrowCore::parse_source_configuration(stored.source_input()).ok()))
-}
-
-fn prepare_app_data(path: &Path) -> Result<(), InstalledStartupError> {
-    fs::create_dir_all(path).map_err(|_| InstalledStartupError::AppData)?;
-    let metadata = fs::symlink_metadata(path).map_err(|_| InstalledStartupError::AppData)?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(InstalledStartupError::AppData);
-    }
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-        .map_err(|_| InstalledStartupError::AppData)?;
-    Ok(())
-}
-
 /// Safe startup failures deliberately discard filesystem and provider context.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub(crate) enum InstalledStartupError {
-    #[error("the private app-data directory is unavailable")]
-    AppData,
-    #[error("another Sparrow instance is already running")]
-    AlreadyRunning,
-    #[error("the source configuration is unavailable")]
-    Configuration,
-    #[error("the source access adapter could not be initialized")]
-    SourceAdapter,
-    #[error("the snapshot adapter could not be initialized")]
-    SnapshotAdapter,
+    #[error(transparent)]
+    Catalog(#[from] CatalogStartupError),
     #[error("the playback adapter could not be initialized")]
     PlaybackAdapter,
-    #[error("the catalog core could not be initialized")]
-    Core,
-}
-
-impl From<ConfigurationStoreError> for InstalledStartupError {
-    fn from(_error: ConfigurationStoreError) -> Self {
-        Self::Configuration
-    }
-}
-
-impl From<InstanceLockError> for InstalledStartupError {
-    fn from(error: InstanceLockError) -> Self {
-        match error {
-            InstanceLockError::AlreadyRunning => Self::AlreadyRunning,
-            InstanceLockError::Unavailable => Self::AppData,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1044,6 +935,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    const PRIVATE_DIRECTORY: &str = "private-v1";
 
     #[cfg(all(target_os = "linux", not(feature = "linux-playback-lab")))]
     #[test]
@@ -1694,7 +1587,7 @@ mod tests {
                 .await
                 .err()
                 .expect("second instance is excluded"),
-            InstalledStartupError::AlreadyRunning
+            InstalledStartupError::Catalog(CatalogStartupError::AlreadyRunning)
         );
         drop(runtime);
     }
@@ -1960,7 +1853,7 @@ mod tests {
         );
         drop(runtime);
 
-        let offline = InstalledRuntime::open(app_data)
+        let offline = reopen_after_background_work(app_data)
             .await
             .expect("offline snapshot reopens without the source server");
         let offline_status = serde_json::to_value(CatalogStatusDto::from(offline.core().status()))
@@ -1989,8 +1882,7 @@ mod tests {
             let directory = TempDir::new().expect("temporary directory");
             let app_data = directory.path().join("app-data");
             let private_root = app_data.join(PRIVATE_DIRECTORY);
-            prepare_app_data(&app_data).expect("app-data directory opens");
-            ensure_private_directory(&private_root).expect("private directory opens");
+            InstalledCatalog::prepare(&app_data).expect("private directory opens");
             let configuration_path = private_root.join("source-configuration.json");
             fs::write(&configuration_path, bytes).expect("configuration fixture writes");
             fs::set_permissions(&configuration_path, fs::Permissions::from_mode(0o600))
@@ -2253,7 +2145,7 @@ mod tests {
         assert_safe_routine_json(&replaced_json);
         drop(runtime);
 
-        let reopened = InstalledRuntime::open(app_data)
+        let reopened = reopen_after_background_work(app_data)
             .await
             .expect("replacement configuration reopens");
         let reopened_status =
@@ -2275,16 +2167,21 @@ mod tests {
         let directory = TempDir::new().expect("temporary directory");
         let app_data = directory.path().join("app-data");
         let private_root = app_data.join(PRIVATE_DIRECTORY);
-        prepare_app_data(&app_data).expect("app-data directory opens");
-        let store = SourceConfigurationStore::open(&private_root).expect("store opens");
+        InstalledCatalog::prepare(&app_data).expect("private directory opens");
         let provider = TcpListener::bind("127.0.0.1:0").expect("black-hole provider binds");
         let location = format!(
             "http://{}/channels.m3u",
             provider.local_addr().expect("provider address exists")
         );
-        store
-            .save(&StoredSourceConfiguration::normalized(location, None))
-            .expect("configuration persists");
+        let path = private_root.join("source-configuration.json");
+        let record = json!({"version": 1, "m3uLocation": location, "epgLocation": null});
+        fs::write(
+            &path,
+            serde_json::to_vec(&record).expect("configuration encodes"),
+        )
+        .expect("configuration persists");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .expect("configuration is private");
 
         let runtime = tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -2310,17 +2207,42 @@ mod tests {
     #[test]
     fn startup_diagnostics_never_expose_private_context() {
         let private_canary = "https://user:secret@provider.invalid/list.m3u";
-        for error in [
-            InstalledStartupError::AppData,
-            InstalledStartupError::AlreadyRunning,
-            InstalledStartupError::Configuration,
-            InstalledStartupError::SourceAdapter,
-            InstalledStartupError::SnapshotAdapter,
-            InstalledStartupError::PlaybackAdapter,
-            InstalledStartupError::Core,
-        ] {
+        let catalog_errors = [
+            CatalogStartupError::AppData,
+            CatalogStartupError::AlreadyRunning,
+            CatalogStartupError::Configuration,
+            CatalogStartupError::SourceAdapter,
+            CatalogStartupError::SnapshotAdapter,
+            CatalogStartupError::Core,
+        ];
+        for error in catalog_errors
+            .into_iter()
+            .map(InstalledStartupError::from)
+            .chain([InstalledStartupError::PlaybackAdapter])
+        {
             assert!(!format!("{error:?} {error}").contains(private_canary));
         }
+    }
+
+    async fn reopen_after_background_work(
+        app_data: PathBuf,
+    ) -> Result<InstalledRuntime, InstalledStartupError> {
+        use std::time::Duration;
+
+        // These restart tests share a process. Let any previous snapshot write release its lock.
+        let prepared = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match InstalledRuntime::prepare(app_data.clone()) {
+                    Err(InstalledStartupError::Catalog(CatalogStartupError::AlreadyRunning)) => {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                    result => break result,
+                }
+            }
+        })
+        .await
+        .expect("previous catalog work releases the instance lock")?;
+        InstalledRuntime::finish_open(prepared, noop_screen_wake()).await
     }
 
     fn one_shot_m3u_server() -> (String, thread::JoinHandle<()>) {

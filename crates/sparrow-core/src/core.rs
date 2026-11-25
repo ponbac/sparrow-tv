@@ -2,6 +2,7 @@ use arc_swap::ArcSwap;
 use futures_util::{FutureExt, StreamExt};
 use std::{
     io::{self, BufRead, Read},
+    ops::Deref,
     panic::{AssertUnwindSafe, resume_unwind},
     sync::{
         Arc, Mutex, RwLock, Weak,
@@ -37,13 +38,31 @@ const FRESHNESS: chrono::Duration = chrono::Duration::hours(6);
 const EVENT_CAPACITY: usize = 32;
 const BACKOFF_MINUTES: [i64; 4] = [1, 5, 15, 60];
 
-/// The transport-neutral entry point for Sparrow catalog behavior.
+/// Owns the Source Configuration of a Sparrow catalog.
 #[derive(Clone)]
 pub struct SparrowCore {
+    catalog: CatalogAccess,
+}
+
+/// Shareable queries, playback access, and refresh lifecycle for a Channel Catalog.
+#[derive(Clone)]
+pub struct CatalogAccess {
     runtime: Arc<CoreRuntime>,
 }
 
+impl Deref for SparrowCore {
+    type Target = CatalogAccess;
+
+    fn deref(&self) -> &Self::Target {
+        self.catalog()
+    }
+}
+
 impl SparrowCore {
+    pub fn catalog(&self) -> &CatalogAccess {
+        &self.catalog
+    }
+
     /// Validates and refines user-supplied source locations without exposing them.
     pub fn parse_source_configuration(
         input: SourceConfigurationInput,
@@ -122,7 +141,7 @@ impl SparrowCore {
     /// Builds a usable core strictly from eligible on-device snapshots.
     ///
     /// Source access is never awaited by this call. The caller hands the recovered
-    /// view to its client, then calls [`Self::activate_automation`] to refresh
+    /// view to its client, then calls [`CatalogAccess::activate_automation`] to refresh
     /// configured sources in the background. This keeps an installed shell
     /// responsive when a provider is offline while preserving any matching
     /// catalog snapshot.
@@ -209,12 +228,6 @@ impl SparrowCore {
         Ok(core)
     }
 
-    /// Starts background source automation once the snapshot-backed status has
-    /// been handed to the installed client. Repeated calls are harmless.
-    pub fn activate_automation(&self) {
-        self.runtime.start_automation();
-    }
-
     /// Replaces the private Source Configuration through one serialized transition.
     ///
     /// The previous catalog becomes ineligible before this method waits for old
@@ -231,8 +244,18 @@ impl SparrowCore {
 
     fn from_runtime(runtime: CoreRuntime) -> Self {
         Self {
-            runtime: Arc::new(runtime),
+            catalog: CatalogAccess {
+                runtime: Arc::new(runtime),
+            },
         }
+    }
+}
+
+impl CatalogAccess {
+    /// Starts background source automation once the snapshot-backed status has
+    /// been handed to the installed client. Repeated calls are harmless.
+    pub fn activate_automation(&self) {
+        self.runtime.start_automation();
     }
 
     pub fn status(&self) -> CatalogStatus {

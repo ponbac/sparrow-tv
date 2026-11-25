@@ -18,6 +18,8 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use chrono::{DateTime, Utc};
 use sparrow_core::SnapshotRecoveryReason;
 
+#[cfg(unix)]
+use crate::InstanceLock;
 use crate::{
     layout::{DiskKind, Layout, MAX_MANIFEST_BYTES, MAX_POINTER_BYTES, Slot, is_transient_name},
     manifest::{
@@ -98,6 +100,8 @@ pub(crate) struct DiskStore {
     faults: Arc<dyn FaultInjector>,
     #[cfg(test)]
     verify_payload_reads: AtomicUsize,
+    #[cfg(unix)]
+    _instance_lock: Option<InstanceLock>,
 }
 
 #[derive(Clone)]
@@ -136,6 +140,16 @@ impl DiskStore {
         Self::open_with_faults(root, Arc::new(NoFaults))
     }
 
+    #[cfg(unix)]
+    pub(crate) fn open_for_instance(
+        root: &Path,
+        instance_lock: InstanceLock,
+    ) -> Result<Self, DiskError> {
+        let mut disk = Self::open(root)?;
+        disk._instance_lock = Some(instance_lock);
+        Ok(disk)
+    }
+
     pub(crate) fn open_with_faults(
         root: &Path,
         faults: Arc<dyn FaultInjector>,
@@ -156,6 +170,8 @@ impl DiskStore {
             faults,
             #[cfg(test)]
             verify_payload_reads: AtomicUsize::new(0),
+            #[cfg(unix)]
+            _instance_lock: None,
         })
     }
 

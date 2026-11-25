@@ -10,7 +10,9 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sparrow_core::ChannelId;
 
-use crate::{config_store::ensure_private_directory, selected_transport_stream::AudioTrackId};
+use sparrow_installed_catalog::ensure_private_directory;
+
+use crate::selected_transport_stream::AudioTrackId;
 
 const STORE_VERSION: u8 = 1;
 const STORE_FILE: &str = "audio-track-preferences.json";

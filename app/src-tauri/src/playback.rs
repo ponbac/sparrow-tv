@@ -10,8 +10,10 @@ use std::{
 
 use bytes::Bytes;
 use futures_util::{FutureExt as _, StreamExt as _};
+#[cfg(test)]
+use sparrow_core::SparrowCore;
 use sparrow_core::{
-    ChannelId, CoreError, PlaybackActivityLease, ResolvedPlaybackSource, SparrowCore,
+    CatalogAccess, ChannelId, CoreError, PlaybackActivityLease, ResolvedPlaybackSource,
 };
 use sparrow_source_http::{
     HttpPlaybackAccess, PlaybackAccessError, PlaybackByteStream, PlaybackReadError,
@@ -308,7 +310,7 @@ pub(crate) struct PlaybackManager {
 
 impl PlaybackManager {
     pub(crate) fn new_with_screen_wake(
-        core: Arc<SparrowCore>,
+        core: CatalogAccess,
         access: HttpPlaybackAccess,
         preferences: AudioPreferenceStore,
         private_root: PathBuf,
@@ -369,7 +371,7 @@ impl PlaybackManager {
         screen_wake: Arc<dyn ScreenWake>,
     ) -> Self {
         Self::with_all_adapters(
-            core,
+            core.catalog().clone(),
             access,
             preferences,
             selector,
@@ -385,7 +387,7 @@ impl PlaybackManager {
         mpv: Arc<dyn NativeMpvPlayer>,
     ) -> Self {
         Self::with_all_adapters(
-            core,
+            core.catalog().clone(),
             access,
             AudioPreferenceStore::disabled(),
             Arc::new(PassthroughPlaybackTransportSelector),
@@ -395,7 +397,7 @@ impl PlaybackManager {
     }
 
     fn with_all_adapters(
-        core: Arc<SparrowCore>,
+        core: CatalogAccess,
         access: Arc<dyn NativePlaybackAccess>,
         preferences: AudioPreferenceStore,
         selector: Arc<dyn PlaybackTransportSelector>,
@@ -772,7 +774,7 @@ struct ReadCommand {
 }
 
 struct PlaybackActorDependencies {
-    core: Arc<SparrowCore>,
+    core: CatalogAccess,
     access: Arc<dyn NativePlaybackAccess>,
     preferences: AudioPreferenceStore,
     selector: Arc<dyn PlaybackTransportSelector>,

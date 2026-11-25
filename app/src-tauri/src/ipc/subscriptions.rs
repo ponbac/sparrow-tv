@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use sparrow_core::SparrowCore;
+use sparrow_core::CatalogAccess;
 use tauri::ipc::Channel;
 use tokio::sync::oneshot;
 
@@ -28,7 +28,7 @@ struct RegistryShared {
 impl SubscriptionRegistry {
     pub(crate) fn subscribe(
         &self,
-        core: Arc<SparrowCore>,
+        core: CatalogAccess,
         events: Channel<CoreEventDto>,
     ) -> Result<String, ClientErrorDto> {
         let sequence = self
@@ -85,7 +85,7 @@ impl SubscriptionRegistry {
 }
 
 async fn forward_events(
-    core: Arc<SparrowCore>,
+    core: CatalogAccess,
     events: Channel<CoreEventDto>,
     mut cancelled: oneshot::Receiver<()>,
     registry: Weak<RegistryShared>,
@@ -139,14 +139,12 @@ mod tests {
         let snapshots = sparrow_snapshot_store::AtomicFileSnapshotStore::open(directory.path())
             .expect("snapshot store opens");
         let source = sparrow_source_http::HttpSourceAccess::new().expect("source adapter opens");
-        let core = Arc::new(
-            SparrowCore::bootstrap(
-                None,
-                CoreAdapters::new(Arc::new(source), Arc::new(snapshots), Arc::new(SystemClock)),
-            )
-            .await
-            .expect("unconfigured core bootstraps"),
-        );
+        let core = SparrowCore::bootstrap(
+            None,
+            CoreAdapters::new(Arc::new(source), Arc::new(snapshots), Arc::new(SystemClock)),
+        )
+        .await
+        .expect("unconfigured core bootstraps");
         let messages = Arc::new(Mutex::new(Vec::new()));
         let messages_for_channel = Arc::clone(&messages);
         let events = Channel::new(move |body| {
@@ -159,7 +157,7 @@ mod tests {
         let registry = SubscriptionRegistry::default();
 
         let subscription_id = registry
-            .subscribe(core, events)
+            .subscribe(core.catalog().clone(), events)
             .expect("subscription starts");
         assert!(valid_subscription_id(&subscription_id));
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
