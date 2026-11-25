@@ -344,14 +344,9 @@ impl PlaybackUi {
     }
 
     fn retarget_motion(&mut self, cx: &Context<GuideSurface>) {
-        let scale = if cx.reduce_motion() || self.state.selected.is_none() {
-            0.
-        } else {
-            cx.try_global::<crate::AnimatorScale>()
-                .map_or(1., |scale| scale.0)
-        };
+        let cut = cx.reduce_motion() || self.state.selected.is_none();
         self.motion
-            .retarget(self.fullscreen(), self.controls_visible, scale);
+            .retarget(self.fullscreen(), self.controls_visible, cut);
     }
 
     pub(super) fn fullscreen_frame(
@@ -399,7 +394,14 @@ impl PlaybackUi {
                         overlay,
                         &self.fullscreen_actions(),
                         frame.band,
-                        self.picture_bottom as f32 / window.scale_factor(),
+                        if reduce_motion
+                            || overlay.show_field()
+                            || self.viewports.is_none_or(|v| v[1].is_none())
+                        {
+                            0.
+                        } else {
+                            self.picture_bottom as f32 / window.scale_factor()
+                        },
                     ))
                 })
                 .children(self.menu_panel(window))
@@ -687,10 +689,10 @@ impl GuideSurface {
     }
 
     pub(super) fn update_playback_viewports(&mut self, window: &Window, frame: FullscreenFrame) {
-        if self.activation.is_none() || playback::get().is_none() {
+        let Some(playback) = playback::get().filter(|_| self.activation.is_some()) else {
             self.playback.viewports = None;
             return;
-        }
+        };
         let [left, top, width, height] =
             picture_rect(window.viewport_size(), window.scale_factor(), frame);
         let bounds = |fullscreen| {
@@ -716,13 +718,10 @@ impl GuideSurface {
         } else {
             [docked, fullscreen]
         };
-        if self.playback.viewports != Some(viewports)
-            && playback::send(Command::SetViewports {
-                host: self.host,
-                docked: viewports[0],
-                fullscreen: viewports[1],
-            })
-        {
+        if self.playback.viewports != Some(viewports) {
+            playback
+                .runner
+                .set_viewports(self.host, viewports[0], viewports[1]);
             self.playback.viewports = Some(viewports);
         }
     }

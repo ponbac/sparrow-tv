@@ -292,6 +292,7 @@ pub struct TvSourceChange {
 
 #[derive(Clone)]
 pub struct TvPlaybackRunner {
+    pending_viewports: Arc<owner::PendingViewports>,
     commands: mpsc::Sender<TvPlaybackCommand>,
     snapshot: watch::Receiver<TvPlaybackSnapshot>,
 }
@@ -317,8 +318,23 @@ impl TvPlaybackRunner {
             u128::from_be_bytes(nonce),
         );
         let snapshot = owner.published.subscribe();
+        let pending_viewports = Arc::clone(&owner.pending_viewports);
         runtime.spawn(owner.run(inbox));
-        Ok(Self { commands, snapshot })
+        Ok(Self {
+            commands,
+            snapshot,
+            pending_viewports,
+        })
+    }
+
+    /// Frame samples replace the pending bounds for their host while the owner is busy.
+    pub fn set_viewports(
+        &self,
+        host: TvHostId,
+        docked: Option<AndroidPlaybackViewport>,
+        fullscreen: Option<AndroidPlaybackViewport>,
+    ) {
+        self.pending_viewports.set(host, docked, fullscreen);
     }
 
     pub fn commands(&self) -> mpsc::Sender<TvPlaybackCommand> {
