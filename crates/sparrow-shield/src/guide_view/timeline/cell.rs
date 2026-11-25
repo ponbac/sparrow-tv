@@ -1,7 +1,4 @@
-use gpui::{
-    Bounds, ContentMask, Div, PathBuilder, Pixels, Window, canvas, fill, point, prelude::*, rgb,
-    rgba, size,
-};
+use gpui::{Div, prelude::*, rgb, rgba};
 use sparrow_core::GuideProgramme;
 use sparrow_tv_guide::{
     guide_screen::TIMELINE_ROW_HEIGHT,
@@ -17,7 +14,6 @@ use super::{RIGHT_FADE_WIDTH, TRACK_WIDTH, TimelineFrame};
 const TITLE_FAMILY: &str = "Sparrow Guide 82";
 const CELL_HEIGHT: f32 = TIMELINE_ROW_HEIGHT - 8.;
 const INSET_Y: f32 = 4.;
-const CLIP_POINT: f32 = 12.;
 const CORNER_RADIUS: f32 = 8.;
 const WASH: u32 = 0x243858;
 
@@ -44,9 +40,9 @@ pub(super) fn render(
     let cut = placement.cut_at_start;
     let live = programme.starts_at() <= frame.now && frame.now < programme.ends_at();
     let fill_color = match (focused, live) {
-        (true, _) => rgb(ICE),
-        (false, true) => layout.surface(CELL_ELAPSED),
-        (false, false) => layout.surface(CELL),
+        (true, _) => ICE,
+        (false, true) => CELL_ELAPSED,
+        (false, false) => CELL,
     };
     let progress = live
         .then(|| frame.axis.elapsed_fraction(programme, frame.meter_time))
@@ -54,11 +50,7 @@ pub(super) fn render(
         .map(|fraction| {
             (
                 (fraction as f32 * full_width).clamp(0., full_width),
-                if focused {
-                    rgb(ICE_ELAPSED)
-                } else {
-                    layout.surface(WASH)
-                },
+                if focused { ICE_ELAPSED } else { WASH },
             )
         });
     // Geometry past the track's clip cannot affect its image unless it rounds
@@ -70,30 +62,47 @@ pub(super) fn render(
         RIGHT_FADE_WIDTH
     };
     let text_width = full_width.min(TRACK_WIDTH - left + fade);
+    let lift = focused.then_some(frame.lift);
+    let grow = lift.map_or(0., |lift| lift.amount * 2.5);
+    let left_grow = grow.min(left.max(0.));
     let cell = layout.rect(left, top, text_width, height).child(
         layout
-            .rect(0., 0., paint_width, CELL_HEIGHT)
-            .child(cell_fill(layout, cut, fill_color, progress)),
+            .rect(
+                -left_grow,
+                -grow,
+                paint_width + left_grow + grow,
+                CELL_HEIGHT + 2. * grow,
+            )
+            .rounded(layout.px(CORNER_RADIUS))
+            .when_some(lift, |face, lift| {
+                face.shadow(vec![lift.shadow(layout, 3.)])
+            })
+            .child(super::super::card_face::paint(
+                layout, cut, fill_color, progress, lift,
+            )),
     );
     if content == ProgrammeCellContent::Chevron {
         let chevron_ink = if focused { rgb(ON_ICE) } else { rgba(DIM) };
+        let viewport = layout
+            .rect(0., 0., text_width, CELL_HEIGHT)
+            .overflow_hidden();
         return Some(
             cell.child(
-                layout
-                    .rect(
-                        (full_width - 21.) / 2. + 4.,
-                        (CELL_HEIGHT - 21.) / 2.,
-                        21.,
-                        21.,
-                    )
-                    .overflow_hidden()
-                    .child(layout.icon(
-                        include_bytes!("../../../assets/icons/chevron-left.svg"),
-                        21.,
-                        chevron_ink,
-                    )),
-            )
-            .overflow_hidden(),
+                viewport.child(
+                    layout
+                        .rect(
+                            (full_width - 21.) / 2. + 4.,
+                            (CELL_HEIGHT - 21.) / 2.,
+                            21.,
+                            21.,
+                        )
+                        .child(layout.icon(
+                            include_bytes!("../../../assets/icons/chevron-left.svg"),
+                            21.,
+                            chevron_ink,
+                        )),
+                ),
+            ),
         );
     }
 
@@ -121,63 +130,4 @@ pub(super) fn render(
                 ),
         ),
     )
-}
-
-fn cell_fill(
-    layout: Layout,
-    cut: bool,
-    fill_color: gpui::Rgba,
-    elapsed: Option<(f32, gpui::Rgba)>,
-) -> impl gpui::IntoElement {
-    canvas(
-        |_, _, _| (),
-        move |bounds, (), window, _| {
-            let radius = layout.px(CORNER_RADIUS);
-            let path = cut.then(|| left_cut(bounds, layout.px(CLIP_POINT), radius));
-            let paint = |window: &mut Window, color| {
-                if let Some(path) = path.as_ref().and_then(|path| path.as_ref()) {
-                    window.paint_path(path.clone(), color);
-                } else {
-                    window.paint_quad(fill(bounds, color).corner_radii(radius));
-                }
-            };
-            paint(window, fill_color);
-            if let Some((elapsed, elapsed_color)) = elapsed {
-                let width = layout.px(elapsed).min(bounds.size.width);
-                let mask = ContentMask {
-                    bounds: Bounds::new(bounds.origin, size(width, bounds.size.height)),
-                };
-                window.with_content_mask(Some(mask), |window| paint(window, elapsed_color));
-            }
-        },
-    )
-    .size_full()
-}
-
-fn left_cut(bounds: Bounds<Pixels>, tip: Pixels, radius: Pixels) -> Option<gpui::Path<Pixels>> {
-    let mut path = PathBuilder::fill();
-    let width = bounds.size.width;
-    let height = bounds.size.height;
-    let radius = radius.min(width / 2.);
-    let tip = tip.min(width - radius);
-    let at = |x, y| bounds.origin + point(x, y);
-    let curve = radius * 0.552_284_8;
-    let zero = gpui::px(0.);
-    path.move_to(at(tip, zero));
-    path.line_to(at(width - radius, zero));
-    path.cubic_bezier_to(
-        at(width, radius),
-        at(width - radius + curve, zero),
-        at(width, radius - curve),
-    );
-    path.line_to(at(width, height - radius));
-    path.cubic_bezier_to(
-        at(width - radius, height),
-        at(width, height - radius + curve),
-        at(width - radius + curve, height),
-    );
-    path.line_to(at(tip, height));
-    path.line_to(at(zero, height / 2.));
-    path.close();
-    path.build().ok()
 }

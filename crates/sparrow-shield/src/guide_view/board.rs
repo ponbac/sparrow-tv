@@ -43,6 +43,7 @@ pub(super) fn render(
     screen: &GuideScreen,
     minute: super::MinuteFrame<'_>,
     icons: &ChannelIcons,
+    lift: super::LiftFrame,
 ) -> Div {
     let height = (layout.height - BOARD_TOP).max(0.);
     let focus = match screen.focus() {
@@ -63,19 +64,26 @@ pub(super) fn render(
     }
     let families = screen.families();
     let scroll = screen.scroll_offset();
+    let mut raised = None;
     for index in screen.visible_families(OVERSCAN_LINES) {
         let [x, y, w, h] = card_bounds(index, scroll);
         let rect = layout.rect(x, y - BOARD_TOP, w, h);
         let family = &families[index];
-        board = board.child(card(
+        let focused = focus == Some(NowFocus::Channel(index));
+        let tile = card(
             layout,
-            rect,
+            (rect, focused.then_some(lift)),
             screen,
             index,
             focus.filter(|focus| focus.family() == Some(index)),
             minute,
             family_icon(family).and_then(|icon| icons.get(icon)),
-        ));
+        );
+        if focused {
+            raised = Some(tile);
+        } else {
+            board = board.child(tile);
+        }
     }
     if !layout.translucent {
         board = board.child(bottom_fade(layout.rect(
@@ -105,7 +113,7 @@ pub(super) fn render(
             ));
         }
     }
-    board
+    board.children(raised)
 }
 
 pub(super) fn bottom_fade(rect: Div) -> Div {
@@ -146,7 +154,7 @@ pub(super) fn more_footer(layout: Layout, rect: Div, loading: bool) -> Div {
 
 fn card(
     layout: Layout,
-    rect: Div,
+    (rect, lift): (Div, Option<super::LiftFrame>),
     screen: &GuideScreen,
     index: usize,
     focus: Option<NowFocus>,
@@ -184,56 +192,64 @@ fn card(
         (CARD_HEIGHT - caption_height - TITLE_HEIGHT - last_height - LINE_GAP * 2.) / 2.;
     let title_top = content_top + caption_height + LINE_GAP;
     let quality_count = family.quality_variants().count();
-    let mut card = rect
+    let grow = lift.map_or(0., |lift| lift.amount * 4.);
+    let width = COLUMN_WIDTH + 2. * grow;
+    let height = CARD_HEIGHT + 2. * grow;
+    let elapsed = live.map(|programme| {
+        (
+            width * elapsed_fraction(programme, minute.meter_time()) as f32,
+            if focused { ICE_ELAPSED } else { CELL_ELAPSED },
+        )
+    });
+    let surface = layout
+        .rect(-grow, -grow, width, height)
         .rounded(layout.px(8.))
-        .overflow_hidden()
-        .bg(if focused {
-            rgb(ICE)
-        } else {
-            layout.surface(CELL)
-        });
-    if let Some(live) = live {
-        let width = COLUMN_WIDTH * elapsed_fraction(live, minute.meter_time()) as f32;
-        if width > 0. {
-            card = card.child(
+        .when_some(lift, |surface, lift| {
+            surface.shadow(vec![lift.shadow(layout, 8.)])
+        })
+        .child(super::card_face::paint(
+            layout,
+            false,
+            if focused { ICE } else { CELL },
+            elapsed,
+            lift,
+        ));
+    let mut overlay = div()
+        .absolute()
+        .size_full()
+        .rounded(layout.px(8.))
+        .overflow_hidden();
+    if let Some(roll) = &rollover {
+        if roll.outgoing < 1.
+            && let Some(old) = programme_at(roll.prior_programmes, roll.previous)
+        {
+            let old_width = width * elapsed_fraction(old, roll.previous) as f32;
+            overlay = overlay.child(
                 layout
-                    .rect(0., 0., width, CARD_HEIGHT)
+                    .rect(0., 0., old_width, height)
                     .rounded_l(layout.px(8.))
                     .bg(if focused {
                         rgb(ICE_ELAPSED)
                     } else {
                         layout.surface(CELL_ELAPSED)
-                    }),
-            );
-        }
-    }
-    if let Some(roll) = &rollover {
-        if roll.outgoing < 1.
-            && let Some(old) = programme_at(roll.prior_programmes, roll.previous)
-        {
-            let width = COLUMN_WIDTH * elapsed_fraction(old, roll.previous) as f32;
-            card = card.child(
-                layout
-                    .rect(0., 0., width, CARD_HEIGHT)
-                    .rounded_l(layout.px(8.))
-                    .bg(rgb(if focused { ICE_ELAPSED } else { CELL_ELAPSED }))
+                    })
                     .opacity(1. - roll.outgoing),
             );
         }
         if roll.sweep > 0. && roll.sweep < 1. {
-            let x = -180. + (COLUMN_WIDTH + 180.) * roll.sweep;
+            let x = -180. + (width + 180.) * roll.sweep;
             let peak = if focused { 0xffffff20 } else { 0x9fe0ff18 };
             for (offset, from, to) in [(0., peak & !0xff, peak), (90., peak, peak & !0xff)] {
-                card = card.child(layout.rect(x + offset, 0., 90., CARD_HEIGHT).bg(
-                    linear_gradient(
+                overlay =
+                    overlay.child(layout.rect(x + offset, 0., 90., height).bg(linear_gradient(
                         90.,
                         linear_color_stop(rgba(from), 0.),
                         linear_color_stop(rgba(to), 1.),
-                    ),
-                ));
+                    )));
             }
         }
     }
+    let mut card = rect.child(surface.when(rollover.is_some(), |s| s.child(overlay)));
     if caption_height != 0. {
         let caption = layout.text(SAIRA, 18., 28., 400.).text_color(supporting);
         let caption = if icon.is_some() {

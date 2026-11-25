@@ -34,6 +34,7 @@ const CHANNEL_CONTROL_X: f32 = 52.;
 
 #[derive(Clone, Copy)]
 struct TimelineFrame {
+    lift: super::LiftFrame,
     axis: Timeline,
     meter_time: DateTime<Utc>,
     now: DateTime<Utc>,
@@ -57,12 +58,14 @@ pub(super) fn render(
     screen: &GuideScreen,
     minute: super::MinuteFrame<'_>,
     icons: &ChannelIcons,
+    lift: super::LiftFrame,
 ) -> Div {
     let now = minute.now;
     let axis = screen
         .timeline()
         .unwrap_or_else(|| Timeline::new(screen.displayed_window()));
     let frame = TimelineFrame {
+        lift,
         axis,
         meter_time: minute.meter_time(),
         now: now.to_utc(),

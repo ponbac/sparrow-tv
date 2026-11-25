@@ -97,6 +97,7 @@ pub(super) struct GuideSurface {
     host: u64,
     screen: GuideScreen,
     focus: FocusHandle,
+    focus_lift: guide_view::FocusLift,
     now_lane: guide_view::LaneViewport,
     timeline_rail: guide_view::RailViewport,
     group_viewport: guide_view::GroupViewport,
@@ -245,6 +246,7 @@ impl GuideSurface {
             host,
             screen,
             focus,
+            focus_lift: Default::default(),
             now_lane: guide_view::LaneViewport::default(),
             timeline_rail: guide_view::RailViewport::default(),
             group_viewport: guide_view::GroupViewport::default(),
@@ -433,6 +435,7 @@ impl GuideSurface {
     }
 
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_lift.key_down(event.is_held);
         let key = match event.keystroke.key.as_str() {
             "up" => ScreenKey::Arrow(Direction::Up),
             "down" => ScreenKey::Arrow(Direction::Down),
@@ -458,6 +461,11 @@ impl GuideSurface {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        match event {
+            activity::Event::Key { repeat, .. } => self.focus_lift.key_down(repeat > 0),
+            activity::Event::Back => self.focus_lift.key_down(false),
+            _ => {}
+        }
         match event {
             activity::Event::PictureBottom(bottom) => {
                 self.playback.picture_bottom = bottom;
@@ -592,7 +600,9 @@ impl GuideSurface {
             self.defer_tint(cx);
         }
         let prior_mode = self.screen.mode();
+        let prior_focus = self.screen.focus();
         let action = self.screen.press(key, now.to_utc(), *now.offset());
+        self.focus_lift.moved(prior_focus, self.screen.focus());
         if self.screen.mode() != prior_mode {
             self.now_lane = guide_view::LaneViewport::default();
             self.timeline_rail = guide_view::RailViewport::default();
@@ -1169,6 +1179,8 @@ impl Render for GuideSurface {
                     self.screen.focus()
                 },
             },
+            self.focus_lift
+                .frame(self.screen.focus(), cx.reduce_motion(), window),
             (&mut self.now_lane, &mut self.timeline_rail),
             window,
             &self.icons,

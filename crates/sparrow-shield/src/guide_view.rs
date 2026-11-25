@@ -4,7 +4,9 @@ mod backdrop;
 pub(super) use backdrop::BackdropMotion;
 mod band;
 mod board;
+mod card_face;
 mod channel_icon;
+mod focus_lift;
 mod groups;
 mod lane;
 mod minute;
@@ -18,6 +20,8 @@ mod timeline;
 use std::sync::Arc;
 
 pub(super) use channel_icon::family_icon;
+pub(super) use focus_lift::FocusLift;
+use focus_lift::LiftFrame;
 pub(super) use groups::{GroupViewport, group_filter_rect, group_sheet};
 pub(crate) use lane::LaneViewport;
 pub(super) use search_panel::{SearchPanel, SearchViewport, search_editor_rect, search_panel};
@@ -154,6 +158,7 @@ pub(super) struct GuideBand<'a> {
 pub(super) fn render(
     screen: &GuideScreen,
     band: GuideBand<'_>,
+    lift: LiftFrame,
     lanes: (&mut LaneViewport, &mut RailViewport),
     window: &mut Window,
     icons: &ChannelIcons,
@@ -173,10 +178,10 @@ pub(super) fn render(
     match screen.mode() {
         GuideMode::Now => guide
             .child(lane::render(layout, screen, lanes.0, window))
-            .child(board::render(layout, screen, minute, icons)),
+            .child(board::render(layout, screen, minute, icons, lift)),
         GuideMode::Timeline => guide
             .child(timeline::rail(layout, screen, lanes.1))
-            .child(timeline::render(layout, screen, minute, icons)),
+            .child(timeline::render(layout, screen, minute, icons, lift)),
     }
 }
 
