@@ -35,6 +35,7 @@ const CHANNEL_CONTROL_X: f32 = 52.;
 #[derive(Clone, Copy)]
 struct TimelineFrame {
     axis: Timeline,
+    meter_time: DateTime<Utc>,
     now: DateTime<Utc>,
 }
 
@@ -54,14 +55,16 @@ fn channel_bounds() -> [f32; 4] {
 pub(super) fn render(
     layout: Layout,
     screen: &GuideScreen,
-    now: DateTime<FixedOffset>,
+    minute: super::MinuteFrame<'_>,
     icons: &ChannelIcons,
 ) -> Div {
+    let now = minute.now;
     let axis = screen
         .timeline()
         .unwrap_or_else(|| Timeline::new(screen.displayed_window()));
     let frame = TimelineFrame {
         axis,
+        meter_time: minute.meter_time(),
         now: now.to_utc(),
     };
     let height = (layout.height - TIMELINE_BOARD_TOP).max(0.);
@@ -102,9 +105,10 @@ pub(super) fn render(
         );
     if rows_height > 0. {
         board = board
-            .when_some(frame.axis.playhead_fraction(frame.now), |board, at| {
-                board.child(playhead(layout, at as f32 * TRACK_WIDTH, rows_height))
-            })
+            .when_some(
+                frame.axis.playhead_fraction(frame.meter_time),
+                |board, at| board.child(playhead(layout, at as f32 * TRACK_WIDTH, rows_height)),
+            )
             .when(!layout.translucent, |board| {
                 board.child(
                     layout
@@ -195,27 +199,30 @@ fn ruler(layout: Layout, frame: TimelineFrame, now: DateTime<FixedOffset>) -> Di
                 .rect(CHANNEL_WIDTH, 0., TRACK_WIDTH, RULER_HEIGHT)
                 .overflow_hidden()
                 .children(ticks)
-                .when_some(frame.axis.playhead_fraction(frame.now), |ticks, at| {
-                    ticks.child(
-                        div()
-                            .absolute()
-                            .left(layout.px(at as f32 * TRACK_WIDTH))
-                            .top(layout.px(7.))
-                            .h(layout.px(30.))
-                            .px(layout.px(10.))
-                            .rounded(layout.px(4.))
-                            .bg(rgb(ICE))
-                            .flex()
-                            .items_center()
-                            .whitespace_nowrap()
-                            .child(
-                                layout
-                                    .text(SAIRA, 15., 30., 700.)
-                                    .text_color(rgb(ON_ICE))
-                                    .child(format!("Now {}", clock_time(frame.now))),
-                            ),
-                    )
-                }),
+                .when_some(
+                    frame.axis.playhead_fraction(frame.meter_time),
+                    |ticks, at| {
+                        ticks.child(
+                            div()
+                                .absolute()
+                                .left(layout.px(at as f32 * TRACK_WIDTH))
+                                .top(layout.px(7.))
+                                .h(layout.px(30.))
+                                .px(layout.px(10.))
+                                .rounded(layout.px(4.))
+                                .bg(rgb(ICE))
+                                .flex()
+                                .items_center()
+                                .whitespace_nowrap()
+                                .child(
+                                    layout
+                                        .text(SAIRA, 15., 30., 700.)
+                                        .text_color(rgb(ON_ICE))
+                                        .child(format!("Now {}", clock_time(frame.now))),
+                                ),
+                        )
+                    },
+                ),
         )
 }
 

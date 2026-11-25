@@ -129,6 +129,8 @@ pub(super) struct GuideSurface {
     preview_dwell: Option<Task<()>>,
     feedback_timeout: Option<Task<()>>,
     clock: Option<Task<()>>,
+    minute_tick: Option<guide_view::MinuteTick>,
+    minute_expiry: Option<Task<()>>,
     _catalog_updates: Task<()>,
     _group_writes: Task<()>,
     icons: ChannelIcons,
@@ -276,6 +278,8 @@ impl GuideSurface {
             preview_dwell: None,
             feedback_timeout: None,
             clock: None,
+            minute_tick: None,
+            minute_expiry: None,
             _catalog_updates: catalog_updates,
             _group_writes: group_writes,
             icons,
@@ -298,6 +302,8 @@ impl GuideSurface {
         if self.activation != activation {
             self.activation = activation;
             self.clock = None;
+            self.minute_tick = None;
+            self.minute_expiry = None;
             self.group_dwell = None;
             self.group_ticket = None;
             self.retire_preview_read();
@@ -330,7 +336,7 @@ impl GuideSurface {
                     if view
                         .update(cx, |view, cx| {
                             if view.activation == Some(activation) {
-                                view.set_clock(clock);
+                                view.minute_boundary(clock, cx);
                                 view.refresh_playback_subject(cx);
                                 view.sync_view(cx);
                             }
@@ -361,6 +367,42 @@ impl GuideSurface {
             self.sync_search_preferences(cx);
             self.sync_view(cx);
         }
+    }
+
+    fn minute_boundary(&mut self, clock: DateTime<FixedOffset>, cx: &mut Context<Self>) {
+        let previous = self.now;
+        self.set_clock(clock);
+        self.minute_expiry = None;
+        self.minute_tick = None;
+        if self.setup.is_some()
+            || self.source.is_some()
+            || self.screen.group_chooser().is_some()
+            || self.search.state().view() == SearchView::Desk
+            || (self.playback.fullscreen() && !self.playback.controls_visible)
+            || guide_view::clock_time(previous.to_utc()) == guide_view::clock_time(clock.to_utc())
+        {
+            return;
+        }
+        let board = (!self.playback.fullscreen()
+            && self.screen.mode() == GuideMode::Now
+            && previous.minute() / 30 == clock.minute() / 30)
+            .then_some(&self.screen);
+        let tick = guide_view::MinuteTick::new(previous, clock, board);
+        let badges = !tick.rollovers.is_empty();
+        self.minute_tick = Some(tick);
+        self.minute_expiry = Some(cx.spawn(async move |view, cx| {
+            if badges {
+                cx.background_executor().timer(Duration::from_secs(4)).await;
+                let _ = view.update(cx, |_, cx| cx.notify());
+            }
+            cx.background_executor()
+                .timer(Duration::from_millis(if badges { 200 } else { 600 }))
+                .await;
+            let _ = view.update(cx, |view, cx| {
+                view.minute_tick = None;
+                cx.notify();
+            });
+        }));
     }
 
     fn set_clock(&mut self, clock: DateTime<FixedOffset>) {
@@ -490,6 +532,9 @@ impl GuideSurface {
                 if current != generation {
                     return;
                 }
+                if let Some(tick) = &mut self.minute_tick {
+                    tick.interrupted = true;
+                }
                 self.icons.note_navigation();
                 if !matches!(edit, activity::Edit::Changed(_)) {
                     self.active_editor = None;
@@ -520,6 +565,9 @@ impl GuideSurface {
     fn press(&mut self, key: ScreenKey, repeat: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.activation.is_none() || self.active_editor.is_some() || self.source_editor_open() {
             return;
+        }
+        if let Some(tick) = &mut self.minute_tick {
+            tick.interrupted = true;
         }
         self.icons.note_navigation();
         if self.setup.is_some() {
@@ -559,7 +607,17 @@ impl GuideSurface {
             self.defer_tint(cx);
         }
         let prior_mode = self.screen.mode();
+        let prior_group = self
+            .minute_tick
+            .as_ref()
+            .and_then(|_| self.screen.selected_group().cloned());
         let action = self.screen.press(key, now.to_utc(), *now.offset());
+        if let Some(tick) = &mut self.minute_tick
+            && (self.screen.mode() != prior_mode
+                || prior_group.as_ref() != self.screen.selected_group())
+        {
+            tick.rollovers.clear();
+        }
         if self.screen.mode() != prior_mode {
             self.now_lane = guide_view::LaneViewport::default();
             self.timeline_rail = guide_view::RailViewport::default();
@@ -1081,17 +1139,25 @@ impl Render for GuideSurface {
             self.icons.hide();
             return root.child(setup);
         }
+        let choice = self.backdrop();
+        let search = (!self.playback.fullscreen())
+            .then(|| self.render_search(window, choice))
+            .flatten();
+        let minute = guide_view::MinuteFrame::new(
+            self.now,
+            self.minute_tick.as_ref(),
+            !cx.reduce_motion(),
+            window,
+        );
         let player = self
             .playback
-            .render(window, self.now.to_utc(), cx.reduce_motion(), frame);
+            .render(window, minute, cx.reduce_motion(), frame);
         let root = root.relative().overflow_hidden().bg(rgb(guide_view::INK));
         if frame.fullscreen >= 1. {
             self.icons.hide();
             return root.children(player);
         }
         let selected = self.playback.docked() || self.playback.fullscreen();
-        let choice = self.backdrop();
-        let search = self.render_search(window, choice);
         let icon = if selected {
             self.playback.channel_icon()
         } else {
@@ -1117,7 +1183,7 @@ impl Render for GuideSurface {
             &self.screen,
             guide_view::GuideBand {
                 choice,
-                now: self.now,
+                minute,
                 preview: self.presented_preview.as_ref(),
                 description: self.description.as_ref(),
                 docked: selected,

@@ -1,4 +1,3 @@
-use chrono::{DateTime, FixedOffset};
 use gpui::{Div, div, linear_color_stop, linear_gradient, prelude::*, rgb, rgba, svg};
 use sparrow_tv_guide::{
     guide_screen::{ScreenFocus, ToolbarFocus},
@@ -9,7 +8,7 @@ use crate::channel_icons::ChannelIcons;
 
 use super::{
     CANVAS_WIDTH, CELL, CELL_ELAPSED, DIM, FAINT, GUTTER, GuideBand, ICE, Layout, ON_ICE,
-    PreviewSelection, SAIRA, SAIRA_CLOCK, SAIRA_PREVIEW, SAIRA_TITLE,
+    PreviewSelection, SAIRA, SAIRA_PREVIEW, SAIRA_TITLE,
     board::quality_tags,
     channel_icon::{Plate, family_icon, plate},
     clock_time,
@@ -26,7 +25,7 @@ const NO_GUIDE_DATA: &str = "No guide data. The channel still plays.";
 pub(super) fn render(layout: Layout, band: GuideBand<'_>, icons: &ChannelIcons) -> Div {
     let GuideBand {
         focus,
-        now,
+        minute,
         preview: shown,
         description,
         docked,
@@ -37,9 +36,9 @@ pub(super) fn render(layout: Layout, band: GuideBand<'_>, icons: &ChannelIcons) 
         .when(!docked, |band| {
             band.child(poster(layout, shown.map(|preview| &preview.family), icons))
         })
-        .child(toolbar(layout, focus, now, docked, inline_search))
+        .child(toolbar(layout, focus, minute, docked, inline_search))
         .when_some(shown, |band, shown| {
-            band.child(preview(layout, shown, now, description, icons, docked))
+            band.child(preview(layout, shown, minute, description, icons, docked))
         })
 }
 
@@ -55,7 +54,7 @@ pub(super) fn panel_bounds(docked: bool) -> (f32, f32) {
 fn toolbar(
     layout: Layout,
     focus: ScreenFocus,
-    now: DateTime<FixedOffset>,
+    minute: super::MinuteFrame<'_>,
     docked: bool,
     inline_search: bool,
 ) -> Div {
@@ -121,13 +120,7 @@ fn toolbar(
         .gap(layout.px(20.))
         .child(search)
         .child(sources)
-        .child(
-            layout
-                .text(SAIRA_CLOCK, 30., 30., 600.)
-                .ml(layout.px(6.))
-                .flex_none()
-                .child(clock_time(now.to_utc())),
-        )
+        .child(minute.clock(layout, 30.).ml(layout.px(6.)))
 }
 
 fn poster(
@@ -196,11 +189,12 @@ fn poster(
 fn preview(
     layout: Layout,
     shown: &PreviewSelection,
-    now: DateTime<FixedOffset>,
+    minute: super::MinuteFrame<'_>,
     description: Option<&gpui::SharedString>,
     icons: &ChannelIcons,
     docked: bool,
 ) -> Div {
+    let now = minute.now;
     let family = &shown.family;
     let highlighted = shown.programme(now);
     let preferred = shown.preferred_variant();
@@ -284,10 +278,7 @@ fn preview(
     let starts = programme.starts_at();
     let ends = programme.ends_at();
     let meter = match preview_timing(programme, now.to_utc()) {
-        PreviewTiming::Live {
-            elapsed_fraction,
-            minutes_left,
-        } => meter
+        PreviewTiming::Live { minutes_left, .. } => meter
             .child(clock_time(starts))
             .child(
                 div()
@@ -298,7 +289,15 @@ fn preview(
                     .bg(rgba(FAINT))
                     .child(
                         layout
-                            .rect(0., 0., 264. * elapsed_fraction as f32, 6.)
+                            .rect(
+                                0.,
+                                0.,
+                                264. * sparrow_tv_guide::time::elapsed_fraction(
+                                    programme,
+                                    minute.meter_time(),
+                                ) as f32,
+                                6.,
+                            )
                             .rounded_l(layout.px(3.))
                             .bg(rgb(ICE)),
                     ),
