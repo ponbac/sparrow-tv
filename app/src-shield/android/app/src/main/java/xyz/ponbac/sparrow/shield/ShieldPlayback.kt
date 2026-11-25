@@ -23,6 +23,8 @@ import xyz.ponbac.sparrow.NativePlaybackSignal
 import xyz.ponbac.sparrow.NativePlaybackViewport
 import xyz.ponbac.sparrow.PlaybackAudioFocus
 
+internal const val PICTURE_REVEAL_MS = 240L
+
 /** Per-Activity Media3 adapter. JNI submits work and gets its completion as an event. */
 @Keep
 class ShieldPlayback(

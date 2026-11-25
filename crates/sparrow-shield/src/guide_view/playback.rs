@@ -1,5 +1,9 @@
 //! Shield picture placement and the controls that fit around the native surface.
 
+mod signal_mark;
+
+use std::time::Instant;
+
 use gpui::{Bounds, Div, Pixels, Size, div, point, prelude::*, rgb, rgba, size};
 
 use super::{
@@ -82,6 +86,7 @@ pub(crate) struct PlaybackOverlay<'a> {
     pub(crate) programme: Option<PlaybackProgramme<'a>>,
     pub(crate) clock: &'a str,
     pub(crate) stage: PlaybackStage,
+    pub(crate) playing_since: Option<Instant>,
     pub(crate) audio_track: Option<&'a str>,
     pub(crate) quality: Option<&'a str>,
     pub(crate) copy_label: &'static str,
@@ -248,13 +253,7 @@ pub(crate) fn docked_playback(viewport: Size<Pixels>, playback: &PlaybackOverlay
         .items_center()
         .gap(layout.px(10.))
         .when(focused, |caption| caption.bg(rgb(ICE)))
-        .child(
-            div()
-                .size(layout.px(12.))
-                .flex_none()
-                .rounded_full()
-                .bg(rgb(TALLY)),
-        )
+        .child(signal_mark::render(layout, playback, focused))
         .child(
             layout
                 .text(SAIRA, 20., 20., 600.)
@@ -363,6 +362,7 @@ fn fullscreen_head(layout: Layout, playback: &PlaybackOverlay<'_>) -> Div {
                         .truncate()
                         .child(playback.channel_name.to_owned()),
                 )
+                .child(signal_mark::render(layout, playback, false))
                 .child(status_tag(layout, playback.stage, true))
                 .when_some(playback.quality, |channel, quality| {
                     channel.child(quality_tag(layout, quality))

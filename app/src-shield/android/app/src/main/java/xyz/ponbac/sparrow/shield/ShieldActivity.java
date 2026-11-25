@@ -10,6 +10,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.util.SparseArray;
 import android.view.KeyEvent;
 import android.view.Surface;
@@ -73,6 +74,7 @@ public final class ShieldActivity extends Activity implements SurfaceHolder.Call
         }
         nativeStart(getApplicationContext(), getDataDir().getAbsolutePath());
         nativeRegisterHost(hostId);
+        updateMotionPreference();
         setContentView(root);
         root.requestFocus();
     }
@@ -99,7 +101,14 @@ public final class ShieldActivity extends Activity implements SurfaceHolder.Call
     @Override
     protected void onResume() {
         super.onResume();
+        updateMotionPreference();
         nativeResume(hostId);
+    }
+
+    private void updateMotionPreference() {
+        float scale = Settings.Global.getFloat(getContentResolver(), Settings.Global.ANIMATOR_DURATION_SCALE, 1f);
+        scale = Float.isFinite(scale) && scale >= 0f ? Math.min(scale, 10f) : 1f;
+        nativeAnimatorScale(scale, Math.round(ShieldPlaybackKt.PICTURE_REVEAL_MS * scale));
     }
 
     @Override
@@ -388,6 +397,7 @@ public final class ShieldActivity extends Activity implements SurfaceHolder.Call
     private native void nativeCatalogActive(long id, boolean active);
     private native void nativeSurface(long id, Surface surface, float density);
     private native void nativeReleaseSurface(long id);
+    private native void nativeAnimatorScale(float scale, int revealMillis);
     private native void nativeResume(long id);
     private native void nativePause(long id);
     private native void nativeDestroy(long id, boolean finishing);

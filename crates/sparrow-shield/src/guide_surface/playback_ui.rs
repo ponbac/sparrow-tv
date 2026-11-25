@@ -1,4 +1,8 @@
-use std::{collections::VecDeque, fmt::Write, time::Duration};
+use std::{
+    collections::VecDeque,
+    fmt::Write,
+    time::{Duration, Instant},
+};
 
 use chrono::{DateTime, Utc};
 use gpui::{Context, Div, Window, prelude::*};
@@ -40,6 +44,7 @@ mod tuning;
 #[derive(Default)]
 pub(super) struct PlaybackUi {
     state: TvPlaybackSnapshot,
+    playing_since: Option<Instant>,
     subject: Option<PlaybackSubject>,
     subject_task: Option<gpui::Task<()>>,
     tune_revision: u64,
@@ -258,6 +263,7 @@ impl PlaybackUi {
             programme,
             clock: &clock,
             stage: self.stage(),
+            playing_since: self.playing_since,
             audio_track: self.selected_audio_track().map(AudioTrack::display_name),
             quality: selected.quality.map(quality_name),
             copy_label: self.copy.label(),
@@ -334,6 +340,9 @@ impl GuideSurface {
             && snapshot.transport_token != self.playback.state.transport_token;
         if snapshot.zap_revision != self.playback.state.zap_revision {
             self.playback.reset_zap();
+        }
+        if began_playing {
+            self.playback.playing_since = Some(Instant::now());
         }
         self.playback.state = snapshot;
         let fullscreen = self.playback.fullscreen();
