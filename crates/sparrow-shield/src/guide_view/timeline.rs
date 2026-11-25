@@ -39,8 +39,13 @@ struct TimelineFrame {
     now: DateTime<Utc>,
 }
 
-pub(super) fn rail(layout: Layout, screen: &GuideScreen, viewport: &mut RailViewport) -> Div {
-    rail::render(layout, screen, viewport)
+pub(super) fn rail(
+    layout: Layout,
+    screen: &GuideScreen,
+    viewport: &mut RailViewport,
+    slide: super::SlideFrame,
+) -> Div {
+    rail::render(layout, screen, viewport, slide)
 }
 
 fn channel_bounds() -> [f32; 4] {
@@ -57,6 +62,7 @@ pub(super) fn render(
     screen: &GuideScreen,
     minute: super::MinuteFrame<'_>,
     icons: &ChannelIcons,
+    slide: super::SlideFrame,
 ) -> Div {
     let now = minute.now;
     let axis = screen
@@ -75,18 +81,24 @@ pub(super) fn render(
     let retry_focus = focus == Some(TimelineFocus::Retry);
     let families = screen.families();
     let scroll = screen.scroll_offset();
-    let rows = screen.visible_families(OVERSCAN_LINES).map(|index| {
-        let family = &families[index];
-        render_row(
-            layout,
-            frame,
-            family,
-            screen.variant_preferences(),
-            index as f32 * TIMELINE_ROW_PITCH - scroll,
-            focus.filter(|focus| focus.family() == Some(index)),
-            family_icon(family).and_then(|icon| icons.get(icon)),
-        )
-    });
+    let rows = screen
+        .visible_families(OVERSCAN_LINES)
+        .enumerate()
+        .map(|(ordinal, index)| {
+            let row_focus = focus.filter(|focus| focus.family() == Some(index));
+            let (offset, opacity) = slide.item(ordinal, row_focus.is_some());
+            let family = &families[index];
+            let row = render_row(
+                layout,
+                frame,
+                family,
+                screen.variant_preferences(),
+                index as f32 * TIMELINE_ROW_PITCH - scroll,
+                row_focus,
+                family_icon(family).and_then(|icon| icons.get(icon)),
+            );
+            row.left(layout.px(offset)).opacity(opacity)
+        });
     let rows_bottom = TIMELINE_ROW_TOP + families.len() as f32 * TIMELINE_ROW_PITCH - scroll;
     let rows_height = (rows_bottom.min(height) - RULER_HEIGHT).max(0.);
     let mut board = layout

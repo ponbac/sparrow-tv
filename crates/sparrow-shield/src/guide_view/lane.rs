@@ -43,6 +43,7 @@ pub(crate) struct LaneViewport {
     first: usize,
     clipped: f32,
     group_reveal: GroupReveal,
+    ink: super::group_slide::GroupInk,
 }
 
 impl LaneViewport {
@@ -118,6 +119,7 @@ pub(super) fn render(
     screen: &GuideScreen,
     viewport: &mut LaneViewport,
     window: &Window,
+    slide: super::SlideFrame,
 ) -> Div {
     let lane_focus = match screen.focus() {
         ScreenFocus::GroupLane(focus) => Some(focus),
@@ -146,6 +148,7 @@ pub(super) fn render(
             window,
             (groups_x, available),
             lane_focus,
+            slide,
         ))
         .child(choose_groups(
             layout,
@@ -233,6 +236,7 @@ fn groups(
     window: &Window,
     bounds: (f32, f32),
     focus: Option<LaneFocus>,
+    slide: super::SlideFrame,
 ) -> Div {
     let (x, available) = bounds;
     let groups = screen.groups();
@@ -252,11 +256,21 @@ fn groups(
         |index| pill(index).width(layout, window).min(available),
     );
     let mut left = -viewport.clipped;
+    let mut pills = Vec::new();
     for index in viewport.first..=groups.len() {
         let pill = pill(index);
         let content_width = pill.width(layout, window);
         let width = content_width.min(available);
-        row = row.child(pill.render(
+        if selected == index {
+            let [x, w] = viewport.ink.bounds(selected, [left, width], slide);
+            row = row.child(super::group_slide::GroupInk::pill(layout.rect(
+                x,
+                0.,
+                w,
+                CONTROL_HEIGHT,
+            )));
+        }
+        pills.push(pill.render(
             layout,
             layout.rect(left, 0., width, CONTROL_HEIGHT),
             selected == index,
@@ -268,7 +282,7 @@ fn groups(
             break;
         }
     }
-    row
+    row.children(pills)
 }
 
 pub(super) fn group_pill_index(focus: LaneFocus) -> Option<usize> {
@@ -322,11 +336,7 @@ impl GroupPill {
         let (text, count, fill) = if focused {
             (rgb(ON_ICE), rgba(ON_ICE_DIM), rgb(ICE))
         } else if selected {
-            (
-                rgb(TEXT),
-                layout.secondary(DIM),
-                layout.surface(CELL_ELAPSED),
-            )
+            (rgb(TEXT), layout.secondary(DIM), rgba(0))
         } else {
             (layout.secondary(DIM), layout.secondary(MUTE), rgba(0))
         };

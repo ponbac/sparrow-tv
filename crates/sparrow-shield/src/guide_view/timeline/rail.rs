@@ -16,6 +16,7 @@ const GROUP_INSET: f32 = 7.5;
 #[derive(Default)]
 pub(crate) struct RailViewport {
     first: usize,
+    ink: super::super::group_slide::GroupInk,
     group_reveal: lane::GroupReveal,
 }
 
@@ -31,7 +32,12 @@ impl RailViewport {
     }
 }
 
-pub(super) fn render(layout: Layout, screen: &GuideScreen, viewport: &mut RailViewport) -> Div {
+pub(super) fn render(
+    layout: Layout,
+    screen: &GuideScreen,
+    viewport: &mut RailViewport,
+    slide: super::super::SlideFrame,
+) -> Div {
     let height = (layout.height - BAND_BOTTOM).max(0.);
     let roster_top = height - ROSTER_BOTTOM - CONTROL_HEIGHT;
     let groups_height = (roster_top - 12. - GROUPS_TOP).max(0.);
@@ -68,6 +74,18 @@ pub(super) fn render(layout: Layout, screen: &GuideScreen, viewport: &mut RailVi
             GuideMode::Timeline,
             focus == Some(LaneFocus::Phase),
         ))
+        .when((viewport.first..end).contains(&selected), |rail| {
+            let y = GROUPS_TOP + (selected - viewport.first) as f32 * GROUP_PITCH;
+            let [y, w] = viewport
+                .ink
+                .bounds(selected, [y, WIDTH - GROUP_INSET * 2.], slide);
+            rail.child(super::super::group_slide::GroupInk::pill(layout.rect(
+                GROUP_INSET,
+                y,
+                w,
+                GROUP_HEIGHT,
+            )))
+        })
         .children(groups)
         .when(end < count, |rail| {
             let used = (rows as f32 * GROUP_PITCH - (GROUP_PITCH - GROUP_HEIGHT)).max(0.);

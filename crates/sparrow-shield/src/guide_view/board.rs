@@ -43,6 +43,7 @@ pub(super) fn render(
     screen: &GuideScreen,
     minute: super::MinuteFrame<'_>,
     icons: &ChannelIcons,
+    slide: super::SlideFrame,
 ) -> Div {
     let height = (layout.height - BOARD_TOP).max(0.);
     let focus = match screen.focus() {
@@ -63,16 +64,20 @@ pub(super) fn render(
     }
     let families = screen.families();
     let scroll = screen.scroll_offset();
-    for index in screen.visible_families(OVERSCAN_LINES) {
+    for (ordinal, index) in screen.visible_families(OVERSCAN_LINES).enumerate() {
+        let focus = focus.filter(|focus| focus.family() == Some(index));
+        let (offset, opacity) = slide.item(ordinal, focus.is_some());
         let [x, y, w, h] = card_bounds(index, scroll);
-        let rect = layout.rect(x, y - BOARD_TOP, w, h);
+        let rect = layout
+            .rect(x + offset, y - BOARD_TOP, w, h)
+            .opacity(opacity);
         let family = &families[index];
         board = board.child(card(
             layout,
             rect,
             screen,
             index,
-            focus.filter(|focus| focus.family() == Some(index)),
+            focus,
             minute,
             family_icon(family).and_then(|icon| icons.get(icon)),
         ));
