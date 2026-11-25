@@ -420,6 +420,27 @@ impl FlatCatalog {
         self.section_slice(Section::ChannelsHot)
     }
 
+    pub(super) fn channel_index_by_number(&self, number: u32) -> Option<usize> {
+        let channels = self.channels_hot();
+        let index = channels.partition_point(|channel| channel.number.get() < number);
+        (channels.get(index)?.number.get() == number).then_some(index)
+    }
+
+    pub(super) fn channel_family_range(&self, index: usize) -> Range<usize> {
+        let channels = self.channels_hot();
+        let number = channels[index].number.get();
+        let before = channels[..index]
+            .iter()
+            .rev()
+            .take_while(|channel| channel.number.get() == number)
+            .count();
+        let after = channels[index + 1..]
+            .iter()
+            .take_while(|channel| channel.number.get() == number)
+            .count();
+        index - before..index + 1 + after
+    }
+
     pub(super) fn channels_by_id(&self) -> &[U32] {
         self.section_slice(Section::ChannelsById)
     }
@@ -1890,10 +1911,36 @@ fn validate_flat_bytes(
     let mut playback_cursor = 0_usize;
     let mut tvg_id_cursor = 0_usize;
     let mut channel_search_cursor = 0_usize;
+    let mut family_number = 0_u32;
+    let mut family_group = 0_u32;
+    let mut family_qualities = 0_u8;
     for index in 0..channel_count {
         let ch = &channels_hot[index];
         if ch.pad != [0; 3] || decode_quality(ch.quality).is_none() {
             return None;
+        }
+        // The number index needs dense, contiguous families of at most four
+        // distinct Quality Variants, all inside the same Channel Group.
+        let number = ch.number.get();
+        let group_index = ch.group_index.get();
+        let quality_bit = if ch.quality == 0 { 0 } else { 1 << ch.quality };
+        if number == family_number {
+            if number == 0
+                || group_index != family_group
+                || quality_bit == 0
+                || family_qualities == 0
+                || family_qualities & quality_bit != 0
+            {
+                return None;
+            }
+            family_qualities |= quality_bit;
+        } else {
+            if family_number.checked_add(1) != Some(number) {
+                return None;
+            }
+            family_number = number;
+            family_group = group_index;
+            family_qualities = quality_bit;
         }
         let icon_index = ch.icon_index.get();
         if icon_index != ABSENT_U32 && icon_index as usize >= icon_count {

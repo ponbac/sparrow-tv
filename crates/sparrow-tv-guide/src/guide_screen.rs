@@ -3,6 +3,7 @@
 use std::{
     collections::{HashSet, VecDeque},
     ops::Range,
+    sync::Arc,
     time::Duration,
 };
 
@@ -15,6 +16,7 @@ use sparrow_core::{
 use crate::{
     BoardView, ChannelGroupPages, GroupPageRequest, GuideFamily, GuidePageRequest, GuidePages,
     GuideWindow, PageStatus, PageUpdate, VariantPreferences,
+    group_chooser::{GroupChooser, GroupChooserFocus, GroupChooserIntent, GroupRosterCounts},
     now_focus::{Direction, NowFocus, NowMove, NowNavigation},
     time::{ProgrammeFocus, ProgrammeStep, Timeline},
     timeline_focus::{TimelineFocus, TimelineMove, TimelineNavigation},
@@ -76,10 +78,23 @@ pub enum ScreenKey {
     Activate,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ScreenAction {
     None,
     Unavailable,
+    EditGroupFilter,
+    GroupVisibilityChanged(GroupVisibilityChange),
+}
+
+/// A Channel Group visibility edit already applied optimistically to the Guide.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GroupVisibilityChange {
+    Set {
+        name: String,
+        hidden: bool,
+    },
+    /// Clears every exclusion, including groups absent from the current catalog.
+    ShowAll,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -214,11 +229,13 @@ impl BoardGeometry {
 pub struct GuideScreen {
     window: GuideWindow,
     exclusions: HashSet<String>,
+    preferences: Arc<VariantPreferences>,
     configured: Option<bool>,
     open_failed: bool,
     generation: Option<CatalogGeneration>,
     group_pages: Option<ChannelGroupPages>,
     visible_groups: Vec<ChannelGroupView>,
+    group_chooser: Option<GroupChooser>,
     selected: Option<ChannelGroupFilter>,
     selected_lane: LaneFocus,
     pages: Option<GuidePages>,
@@ -238,11 +255,13 @@ impl GuideScreen {
         Self {
             window: GuideWindow::at(now, offset, false),
             exclusions,
+            preferences: Arc::default(),
             configured: None,
             open_failed: false,
             generation: None,
             group_pages: None,
             visible_groups: Vec::new(),
+            group_chooser: None,
             selected: None,
             selected_lane: LaneFocus::All,
             pages: None,
@@ -295,8 +314,90 @@ impl GuideScreen {
         self.selected.as_ref()
     }
 
+    pub fn clear_group_selection(&mut self) {
+        self.select_group(None);
+    }
+
     pub fn groups(&self) -> &[ChannelGroupView] {
         &self.visible_groups
+    }
+
+    pub fn exclusions(&self) -> &HashSet<String> {
+        &self.exclusions
+    }
+
+    pub fn variant_preferences(&self) -> &Arc<VariantPreferences> {
+        &self.preferences
+    }
+
+    pub fn set_variant_preferences(&mut self, preferences: Arc<VariantPreferences>) {
+        if self.preferences == preferences {
+            return;
+        }
+        let focused = self.board_target();
+        if self.timeline().is_some() {
+            self.cancel_pending_navigation();
+        }
+        self.preferences = preferences;
+        self.reconcile_timeline_return();
+        self.reconcile_preview();
+        self.restore_board_target(focused);
+    }
+
+    pub fn group_chooser(&self) -> Option<&GroupChooser> {
+        self.group_chooser.as_ref()
+    }
+
+    /// The unfiltered catalog roster, including hidden groups.
+    pub fn group_roster(&self) -> &[ChannelGroupView] {
+        self.group_pages
+            .as_ref()
+            .map_or(&[], ChannelGroupPages::groups)
+    }
+
+    pub fn group_roster_counts(&self) -> GroupRosterCounts {
+        let shown = self.visible_groups.len();
+        GroupRosterCounts {
+            shown,
+            hidden: self.group_roster().len() - shown,
+        }
+    }
+
+    pub fn group_roster_status(&self) -> Option<PageStatus> {
+        self.group_pages.as_ref().map(ChannelGroupPages::status)
+    }
+
+    pub fn group_chooser_can_show_all(&self) -> bool {
+        !self.exclusions.is_empty()
+    }
+
+    /// Applies a complete preference snapshot without changing the active Guide mode.
+    pub fn set_group_exclusions(&mut self, exclusions: HashSet<String>) -> bool {
+        self.apply_group_exclusions(exclusions, self.selected.clone())
+    }
+
+    pub fn group_chooser_intent(&mut self, intent: GroupChooserIntent) -> ScreenAction {
+        if self.group_chooser.is_none() {
+            return ScreenAction::None;
+        }
+        match intent {
+            GroupChooserIntent::Close => {
+                self.close_group_chooser();
+                ScreenAction::None
+            }
+            GroupChooserIntent::Filter(filter) => {
+                let groups = self
+                    .group_pages
+                    .as_ref()
+                    .map_or(&[][..], ChannelGroupPages::groups);
+                if let Some(chooser) = &mut self.group_chooser {
+                    chooser.change_filter(filter, groups);
+                }
+                self.focus_epoch = self.focus_epoch.wrapping_add(1);
+                ScreenAction::None
+            }
+            GroupChooserIntent::Activate(target) => self.activate_group_chooser(target),
+        }
     }
 
     pub fn families(&self) -> &[GuideFamily] {
@@ -381,7 +482,6 @@ impl GuideScreen {
         self.viewport.offset
     }
 
-    /// The first row that extends past the fixed header. A fully covered viewport reports the row count.
     pub fn first_visible_row(&self) -> usize {
         let geometry = self.mode().geometry();
         if self.viewport.height <= geometry.covered_top {
@@ -447,6 +547,7 @@ impl GuideScreen {
             self.preview = None;
             self.clear_timeline_return();
             self.group_pages = generation.map(ChannelGroupPages::new);
+            self.refresh_chooser_matches();
             self.visible_groups.clear();
             self.selected_lane = LaneFocus::All;
             self.cached.clear();
@@ -476,6 +577,7 @@ impl GuideScreen {
                 && groups.status() == PageStatus::ReconcileGeneration
             {
                 groups.select(generation);
+                self.refresh_chooser_matches();
                 self.visible_groups.clear();
                 self.selected_lane = LaneFocus::All;
                 if matches!(self.focus(), ScreenFocus::GroupLane(LaneFocus::Group(_))) {
@@ -533,6 +635,7 @@ impl GuideScreen {
                     .cloned(),
             );
             let groups_complete = pages.status() == PageStatus::Complete;
+            self.refresh_chooser_matches();
             if self.selected_lane == LaneFocus::All {
                 self.update_selected_lane();
             }
@@ -586,8 +689,12 @@ impl GuideScreen {
     pub fn prefetch_ticket(&self) -> Option<GroupPrefetchTicket> {
         self.generation?;
         let group = self.focused_group()?;
-        (group != self.selected && !self.cached.iter().any(|entry| entry.key == group))
-            .then_some(GroupPrefetchTicket(self.focus_epoch))
+        (group != self.selected
+            && group
+                .as_ref()
+                .is_none_or(|group| !self.exclusions.contains(group.as_str()))
+            && !self.cached.iter().any(|entry| entry.key == group))
+        .then_some(GroupPrefetchTicket(self.focus_epoch))
     }
 
     /// The host calls this when `GROUP_PREFETCH_DELAY` has elapsed.
@@ -617,6 +724,21 @@ impl GuideScreen {
     ) -> ScreenAction {
         if key != ScreenKey::Arrow(Direction::Down) {
             self.cancel_pending_navigation();
+        }
+        if let Some(focus) = self.group_chooser.as_ref().map(GroupChooser::focus) {
+            return match key {
+                ScreenKey::Activate => self.activate_group_chooser(focus),
+                ScreenKey::Arrow(direction) => {
+                    let can_show_all = self.group_chooser_can_show_all();
+                    if let Some(chooser) = &mut self.group_chooser {
+                        chooser.arrow(direction, can_show_all);
+                        if chooser.focus() != focus {
+                            self.focus_epoch = self.focus_epoch.wrapping_add(1);
+                        }
+                    }
+                    ScreenAction::None
+                }
+            };
         }
         match key {
             ScreenKey::Activate => self.activate(now, offset),
@@ -653,10 +775,17 @@ impl GuideScreen {
                 self.retry();
                 ScreenAction::None
             }
-            ScreenFocus::Toolbar(_)
-            | ScreenFocus::GroupLane(LaneFocus::ChooseGroups)
-            | ScreenFocus::Board(_)
-            | ScreenFocus::TimelineBoard(_) => ScreenAction::Unavailable,
+            ScreenFocus::GroupLane(LaneFocus::ChooseGroups) => {
+                self.group_chooser = Some(GroupChooser::new(
+                    self.group_roster(),
+                    self.selected_group(),
+                ));
+                self.focus_epoch = self.focus_epoch.wrapping_add(1);
+                ScreenAction::None
+            }
+            ScreenFocus::Toolbar(_) | ScreenFocus::Board(_) | ScreenFocus::TimelineBoard(_) => {
+                ScreenAction::Unavailable
+            }
         }
     }
 
@@ -782,7 +911,7 @@ impl GuideScreen {
         let first = self.board_entry_row();
         if let Some(family) = self.families().get(first) {
             let anchor = axis.anchor(now, None);
-            let target = axis.cell_at(programmes(family), anchor);
+            let target = axis.cell_at(family.programmes(&self.preferences), anchor);
             Some(timeline_cell(first, target))
         } else {
             self.retry_available().then_some(TimelineFocus::Retry)
@@ -798,7 +927,7 @@ impl GuideScreen {
             .and_then(|family| self.families().get(family));
         let focused = match focus {
             TimelineFocus::Programme { cell, .. } => {
-                current.and_then(|family| programmes(family).get(cell))
+                current.and_then(|family| family.programmes(&self.preferences).get(cell))
             }
             _ => None,
         };
@@ -827,7 +956,7 @@ impl GuideScreen {
                     && let Some(family) = current
                 {
                     let count = self.variant_count(index);
-                    let cells = programmes(family);
+                    let cells = family.programmes(&self.preferences);
                     let target = self
                         .timeline_horizontal_target(focus, direction, anchor, axis, cells, count);
                     if target != self.focus() {
@@ -972,6 +1101,13 @@ impl GuideScreen {
     }
 
     fn focused_group(&self) -> Option<Option<ChannelGroupFilter>> {
+        if let Some(chooser) = self.group_chooser() {
+            return match chooser.focus() {
+                GroupChooserFocus::Pick(0) => Some(None),
+                GroupChooserFocus::Pick(row) => self.chooser_group(row).map(Some),
+                _ => None,
+            };
+        }
         match self.focus() {
             ScreenFocus::GroupLane(LaneFocus::All) => Some(None),
             ScreenFocus::GroupLane(LaneFocus::Group(index)) => self
@@ -981,6 +1117,165 @@ impl GuideScreen {
                 .map(Some),
             _ => None,
         }
+    }
+
+    fn refresh_chooser_matches(&mut self) {
+        if let Some(chooser) = &mut self.group_chooser {
+            let groups = self
+                .group_pages
+                .as_ref()
+                .map_or(&[][..], ChannelGroupPages::groups);
+            let focus = chooser.focus();
+            chooser.rebuild_matches(groups);
+            if chooser.focus() != focus {
+                self.focus_epoch = self.focus_epoch.wrapping_add(1);
+            }
+        }
+    }
+
+    fn chooser_group(&self, row: usize) -> Option<ChannelGroupFilter> {
+        let index = self.group_chooser()?.group_index(row)?;
+        ChannelGroupFilter::parse(self.group_roster().get(index)?.name()).ok()
+    }
+
+    fn close_group_chooser(&mut self) {
+        self.group_chooser = None;
+        self.focus_epoch = self.focus_epoch.wrapping_add(1);
+        self.move_focus(ScreenFocus::GroupLane(LaneFocus::ChooseGroups));
+    }
+
+    fn activate_group_chooser(&mut self, target: GroupChooserFocus) -> ScreenAction {
+        let can_show_all = self.group_chooser_can_show_all();
+        if !self
+            .group_chooser
+            .as_mut()
+            .is_some_and(|chooser| chooser.focus_control(target, can_show_all))
+        {
+            return ScreenAction::None;
+        }
+        self.focus_epoch = self.focus_epoch.wrapping_add(1);
+        let change = match target {
+            GroupChooserFocus::Close => {
+                self.close_group_chooser();
+                None
+            }
+            GroupChooserFocus::Filter => return ScreenAction::EditGroupFilter,
+            GroupChooserFocus::Pick(0) => {
+                self.select_group(None);
+                self.close_group_chooser();
+                None
+            }
+            GroupChooserFocus::Pick(row) => {
+                let Some(group) = self.chooser_group(row) else {
+                    return ScreenAction::None;
+                };
+                let change = if self.exclusions.contains(group.as_str()) {
+                    let name = group.as_str().to_owned();
+                    let mut exclusions = self.exclusions.clone();
+                    exclusions.remove(&name);
+                    self.apply_group_exclusions(exclusions, Some(group));
+                    Some(GroupVisibilityChange::Set {
+                        name,
+                        hidden: false,
+                    })
+                } else {
+                    self.select_group(Some(group));
+                    None
+                };
+                self.close_group_chooser();
+                change
+            }
+            GroupChooserFocus::Toggle(row) => {
+                let Some(group) = self.chooser_group(row) else {
+                    return ScreenAction::None;
+                };
+                let name = group.as_str().to_owned();
+                let mut exclusions = self.exclusions.clone();
+                let hidden = !exclusions.remove(&name);
+                if hidden {
+                    exclusions.insert(name.clone());
+                }
+                self.set_group_exclusions(exclusions);
+                Some(GroupVisibilityChange::Set { name, hidden })
+            }
+            GroupChooserFocus::ShowAll => {
+                self.set_group_exclusions(HashSet::new());
+                if let Some(chooser) = &mut self.group_chooser {
+                    let groups = self
+                        .group_pages
+                        .as_ref()
+                        .map_or(&[][..], ChannelGroupPages::groups);
+                    chooser.focus_selected(groups, self.selected.as_ref());
+                }
+                Some(GroupVisibilityChange::ShowAll)
+            }
+        };
+        change.map_or(ScreenAction::None, ScreenAction::GroupVisibilityChanged)
+    }
+
+    fn apply_group_exclusions(
+        &mut self,
+        exclusions: HashSet<String>,
+        group: Option<ChannelGroupFilter>,
+    ) -> bool {
+        if exclusions == self.exclusions {
+            return false;
+        }
+        let lane_group = match self.focus() {
+            ScreenFocus::GroupLane(LaneFocus::Group(index)) => {
+                self.visible_groups.get(index).cloned()
+            }
+            _ => None,
+        };
+        let focused = self.board_target();
+        let displayed = self.displayed_window();
+        self.exclusions = exclusions;
+        if let Some(chooser) = &mut self.group_chooser {
+            chooser.reconcile_show_all(!self.exclusions.is_empty());
+        }
+        let selected = group.filter(|group| !self.exclusions.contains(group.as_str()));
+        if selected != self.selected {
+            self.clear_timeline_return();
+        }
+        self.selected = selected;
+        self.visible_groups = self
+            .group_roster()
+            .iter()
+            .filter(|group| !self.exclusions.contains(group.name()))
+            .cloned()
+            .collect();
+        self.update_selected_lane();
+        self.cached.clear();
+        self.reads
+            .retain(|read| !matches!(read, GuideRead::Guide(_)));
+        self.focus_epoch = self.focus_epoch.wrapping_add(1);
+        self.cancel_pending_navigation();
+        if let Some(generation) = self.generation {
+            let mut pages = GuidePages::new(
+                generation,
+                self.selected.clone(),
+                self.window,
+                self.exclusions.clone(),
+            );
+            if let Some(previous) = &self.pages {
+                pages.keep_compatible_rows(previous);
+            }
+            self.pages = Some(pages);
+        }
+        if let Some(group) = lane_group {
+            let focus = self
+                .visible_groups
+                .iter()
+                .position(|visible| visible.name() == group.name())
+                .map_or(self.selected_lane(), LaneFocus::Group);
+            self.move_focus(ScreenFocus::GroupLane(focus));
+        }
+        self.reanchor_timeline(displayed);
+        self.restore_board_target(focused);
+        self.reconcile_timeline_return();
+        self.recover_focus();
+        self.schedule_reads();
+        true
     }
 
     fn select_group(&mut self, group: Option<ChannelGroupFilter>) {
@@ -1086,7 +1381,7 @@ impl GuideScreen {
             .map(|row| row.channel().id().clone());
         let programme = match focus {
             ScreenFocus::TimelineBoard(TimelineFocus::Programme { cell, .. }) => {
-                ProgrammeFocus::at(programmes(family), cell)
+                ProgrammeFocus::at(family.programmes(&self.preferences), cell)
             }
             _ => None,
         };
@@ -1129,7 +1424,7 @@ impl GuideScreen {
                         }
                     } else {
                         let cell = prior.programme.as_ref().and_then(|programme| {
-                            let cells = programmes(family);
+                            let cells = family.programmes(&self.preferences);
                             if let Some(cell) = axis.exact_focus(cells, programme) {
                                 retained_programme = Some(TimelineFocus::Programme {
                                     family: index,
@@ -1232,11 +1527,13 @@ impl GuideScreen {
         let Some(mut target) = return_target.clone() else {
             return;
         };
-        let next = locate_programme(*axis, self.families(), &target).map(|(index, cell)| {
-            target.family.index = index;
-            target.cell = Some(cell);
-            target
-        });
+        let next = locate_programme(*axis, self.families(), &self.preferences, &target).map(
+            |(index, cell)| {
+                target.family.index = index;
+                target.cell = Some(cell);
+                target
+            },
+        );
         if let BoardMode::Timeline { return_target, .. } = &mut self.mode {
             *return_target = next;
         }
@@ -1254,8 +1551,10 @@ impl GuideScreen {
         if let Some(target) = &mut preview.programme {
             target.cell = index.and_then(|index| {
                 target.family.index = index;
-                Timeline::new(self.displayed_window())
-                    .exact_focus(programmes(&families[index]), &target.programme)
+                Timeline::new(self.displayed_window()).exact_focus(
+                    families[index].programmes(&self.preferences),
+                    &target.programme,
+                )
             });
         }
         self.preview = Some(preview);
@@ -1278,7 +1577,7 @@ impl GuideScreen {
                 if let Some(axis) = self.timeline()
                     && let Some(row) = self.families().get(family)
                 {
-                    let cell = axis.cell_at(programmes(row), anchor);
+                    let cell = axis.cell_at(row.programmes(&self.preferences), anchor);
                     self.move_focus(ScreenFocus::TimelineBoard(timeline_cell(family, cell)));
                 }
             }
@@ -1304,7 +1603,7 @@ impl GuideScreen {
             if let ScreenFocus::TimelineBoard(TimelineFocus::Programme { cell, .. }) = focus
                 && let Some(mut axis) = self.timeline()
             {
-                let cells = programmes(row);
+                let cells = row.programmes(&self.preferences);
                 if let Some(programme) = ProgrammeFocus::at(cells, cell) {
                     axis.reveal(&cells[cell]);
                     let target = ProgrammeTarget {
@@ -1471,10 +1770,6 @@ fn board_family(focus: ScreenFocus) -> Option<usize> {
     }
 }
 
-fn programmes(family: &GuideFamily) -> &[GuideProgramme] {
-    family.programmes(&VariantPreferences::default())
-}
-
 fn timeline_cell(family: usize, cell: Option<usize>) -> TimelineFocus {
     cell.map_or(TimelineFocus::Channel(family), |cell| {
         TimelineFocus::Programme { family, cell }
@@ -1484,9 +1779,10 @@ fn timeline_cell(family: usize, cell: Option<usize>) -> TimelineFocus {
 fn locate_programme(
     axis: Timeline,
     families: &[GuideFamily],
+    preferences: &VariantPreferences,
     target: &ProgrammeTarget,
 ) -> Option<(usize, usize)> {
     let index = target.family.resolve(families)?;
-    axis.exact_focus(programmes(&families[index]), &target.programme)
+    axis.exact_focus(families[index].programmes(preferences), &target.programme)
         .map(|cell| (index, cell))
 }

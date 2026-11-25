@@ -768,6 +768,33 @@ fn structural_validator_rejects_short_tables_flag_mismatch_bad_urls_and_corrupt_
 }
 
 #[test]
+fn reopened_catalog_rejects_numbers_that_violate_the_family_index() {
+    use std::mem::offset_of;
+
+    let built = rich_catalog(generation(1));
+    let base = built.as_bytes();
+    let start = section_offset(base, Section::ChannelsHot);
+    let reopen = |bytes| {
+        ChannelCatalog::from_cache_mapping(
+            crate::ports::CatalogCacheMapping::new(bytes),
+            generation(1),
+        )
+    };
+    assert!(reopen(base.to_vec()).is_some());
+
+    let mut out_of_order = base.to_vec();
+    let number = start + 4 * size_of::<ChannelHot>() + offset_of!(ChannelHot, number);
+    out_of_order[number..number + 4].copy_from_slice(&1_u32.to_le_bytes());
+    assert!(reopen(out_of_order).is_none());
+
+    // Give the last variant of family 2 the same quality as its predecessor.
+    let mut repeated_quality = base.to_vec();
+    let quality = start + 4 * size_of::<ChannelHot>() + offset_of!(ChannelHot, quality);
+    repeated_quality[quality] = repeated_quality[quality - size_of::<ChannelHot>()];
+    assert!(reopen(repeated_quality).is_none());
+}
+
+#[test]
 fn catalog_generation_covers_configuration_m3u_and_optional_epg_content() {
     let first_configuration = configuration();
     let other_configuration = SourceConfiguration::parse(SourceConfigurationInput::new(

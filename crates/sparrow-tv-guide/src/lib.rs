@@ -2,10 +2,12 @@
 
 mod board_focus;
 mod families;
+pub mod group_chooser;
 pub mod guide_screen;
 pub mod now_focus;
 mod pages;
 pub mod preview;
+pub mod search;
 pub mod time;
 pub mod timeline_focus;
 mod viewport;
