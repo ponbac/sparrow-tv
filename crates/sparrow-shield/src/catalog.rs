@@ -559,7 +559,9 @@ async fn write_preferences(
         match request {
             PreferenceWrite::Backdrop { choice, completed } => {
                 let saved = catalog
-                    .update_guide_preferences(vec![GuidePreferenceChange::SetBackdrop(choice)])
+                    .update_guide_preferences(
+                        sparrow_installed_catalog::GuidePreferenceWrite::SetBackdrop(choice),
+                    )
                     .await
                     .is_ok();
                 let _ = completed.send(saved);

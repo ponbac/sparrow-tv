@@ -1110,7 +1110,7 @@ impl Render for GuideSurface {
             cx.reduce_motion()
                 || self.activation.is_none()
                 || self.search.state().view() == SearchView::Desk
-                || self.sources_sheet_open()
+                || (self.sources_sheet_open() && !self.backdrop_preview_focused())
                 || self.screen.group_chooser().is_some(),
         );
         let guide = guide_view::render(

@@ -154,6 +154,12 @@ impl GuideSurface {
             .is_some_and(|source| source.presentation == Presentation::Sheet)
     }
 
+    pub(super) fn backdrop_preview_focused(&self) -> bool {
+        self.source.as_ref().is_some_and(|source| {
+            source.presentation == Presentation::Sheet && source.focus == SourceFocus::Backdrop
+        })
+    }
+
     /// The Setup draft as the Setup state machine sees it.
     pub(super) fn setup_draft(&self) -> DraftView {
         self.source

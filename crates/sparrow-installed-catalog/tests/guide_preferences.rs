@@ -35,7 +35,6 @@ async fn guide_preferences_round_trip_offline_with_webview_v1_fields() {
             visibility("", true),
             visibility("News \"East\"", true),
             prefer(ChannelQuality::Fhd),
-            GuidePreferenceChange::SetBackdrop(GuideBackdrop::ChannelTint),
         ])
         .await
         .unwrap();
@@ -59,12 +58,24 @@ async fn guide_preferences_round_trip_offline_with_webview_v1_fields() {
         encoded,
         json!({
             "version": 1,
-            "sparrow.backdrop:v1": "channel-tint",
             "sparrow.board-group-exclusions:v1": { "excluded": ["", "News \"East\""] },
             "sparrow.variant-preferences:v1": {
                 "preferences": [{ "family": FAMILY, "quality": "fhd" }],
             },
         }),
+    );
+    let original = fs::read(catalog.private_root().join("guide-preferences.json")).unwrap();
+    catalog
+        .update_guide_preferences(
+            sparrow_installed_catalog::GuidePreferenceWrite::SetBackdrop(
+                GuideBackdrop::ChannelTint,
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        fs::read(catalog.private_root().join("guide-preferences.json")).unwrap(),
+        original
     );
     drop(catalog);
 
@@ -99,11 +110,19 @@ async fn future_backdrop_preserves_other_guide_preferences() {
         .update_guide_preferences(vec![prefer(ChannelQuality::Hd), visibility("Local", true)])
         .await
         .unwrap();
-    let path = catalog.private_root().join("guide-preferences.json");
+    let path = catalog.private_root().join("appearance-v1.json");
+    catalog
+        .update_guide_preferences(
+            sparrow_installed_catalog::GuidePreferenceWrite::SetBackdrop(GuideBackdrop::Flat),
+        )
+        .await
+        .unwrap();
     drop(catalog);
-    let mut record: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    record["sparrow.backdrop:v1"] = json!("future-backdrop");
-    fs::write(path, serde_json::to_vec(&record).unwrap()).unwrap();
+    fs::write(
+        path,
+        br#"{"backdrop":"future-backdrop","future-setting":42}"#,
+    )
+    .unwrap();
 
     let catalog = open(directory.path()).await;
     let preferences = catalog.load_guide_preferences().await.unwrap();
