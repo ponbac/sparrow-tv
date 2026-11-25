@@ -60,7 +60,7 @@ pub(super) struct PlaybackUi {
     last_zap: Option<Instant>,
     roll: Option<ZapRoll>,
     dock_focus: bool,
-    controls_visible: bool,
+    pub(super) controls_visible: bool,
     control: Option<Control>,
     copy_sequence: u64,
     copy: DiagnosticCopy,
@@ -304,7 +304,6 @@ impl PlaybackUi {
                     title: slot.title(),
                 }),
         });
-        let clock = guide_view::clock_time(now);
         let feedback = match self.state.phase {
             TvPlaybackPhase::Recovering { failure, .. }
             | TvPlaybackPhase::Failed { failure, .. } => Some(failure_label(failure)),
@@ -322,7 +321,6 @@ impl PlaybackUi {
                 .filter(|r| !reduce_motion && r.active(self.shown_number(selected))),
             channel_name: subject.map_or("", |subject| &subject.title),
             programme,
-            clock: &clock,
             stage: self.stage(),
             signal_landing: self.signal_landing,
             // Paint beneath the outgoing surface while a retune or queued zap awaits selection.
@@ -368,11 +366,11 @@ impl PlaybackUi {
     pub(super) fn render(
         &self,
         window: &mut Window,
-        now: DateTime<Utc>,
+        minute: guide_view::MinuteFrame,
         reduce_motion: bool,
         frame: FullscreenFrame,
     ) -> Option<Div> {
-        self.overlay(now, reduce_motion, |overlay| {
+        self.overlay(minute.now.to_utc(), reduce_motion, |overlay| {
             if overlay.still.is_some()
                 && let Some(handoff) = self.state.still_handoff.clone()
             {
@@ -410,6 +408,7 @@ impl PlaybackUi {
                         } else {
                             self.picture_bottom as f32 / window.scale_factor()
                         },
+                        minute,
                     ))
                 })
                 .children(self.menu_panel(window))

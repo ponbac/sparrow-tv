@@ -7,6 +7,8 @@ mod board;
 mod channel_icon;
 mod groups;
 mod lane;
+mod minute;
+pub(crate) use minute::{MinuteFrame, MinuteTick};
 pub(super) mod playback;
 mod search_panel;
 mod setup;
@@ -141,7 +143,7 @@ pub(super) fn surface_height(viewport: Size<Pixels>) -> f32 {
 
 pub(super) struct GuideBand<'a> {
     pub(super) choice: sparrow_installed_catalog::GuideBackdrop,
-    pub(super) now: DateTime<FixedOffset>,
+    pub(super) minute: MinuteFrame<'a>,
     pub(super) preview: Option<&'a PreviewSelection>,
     pub(super) description: Option<&'a gpui::SharedString>,
     pub(super) docked: bool,
@@ -158,7 +160,7 @@ pub(super) fn render(
     backdrop: Div,
 ) -> Div {
     let layout = Layout::for_guide(window.viewport_size(), band.choice);
-    let now = band.now;
+    let minute = band.minute;
     let guide = div()
         .size_full()
         .relative()
@@ -171,10 +173,10 @@ pub(super) fn render(
     match screen.mode() {
         GuideMode::Now => guide
             .child(lane::render(layout, screen, lanes.0, window))
-            .child(board::render(layout, screen, now, icons)),
+            .child(board::render(layout, screen, minute, icons)),
         GuideMode::Timeline => guide
             .child(timeline::rail(layout, screen, lanes.1))
-            .child(timeline::render(layout, screen, now, icons)),
+            .child(timeline::render(layout, screen, minute, icons)),
     }
 }
 

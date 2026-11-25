@@ -1,6 +1,7 @@
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, Utc};
 use gpui::{Div, div, linear_color_stop, linear_gradient, prelude::*, rgb, rgba};
 use sparrow_core::ChannelQuality;
+use sparrow_core::GuideProgramme;
 use sparrow_tv_guide::{
     GuideFamily, PageStatus, VariantPreferences,
     guide_screen::{
@@ -40,7 +41,7 @@ fn card_bounds(index: usize, scroll: f32) -> [f32; 4] {
 pub(super) fn render(
     layout: Layout,
     screen: &GuideScreen,
-    now: DateTime<FixedOffset>,
+    minute: super::MinuteFrame<'_>,
     icons: &ChannelIcons,
 ) -> Div {
     let height = (layout.height - BOARD_TOP).max(0.);
@@ -72,7 +73,7 @@ pub(super) fn render(
             family,
             screen.variant_preferences(),
             focus.filter(|focus| focus.family() == Some(index)),
-            now,
+            minute,
             family_icon(family).and_then(|icon| icons.get(icon)),
         ));
     }
@@ -149,7 +150,7 @@ fn card(
     family: &GuideFamily,
     preferences: &VariantPreferences,
     focus: Option<NowFocus>,
-    now: DateTime<FixedOffset>,
+    minute: super::MinuteFrame<'_>,
     icon: Option<&IconImage>,
 ) -> Div {
     let focused = matches!(focus, Some(NowFocus::Channel(_)));
@@ -159,34 +160,24 @@ fn card(
     };
     let (preferred, source) = family.preferred_with_schedule(preferences);
     let programmes = source.programmes();
-    let instant = now.to_utc();
+    let instant = minute.now.to_utc();
     let live = programme_at(programmes, instant);
-    let next = next_after(programmes, instant);
     let supporting = rgba(if focused { ON_ICE_DIM } else { DIM });
-    let subtitle = next
-        .map(|next| format!("{} {}", clock_time(next.starts_at()), programme_title(next)))
-        .or_else(|| programmes.is_empty().then(|| "No guide data.".into()));
+    let rollover = minute.rollover(source.channel().id());
     let caption_height = if live.is_some() || icon.is_some() {
         28.
     } else {
         0.
     };
-    let last_height = if live.is_some() || subtitle.is_some() {
-        26.
-    } else {
-        0.
-    };
+    let last_height =
+        if live.is_some() || next_after(programmes, instant).is_some() || programmes.is_empty() {
+            26.
+        } else {
+            0.
+        };
     let content_top =
         (CARD_HEIGHT - caption_height - TITLE_HEIGHT - last_height - LINE_GAP * 2.) / 2.;
     let title_top = content_top + caption_height + LINE_GAP;
-    let title = live.map_or_else(|| family.title().into(), programme_title);
-    let title_color = if focused {
-        rgb(ON_ICE)
-    } else if live.is_some() {
-        rgb(TEXT)
-    } else {
-        rgba(DIM)
-    };
     let quality_count = family.quality_variants().count();
     let mut card = rect
         .rounded(layout.px(8.))
@@ -197,7 +188,7 @@ fn card(
             layout.surface(CELL)
         });
     if let Some(live) = live {
-        let width = COLUMN_WIDTH * elapsed_fraction(live, instant) as f32;
+        let width = COLUMN_WIDTH * elapsed_fraction(live, minute.meter_time()) as f32;
         if width > 0. {
             card = card.child(
                 layout
@@ -210,6 +201,24 @@ fn card(
                     }),
             );
         }
+    }
+    if let Some((_, progress, _)) = rollover
+        && progress < 1.
+    {
+        card = card.child(
+            layout
+                .rect(
+                    -112. + (COLUMN_WIDTH + 112.) * progress,
+                    0.,
+                    112.,
+                    CARD_HEIGHT,
+                )
+                .bg(linear_gradient(
+                    90.,
+                    linear_color_stop(rgba(0xffffff00), 0.),
+                    linear_color_stop(rgba(0xffffff22), 1.),
+                )),
+        );
     }
     if caption_height != 0. {
         let caption = layout.text(SAIRA, 18., 28., 400.).text_color(supporting);
@@ -239,7 +248,23 @@ fn card(
                     CONTENT_WIDTH - (quality_count.max(1) as f32 * 52. + 6.),
                     28.,
                 )
-                .child(caption),
+                .flex()
+                .items_center()
+                .gap(layout.px(8.))
+                .child(caption.min_w_0())
+                .when_some(rollover, |line, (_, _, opacity)| {
+                    line.child(
+                        layout
+                            .text(SAIRA, 15., 22., 600.)
+                            .flex_none()
+                            .px(layout.px(6.))
+                            .rounded(layout.px(4.))
+                            .bg(rgb(if focused { ON_ICE } else { ICE }))
+                            .text_color(rgb(if focused { ICE } else { ON_ICE }))
+                            .opacity(opacity)
+                            .child("Starting now"),
+                    )
+                }),
         );
     }
 
@@ -249,49 +274,22 @@ fn card(
             .left(layout.px(14.))
             .top(layout.px(23.)),
     )
-    .child(
-        layout
-            .rect(CONTENT_X, title_top, CONTENT_WIDTH, TITLE_HEIGHT)
-            .child(
-                layout
-                    .text(
-                        SAIRA_TITLE,
-                        31.,
-                        TITLE_HEIGHT,
-                        if live.is_some() { 650. } else { 600. },
-                    )
-                    .text_color(title_color)
-                    .truncate()
-                    .child(title),
-            ),
-    )
-    .when(last_height != 0., |card| {
-        card.child(
-            layout
-                .rect(
-                    CONTENT_X,
-                    title_top + TITLE_HEIGHT + LINE_GAP,
-                    CONTENT_WIDTH,
-                    last_height,
-                )
-                .font_family(SAIRA)
-                .text_size(layout.px(18.))
-                .line_height(layout.px(26.))
-                .text_color(supporting)
-                .flex()
-                .gap(layout.px(12.))
-                .when_some(subtitle, |line, subtitle| {
-                    line.child(div().min_w_0().truncate().child(subtitle))
-                })
-                .when_some(live, |line, live| {
-                    line.child(
-                        div()
-                            .ml_auto()
-                            .flex_none()
-                            .child(format!("{} min left", minutes_left(live, instant))),
-                    )
-                }),
-        )
+    .child({
+        let height = TITLE_HEIGHT + LINE_GAP + last_height;
+        let block = |at, dy| {
+            programme_lines(layout, family, programmes, at, focused)
+                .absolute()
+                .top(layout.px(dy))
+        };
+        let body = layout
+            .rect(CONTENT_X, title_top, CONTENT_WIDTH, height)
+            .overflow_hidden();
+        match rollover {
+            Some((previous, p, _)) if p < 1. => body
+                .child(block(previous, -height * p))
+                .child(block(instant, height * (1. - p))),
+            _ => body.child(block(instant, 0.)),
+        }
     })
     .when(quality_count > 0, |card| {
         card.child(
@@ -317,6 +315,66 @@ fn card(
                 .border_color(rgb(ICE)),
         )
     })
+}
+
+fn programme_lines(
+    layout: Layout,
+    family: &GuideFamily,
+    programmes: &[GuideProgramme],
+    instant: DateTime<Utc>,
+    focused: bool,
+) -> Div {
+    let live = programme_at(programmes, instant);
+    let subtitle = next_after(programmes, instant)
+        .map(|next| format!("{} {}", clock_time(next.starts_at()), programme_title(next)))
+        .or_else(|| programmes.is_empty().then(|| "No guide data.".into()));
+    let supporting = rgba(if focused { ON_ICE_DIM } else { DIM });
+    let title = live.map_or_else(|| family.title().into(), programme_title);
+    let title_color = if focused {
+        rgb(ON_ICE)
+    } else if live.is_some() {
+        rgb(TEXT)
+    } else {
+        rgba(DIM)
+    };
+    div()
+        .child(
+            layout.rect(0., 0., CONTENT_WIDTH, TITLE_HEIGHT).child(
+                layout
+                    .text(
+                        SAIRA_TITLE,
+                        31.,
+                        TITLE_HEIGHT,
+                        if live.is_some() { 650. } else { 600. },
+                    )
+                    .text_color(title_color)
+                    .truncate()
+                    .child(title),
+            ),
+        )
+        .when(live.is_some() || subtitle.is_some(), |card| {
+            card.child(
+                layout
+                    .rect(0., TITLE_HEIGHT + LINE_GAP, CONTENT_WIDTH, 26.)
+                    .font_family(SAIRA)
+                    .text_size(layout.px(18.))
+                    .line_height(layout.px(26.))
+                    .text_color(supporting)
+                    .flex()
+                    .gap(layout.px(12.))
+                    .when_some(subtitle, |line, subtitle| {
+                        line.child(div().min_w_0().truncate().child(subtitle))
+                    })
+                    .when_some(live, |line, live| {
+                        line.child(
+                            div()
+                                .ml_auto()
+                                .flex_none()
+                                .child(format!("{} min left", minutes_left(live, instant))),
+                        )
+                    }),
+            )
+        })
 }
 
 pub(super) fn quality_tags(

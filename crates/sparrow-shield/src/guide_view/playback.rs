@@ -98,7 +98,6 @@ pub(crate) struct PlaybackOverlay<'a> {
     pub(crate) channel_number: u32,
     pub(crate) channel_name: &'a str,
     pub(crate) programme: Option<PlaybackProgramme<'a>>,
-    pub(crate) clock: &'a str,
     pub(crate) stage: PlaybackStage,
     pub(crate) first_picture: Option<Instant>,
     pub(crate) signal_landing: Option<(Instant, PlaybackStage)>,
@@ -407,6 +406,7 @@ pub(crate) fn fullscreen_band(
     actions: &[PlaybackControl],
     visible: f32,
     native_bottom: f32,
+    minute: super::MinuteFrame,
 ) -> Div {
     let layout = Layout::new(viewport);
     let [left, _, width, picture_height] = picture_reference(
@@ -443,7 +443,7 @@ pub(crate) fn fullscreen_band(
             )
             .child(layout.rect(left, -overlap, width, overlap).bg(rgb(PANEL)))
         })
-        .child(fullscreen_head(layout, playback))
+        .child(fullscreen_head(layout, playback, minute))
         .child(fullscreen_controls(
             layout,
             layout.height - picture_height,
@@ -452,7 +452,11 @@ pub(crate) fn fullscreen_band(
         ))
 }
 
-fn fullscreen_head(layout: Layout, playback: &PlaybackOverlay<'_>) -> Div {
+fn fullscreen_head(
+    layout: Layout,
+    playback: &PlaybackOverlay<'_>,
+    minute: super::MinuteFrame,
+) -> Div {
     let reel = playback
         .reel
         .filter(|entries| entries.iter().any(Option::is_some));
@@ -518,13 +522,7 @@ fn fullscreen_head(layout: Layout, playback: &PlaybackOverlay<'_>) -> Div {
                 playback.stage,
             )))
         })
-        .child(
-            layout
-                .text(SAIRA_CLOCK, 40., 40., 600.)
-                .pl(layout.px(8.))
-                .flex_none()
-                .child(playback.clock.to_owned()),
-        )
+        .child(minute.clock(layout, 40.).pl(layout.px(8.)))
 }
 
 fn progress(layout: Layout, programme: &PlaybackProgramme<'_>, stage: PlaybackStage) -> Div {
