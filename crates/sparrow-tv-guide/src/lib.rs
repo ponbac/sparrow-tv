@@ -14,7 +14,7 @@ mod viewport;
 
 pub use board_focus::BoardView;
 
-pub use families::{GuideFamily, VariantPreferences};
+pub use families::{GuideFamily, VariantPreferences, normalize_preference_title};
 pub use pages::{
     ChannelGroupPages, GroupPageRequest, GuidePageRequest, GuidePages, PageStatus, PageUpdate,
 };

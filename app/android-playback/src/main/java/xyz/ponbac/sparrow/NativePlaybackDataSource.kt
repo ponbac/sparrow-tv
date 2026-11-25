@@ -11,10 +11,15 @@ import androidx.media3.datasource.DataSourceException
 import androidx.media3.datasource.DataSpec
 import java.io.IOException
 
+internal fun interface NativePlaybackReader {
+  fun read(identity: NativePlaybackIdentity, output: ByteArray, offset: Int, length: Int): Int
+}
+
 @OptIn(UnstableApi::class)
 @Keep
 internal class NativePlaybackDataSource(
   private val identity: NativePlaybackIdentity,
+  private val reader: NativePlaybackReader?,
 ) : BaseDataSource(true) {
   private var opened = false
 
@@ -35,7 +40,9 @@ internal class NativePlaybackDataSource(
     if (length == 0) {
       return 0
     }
-    val read = readNativePlayback(
+    // Shield adds host and presentation identity in its reader; installed Tauri
+    // keeps the existing JNI entry point and wire arguments.
+    val read = reader?.read(identity, buffer, offset, length) ?: readNativePlayback(
       identity.sessionId,
       identity.streamHandle,
       buffer,
@@ -48,7 +55,7 @@ internal class NativePlaybackDataSource(
         read
       }
       read == 0 -> C.RESULT_END_OF_INPUT
-      else -> throw IOException("native playback became unavailable")
+      else -> throw NativePlaybackReadInterrupted()
     }
   }
 
@@ -74,3 +81,5 @@ internal class NativePlaybackDataSource(
     val PLAYBACK_URI: Uri = Uri.parse("sparrow-native://playback/live.ts")
   }
 }
+
+internal class NativePlaybackReadInterrupted : IOException("native playback became unavailable")

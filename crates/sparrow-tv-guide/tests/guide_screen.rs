@@ -35,6 +35,42 @@ async fn focus_reveals_only_the_pixels_needed_to_clear_the_bottom_margin() {
 }
 
 #[tokio::test]
+async fn playback_focus_reveals_the_exact_family_and_preserves_its_fullscreen_origin() {
+    let mut m3u = catalog(29);
+    m3u.push_str(
+        "#EXTINF:-1 group-title=\"Local\",Film SD\nhttps://fixture.invalid/film-sd.ts\n\
+         #EXTINF:-1 group-title=\"Local\",Film HD\nhttps://fixture.invalid/film-hd.ts\n",
+    );
+    let fixture = support::open(m3u, None).await;
+    let mut screen = open_screen(fixture.core(), HashSet::new());
+    screen.set_surface_height(1080.);
+    let family = 29;
+    let playing = screen.families()[family].variants()[1]
+        .channel()
+        .id()
+        .clone();
+    arrow(&mut screen, Direction::Up);
+    arrow(&mut screen, Direction::Up);
+    arrow(&mut screen, Direction::Left);
+    assert_eq!(screen.focus(), ScreenFocus::Toolbar(ToolbarFocus::Search));
+    assert!(!screen.visible_families(0).contains(&family));
+
+    screen.restore_playback_focus(Some(&playing), false);
+    assert_eq!(screen.focus(), channel(family));
+    assert!(screen.visible_families(0).contains(&family));
+
+    arrow(&mut screen, Direction::Right);
+    let origin = ScreenFocus::Board(NowFocus::Variant { family, chip: 0 });
+    assert_eq!(screen.focus(), origin);
+    screen.restore_playback_focus(Some(&playing), true);
+    assert_eq!(screen.focus(), origin);
+
+    screen.restore_playback_focus(None, true);
+    assert_eq!(screen.focus(), channel(0));
+    assert_eq!(screen.scroll_offset(), 0.);
+}
+
+#[tokio::test]
 async fn near_tail_prefetch_and_held_down_keep_navigation_and_viewport_in_sync() {
     let fixture = support::open(catalog(160), None).await;
     let mut screen = open_screen(fixture.core(), HashSet::new());

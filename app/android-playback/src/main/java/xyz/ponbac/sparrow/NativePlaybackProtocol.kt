@@ -256,3 +256,31 @@ internal class NativePlaybackMainThreadRequest<T>(
     COMPLETED,
   }
 }
+
+/**
+ * The picture-in-picture window's shape for a video of this size, as a
+ * numerator and denominator. Android refuses ratios beyond 2.39:1 either way,
+ * so wider or taller pictures are letterboxed at that limit, and a picture of
+ * unknown size gets 16:9.
+ */
+internal fun pictureInPictureAspect(
+  width: Int,
+  height: Int,
+  pixelWidthHeightRatio: Float,
+): Pair<Int, Int> {
+  if (width <= 0 || height <= 0 || !(pixelWidthHeightRatio > 0f)) {
+    return 16 to 9
+  }
+  val ratio = width.toDouble() * pixelWidthHeightRatio / height
+  if (!ratio.isFinite()) {
+    return 16 to 9
+  }
+  val numerator = Math.round(ratio * ASPECT_DENOMINATOR).toInt()
+  return when {
+    numerator * 100L >= ASPECT_DENOMINATOR * 239L -> 239 to 100
+    numerator * 239L <= ASPECT_DENOMINATOR * 100L -> 100 to 239
+    else -> numerator to ASPECT_DENOMINATOR
+  }
+}
+
+private const val ASPECT_DENOMINATOR = 1_000

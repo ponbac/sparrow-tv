@@ -4,12 +4,13 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
 
 use chrono::{DateTime, Utc};
+use sparrow_bounded_blocking::BlockingTaskCancellation;
 use sparrow_core::{
     CatalogAccess, CatalogGeneration, ChannelId, ChannelQuality, ChannelSummary, CoreError,
     GuideProgramme, InputReason, Page, PageCursor, PageLimit, PageRequest, ProgrammeSearchHit,
@@ -54,7 +55,7 @@ pub struct SearchRead {
     generation: CatalogGeneration,
     term: SearchTerm,
     branch: Branch,
-    cancelled: Arc<AtomicBool>,
+    cancelled: BlockingTaskCancellation,
 }
 
 enum Branch {
@@ -75,7 +76,12 @@ enum ReadResult {
 
 impl SearchRead {
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Relaxed)
+        self.cancelled.is_cancelled()
+    }
+
+    /// The worker can use the same cancellation while waiting for its read permit.
+    pub fn cancellation(&self) -> BlockingTaskCancellation {
+        self.cancelled.clone()
     }
 
     /// Performs the query. The caller must run it off the render thread.
@@ -85,7 +91,7 @@ impl SearchRead {
             Err(CoreError::Cancelled)
         } else {
             let cancelled = &self.cancelled;
-            let is_cancelled = || cancelled.load(Ordering::Relaxed);
+            let is_cancelled = || cancelled.is_cancelled();
             match self.branch {
                 Branch::Inline => {
                     let page = PageRequest::first(limit);
@@ -288,7 +294,7 @@ enum Pending {
     Debouncing(SearchDebounce),
     Reading {
         id: u64,
-        cancelled: Arc<AtomicBool>,
+        cancelled: BlockingTaskCancellation,
     },
     Failed,
     ReconcileGeneration,
@@ -575,10 +581,10 @@ impl SearchState {
         };
         let generation = self.generation?;
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled = BlockingTaskCancellation::new();
         self.pending = Pending::Reading {
             id,
-            cancelled: Arc::clone(&cancelled),
+            cancelled: cancelled.clone(),
         };
         Some(SearchRead {
             id,
@@ -625,7 +631,7 @@ impl SearchState {
 
     fn cancel_read(&self) {
         if let Pending::Reading { cancelled, .. } = &self.pending {
-            cancelled.store(true, Ordering::Relaxed);
+            cancelled.cancel();
         }
     }
 }

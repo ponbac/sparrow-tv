@@ -13,10 +13,10 @@ type AbortProcess = Box<dyn FnOnce() + Send + 'static>;
 
 /// A bounded system-mpv volume percentage.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct MpvVolume(u8);
+pub struct MpvVolume(u8);
 
 impl MpvVolume {
-    pub(crate) const fn parse(percent: u8) -> Result<Self, MpvFailure> {
+    pub const fn parse(percent: u8) -> Result<Self, MpvFailure> {
         if percent <= 100 {
             Ok(Self(percent))
         } else {
@@ -24,6 +24,7 @@ impl MpvVolume {
         }
     }
 
+    #[cfg(any(target_os = "linux", test))]
     const fn percent(self) -> u8 {
         self.0
     }
@@ -31,7 +32,7 @@ impl MpvVolume {
 
 /// One privacy-safe control for the system-mpv process owning a Playback Session.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum MpvPlaybackControl {
+pub enum MpvPlaybackControl {
     HealthCheck,
     Pause,
     Resume,
@@ -57,6 +58,7 @@ pub(super) struct MpvProcess {
 }
 
 impl MpvProcess {
+    #[cfg(any(target_os = "linux", test))]
     pub(super) fn controlled(
         exited: MpvExitFuture,
         control: ControlProcess,
@@ -102,12 +104,13 @@ impl Drop for MpvProcess {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum MpvExit {
+    #[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
     Terminated,
 }
 
 /// Privacy-safe failures from the system-mpv adapter.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub(crate) enum MpvFailure {
+pub enum MpvFailure {
     #[cfg(any(test, not(target_os = "linux")))]
     #[error("mpv failover is unsupported on this platform")]
     Unsupported,
@@ -130,14 +133,14 @@ pub(crate) enum MpvFailure {
 }
 
 impl MpvFailure {
-    pub(crate) const fn retryable(self) -> bool {
+    pub const fn retryable(self) -> bool {
         matches!(
             self,
             Self::LaunchFailed | Self::ControlUnavailable | Self::Terminated
         )
     }
 
-    pub(crate) const fn reason(self) -> &'static str {
+    pub const fn reason(self) -> &'static str {
         match self {
             #[cfg(any(test, not(target_os = "linux")))]
             Self::Unsupported => "unsupported",

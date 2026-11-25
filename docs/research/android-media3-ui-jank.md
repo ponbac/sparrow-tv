@@ -40,7 +40,7 @@ The common shape is not “never release anything.” It is to make player/view 
 ## Implemented result
 
 Sparrow now retains one Activity-scoped `PlayerView` and `ExoPlayer` in
-[`NativePlaybackController`](../../app/src-tauri/gen/android/app/src/main/java/xyz/ponbac/sparrow/NativePlaybackController.kt),
+[`NativePlaybackController`](../../app/android-playback/src/main/java/xyz/ponbac/sparrow/NativePlaybackController.kt),
 while each opaque Rust stream owns a shorter-lived media binding, listeners,
 and counters. Ordinary media replacement stops and clears the old media source,
 then prepares the new source on the retained player. Explicit final Stop and

@@ -29,7 +29,7 @@ impl GuideFamily {
     }
 
     pub fn preference_title(&self) -> String {
-        normalize_title(self.title())
+        normalize_preference_title(self.title())
     }
 
     pub fn variants(&self) -> &[GuideWindowChannel] {
@@ -38,8 +38,11 @@ impl GuideFamily {
 
     /// Selects the viewer's available Quality Variant or the highest quality.
     pub fn preferred_variant(&self, preferences: &VariantPreferences) -> &GuideWindowChannel {
-        let wanted = preferences.quality(self.group(), self.title());
         let mut best = &self.variants[0];
+        if self.variants.len() == 1 {
+            return best;
+        }
+        let wanted = preferences.quality(self.group(), self.title());
         for variant in self.variants.iter() {
             let quality = variant_quality(variant);
             if quality.is_some() && quality == wanted {
@@ -104,11 +107,14 @@ impl VariantPreferences {
         self.0
             .entry(group.to_owned())
             .or_default()
-            .insert(normalize_title(title), quality);
+            .insert(normalize_preference_title(title), quality);
     }
 
     pub fn quality(&self, group: &str, title: &str) -> Option<ChannelQuality> {
-        self.0.get(group)?.get(&normalize_title(title)).copied()
+        self.0
+            .get(group)?
+            .get(&normalize_preference_title(title))
+            .copied()
     }
 }
 
@@ -138,7 +144,8 @@ fn variant_quality(row: &GuideWindowChannel) -> Option<ChannelQuality> {
     row.channel().variant().map(|variant| variant.quality())
 }
 
-fn normalize_title(title: &str) -> String {
+/// Normalizes a family title for the version 1 Quality Variant preference key.
+pub fn normalize_preference_title(title: &str) -> String {
     let normalized = title.nfkc().collect::<String>().to_lowercase();
     // Match the existing guide's JavaScript whitespace rule for preference keys.
     let is_space = |character: char| {

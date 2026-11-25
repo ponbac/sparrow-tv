@@ -1,67 +1,96 @@
 use chrono::{DateTime, FixedOffset};
 use gpui::{Div, div, linear_color_stop, linear_gradient, prelude::*, rgb, rgba, svg};
 use sparrow_tv_guide::{
-    VariantPreferences,
     guide_screen::{ScreenFocus, ToolbarFocus},
     preview::{PreviewTiming, following_programmes, preview_timing},
 };
 
+use crate::channel_icons::ChannelIcons;
+
 use super::{
-    CANVAS_WIDTH, CELL, CELL_ELAPSED, DIM, FAINT, GUTTER, ICE, Layout, ON_ICE, PreviewSelection,
-    SAIRA, SAIRA_CLOCK, SAIRA_NUMBER, SAIRA_PREVIEW, SAIRA_TITLE, TEXT, board::quality_tags,
-    clock_time, programme_title,
+    CANVAS_WIDTH, CELL, CELL_ELAPSED, DIM, FAINT, GUTTER, GuideBand, ICE, Layout, ON_ICE,
+    PreviewSelection, SAIRA, SAIRA_CLOCK, SAIRA_PREVIEW, SAIRA_TITLE, TEXT,
+    board::quality_tags,
+    channel_icon::{Plate, family_icon, plate},
+    clock_time,
+    playback::DOCK_PREVIEW_X,
+    programme_title,
 };
 
 const POSTER_WIDTH: f32 = 336.;
-const BAND_TOP: f32 = 27.;
-const PREVIEW_X: f32 = GUTTER + POSTER_WIDTH + 44.;
-const PREVIEW_WIDTH: f32 = CANVAS_WIDTH - GUTTER - PREVIEW_X;
+pub(super) const BAND_TOP: f32 = 27.;
+pub(super) const TOOLBAR_HEIGHT: f32 = 58.;
+const IDLE_PREVIEW_X: f32 = GUTTER + POSTER_WIDTH + 44.;
 const NO_GUIDE_DATA: &str = "No guide data. The channel still plays.";
 
-pub(super) fn render(
-    layout: Layout,
-    focus: ScreenFocus,
-    now: DateTime<FixedOffset>,
-    shown: Option<&PreviewSelection>,
-    description: Option<&gpui::SharedString>,
-) -> Div {
+pub(super) fn render(layout: Layout, band: GuideBand<'_>, icons: &ChannelIcons) -> Div {
+    let GuideBand {
+        focus,
+        now,
+        preview: shown,
+        description,
+        docked,
+        inline_search,
+    } = band;
     div()
-        .child(poster(layout, shown.map(|preview| &preview.family)))
-        .child(toolbar(layout, focus, now))
+        .when(!docked, |band| {
+            band.child(poster(layout, shown.map(|preview| &preview.family), icons))
+        })
+        .child(toolbar(layout, focus, now, docked, inline_search))
         .when_some(shown, |band, shown| {
-            band.child(preview(layout, shown, now, description))
+            band.child(preview(layout, shown, now, description, icons, docked))
         })
 }
 
-fn toolbar(layout: Layout, focus: ScreenFocus, now: DateTime<FixedOffset>) -> Div {
+pub(super) fn panel_bounds(docked: bool) -> (f32, f32) {
+    let left = if docked {
+        DOCK_PREVIEW_X
+    } else {
+        IDLE_PREVIEW_X
+    };
+    (left, CANVAS_WIDTH - GUTTER - left)
+}
+
+fn toolbar(
+    layout: Layout,
+    focus: ScreenFocus,
+    now: DateTime<FixedOffset>,
+    docked: bool,
+    inline_search: bool,
+) -> Div {
+    let (left, width) = panel_bounds(docked);
     let search_focus = focus == ScreenFocus::Toolbar(ToolbarFocus::Search);
     let sources_focus = focus == ScreenFocus::Toolbar(ToolbarFocus::Sources);
-    let search = div()
-        .h(layout.px(58.))
-        .flex_1()
-        .min_w_0()
-        .rounded_full()
-        .bg(rgb(CELL))
-        .when(search_focus, |search| {
-            search.border(layout.px(3.)).border_color(rgb(ICE))
-        })
-        .flex()
-        .items_center()
-        .pl(layout.px(if search_focus { 17. } else { 20. }))
-        .pr(layout.px(8.))
-        .gap(layout.px(12.))
-        .child(layout.icon(
-            include_bytes!("../../assets/icons/search.svg"),
-            22.,
-            rgba(DIM),
-        ))
-        .child(
-            layout
-                .text(SAIRA, 20., 28., 400.)
-                .text_color(rgba(DIM))
-                .truncate()
-                .child("Search channels and programmes"),
-        );
+    let search =
+        div()
+            .h(layout.px(TOOLBAR_HEIGHT))
+            .flex_1()
+            .min_w_0()
+            .when(!inline_search, |search| {
+                search
+                    .rounded_full()
+                    .bg(rgb(CELL))
+                    .when(search_focus, |search| {
+                        search.border(layout.px(3.)).border_color(rgb(ICE))
+                    })
+                    .flex()
+                    .items_center()
+                    .pl(layout.px(if search_focus { 17. } else { 20. }))
+                    .pr(layout.px(8.))
+                    .gap(layout.px(12.))
+                    .child(layout.icon(
+                        include_bytes!("../../assets/icons/search.svg"),
+                        22.,
+                        rgba(DIM),
+                    ))
+                    .child(
+                        layout
+                            .text(SAIRA, 20., 28., 400.)
+                            .text_color(rgba(DIM))
+                            .truncate()
+                            .child("Search channels and programmes"),
+                    )
+            });
     let sources_ink = if sources_focus { ON_ICE } else { TEXT };
     let sources = layout
         .text(SAIRA, 20., 28., 500.)
@@ -81,7 +110,7 @@ fn toolbar(layout: Layout, focus: ScreenFocus, now: DateTime<FixedOffset>) -> Di
         ))
         .child("Sources");
     layout
-        .rect(PREVIEW_X, BAND_TOP, PREVIEW_WIDTH, 58.)
+        .rect(left, BAND_TOP, width, TOOLBAR_HEIGHT)
         .flex()
         .items_center()
         .gap(layout.px(20.))
@@ -96,7 +125,11 @@ fn toolbar(layout: Layout, focus: ScreenFocus, now: DateTime<FixedOffset>) -> Di
         )
 }
 
-fn poster(layout: Layout, family: Option<&sparrow_tv_guide::GuideFamily>) -> Div {
+fn poster(
+    layout: Layout,
+    family: Option<&sparrow_tv_guide::GuideFamily>,
+    icons: &ChannelIcons,
+) -> Div {
     let poster = layout
         .rect(GUTTER, BAND_TOP, POSTER_WIDTH, 404.)
         .rounded(layout.px(8.))
@@ -134,16 +167,16 @@ fn poster(layout: Layout, family: Option<&sparrow_tv_guide::GuideFamily>) -> Div
     };
     poster
         .child(
-            layout
-                .rect(30., 30., 276., 207.)
-                .flex()
-                .items_center()
-                .child(
-                    layout
-                        .text(SAIRA_NUMBER, 132., 132., 250.)
-                        .text_color(rgb(ICE))
-                        .child(family.number().to_string()),
-                ),
+            plate(
+                layout,
+                Plate::Poster,
+                family.number(),
+                false,
+                family_icon(family).and_then(|icon| icons.get(icon)),
+            )
+            .absolute()
+            .left(layout.px(30.))
+            .top(layout.px(30.)),
         )
         .child(
             layout.rect(30., 268., 276., 52.).child(
@@ -160,10 +193,12 @@ fn preview(
     shown: &PreviewSelection,
     now: DateTime<FixedOffset>,
     description: Option<&gpui::SharedString>,
+    icons: &ChannelIcons,
+    docked: bool,
 ) -> Div {
     let family = &shown.family;
     let highlighted = shown.programme(now);
-    let preferred = family.preferred_variant(&VariantPreferences::default());
+    let preferred = shown.preferred_variant();
     let metadata = layout
         .text(SAIRA, 20., 30., 400.)
         .w_full()
@@ -197,18 +232,39 @@ fn preview(
         || family.title().into(),
         |(_, programme)| programme_title(programme),
     );
-    let preview = layout
-        .rect(PREVIEW_X, 101., PREVIEW_WIDTH, 331.)
-        .flex()
-        .flex_col()
-        .child(metadata)
-        .child(
-            layout
-                .text(SAIRA_PREVIEW, 66., 68.64, 700.)
-                .mt(layout.px(4.))
-                .truncate()
-                .child(title),
-        );
+    let heading = layout
+        .text(SAIRA_PREVIEW, 66., 68.64, 700.)
+        .mt(layout.px(4.))
+        .truncate()
+        .child(title);
+    let (left, width) = panel_bounds(docked);
+    let preview = layout.rect(left, 101., width, 331.).flex().flex_col();
+    let preview = if docked {
+        preview.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(layout.px(24.))
+                .child(plate(
+                    layout,
+                    Plate::Preview,
+                    family.number(),
+                    false,
+                    family_icon(family).and_then(|icon| icons.get(icon)),
+                ))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(metadata)
+                        .child(heading),
+                ),
+        )
+    } else {
+        preview.child(metadata).child(heading)
+    };
     let meter = layout
         .text(SAIRA, 20., 24., 400.)
         .h(layout.px(30.))

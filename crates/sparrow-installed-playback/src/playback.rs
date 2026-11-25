@@ -36,16 +36,16 @@ use crate::{
         SelectionRequest, TransportReader, TransportStreamError,
     },
 };
-pub(crate) use mpv::MpvFailure;
+pub use mpv::MpvFailure;
 #[cfg(test)]
 use mpv::UnsupportedMpvPlayer;
 use mpv::{MpvExit, MpvLaunchFuture, MpvProcess, NativeMpvPlayer, system_mpv_player};
-pub(crate) use mpv::{MpvPlaybackControl, MpvVolume};
+pub use mpv::{MpvPlaybackControl, MpvVolume};
 const COMMAND_CAPACITY: usize = 16;
 const READ_CAPACITY: usize = 16;
 const MAX_STOP_TOMBSTONES: usize = 64;
 const MAX_SUSPEND_INTENTS: usize = 64;
-const MAX_NATIVE_PULL_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_NATIVE_PULL_BYTES: usize = 64 * 1024;
 const SESSION_ID_PREFIX: &str = "play1_";
 const SESSION_ID_NONCE_HEX_BYTES: usize = 32;
 const MAX_SESSION_ID_BYTES: usize = 64;
@@ -123,10 +123,10 @@ impl PlaybackTransportSelector for PassthroughPlaybackTransportSelector {
 /// It is deliberately opaque in diagnostics and cannot be serialized from the
 /// native playback layer.
 #[derive(Clone, Eq, Hash, PartialEq)]
-pub(crate) struct PlaybackSessionId(String);
+pub struct PlaybackSessionId(String);
 
 impl PlaybackSessionId {
-    pub(crate) fn parse(value: String) -> Result<Self, PlaybackManagerError> {
+    pub fn parse(value: String) -> Result<Self, PlaybackManagerError> {
         let Some(suffix) = value.strip_prefix(SESSION_ID_PREFIX) else {
             return Err(PlaybackManagerError::Unavailable);
         };
@@ -144,7 +144,7 @@ impl PlaybackSessionId {
         Ok(Self(value))
     }
 
-    pub(crate) fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         &self.0
     }
 }
@@ -157,10 +157,10 @@ impl Debug for PlaybackSessionId {
 
 /// A Rust-generated handle for exactly one native provider stream.
 #[derive(Clone, Eq, Hash, PartialEq)]
-pub(crate) struct NativeStreamHandle(String);
+pub struct NativeStreamHandle(String);
 
 impl NativeStreamHandle {
-    pub(crate) fn parse(value: String) -> Result<Self, PlaybackManagerError> {
+    pub fn parse(value: String) -> Result<Self, PlaybackManagerError> {
         let Some(suffix) = value.strip_prefix(STREAM_HANDLE_PREFIX) else {
             return Err(PlaybackManagerError::Unavailable);
         };
@@ -174,7 +174,7 @@ impl NativeStreamHandle {
         Self(format!("{STREAM_HANDLE_PREFIX}{sequence:016x}"))
     }
 
-    pub(crate) fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         &self.0
     }
 }
@@ -190,7 +190,7 @@ fn is_lower_hex(byte: u8) -> bool {
 }
 
 #[derive(Clone, Eq, PartialEq)]
-pub(crate) struct StartedPlayback {
+pub struct StartedPlayback {
     session_id: PlaybackSessionId,
     stream_handle: NativeStreamHandle,
     tracks: Vec<AudioTrack>,
@@ -199,23 +199,23 @@ pub(crate) struct StartedPlayback {
 }
 
 impl StartedPlayback {
-    pub(crate) fn session_id(&self) -> &PlaybackSessionId {
+    pub fn session_id(&self) -> &PlaybackSessionId {
         &self.session_id
     }
 
-    pub(crate) fn stream_handle(&self) -> &NativeStreamHandle {
+    pub fn stream_handle(&self) -> &NativeStreamHandle {
         &self.stream_handle
     }
 
-    pub(crate) fn tracks(&self) -> &[AudioTrack] {
+    pub fn tracks(&self) -> &[AudioTrack] {
         &self.tracks
     }
 
-    pub(crate) fn selection(&self) -> &AudioSelection {
+    pub fn selection(&self) -> &AudioSelection {
         &self.selection
     }
 
-    pub(crate) const fn preference_status(&self) -> Option<PreferenceStatus> {
+    pub const fn preference_status(&self) -> Option<PreferenceStatus> {
         self.preference_status
     }
 }
@@ -235,12 +235,12 @@ impl Debug for StartedPlayback {
 
 /// A safe acknowledgement that system mpv owns the selected Playback Session.
 #[derive(Clone, Eq, PartialEq)]
-pub(crate) struct MpvPlaybackSession {
+pub struct MpvPlaybackSession {
     session_id: PlaybackSessionId,
 }
 
 impl MpvPlaybackSession {
-    pub(crate) fn session_id(&self) -> &PlaybackSessionId {
+    pub fn session_id(&self) -> &PlaybackSessionId {
         &self.session_id
     }
 }
@@ -255,7 +255,7 @@ impl Debug for MpvPlaybackSession {
 }
 
 /// Platform-selected Primary Playback Engine opened for an installed session.
-pub(crate) enum InstalledPlaybackStart {
+pub enum InstalledPlaybackStart {
     NativeStream(StartedPlayback),
     #[cfg(target_os = "linux")]
     LinuxMpv(MpvPlaybackSession),
@@ -264,7 +264,7 @@ pub(crate) enum InstalledPlaybackStart {
 /// Safe failures from the native playback boundary. Provider locations and
 /// library errors never enter this value.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum PlaybackManagerError {
+pub enum PlaybackManagerError {
     #[error("the catalog could not resolve playback")]
     Core(#[source] CoreError),
     #[error("native playback failed before streaming")]
@@ -294,28 +294,39 @@ impl PlaybackManagerError {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum PlaybackRestartIntent {
+pub enum PlaybackRestartIntent {
     Retry,
     Resume,
     SelectAudio(AudioTrackId),
 }
 
+pub(crate) enum NativePlaybackOpen {
+    Start(ChannelId),
+    Reopen,
+    Restart(NativeStreamHandle, PlaybackRestartIntent),
+}
+
 /// Owns the only native provider connection and serializes all stream lifecycle
 /// transitions behind bounded, cancellation-aware queues.
-pub(crate) struct PlaybackManager {
+pub struct PlaybackManager {
     controls: mpsc::Sender<ControlCommand>,
     reads: mpsc::Sender<ReadCommand>,
     actor: JoinHandle<()>,
 }
 
 impl PlaybackManager {
-    pub(crate) fn new_with_screen_wake(
+    /// Opens private Audio Track preferences and starts the playback actor.
+    ///
+    /// # Panics
+    ///
+    /// Construction requires an active Tokio runtime.
+    pub fn new(
         core: CatalogAccess,
         access: HttpPlaybackAccess,
-        preferences: AudioPreferenceStore,
         private_root: PathBuf,
         screen_wake: Arc<dyn ScreenWake>,
     ) -> Self {
+        let preferences = AudioPreferenceStore::open(&private_root);
         Self::with_all_adapters(
             core,
             Arc::new(access),
@@ -428,36 +439,89 @@ impl PlaybackManager {
         }
     }
 
-    #[cfg_attr(target_os = "linux", allow(dead_code))]
-    pub(crate) async fn start(
+    pub async fn start(
         &self,
         session_id: PlaybackSessionId,
         channel_id: ChannelId,
     ) -> Result<StartedPlayback, PlaybackManagerError> {
+        self.admit_native_open(session_id, NativePlaybackOpen::Start(channel_id))
+            .await?
+            .await
+    }
+
+    /// Enqueues the open before returning its separate, cancellable reply.
+    /// A subsequent suspension can then cancel the open even before transport
+    /// negotiation or the first provider response completes.
+    pub(crate) async fn admit_native_open(
+        &self,
+        session_id: PlaybackSessionId,
+        request: NativePlaybackOpen,
+    ) -> Result<
+        impl Future<Output = Result<StartedPlayback, PlaybackManagerError>> + Send + use<>,
+        PlaybackManagerError,
+    > {
         let (reply, response) = oneshot::channel();
-        self.controls
-            .send(ControlCommand::Start {
+        let command = match request {
+            NativePlaybackOpen::Start(channel_id) => ControlCommand::Start {
                 session_id,
                 channel_id,
                 reply,
-            })
+            },
+            NativePlaybackOpen::Reopen => ControlCommand::Reopen { session_id, reply },
+            NativePlaybackOpen::Restart(expected_stream_handle, intent) => {
+                ControlCommand::Restart {
+                    session_id,
+                    expected_stream_handle,
+                    intent,
+                    reply,
+                }
+            }
+        };
+        self.controls
+            .send(command)
             .await
             .map_err(|_| PlaybackManagerError::Unavailable)?;
-        response
-            .await
-            .map_err(|_| PlaybackManagerError::Unavailable)?
+        Ok(async move {
+            response
+                .await
+                .map_err(|_| PlaybackManagerError::Unavailable)?
+        })
     }
 
-    pub(crate) async fn read(
+    pub async fn read(
         &self,
         session_id: PlaybackSessionId,
         stream_handle: NativeStreamHandle,
     ) -> Result<Vec<u8>, PlaybackManagerError> {
+        self.read_transport(session_id, stream_handle, MAX_NATIVE_PULL_BYTES, false)
+            .await
+    }
+
+    pub(crate) async fn read_media3(
+        &self,
+        session_id: PlaybackSessionId,
+        stream_handle: NativeStreamHandle,
+        maximum: usize,
+    ) -> Result<Vec<u8>, PlaybackManagerError> {
+        self.read_transport(session_id, stream_handle, maximum, true)
+            .await
+    }
+
+    async fn read_transport(
+        &self,
+        session_id: PlaybackSessionId,
+        stream_handle: NativeStreamHandle,
+        maximum: usize,
+        repeat_eof: bool,
+    ) -> Result<Vec<u8>, PlaybackManagerError> {
+        debug_assert!((1..=MAX_NATIVE_PULL_BYTES).contains(&maximum));
         let (reply, response) = oneshot::channel();
         self.reads
             .send(ReadCommand {
                 session_id,
                 stream_handle,
+                maximum,
+                repeat_eof,
                 reply,
             })
             .await
@@ -471,7 +535,7 @@ impl PlaybackManager {
     /// live. Presentation adapters use this immediately before publishing an
     /// external player so a completed transport cleanup cannot be undone by a
     /// delayed presentation start.
-    pub(crate) async fn validate_active_generation(
+    pub async fn validate_active_generation(
         &self,
         session_id: PlaybackSessionId,
         expected_stream_handle: NativeStreamHandle,
@@ -490,10 +554,7 @@ impl PlaybackManager {
             .map_err(|_| PlaybackManagerError::Unavailable)?
     }
 
-    pub(crate) async fn suspend(
-        &self,
-        session_id: PlaybackSessionId,
-    ) -> Result<(), PlaybackManagerError> {
+    pub async fn suspend(&self, session_id: PlaybackSessionId) -> Result<(), PlaybackManagerError> {
         let (reply, response) = oneshot::channel();
         self.controls
             .send(ControlCommand::Suspend { session_id, reply })
@@ -506,7 +567,7 @@ impl PlaybackManager {
 
     /// Cancels only the exact native transport generation while retaining its
     /// pinned session for a coordinated presentation release and restart.
-    pub(crate) async fn suspend_generation(
+    pub async fn suspend_generation(
         &self,
         session_id: PlaybackSessionId,
         expected_stream_handle: NativeStreamHandle,
@@ -525,43 +586,30 @@ impl PlaybackManager {
             .map_err(|_| PlaybackManagerError::Unavailable)?
     }
 
-    #[cfg_attr(target_os = "linux", allow(dead_code))]
-    pub(crate) async fn reopen(
+    pub async fn reopen(
         &self,
         session_id: PlaybackSessionId,
     ) -> Result<StartedPlayback, PlaybackManagerError> {
-        let (reply, response) = oneshot::channel();
-        self.controls
-            .send(ControlCommand::Reopen { session_id, reply })
+        self.admit_native_open(session_id, NativePlaybackOpen::Reopen)
+            .await?
             .await
-            .map_err(|_| PlaybackManagerError::Unavailable)?;
-        response
-            .await
-            .map_err(|_| PlaybackManagerError::Unavailable)?
     }
 
-    pub(crate) async fn restart(
+    pub async fn restart(
         &self,
         session_id: PlaybackSessionId,
         expected_stream_handle: NativeStreamHandle,
         intent: PlaybackRestartIntent,
     ) -> Result<StartedPlayback, PlaybackManagerError> {
-        let (reply, response) = oneshot::channel();
-        self.controls
-            .send(ControlCommand::Restart {
-                session_id,
-                expected_stream_handle,
-                intent,
-                reply,
-            })
-            .await
-            .map_err(|_| PlaybackManagerError::Unavailable)?;
-        response
-            .await
-            .map_err(|_| PlaybackManagerError::Unavailable)?
+        self.admit_native_open(
+            session_id,
+            NativePlaybackOpen::Restart(expected_stream_handle, intent),
+        )
+        .await?
+        .await
     }
 
-    pub(crate) async fn stop(
+    pub async fn stop(
         &self,
         session_id: PlaybackSessionId,
         stream_handle: Option<NativeStreamHandle>,
@@ -580,7 +628,7 @@ impl PlaybackManager {
             .map_err(|_| PlaybackManagerError::Unavailable)?
     }
 
-    pub(crate) async fn set_activity(
+    pub async fn set_activity(
         &self,
         session_id: PlaybackSessionId,
         active: bool,
@@ -599,11 +647,11 @@ impl PlaybackManager {
             .map_err(|_| PlaybackManagerError::Unavailable)?
     }
 
-    pub(crate) async fn suspend_for_lifecycle(&self) -> Result<(), PlaybackManagerError> {
+    pub async fn suspend_for_lifecycle(&self) -> Result<(), PlaybackManagerError> {
         self.report_lifecycle(PlaybackLifecycle::Suspended).await
     }
 
-    pub(crate) async fn resume_for_lifecycle(&self) -> Result<(), PlaybackManagerError> {
+    pub async fn resume_for_lifecycle(&self) -> Result<(), PlaybackManagerError> {
         self.report_lifecycle(PlaybackLifecycle::Resumed).await
     }
 
@@ -622,8 +670,7 @@ impl PlaybackManager {
     }
 
     /// Resolves a Channel and starts system mpv as its Primary Playback Engine.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    pub(crate) async fn start_mpv_primary(
+    pub async fn start_mpv_primary(
         &self,
         session_id: PlaybackSessionId,
         channel_id: ChannelId,
@@ -643,7 +690,7 @@ impl PlaybackManager {
     }
 
     /// Applies one control only when system mpv owns the correlated Playback Session.
-    pub(crate) async fn control_mpv(
+    pub async fn control_mpv(
         &self,
         session_id: PlaybackSessionId,
         control: MpvPlaybackControl,
@@ -663,7 +710,7 @@ impl PlaybackManager {
     }
 
     /// Reopens a suspended Linux mpv Primary Playback Engine at the live edge.
-    pub(crate) async fn reopen_mpv(
+    pub async fn reopen_mpv(
         &self,
         session_id: PlaybackSessionId,
     ) -> Result<MpvPlaybackSession, PlaybackManagerError> {
@@ -677,7 +724,7 @@ impl PlaybackManager {
             .map_err(|_| PlaybackManagerError::Unavailable)?
     }
 
-    pub(crate) async fn shutdown(&self) -> Result<(), PlaybackManagerError> {
+    pub async fn shutdown(&self) -> Result<(), PlaybackManagerError> {
         let (reply, response) = oneshot::channel();
         self.controls
             .send(ControlCommand::Shutdown { reply })
@@ -696,7 +743,6 @@ impl Drop for PlaybackManager {
 }
 
 enum ControlCommand {
-    #[cfg_attr(target_os = "linux", allow(dead_code))]
     Start {
         session_id: PlaybackSessionId,
         channel_id: ChannelId,
@@ -716,7 +762,6 @@ enum ControlCommand {
         expected_stream_handle: NativeStreamHandle,
         reply: UnitReply,
     },
-    #[cfg_attr(target_os = "linux", allow(dead_code))]
     Reopen {
         session_id: PlaybackSessionId,
         reply: DescriptorReply,
@@ -741,7 +786,6 @@ enum ControlCommand {
         lifecycle: PlaybackLifecycle,
         reply: UnitReply,
     },
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     StartMpvPrimary {
         session_id: PlaybackSessionId,
         channel_id: ChannelId,
@@ -770,6 +814,8 @@ enum PlaybackLifecycle {
 struct ReadCommand {
     session_id: PlaybackSessionId,
     stream_handle: NativeStreamHandle,
+    maximum: usize,
+    repeat_eof: bool,
     reply: oneshot::Sender<Result<Vec<u8>, PlaybackManagerError>>,
 }
 
@@ -879,7 +925,19 @@ impl PlaybackActor {
                 ActorState::Dormant(session) => match self.next_command().await {
                     Some(ActorCommand::Control(command)) => self.control_dormant(session, command),
                     Some(ActorCommand::Read(command)) => {
-                        let _ = command.reply.send(Err(PlaybackManagerError::Cancelled));
+                        // Media3 may have received the final bytes after a coalesced
+                        // pull encountered EOF. Report EOF for that generation only.
+                        let result = if command.repeat_eof
+                            && self.foreground
+                            && session.dormant_reason == Some(DormantReason::EndOfInput)
+                            && command.session_id == session.id
+                            && session.last_stream_handle.as_ref() == Some(&command.stream_handle)
+                        {
+                            Ok(Vec::new())
+                        } else {
+                            Err(PlaybackManagerError::Cancelled)
+                        };
+                        let _ = command.reply.send(result);
                         ActorState::Dormant(session)
                     }
                     None => return,
@@ -1734,7 +1792,10 @@ impl PlaybackActor {
             ControlCommand::ControlMpv {
                 session_id, reply, ..
             } if session_id == session.id
-                && matches!(session.dormant_reason, Some(DormantReason::Failed)) =>
+                && matches!(
+                    session.dormant_reason,
+                    Some(DormantReason::Failed | DormantReason::EndOfInput)
+                ) =>
             {
                 let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::Terminated)));
                 ActorState::Dormant(session)
@@ -1750,7 +1811,11 @@ impl PlaybackActor {
                 if session_id == session.id
                     && matches!(
                         session.dormant_reason,
-                        Some(DormantReason::Failed | DormantReason::Suspended)
+                        Some(
+                            DormantReason::Failed
+                                | DormantReason::EndOfInput
+                                | DormantReason::Suspended
+                        )
                     ) =>
             {
                 self.begin_mpv_open(session, reply)
@@ -2415,7 +2480,7 @@ impl PlaybackActor {
             return ActorState::Streaming(streaming);
         }
         ActorState::Reading(ReadingState {
-            pending: Box::pin(PendingRead::new(streaming.stream)),
+            pending: Box::pin(PendingRead::new(streaming.stream, read.maximum)),
             session: streaming.session,
             reply: read.reply,
         })
@@ -2437,7 +2502,7 @@ impl PlaybackActor {
                 reading.reply,
                 Ok(Vec::new()),
                 reading.session,
-                DormantReason::Failed,
+                DormantReason::EndOfInput,
             ),
             ReadCompletion::Failed(error) => self.reply_with_dormant(
                 reading.reply,
@@ -2560,7 +2625,7 @@ impl PlaybackActor {
         self.dependencies
             .screen_wake
             .set_active(active)
-            .map_err(|()| PlaybackManagerError::Unavailable)
+            .map_err(|_| PlaybackManagerError::Unavailable)
     }
 
     fn update_lifecycle(
@@ -2579,7 +2644,7 @@ impl PlaybackActor {
                         .dependencies
                         .screen_wake
                         .set_active(false)
-                        .map_err(|()| PlaybackManagerError::Unavailable);
+                        .map_err(|_| PlaybackManagerError::Unavailable);
                 }
                 self.foreground = false;
                 self.resume_intent = self.active_intent.take();
@@ -2589,7 +2654,7 @@ impl PlaybackActor {
                 self.dependencies
                     .screen_wake
                     .set_active(false)
-                    .map_err(|()| PlaybackManagerError::Unavailable)
+                    .map_err(|_| PlaybackManagerError::Unavailable)
             }
             PlaybackLifecycle::Resumed => {
                 let was_foreground = self.foreground;
@@ -2600,7 +2665,7 @@ impl PlaybackActor {
                         .dependencies
                         .screen_wake
                         .set_active(false)
-                        .map_err(|()| PlaybackManagerError::Unavailable);
+                        .map_err(|_| PlaybackManagerError::Unavailable);
                 };
                 if was_foreground || self.resume_intent.as_ref() != Some(&session.id) {
                     return Ok(());
@@ -2613,7 +2678,7 @@ impl PlaybackActor {
                 self.dependencies
                     .screen_wake
                     .set_active(true)
-                    .map_err(|()| PlaybackManagerError::Unavailable)
+                    .map_err(|_| PlaybackManagerError::Unavailable)
             }
         }
     }
@@ -2703,6 +2768,7 @@ struct MpvPlayingState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DormantReason {
+    EndOfInput,
     Failed,
     Suspended,
 }
@@ -2777,12 +2843,14 @@ enum PendingOpenError {
 
 struct PendingRead {
     stream: Option<StreamInstance>,
+    maximum: usize,
 }
 
 impl PendingRead {
-    fn new(stream: StreamInstance) -> Self {
+    fn new(stream: StreamInstance, maximum: usize) -> Self {
         Self {
             stream: Some(stream),
+            maximum,
         }
     }
 }
@@ -2791,9 +2859,10 @@ impl Future for PendingRead {
     type Output = ReadCompletion;
 
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        let maximum = self.maximum;
         let stream = self.stream.as_mut().expect("pending read owns stream");
         if !stream.remainder.is_empty() {
-            let take = stream.remainder.len().min(MAX_NATIVE_PULL_BYTES);
+            let take = stream.remainder.len().min(maximum);
             let bytes = stream.remainder.split_to(take).to_vec();
             let stream = self.stream.take().expect("pending read owns stream");
             return Poll::Ready(ReadCompletion::Chunk(bytes, stream));
@@ -2805,7 +2874,7 @@ impl Future for PendingRead {
                 Poll::Pending
             }
             Some(Ok(mut bytes)) => {
-                let take = bytes.len().min(MAX_NATIVE_PULL_BYTES);
+                let take = bytes.len().min(maximum);
                 let chunk = bytes.split_to(take).to_vec();
                 stream.remainder = bytes;
                 let stream = self.stream.take().expect("pending read owns stream");

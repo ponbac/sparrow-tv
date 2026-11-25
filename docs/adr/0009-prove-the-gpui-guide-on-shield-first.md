@@ -6,7 +6,7 @@ Sparrow TV will develop the GPUI port first on NVIDIA Shield. During this milest
 
 1. Extract the installed catalog setup and Source Configuration storage from Tauri. Preserve its startup order, private data layout, and IPC behavior.
 2. Render Now and Timeline on the physical Shield from the shared core and paged reads. Port the TV navigation rules, Quality Variant row folding, time windows, and paging from the existing behavior tests. Keep guide state testable without GPUI. The Activity owns lifecycle reporting and Android TLS initialization. Core startup, refresh, and queries run off the render thread with a Tokio runtime.
-3. After the guide passes the hardware gate, port Playback Session behavior from the installed runner, including cancellation, recovery, and exclusive transport ownership. Reuse the Media3 path and preserve picture visibility semantics. Complete the remaining Shield workflows before taking up phone and desktop.
+3. Port Playback Session behavior from the installed runner, including cancellation, recovery, and exclusive transport ownership. Reuse the Media3 path and preserve picture visibility semantics. Complete the remaining Shield workflows before taking up phone and desktop. Develop and test these changes off-device while the Shield is in use.
 
 Pin GPUI and its Android backend to tested revisions, use the shared Cargo lockfile, and scope the native dependencies to Android. Seed the development package through Source Configuration replacement with a loopback-only fixture launch option. Keep the fixture generator and optical harness in the repository. Use D-pad input and an allowlisted Activity dump with stable focus IDs, Channel Number, generation, and page state to verify the native guide without exposing Channel names or source data.
 
@@ -19,7 +19,7 @@ Compare optimized builds on the same physical Shield, using the same determinist
 - Peak total PSS must stay at or below 512 MiB and at or below Tauri's measured peak. Sample the app and its bound renderer processes on both builds over the same startup and browse interval.
 - Record the share of 20 Hz input windows with a visible focus change and verify the end focus. This counts displayed changes within each window. Add the playback-on comparison and Media3 continuity evidence once the native Playback Session is in use.
 
-If the guide misses these targets, profile it on Shield before extending the port.
+Use the paired Shield results to decide whether the native package is ready to replace the installed Shield app. If the guide misses these targets, profile it on Shield before deciding on replacement.
 
 ## Replacement decisions
 

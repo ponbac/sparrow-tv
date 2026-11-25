@@ -2,9 +2,11 @@
 members = [
   "app/src-tauri",
   "crates/sparrow-bounded-blocking",
+  "crates/sparrow-channel-icons",
   "crates/sparrow-client-contract",
   "crates/sparrow-core",
   "crates/sparrow-installed-catalog",
+  "crates/sparrow-installed-playback",
   "crates/sparrow-server",
   "crates/sparrow-shield",
   "crates/sparrow-snapshot-store",

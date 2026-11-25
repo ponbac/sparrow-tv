@@ -5923,6 +5923,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sparrow-channel-icons"
+version = "0.0.0"
+dependencies = [
+ "gif",
+ "image",
+ "reqwest",
+ "thiserror 2.0.20",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "sparrow-client-contract"
 version = "0.0.0"
 dependencies = [
@@ -5959,13 +5971,7 @@ dependencies = [
 name = "sparrow-installed"
 version = "0.0.0"
 dependencies = [
- "async-trait",
- "blake3",
- "bytes",
- "chrono",
- "futures-util",
  "jni 0.22.4",
- "libc",
  "rustls-platform-verifier",
  "serde",
  "serde_json",
@@ -5973,6 +5979,7 @@ dependencies = [
  "sparrow-client-contract",
  "sparrow-core",
  "sparrow-installed-catalog",
+ "sparrow-installed-playback",
  "sparrow-snapshot-store",
  "sparrow-source-http",
  "tauri",
@@ -5990,6 +5997,27 @@ dependencies = [
  "serde",
  "serde_json",
  "sparrow-core",
+ "sparrow-snapshot-store",
+ "sparrow-source-http",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
+name = "sparrow-installed-playback"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "bytes",
+ "chrono",
+ "futures-util",
+ "libc",
+ "serde",
+ "serde_json",
+ "sparrow-core",
+ "sparrow-installed-catalog",
  "sparrow-snapshot-store",
  "sparrow-source-http",
  "tempfile",
@@ -6033,13 +6061,18 @@ dependencies = [
  "chrono",
  "gpui-pre",
  "gpui-pre-mobile",
+ "image",
  "jni 0.22.4",
  "log",
  "ndk",
  "reqwest",
  "rustls-platform-verifier",
+ "sparrow-bounded-blocking",
+ "sparrow-channel-icons",
  "sparrow-core",
  "sparrow-installed-catalog",
+ "sparrow-installed-playback",
+ "sparrow-source-http",
  "sparrow-tv-guide",
  "tokio",
 ]
@@ -6084,6 +6117,7 @@ name = "sparrow-tv-guide"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "sparrow-bounded-blocking",
  "sparrow-core",
  "sparrow-installed-catalog",
  "tempfile",

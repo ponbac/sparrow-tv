@@ -8,12 +8,12 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use futures_util::stream;
 use sparrow_core::{
-    CatalogCacheMapping, ChannelQuery, Clock, CoreAdapters, PageLimit, PageRequest,
-    PrivateSourceValidators, RefreshOutcome, RefreshTrigger, ScheduleQuery, SnapshotCandidate,
-    SnapshotRevalidation, SnapshotScan, SnapshotSource, SnapshotStage, SnapshotStageRequest,
-    SnapshotStore, SourceAccess, SourceAccessError, SourceAccessFailure, SourceByteStream,
-    SourceConfiguration, SourceConfigurationInput, SourceKind, SourceRequest, SourceResponse,
-    SourceState, SparrowCore, StoreError, ValidatedStage,
+    CatalogCacheMapping, ChannelQuery, Clock, CoreAdapters, LifecycleSignal, PageLimit,
+    PageRequest, PrivateSourceValidators, RefreshOutcome, RefreshTrigger, ScheduleQuery,
+    SnapshotCandidate, SnapshotRevalidation, SnapshotScan, SnapshotSource, SnapshotStage,
+    SnapshotStageRequest, SnapshotStore, SourceAccess, SourceAccessError, SourceAccessFailure,
+    SourceByteStream, SourceConfiguration, SourceConfigurationInput, SourceKind, SourceRequest,
+    SourceResponse, SourceState, SparrowCore, StoreError, ValidatedStage,
 };
 use sparrow_snapshot_store::AtomicFileSnapshotStore;
 use tempfile::TempDir;
@@ -280,6 +280,7 @@ struct CapturingSnapshotStore {
     cancelled_cache_writes: Arc<AtomicUsize>,
     fail_next_cache_writes: Arc<AtomicUsize>,
     cache_gate: Option<Arc<CacheWriteGate>>,
+    epg_recovery_gate: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 impl CapturingSnapshotStore {
@@ -294,6 +295,7 @@ impl CapturingSnapshotStore {
             cancelled_cache_writes: Arc::new(AtomicUsize::new(0)),
             fail_next_cache_writes: Arc::new(AtomicUsize::new(0)),
             cache_gate: None,
+            epg_recovery_gate: None,
         }
     }
 
@@ -384,6 +386,11 @@ impl SnapshotStore for CapturingSnapshotStore {
         candidate: &SnapshotCandidate,
     ) -> Result<Box<dyn std::io::BufRead + Send>, StoreError> {
         self.candidate_opens.fetch_add(1, Ordering::SeqCst);
+        if candidate.metadata().source().kind() == SourceKind::Epg
+            && let Some(gate) = &self.epg_recovery_gate
+        {
+            gate.acquire().await.unwrap().forget();
+        }
         self.inner.open_candidate(candidate).await
     }
 
@@ -898,16 +905,30 @@ async fn processed_catalog_reopens_without_reading_source_payloads_and_recovers_
 async fn installed_cache_miss_opens_channels_before_restoring_the_saved_guide() {
     let directory = TempDir::new().unwrap();
     let disk = Arc::new(AtomicFileSnapshotStore::open(directory.path()).unwrap());
-    let store = Arc::new(CapturingSnapshotStore::new(disk));
     drop(
         bootstrap(
             configuration(M3U_URL, EPG_URL),
             FixtureSource::online(),
-            Arc::clone(&store),
+            Arc::clone(&disk),
         )
         .await,
     );
-    let core = snapshot_restart(Arc::clone(&store), true).await;
+    let epg_recovery_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let store = Arc::new(CapturingSnapshotStore {
+        epg_recovery_gate: Some(Arc::clone(&epg_recovery_gate)),
+        ..CapturingSnapshotStore::new(disk)
+    });
+    let offline = FixtureSource::rejecting();
+    let core = SparrowCore::bootstrap_installed(
+        Some(configuration(M3U_URL, EPG_URL)),
+        CoreAdapters::new(
+            Arc::new(offline.clone()),
+            store.clone(),
+            Arc::new(FixedClock(parse_time("2026-08-29T12:00:00Z"))),
+        ),
+    )
+    .await
+    .unwrap();
     assert_eq!(channel_names(&core), ["Alpha"]);
     assert!(programme_titles(&core).is_empty());
     assert_eq!(
@@ -916,7 +937,23 @@ async fn installed_cache_miss_opens_channels_before_restoring_the_saved_guide() 
         "EPG payload must not delay opening Channels"
     );
     let mut events = core.subscribe();
+    core.report_lifecycle(LifecycleSignal::Started);
     core.activate_automation();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while store.candidate_opens.load(Ordering::SeqCst) < 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("EPG recovery starts in the background");
+    core.report_lifecycle(LifecycleSignal::Resumed);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(
+        offline.opens(SourceKind::Epg),
+        0,
+        "automatic EPG refresh must allow the saved guide to recover first"
+    );
+    epg_recovery_gate.add_permits(1);
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         while programme_titles(&core).is_empty() {
             events.recv().await.unwrap();

@@ -145,6 +145,11 @@ impl ChannelCatalog {
         )
     }
 
+    pub(crate) fn channel_number(&self, id: &ChannelId) -> Option<u32> {
+        let index = self.flat.channel_index_by_digest(&id.digest())?;
+        Some(self.flat.channels_hot()[index].number.get())
+    }
+
     pub(crate) fn channel_family(&self, number: u32) -> Option<ChannelFamily> {
         let index = self.flat.channel_index_by_number(number)?;
         Some(self.project_channel_family(index))
@@ -244,10 +249,10 @@ impl ChannelCatalog {
         )
     }
 
-    /// Selects the Programmes of one schedule that end after `from`, in start
-    /// order. A long Programme can outlast shorter ones that start after it,
-    /// so the selection is not a contiguous range and every candidate is
-    /// checked.
+    /// Selects a page prefix in start order, plus one match to detect continuation.
+    /// A long Programme can outlast shorter ones that start after it, so the
+    /// overlap index gives the first possible match but subsequent entries must
+    /// still be checked individually.
     fn programmes_ending_after(
         &self,
         schedule: &Range<usize>,
@@ -256,22 +261,20 @@ impl ChannelCatalog {
     ) -> SelectionPrefix {
         let first_possible = self.flat.first_possible_overlap(schedule, from);
         let entries = self.flat.schedule_entries();
+        let programmes = self.flat.matched_programmes_hot();
+        let from = (from.timestamp(), from.timestamp_subsec_nanos());
         let mut indices = Vec::with_capacity(prefix_len.min(schedule.end - first_possible));
-        let mut total_len = 0;
         for (offset, entry) in entries[first_possible..schedule.end].iter().enumerate() {
-            let index = first_possible + offset;
-            if self
-                .flat
-                .matched_programme_ends_at(entry.matched_prog_index.get() as usize)
-                > from
-            {
-                total_len += 1;
-                if indices.len() < prefix_len {
-                    indices.push(index);
+            let programme = &programmes[entry.matched_prog_index.get() as usize];
+            if (programme.ends_at_secs.get(), programme.ends_at_nanos.get()) > from {
+                if indices.len() == prefix_len {
+                    return SelectionPrefix::new(indices, prefix_len + 1);
                 }
+                indices.push(first_possible + offset);
             }
         }
-        SelectionPrefix::new(indices, total_len)
+        let match_count = indices.len();
+        SelectionPrefix::new(indices, match_count)
     }
 
     pub(crate) fn guide_window(

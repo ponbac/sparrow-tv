@@ -971,7 +971,7 @@ fn ranked_selection_keeps_only_the_requested_prefix_and_counts_every_match() {
         super::ranked_channel_selection(&cat.flat, &mut matcher, 5, &super::never_cancelled)
             .expect("an uncancelled ranking succeeds");
 
-    assert_eq!(selection.total_len(), 9);
+    assert_eq!(selection.available_len(), 9);
     // Notice channels are clustered by first-seen group ("Other", "News", "Newsroom",
     // "Daily News", "Goodnews"), so check ranked order via channel names & groups.
     let first_five = cat
@@ -1030,8 +1030,11 @@ fn schedule_overlap_index_preserves_long_running_programmes_and_resets_per_chann
 
     let a_from_50 = cat
         .schedule(
-            &ScheduleQuery::new(ch_a, PageRequest::first(PageLimit::new(10).unwrap()))
-                .with_from(instant(50)),
+            &ScheduleQuery::new(
+                ch_a.clone(),
+                PageRequest::first(PageLimit::new(10).unwrap()),
+            )
+            .with_from(instant(50)),
         )
         .unwrap();
     assert_eq!(a_from_50.items().len(), 1);
@@ -1044,6 +1047,27 @@ fn schedule_overlap_index_preserves_long_running_programmes_and_resets_per_chann
         )
         .unwrap();
     assert!(b_from_50.items().is_empty());
+
+    // The short Programme ending at the filter boundary does not consume a
+    // position. The continuation reaches the next match, then ends.
+    let limit = PageLimit::new(1).unwrap();
+    let first = cat
+        .schedule(
+            &ScheduleQuery::new(ch_a.clone(), PageRequest::first(limit)).with_from(instant(20)),
+        )
+        .unwrap();
+    assert_eq!(first.items()[0].ends_at(), instant(100));
+    let next = cat
+        .schedule(
+            &ScheduleQuery::new(
+                ch_a,
+                PageRequest::after(first.next().unwrap().clone(), limit),
+            )
+            .with_from(instant(20)),
+        )
+        .unwrap();
+    assert_eq!(next.items()[0].ends_at(), instant(30));
+    assert!(next.next().is_none());
 }
 
 #[test]
