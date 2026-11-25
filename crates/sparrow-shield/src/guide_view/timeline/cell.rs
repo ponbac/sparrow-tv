@@ -14,7 +14,7 @@ use super::{RIGHT_FADE_WIDTH, TRACK_WIDTH, TimelineFrame};
 const TITLE_FAMILY: &str = "Sparrow Guide 82";
 const CELL_HEIGHT: f32 = TIMELINE_ROW_HEIGHT - 8.;
 const INSET_Y: f32 = 4.;
-const CORNER_RADIUS: f32 = 8.;
+use super::super::card_face::{CLIP_POINT, CORNER_RADIUS};
 const WASH: u32 = 0x243858;
 
 fn geometry(
@@ -44,15 +44,6 @@ pub(super) fn render(
         (false, true) => CELL_ELAPSED,
         (false, false) => CELL,
     };
-    let progress = live
-        .then(|| frame.axis.elapsed_fraction(programme, frame.meter_time))
-        .flatten()
-        .map(|fraction| {
-            (
-                (fraction as f32 * full_width).clamp(0., full_width),
-                if focused { ICE_ELAPSED } else { WASH },
-            )
-        });
     // Geometry past the track's clip cannot affect its image unless it rounds
     // back into view. Bound the painted shape even for very long programmes.
     let paint_width = full_width.min(TRACK_WIDTH - left + CORNER_RADIUS);
@@ -65,17 +56,30 @@ pub(super) fn render(
     let lift = focused.then_some(frame.lift);
     let grow = lift.map_or(0., |lift| lift.amount * 2.5);
     let left_grow = grow.min(left.max(0.));
+    let progress = frame
+        .axis
+        .elapsed_fraction(programme, frame.meter_time)
+        .filter(|_| live)
+        .map(|fraction| {
+            let elapsed = (fraction * placement.full_width_fraction) as f32 * TRACK_WIDTH;
+            (
+                elapsed + left_grow,
+                if focused { ICE_ELAPSED } else { WASH },
+            )
+        });
+    let width = paint_width + left_grow + grow;
+    let face_height = height + 2. * grow;
     let cell = layout.rect(left, top, text_width, height).child(
         layout
-            .rect(
-                -left_grow,
-                -grow,
-                paint_width + left_grow + grow,
-                CELL_HEIGHT + 2. * grow,
-            )
-            .rounded(layout.px(CORNER_RADIUS))
+            .rect(-left_grow, -grow, width, face_height)
             .when_some(lift, |face, lift| {
-                face.shadow(vec![lift.shadow(layout, 3.)])
+                let inset = if cut { CLIP_POINT.min(width / 2.) } else { 0. };
+                face.child(
+                    layout
+                        .rect(inset, 0., width - inset, face_height)
+                        .rounded(layout.px(CORNER_RADIUS))
+                        .shadow(vec![lift.shadow(layout, 9., 20., 204)]),
+                )
             })
             .child(super::super::card_face::paint(
                 layout, cut, fill_color, progress, lift,

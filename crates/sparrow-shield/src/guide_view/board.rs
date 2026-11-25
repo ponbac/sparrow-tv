@@ -51,9 +51,8 @@ pub(super) fn render(
         _ => None,
     };
     let retry_focus = focus == Some(NowFocus::Retry);
-    let mut board = layout
-        .rect(0., BOARD_TOP, CANVAS_WIDTH, height)
-        .overflow_hidden();
+    const TOP_BLEED: f32 = 10.;
+    let mut board = layout.rect(0., TOP_BLEED, CANVAS_WIDTH, height);
     if let Some(notice) = screen.notice() {
         board = board.child(notice_panel(
             layout,
@@ -72,7 +71,8 @@ pub(super) fn render(
         let focused = focus == Some(NowFocus::Channel(index));
         let tile = card(
             layout,
-            (rect, focused.then_some(lift)),
+            rect,
+            lift,
             screen,
             index,
             focus.filter(|focus| focus.family() == Some(index)),
@@ -113,7 +113,10 @@ pub(super) fn render(
             ));
         }
     }
-    board.children(raised)
+    layout
+        .rect(0., BOARD_TOP - TOP_BLEED, CANVAS_WIDTH, height + TOP_BLEED)
+        .overflow_hidden()
+        .child(board.children(raised))
 }
 
 pub(super) fn bottom_fade(rect: Div) -> Div {
@@ -152,9 +155,11 @@ pub(super) fn more_footer(layout: Layout, rect: Div, loading: bool) -> Div {
         .child(action(layout, label, false))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn card(
     layout: Layout,
-    (rect, lift): (Div, Option<super::LiftFrame>),
+    rect: Div,
+    lift: super::LiftFrame,
     screen: &GuideScreen,
     index: usize,
     focus: Option<NowFocus>,
@@ -192,6 +197,7 @@ fn card(
         (CARD_HEIGHT - caption_height - TITLE_HEIGHT - last_height - LINE_GAP * 2.) / 2.;
     let title_top = content_top + caption_height + LINE_GAP;
     let quality_count = family.quality_variants().count();
+    let lift = focused.then_some(lift);
     let grow = lift.map_or(0., |lift| lift.amount * 4.);
     let width = COLUMN_WIDTH + 2. * grow;
     let height = CARD_HEIGHT + 2. * grow;
@@ -203,9 +209,9 @@ fn card(
     });
     let surface = layout
         .rect(-grow, -grow, width, height)
-        .rounded(layout.px(8.))
+        .rounded(layout.px(super::card_face::CORNER_RADIUS))
         .when_some(lift, |surface, lift| {
-            surface.shadow(vec![lift.shadow(layout, 8.)])
+            surface.shadow(vec![lift.shadow(layout, 14., 30., 217)])
         })
         .child(super::card_face::paint(
             layout,

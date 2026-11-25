@@ -3,8 +3,8 @@ use gpui::{
     Bounds, ContentMask, PathBuilder, Pixels, Window, canvas, fill, point, prelude::*, rgb, size,
 };
 
-const CORNER_RADIUS: f32 = 8.;
-const CLIP_POINT: f32 = 12.;
+pub(super) const CORNER_RADIUS: f32 = 8.;
+pub(super) const CLIP_POINT: f32 = 12.;
 
 pub(super) fn paint(
     layout: Layout,
@@ -18,7 +18,7 @@ pub(super) fn paint(
         move |bounds, (), window, _| {
             let radius = layout.px(CORNER_RADIUS);
             let path = cut
-                .then(|| left_cut(bounds, layout.px(CLIP_POINT), radius))
+                .then(|| left_cut(PathBuilder::fill(), bounds, layout.px(CLIP_POINT), radius))
                 .flatten();
             let paint = |window: &mut Window, color| {
                 let base = if lift.is_some() {
@@ -27,9 +27,15 @@ pub(super) fn paint(
                     layout.surface(color)
                 };
                 let fills = std::iter::once(base.into()).chain(
-                    lift.and_then(|lift| lift.sheen(color, bounds.size.width / bounds.size.height))
-                        .into_iter()
-                        .flatten(),
+                    lift.and_then(|lift| {
+                        lift.sheen(
+                            color,
+                            bounds.size.width / layout.px(1.),
+                            bounds.size.height / layout.px(1.),
+                        )
+                    })
+                    .into_iter()
+                    .flatten(),
                 );
                 for fill_color in fills {
                     if let Some(path) = path.as_ref() {
@@ -47,13 +53,40 @@ pub(super) fn paint(
                 };
                 window.with_content_mask(Some(mask), |window| paint(window, elapsed_color));
             }
+            if let Some(lift) = lift.filter(|lift| lift.amount > 0.) {
+                let stroke = layout.px(2. * lift.amount);
+                let color = gpui::rgba(0xe8f8ff00 | (184. * lift.amount) as u32);
+                if cut {
+                    let inset = stroke / 2.;
+                    if bounds.size.width > stroke
+                        && let Some(rim) = left_cut(
+                            PathBuilder::stroke(stroke),
+                            bounds.inset(inset),
+                            layout.px(CLIP_POINT) - inset,
+                            radius - inset,
+                        )
+                    {
+                        window.paint_path(rim, color);
+                    }
+                } else {
+                    window.paint_quad(
+                        gpui::outline(bounds, color, gpui::BorderStyle::Solid)
+                            .corner_radii(radius)
+                            .border_widths(stroke),
+                    );
+                }
+            }
         },
     )
     .size_full()
 }
 
-fn left_cut(bounds: Bounds<Pixels>, tip: Pixels, radius: Pixels) -> Option<gpui::Path<Pixels>> {
-    let mut path = PathBuilder::fill();
+fn left_cut(
+    mut path: PathBuilder,
+    bounds: Bounds<Pixels>,
+    tip: Pixels,
+    radius: Pixels,
+) -> Option<gpui::Path<Pixels>> {
     let width = bounds.size.width;
     let height = bounds.size.height;
     let radius = radius.min(width / 2.);

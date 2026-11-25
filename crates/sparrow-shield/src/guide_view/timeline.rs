@@ -78,17 +78,27 @@ pub(super) fn render(
     let retry_focus = focus == Some(TimelineFocus::Retry);
     let families = screen.families();
     let scroll = screen.scroll_offset();
+    let mut raised = None;
     let rows = screen.visible_families(OVERSCAN_LINES).map(|index| {
         let family = &families[index];
-        render_row(
+        let y = TIMELINE_ROW_TOP + index as f32 * TIMELINE_ROW_PITCH - scroll;
+        let (row, focused_cell) = render_row(
             layout,
             frame,
             family,
             screen.variant_preferences(),
-            index as f32 * TIMELINE_ROW_PITCH - scroll,
+            y - RULER_HEIGHT,
             focus.filter(|focus| focus.family() == Some(index)),
             family_icon(family).and_then(|icon| icons.get(icon)),
-        )
+        );
+        if let Some(cell) = focused_cell {
+            raised = Some(
+                layout
+                    .rect(0., y - RULER_HEIGHT, TRACK_WIDTH, TIMELINE_ROW_HEIGHT)
+                    .child(cell),
+            );
+        }
+        row
     });
     let rows_bottom = TIMELINE_ROW_TOP + families.len() as f32 * TIMELINE_ROW_PITCH - scroll;
     let rows_height = (rows_bottom.min(height) - RULER_HEIGHT).max(0.);
@@ -106,6 +116,27 @@ pub(super) fn render(
                 .overflow_hidden()
                 .children(rows),
         );
+    if !layout.translucent {
+        board = board.child(board::bottom_fade(layout.rect(
+            0.,
+            height - 12.,
+            BOARD_WIDTH,
+            12.,
+        )));
+    }
+    board = board.when_some(raised, |board, cell| {
+        board.child(
+            layout
+                .rect(
+                    CHANNEL_WIDTH,
+                    RULER_HEIGHT,
+                    TRACK_WIDTH,
+                    height - RULER_HEIGHT,
+                )
+                .overflow_hidden()
+                .child(cell),
+        )
+    });
     if rows_height > 0. {
         board = board
             .when_some(
@@ -136,14 +167,6 @@ pub(super) fn render(
             notice,
             retry_focus,
         ));
-    }
-    if !layout.translucent {
-        board = board.child(board::bottom_fade(layout.rect(
-            0.,
-            height - 12.,
-            BOARD_WIDTH,
-            12.,
-        )));
     }
     let footer_y = screen.footer_top();
     if !families.is_empty() && footer_y < height {
@@ -249,7 +272,7 @@ fn render_row(
     y: f32,
     focus: Option<TimelineFocus>,
     icon: Option<&IconImage>,
-) -> Div {
+) -> (Div, Option<Div>) {
     let (preferred, source) = family.preferred_with_schedule(preferences);
     let channel_focus = matches!(focus, Some(TimelineFocus::Channel(_)));
     let chip_focus = match focus {
@@ -267,20 +290,15 @@ fn render_row(
     let track = if programmes.is_empty() {
         track.child(no_guide_data(layout))
     } else {
-        track
-            .children(
-                programmes
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, _)| Some(*index) != programme_focus)
-                    .filter_map(|(_, programme)| cell::render(layout, frame, programme, false)),
-            )
-            .when_some(
-                programme_focus.and_then(|index| programmes.get(index)),
-                |track, programme| track.children(cell::render(layout, frame, programme, true)),
-            )
+        track.children(
+            programmes
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| Some(*index) != programme_focus)
+                .filter_map(|(_, programme)| cell::render(layout, frame, programme, false)),
+        )
     };
-    layout
+    let row = layout
         .rect(0., y, BOARD_WIDTH - GUTTER, TIMELINE_ROW_HEIGHT)
         .when(icon.is_some(), |row| {
             row.child(
@@ -305,7 +323,11 @@ fn render_row(
             chip_focus,
             icon,
         ))
-        .child(track)
+        .child(track);
+    let raised = programme_focus
+        .and_then(|index| programmes.get(index))
+        .and_then(|programme| cell::render(layout, frame, programme, true));
+    (row, raised)
 }
 
 fn channel(
