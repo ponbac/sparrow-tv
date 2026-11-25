@@ -1,6 +1,6 @@
 use gpui::{Div, FontWeight, Rgba, SharedString, TextRun, Window, font, prelude::*, rgb, rgba};
-use sparrow_core::CatalogGeneration;
-use sparrow_tv_guide::now_screen::{LaneFocus, NowScreen, ScreenFocus};
+use sparrow_core::{CatalogGeneration, ChannelGroupView};
+use sparrow_tv_guide::guide_screen::{GuideMode, GuideScreen, LaneFocus, ScreenFocus};
 
 use super::{
     BAND_BOTTOM, CANVAS_WIDTH, CELL_ELAPSED, DIM, FAINT, GUTTER, ICE, LANE_HEIGHT, Layout, MUTE,
@@ -13,13 +13,66 @@ const GROUP_GAP: f32 = 4.;
 const REVEAL_MARGIN: f32 = 48.;
 
 #[derive(Default)]
+pub(super) struct GroupReveal {
+    selected: Option<usize>,
+    count: usize,
+}
+
+impl GroupReveal {
+    pub(super) fn target(
+        &mut self,
+        selected: usize,
+        focused: Option<usize>,
+        count: usize,
+    ) -> Option<usize> {
+        let focused = focused.filter(|&index| index < count);
+        let selection_changed = self.selected.replace(selected) != Some(selected);
+        let groups_changed = std::mem::replace(&mut self.count, count) != count;
+        // Outside the group pills, make the checked group visible as groups arrive.
+        if selection_changed || (groups_changed && focused.is_none()) {
+            Some(selected).filter(|&index| index < count)
+        } else {
+            focused
+        }
+    }
+}
+
+#[derive(Default)]
 pub(crate) struct LaneViewport {
     generation: Option<CatalogGeneration>,
     first: usize,
     clipped: f32,
+    group_reveal: GroupReveal,
 }
 
 impl LaneViewport {
+    fn update(
+        &mut self,
+        generation: Option<CatalogGeneration>,
+        selected: usize,
+        focused: Option<usize>,
+        count: usize,
+        available: f32,
+        width: impl Fn(usize) -> f32,
+    ) {
+        if self.generation != generation {
+            *self = Self {
+                generation,
+                ..Self::default()
+            };
+        }
+        if self.first >= count {
+            self.first = 0;
+            self.clipped = 0.;
+        }
+        if available <= 0. {
+            return;
+        }
+        if let Some(index) = self.group_reveal.target(selected, focused, count) {
+            self.reveal(index, count - 1, available, width);
+        }
+    }
+
     fn reveal(&mut self, index: usize, last: usize, available: f32, width: impl Fn(usize) -> f32) {
         if index < self.first || (index == self.first && self.clipped > 0.) {
             self.first = index;
@@ -62,7 +115,7 @@ impl LaneViewport {
 
 pub(super) fn render(
     layout: Layout,
-    screen: &NowScreen,
+    screen: &GuideScreen,
     viewport: &mut LaneViewport,
     window: &Window,
 ) -> Div {
@@ -82,7 +135,8 @@ pub(super) fn render(
         .rect(0., BAND_BOTTOM, CANVAS_WIDTH, LANE_HEIGHT)
         .child(view_switch(
             layout,
-            switch_width,
+            layout.rect(GUTTER, CONTROL_Y, switch_width, CONTROL_HEIGHT),
+            GuideMode::Now,
             lane_focus == Some(LaneFocus::Phase),
         ))
         .child(groups(
@@ -95,17 +149,15 @@ pub(super) fn render(
         ))
         .child(choose_groups(
             layout,
-            roster_x,
-            roster_width,
+            layout.rect(roster_x, CONTROL_Y, roster_width, CONTROL_HEIGHT),
             lane_focus == Some(LaneFocus::ChooseGroups),
         ))
 }
 
-fn view_switch(layout: Layout, width: f32, focused: bool) -> Div {
+pub(super) fn view_switch(layout: Layout, rect: Div, mode: GuideMode, focused: bool) -> Div {
     let now_icon = include_bytes!("../../assets/icons/now.svg");
     let timeline_icon = include_bytes!("../../assets/icons/timeline.svg");
-    layout
-        .rect(GUTTER, CONTROL_Y, width, CONTROL_HEIGHT)
+    let mut switch = rect
         .rounded_full()
         .px(layout.px(if focused { 4. } else { 2.5 }))
         .py(layout.px(if focused { 4. } else { 2.5 }))
@@ -114,25 +166,30 @@ fn view_switch(layout: Layout, width: f32, focused: bool) -> Div {
             control.border(layout.px(1.5)).border_color(rgba(FAINT))
         })
         .flex()
-        .gap(layout.px(2.))
-        .child(segment(
-            layout,
-            "Now",
-            now_icon,
-            if focused { rgb(ICE) } else { rgb(TEXT) },
-            if focused {
-                rgb(ON_ICE)
-            } else {
-                rgb(CELL_ELAPSED)
-            },
-        ))
-        .child(segment(
-            layout,
+        .gap(layout.px(2.));
+    for (label, icon, active) in [
+        ("Now", now_icon.as_slice(), mode == GuideMode::Now),
+        (
             "Timeline",
-            timeline_icon,
-            if focused { rgb(ON_ICE) } else { rgba(DIM) },
-            rgba(0),
-        ))
+            timeline_icon.as_slice(),
+            mode == GuideMode::Timeline,
+        ),
+    ] {
+        let (ink, fill) = match (active, focused) {
+            (true, true) => (rgb(ICE), rgb(ON_ICE)),
+            (true, false) => (rgb(TEXT), rgb(CELL_ELAPSED)),
+            (false, true) => (rgb(ON_ICE), rgba(0)),
+            (false, false) => (rgba(DIM), rgba(0)),
+        };
+        switch = switch.child(
+            segment(layout, label, icon, ink, fill)
+                .when(mode == GuideMode::Timeline, |segment| {
+                    segment.flex_1().justify_center()
+                })
+                .when(mode == GuideMode::Now, |segment| segment.flex_none()),
+        );
+    }
+    switch
 }
 
 fn segment(layout: Layout, label: &'static str, icon: &'static [u8], ink: Rgba, fill: Rgba) -> Div {
@@ -142,7 +199,6 @@ fn segment(layout: Layout, label: &'static str, icon: &'static [u8], ink: Rgba, 
         .rounded_full()
         .bg(fill)
         .text_color(ink)
-        .flex_none()
         .flex()
         .items_center()
         .gap(layout.px(8.))
@@ -150,11 +206,9 @@ fn segment(layout: Layout, label: &'static str, icon: &'static [u8], ink: Rgba, 
         .child(label)
 }
 
-fn choose_groups(layout: Layout, x: f32, width: f32, focused: bool) -> Div {
+pub(super) fn choose_groups(layout: Layout, rect: Div, focused: bool) -> Div {
     let ink = rgb(if focused { ON_ICE } else { TEXT });
-    layout
-        .rect(x, CONTROL_Y, width, CONTROL_HEIGHT)
-        .font_weight(FontWeight(600.))
+    rect.font_weight(FontWeight(600.))
         .text_size(layout.px(20.))
         .line_height(layout.px(28.))
         .text_color(ink)
@@ -174,7 +228,7 @@ fn choose_groups(layout: Layout, x: f32, width: f32, focused: bool) -> Div {
 
 fn groups(
     layout: Layout,
-    screen: &NowScreen,
+    screen: &GuideScreen,
     viewport: &mut LaneViewport,
     window: &Window,
     bounds: (f32, f32),
@@ -182,45 +236,32 @@ fn groups(
 ) -> Div {
     let (x, available) = bounds;
     let groups = screen.groups();
-    let selected = group_pill_index(screen.selected_lane());
-    let focused = focus
-        .and_then(group_pill_index)
-        .filter(|&index| index <= groups.len());
-    if viewport.generation != screen.generation() || viewport.first > groups.len() {
-        *viewport = LaneViewport {
-            generation: screen.generation(),
-            ..LaneViewport::default()
-        };
-    }
-    let pill = |index| {
-        if index == 0 {
-            Pill::new(layout, window, "All", None, available)
-        } else {
-            let group: &sparrow_core::ChannelGroupView = &groups[index - 1];
-            let name = if group.name().is_empty() {
-                "Ungrouped"
-            } else {
-                group.name()
-            };
-            Pill::new(layout, window, name, Some(group.channel_count()), available)
-        }
-    };
+    let selected = group_pill_index(screen.selected_lane()).unwrap_or(0);
+    let focused = focus.and_then(group_pill_index);
+    let pill = |index: usize| GroupPill::new(index.checked_sub(1).map(|index| &groups[index]));
 
     let mut row = layout
         .rect(x, CONTROL_Y, available, CONTROL_HEIGHT)
         .overflow_hidden();
-    if let Some(index) = focused {
-        viewport.reveal(index, groups.len(), available, |index| pill(index).width);
-    }
+    viewport.update(
+        screen.generation(),
+        selected,
+        focused,
+        groups.len() + 1,
+        available,
+        |index| pill(index).width(layout, window).min(available),
+    );
     let mut left = -viewport.clipped;
     for index in viewport.first..=groups.len() {
         let pill = pill(index);
-        let width = pill.width;
+        let content_width = pill.width(layout, window);
+        let width = content_width.min(available);
         row = row.child(pill.render(
             layout,
-            left,
-            selected == Some(index),
+            layout.rect(left, 0., width, CONTROL_HEIGHT),
+            selected == index,
             focused == Some(index),
+            content_width > available,
         ));
         left += width + GROUP_GAP;
         if left >= available {
@@ -230,7 +271,7 @@ fn groups(
     row
 }
 
-fn group_pill_index(focus: LaneFocus) -> Option<usize> {
+pub(super) fn group_pill_index(focus: LaneFocus) -> Option<usize> {
     match focus {
         LaneFocus::All => Some(0),
         LaneFocus::Group(index) => Some(index + 1),
@@ -238,37 +279,46 @@ fn group_pill_index(focus: LaneFocus) -> Option<usize> {
     }
 }
 
-struct Pill {
+pub(super) struct GroupPill {
     label: SharedString,
     count: Option<SharedString>,
-    width: f32,
-    constrained: bool,
 }
 
-impl Pill {
-    fn new(
-        layout: Layout,
-        window: &Window,
-        label: &str,
-        count: Option<u32>,
-        available: f32,
-    ) -> Self {
-        let label: SharedString = label.into();
-        let count: Option<SharedString> = count.map(|count| count.to_string().into());
-        let label_width = measure(layout, window, &label, 20., 600.);
-        let count_width = count
-            .as_ref()
-            .map_or(0., |count| 8. + measure(layout, window, count, 15., 500.));
-        let content_width = 28. + label_width + count_width;
+impl GroupPill {
+    pub(super) fn new(group: Option<&ChannelGroupView>) -> Self {
+        let Some(group) = group else {
+            return Self {
+                label: "All".into(),
+                count: None,
+            };
+        };
+        let label = match group.name() {
+            "" => "Ungrouped",
+            name => name,
+        };
         Self {
-            label,
-            count,
-            width: content_width.min(available),
-            constrained: content_width > available,
+            label: label.into(),
+            count: Some(group.channel_count().to_string().into()),
         }
     }
 
-    fn render(self, layout: Layout, x: f32, selected: bool, focused: bool) -> Div {
+    fn width(&self, layout: Layout, window: &Window) -> f32 {
+        let label_width = measure(layout, window, &self.label, 20., 600.);
+        let count_width = self
+            .count
+            .as_ref()
+            .map_or(0., |count| 8. + measure(layout, window, count, 15., 500.));
+        28. + label_width + count_width
+    }
+
+    pub(super) fn render(
+        self,
+        layout: Layout,
+        rect: Div,
+        selected: bool,
+        focused: bool,
+        constrained: bool,
+    ) -> Div {
         let (text, count, fill) = if focused {
             (rgb(ON_ICE), rgba(ON_ICE_DIM), rgb(ICE))
         } else if selected {
@@ -276,9 +326,7 @@ impl Pill {
         } else {
             (rgba(DIM), rgba(MUTE), rgba(0))
         };
-        layout
-            .rect(x, 0., self.width, CONTROL_HEIGHT)
-            .rounded_full()
+        rect.rounded_full()
             .bg(fill)
             .px(layout.px(14.))
             .gap(layout.px(8.))
@@ -288,8 +336,8 @@ impl Pill {
                 layout
                     .text(SAIRA, 20., 28., 600.)
                     .whitespace_nowrap()
-                    .when(self.constrained, |label| label.min_w_0().truncate())
-                    .when(!self.constrained, |label| label.flex_none())
+                    .when(constrained, |label| label.min_w_0().truncate())
+                    .when(!constrained, |label| label.flex_none())
                     .text_color(text)
                     .child(self.label),
             )
@@ -322,4 +370,32 @@ fn measure(layout: Layout, window: &Window, label: &SharedString, size: f32, wei
         None,
     );
     f32::from(line.width()) / layout.scale
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GROUP_GAP, LaneViewport};
+
+    #[test]
+    fn horizontal_lane_reveals_the_selected_group_then_keeps_the_focused_group_visible() {
+        let mut viewport = LaneViewport::default();
+        let width = |_| 80.;
+        let available = 256.;
+        let scroll =
+            |viewport: &LaneViewport| viewport.first as f32 * (80. + GROUP_GAP) + viewport.clipped;
+
+        viewport.update(None, 12, None, 20, available, width);
+        assert_eq!(scroll(&viewport), 880.);
+        viewport.update(None, 12, Some(11), 20, available, width);
+        assert_eq!(scroll(&viewport), 880.);
+
+        viewport.update(None, 12, Some(16), 20, available, width);
+        assert_eq!(scroll(&viewport), 1216.);
+        viewport.update(None, 12, Some(16), 21, available, width);
+        assert_eq!(scroll(&viewport), 1216.);
+        viewport.update(None, 12, None, 21, available, width);
+        assert_eq!(scroll(&viewport), 1216.);
+        viewport.update(None, 12, None, 22, available, width);
+        assert_eq!(scroll(&viewport), 960.);
+    }
 }

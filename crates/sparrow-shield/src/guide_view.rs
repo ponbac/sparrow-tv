@@ -1,25 +1,26 @@
-//! The Shield's Now Guide, laid out in 1920-wide reference units.
+//! The Shield Guide, laid out in 1920-wide reference units.
 
 mod band;
 mod board;
 mod lane;
+mod timeline;
 
 pub(crate) use lane::LaneViewport;
+pub(crate) use timeline::RailViewport;
 
 use chrono::{DateTime, FixedOffset, Local, Utc};
 use gpui::{Div, FontWeight, IntoElement, Pixels, Size, Styled, Window, div, prelude::*, px, svg};
 use sparrow_core::{GuideProgramme, GuideWindowChannel};
 use sparrow_tv_guide::{
-    VariantPreferences,
-    now_screen::NowScreen,
-    time::{next_after, programme_at},
+    GuideFamily, VariantPreferences,
+    guide_screen::{GuideMode, GuideScreen, NOW_BOARD_TOP as BOARD_TOP},
+    preview::select_programme,
 };
 
 const CANVAS_WIDTH: f32 = 1920.;
 const GUTTER: f32 = 40.;
 const BAND_BOTTOM: f32 = 444.;
-const LANE_HEIGHT: f32 = 78.;
-const BOARD_TOP: f32 = BAND_BOTTOM + LANE_HEIGHT;
+const LANE_HEIGHT: f32 = BOARD_TOP - BAND_BOTTOM;
 const CARD_GAP: f32 = 11.;
 
 const INK: u32 = 0x0a111e;
@@ -89,42 +90,67 @@ impl Layout {
     }
 }
 
-pub(super) fn board_height(viewport: Size<Pixels>) -> f32 {
-    (Layout::new(viewport).height - BOARD_TOP).max(0.)
+pub(super) fn surface_height(viewport: Size<Pixels>) -> f32 {
+    Layout::new(viewport).height
 }
 
 pub(super) fn render(
-    screen: &NowScreen,
+    screen: &GuideScreen,
     now: DateTime<FixedOffset>,
+    preview: Option<&PreviewSelection>,
     description: Option<&gpui::SharedString>,
-    lane_viewport: &mut LaneViewport,
+    lanes: (&mut LaneViewport, &mut RailViewport),
     window: &mut Window,
 ) -> Div {
     let layout = Layout::new(window.viewport_size());
-    div()
+    let guide = div()
         .size_full()
         .relative()
         .overflow_hidden()
         .bg(gpui::rgb(INK))
         .text_color(gpui::rgb(TEXT))
         .font_family(SAIRA)
-        .child(band::render(layout, screen, now, description))
-        .child(lane::render(layout, screen, lane_viewport, window))
-        .child(board::render(layout, screen, now))
+        .child(band::render(
+            layout,
+            screen.focus(),
+            now,
+            preview,
+            description,
+        ));
+    match screen.mode() {
+        GuideMode::Now => guide
+            .child(lane::render(layout, screen, lanes.0, window))
+            .child(board::render(layout, screen, now)),
+        GuideMode::Timeline => guide
+            .child(timeline::rail(layout, screen, lanes.1))
+            .child(timeline::render(layout, screen, now)),
+    }
 }
 
-pub(super) fn preview_programme(
-    screen: &NowScreen,
-    now: DateTime<FixedOffset>,
-) -> Option<(&GuideWindowChannel, &GuideProgramme)> {
-    let (_, source) = screen
-        .preview_family()?
-        .preferred_with_schedule(&VariantPreferences::default());
-    let programmes = source.programmes();
-    let instant = now.to_utc();
-    let programme =
-        programme_at(programmes, instant).or_else(|| next_after(programmes, instant))?;
-    Some((source, programme))
+pub(super) struct PreviewSelection {
+    pub(super) family: GuideFamily,
+    cell: Option<usize>,
+}
+
+impl PreviewSelection {
+    pub(super) fn from_screen(screen: &GuideScreen) -> Option<Self> {
+        Some(Self {
+            family: screen.preview_family()?.clone(),
+            cell: screen.preview_cell(),
+        })
+    }
+
+    pub(super) fn programme(
+        &self,
+        now: DateTime<FixedOffset>,
+    ) -> Option<(&GuideWindowChannel, &GuideProgramme)> {
+        select_programme(
+            &self.family,
+            &VariantPreferences::default(),
+            self.cell,
+            now.to_utc(),
+        )
+    }
 }
 
 fn programme_title(programme: &GuideProgramme) -> gpui::SharedString {

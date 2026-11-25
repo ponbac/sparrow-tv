@@ -3,12 +3,12 @@ use gpui::{Div, div, linear_color_stop, linear_gradient, prelude::*, rgb, rgba};
 use sparrow_core::ChannelQuality;
 use sparrow_tv_guide::{
     GuideFamily, PageStatus, VariantPreferences,
-    now_focus::NowFocus,
-    now_screen::{
-        NOW_COLUMNS, NOW_MORE_HEIGHT, NOW_RETAINED_RETRY_HEIGHT, NOW_ROW_HEIGHT as CARD_HEIGHT,
-        NOW_ROW_PITCH as CARD_PITCH, NOW_ROW_TOP as BOARD_PAD, NowScreen, ScreenFocus,
-        ScreenNotice,
+    guide_screen::{
+        GuideScreen, NOW_COLUMNS, NOW_MORE_HEIGHT, NOW_RETAINED_RETRY_HEIGHT,
+        NOW_ROW_HEIGHT as CARD_HEIGHT, NOW_ROW_PITCH as CARD_PITCH, NOW_ROW_TOP as BOARD_PAD,
+        ScreenFocus, ScreenNotice,
     },
+    now_focus::NowFocus,
     time::{elapsed_fraction, minutes_left, next_after, programme_at},
 };
 
@@ -25,7 +25,7 @@ const CONTENT_WIDTH: f32 = COLUMN_WIDTH - CONTENT_X - 21.;
 const TITLE_HEIGHT: f32 = 35.65;
 const LINE_GAP: f32 = 4.;
 
-pub(super) fn render(layout: Layout, screen: &NowScreen, now: DateTime<FixedOffset>) -> Div {
+pub(super) fn render(layout: Layout, screen: &GuideScreen, now: DateTime<FixedOffset>) -> Div {
     let height = (layout.height - BOARD_TOP).max(0.);
     let focus = screen.focus();
     let retry_focus = focus == ScreenFocus::Board(NowFocus::Retry);
@@ -33,7 +33,12 @@ pub(super) fn render(layout: Layout, screen: &NowScreen, now: DateTime<FixedOffs
         .rect(0., BOARD_TOP, CANVAS_WIDTH, height)
         .overflow_hidden();
     if let Some(notice) = screen.notice() {
-        board = board.child(notice_panel(layout, notice, retry_focus));
+        board = board.child(notice_panel(
+            layout,
+            layout.rect(GUTTER, BOARD_PAD, CANVAS_WIDTH - GUTTER * 2., 285.),
+            notice,
+            retry_focus,
+        ));
     }
     let families = screen.families();
     let scroll = screen.scroll_offset();
@@ -48,67 +53,69 @@ pub(super) fn render(layout: Layout, screen: &NowScreen, now: DateTime<FixedOffs
         );
         board = board.child(card(layout, rect, index, &families[index], focus, now));
     }
-    board = board.child(
-        layout
-            .rect(0., height - 12., CANVAS_WIDTH, 12.)
-            .bg(linear_gradient(
-                180.,
-                linear_color_stop(rgba(INK << 8), 0.),
-                linear_color_stop(rgb(INK), 1.),
-            )),
-    );
+    board = board.child(bottom_fade(layout.rect(
+        0.,
+        height - 12.,
+        CANVAS_WIDTH,
+        12.,
+    )));
     let footer_y = screen.footer_top();
     if !families.is_empty() && footer_y < height {
+        let width = CANVAS_WIDTH - GUTTER * 2.;
         if screen.retry_available() {
-            board = board.child(
-                layout
-                    .rect(
-                        GUTTER,
-                        footer_y,
-                        CANVAS_WIDTH - GUTTER * 2.,
-                        NOW_RETAINED_RETRY_HEIGHT,
-                    )
-                    .rounded(layout.px(8.))
-                    .bg(rgb(PANEL))
-                    .px(layout.px(18.))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(layout.px(18.))
-                    .child(
-                        layout
-                            .text(SAIRA, 18., 26., 400.)
-                            .text_color(rgba(DIM))
-                            .child(
-                                "The guide could not update. These are the last loaded channels.",
-                            ),
-                    )
-                    .child(action(layout, "Try again", retry_focus)),
-            );
+            board = board.child(retained_footer(
+                layout,
+                layout.rect(GUTTER, footer_y, width, NOW_RETAINED_RETRY_HEIGHT),
+                retry_focus,
+            ));
         } else if matches!(
             screen.page_status(),
             Some(PageStatus::Ready | PageStatus::Loading)
         ) {
-            let label = if screen.page_status() == Some(PageStatus::Loading) {
-                "Loading more channels…"
-            } else {
-                "More channels"
-            };
-            board = board.child(
-                layout
-                    .rect(
-                        GUTTER,
-                        footer_y,
-                        CANVAS_WIDTH - GUTTER * 2.,
-                        NOW_MORE_HEIGHT,
-                    )
-                    .flex()
-                    .justify_center()
-                    .child(action(layout, label, false)),
-            );
+            board = board.child(more_footer(
+                layout,
+                layout.rect(GUTTER, footer_y, width, NOW_MORE_HEIGHT),
+                screen.page_status() == Some(PageStatus::Loading),
+            ));
         }
     }
     board
+}
+
+pub(super) fn bottom_fade(rect: Div) -> Div {
+    rect.bg(linear_gradient(
+        180.,
+        linear_color_stop(rgba(INK << 8), 0.),
+        linear_color_stop(rgb(INK), 1.),
+    ))
+}
+
+pub(super) fn retained_footer(layout: Layout, rect: Div, focused: bool) -> Div {
+    rect.rounded(layout.px(8.))
+        .bg(rgb(PANEL))
+        .px(layout.px(18.))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(layout.px(18.))
+        .child(
+            layout
+                .text(SAIRA, 18., 26., 400.)
+                .text_color(rgba(DIM))
+                .child("The guide could not update. These are the last loaded channels."),
+        )
+        .child(action(layout, "Try again", focused))
+}
+
+pub(super) fn more_footer(layout: Layout, rect: Div, loading: bool) -> Div {
+    let label = if loading {
+        "Loading more channels…"
+    } else {
+        "More channels"
+    };
+    rect.flex()
+        .justify_center()
+        .child(action(layout, label, false))
 }
 
 fn card(
@@ -331,7 +338,12 @@ fn quality_chip(
         .child(label)
 }
 
-fn notice_panel(layout: Layout, notice: ScreenNotice, retry_focus: bool) -> Div {
+pub(super) fn notice_panel(
+    layout: Layout,
+    rect: Div,
+    notice: ScreenNotice,
+    retry_focus: bool,
+) -> Div {
     use ScreenNotice::*;
     let (title, detail) = match notice {
         Loading => ("Opening the guide", "Loading channels and programme times."),
@@ -353,9 +365,7 @@ fn notice_panel(layout: Layout, notice: ScreenNotice, retry_focus: bool) -> Div 
             "Sparrow could not reach the guide.",
         ),
     };
-    layout
-        .rect(GUTTER, BOARD_PAD, CANVAS_WIDTH - GUTTER * 2., 285.)
-        .flex()
+    rect.flex()
         .flex_col()
         .items_center()
         .justify_center()

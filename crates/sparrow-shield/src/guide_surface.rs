@@ -5,31 +5,33 @@ use gpui::{
     AnyWindowHandle, App, Context, FocusHandle, IntoElement, KeyDownEvent, Render, SharedString,
     Task, Window, WindowOptions, div, prelude::*, px, rgb,
 };
-use sparrow_core::{
-    CatalogGeneration, CatalogStatus, ChannelGroupView, ChannelId, CoreError, GuideWindowChannel,
-    Page, PageLimit, PageRequest, ScheduleQuery,
-};
+use sparrow_core::{CatalogStatus, ChannelGroupView, CoreError, GuideWindowChannel, Page};
 use sparrow_tv_guide::{
-    GroupPageRequest, GuidePageRequest, GuideWindow, PageStatus, PageUpdate,
-    now_focus::{Direction, NowFocus},
-    now_screen::{
-        GROUP_PREFETCH_DELAY, GroupPrefetchTicket, LaneFocus, NowRead, NowScreen, ScreenAction,
-        ScreenFocus, ScreenKey, ToolbarFocus,
+    GroupPageRequest, GuidePageRequest, PageStatus, PageUpdate,
+    guide_screen::{
+        GROUP_PREFETCH_DELAY, GroupPrefetchTicket, GuideMode, GuideRead, GuideScreen, LaneFocus,
+        ScreenAction, ScreenFocus, ScreenKey, ToolbarFocus,
     },
+    now_focus::{Direction, NowFocus},
+    preview::{DescriptionPage, PreviewProgramme},
+    timeline_focus::TimelineFocus,
 };
+use tokio::task::AbortHandle;
 
-use crate::{catalog, now_view};
+use crate::{catalog, guide_view};
 
 const PREVIEW_DWELL: Duration = Duration::from_millis(300);
 const FEEDBACK_DURATION: Duration = Duration::from_millis(1500);
-const MAX_PREVIEW_DESCRIPTION_BYTES: usize = 1024;
 
 #[derive(Clone, Copy)]
 pub(super) struct GuideDiagnostics {
+    pub(super) mode: GuideMode,
     pub(super) focus: &'static str,
     pub(super) channel: Option<u32>,
     pub(super) group_index: Option<usize>,
     pub(super) chip_index: Option<usize>,
+    pub(super) programme_index: Option<usize>,
+    pub(super) pan_minutes: Option<i64>,
     pub(super) first_row: usize,
     pub(super) scroll_offset_units: u32,
     pub(super) loaded_families: usize,
@@ -37,10 +39,13 @@ pub(super) struct GuideDiagnostics {
 }
 
 pub(super) static GUIDE_DIAGNOSTICS: Mutex<GuideDiagnostics> = Mutex::new(GuideDiagnostics {
+    mode: GuideMode::Now,
     focus: "None",
     channel: None,
     group_index: None,
     chip_index: None,
+    programme_index: None,
+    pan_minutes: None,
     first_row: 0,
     scroll_offset_units: 0,
     loaded_families: 0,
@@ -48,12 +53,17 @@ pub(super) static GUIDE_DIAGNOSTICS: Mutex<GuideDiagnostics> = Mutex::new(GuideD
 });
 
 pub(super) struct GuideSurface {
-    screen: NowScreen,
+    screen: GuideScreen,
     focus: FocusHandle,
-    lane_viewport: now_view::LaneViewport,
+    now_lane: guide_view::LaneViewport,
+    timeline_rail: guide_view::RailViewport,
     now: DateTime<FixedOffset>,
     description: Option<SharedString>,
-    preview: Option<PreviewKey>,
+    description_programme: Option<PreviewProgramme>,
+    desired_preview: Option<PreviewTarget>,
+    preview_revision: u64,
+    presented_preview: Option<guide_view::PreviewSelection>,
+    preview_frame: PreviewFrame,
     group_ticket: Option<GroupPrefetchTicket>,
     activation: Option<u64>,
     status_revision: Option<u64>,
@@ -65,14 +75,17 @@ pub(super) struct GuideSurface {
     _catalog_updates: Task<()>,
 }
 
-#[derive(Clone, PartialEq, Eq)]
-struct PreviewKey {
-    generation: CatalogGeneration,
-    channel: ChannelId,
-    starts_at: DateTime<Utc>,
-    ends_at: DateTime<Utc>,
-    ordinal: usize,
-    from: DateTime<Utc>,
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PreviewFrame {
+    Idle,
+    WaitingForPaint,
+    Scheduled,
+}
+
+#[derive(PartialEq, Eq)]
+struct PreviewTarget {
+    number: u32,
+    programme: Option<PreviewProgramme>,
 }
 
 enum ReadResult {
@@ -86,11 +99,8 @@ enum ReadResult {
 impl GuideSurface {
     pub(super) fn new(host: u64, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let now = Local::now().fixed_offset();
-        let mut screen = NowScreen::new(
-            GuideWindow::at(now.to_utc(), *now.offset(), false),
-            HashSet::new(),
-        );
-        screen.set_viewport_height(now_view::board_height(window.viewport_size()));
+        let mut screen = GuideScreen::new(now.to_utc(), *now.offset(), HashSet::new());
+        screen.set_surface_height(guide_view::surface_height(window.viewport_size()));
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
 
@@ -120,10 +130,15 @@ impl GuideSurface {
         Self {
             screen,
             focus,
-            lane_viewport: now_view::LaneViewport::default(),
+            now_lane: guide_view::LaneViewport::default(),
+            timeline_rail: guide_view::RailViewport::default(),
             now,
             description: None,
-            preview: None,
+            description_programme: None,
+            desired_preview: None,
+            preview_revision: 0,
+            presented_preview: None,
+            preview_frame: PreviewFrame::Idle,
             group_ticket: None,
             activation: None,
             status_revision: None,
@@ -150,10 +165,8 @@ impl GuideSurface {
             self.clock = None;
             self.group_dwell = None;
             self.group_ticket = None;
-            self.preview_dwell = None;
-            if self.description.is_none() {
-                self.preview = None;
-            }
+            self.retire_preview_read();
+            self.preview_frame = PreviewFrame::Idle;
             self.feedback = None;
             self.feedback_timeout = None;
         }
@@ -199,9 +212,19 @@ impl GuideSurface {
     }
 
     fn set_clock(&mut self, clock: DateTime<FixedOffset>) {
+        if let Some(preview) = &self.presented_preview
+            && self.description.is_some()
+        {
+            let selected = |clock| preview.programme(clock).map(|(_, programme)| programme);
+            // The displayed Channel's live-or-next slot follows the clock even
+            // if a focus change is still waiting for the next frame.
+            if selected(self.now) != selected(clock) {
+                self.description = None;
+                self.description_programme = None;
+            }
+        }
         self.now = clock;
-        self.screen
-            .set_window(GuideWindow::at(clock.to_utc(), *clock.offset(), false));
+        self.screen.set_clock(clock.to_utc(), *clock.offset());
     }
 
     fn key(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -216,11 +239,22 @@ impl GuideSurface {
         if self.activation.is_none() {
             return;
         }
-        let action = self.screen.press(key);
+        let modifiers = event.keystroke.modifiers;
+        if matches!(key, ScreenKey::Arrow(_))
+            && (modifiers.control || modifiers.alt || modifiers.platform)
+        {
+            return;
+        }
+        let now = Local::now().fixed_offset();
+        let prior_mode = self.screen.mode();
+        let action = self.screen.press(key, now.to_utc(), *now.offset());
+        if self.screen.mode() != prior_mode {
+            self.now_lane = guide_view::LaneViewport::default();
+            self.timeline_rail = guide_view::RailViewport::default();
+        }
         self.feedback = match action {
             ScreenAction::Unavailable => Some("This action is unavailable."),
-            ScreenAction::OpenTimeline => Some("Timeline is unavailable."),
-            _ => None,
+            ScreenAction::None => None,
         };
         self.feedback_timeout = self.feedback.map(|_| {
             cx.spawn(async |view, cx| {
@@ -256,22 +290,22 @@ impl GuideSurface {
                 })
             });
         }
-        self.refresh_description(cx);
+        self.sync_preview(cx);
         cx.notify();
     }
 
     fn dispatch_reads(&mut self, cx: &Context<Self>) {
         for read in self.screen.take_reads() {
             let task = match read {
-                NowRead::Status => {
+                GuideRead::Status => {
                     catalog::reconcile_status();
                     continue;
                 }
-                NowRead::Groups(request) => catalog::read(move |core| {
+                GuideRead::Groups(request) => catalog::read(move |core| {
                     let result = core.list_groups(request.query().clone());
                     ReadResult::Groups(request, result)
                 }),
-                NowRead::Guide(request) => catalog::read(move |core| {
+                GuideRead::Guide(request) => catalog::read(move |core| {
                     let result = core.guide_window(request.query().clone());
                     ReadResult::Guide(request, result)
                 }),
@@ -298,39 +332,99 @@ impl GuideSurface {
         }
     }
 
-    fn refresh_description(&mut self, cx: &Context<Self>) {
-        let key = self.screen.generation().and_then(|generation| {
-            let (row, programme) = now_view::preview_programme(&self.screen, self.now)?;
-            let starts_at = programme.starts_at();
-            let ends_at = programme.ends_at();
-            let ordinal = row
-                .programmes()
-                .iter()
-                .take_while(|candidate| !std::ptr::eq(*candidate, programme))
-                .filter(|candidate| {
-                    candidate.starts_at() == starts_at && candidate.ends_at() == ends_at
-                })
-                .count();
-            Some(PreviewKey {
-                generation,
-                channel: row.channel().id().clone(),
-                starts_at,
-                ends_at,
-                ordinal,
-                from: starts_at.max(self.screen.displayed_window().starts_at()),
-            })
+    fn sync_preview(&mut self, cx: &Context<Self>) {
+        let selection = guide_view::PreviewSelection::from_screen(&self.screen);
+        // The same Programme can move to a different cell index after an
+        // updated Guide window. Keep the existing lookup if its identity stays.
+        let desired = selection.as_ref().map(|selection| {
+            let programme = self.screen.generation().and_then(|generation| {
+                let (row, programme) = selection.programme(self.now)?;
+                PreviewProgramme::for_row(generation, row, programme)
+            });
+            PreviewTarget {
+                number: selection.family.number(),
+                programme,
+            }
         });
-        if self.preview == key {
+        if self.desired_preview != desired {
+            self.desired_preview = desired;
+            self.retire_preview_read();
+            if self.presented_preview.is_some() {
+                self.preview_frame = PreviewFrame::WaitingForPaint;
+            }
+        }
+        if self.preview_frame == PreviewFrame::Idle {
+            self.publish_preview(selection, cx);
+        }
+    }
+
+    fn retire_preview_read(&mut self) {
+        self.preview_revision = self.preview_revision.wrapping_add(1);
+        self.preview_dwell = None;
+        // Keep an already displayed description paired with its old band until
+        // publication. An interrupted lookup can restart if focus returns.
+        if self.description.is_none() {
+            self.description_programme = None;
+        }
+    }
+
+    fn schedule_preview_frame(&mut self, window: &Window, cx: &Context<Self>) {
+        if self.preview_frame != PreviewFrame::WaitingForPaint {
             return;
         }
-        self.preview.clone_from(&key);
+        self.preview_frame = PreviewFrame::Scheduled;
+        let activation = self.activation;
+        let revision = self.preview_revision;
+        let view = cx.weak_entity();
+        // GPUI runs the callback before drawing its next frame. Registering
+        // during render lets the current focus update paint first.
+        window.on_next_frame(move |_, cx| {
+            let _ = view.update(cx, |view, cx| {
+                if view.activation == activation
+                    && view.preview_revision == revision
+                    && view.preview_frame == PreviewFrame::Scheduled
+                {
+                    view.preview_frame = PreviewFrame::Idle;
+                    let selection = guide_view::PreviewSelection::from_screen(&view.screen);
+                    view.publish_preview(selection, cx);
+                    cx.notify();
+                }
+            });
+        });
+    }
+
+    fn publish_preview(
+        &mut self,
+        selection: Option<guide_view::PreviewSelection>,
+        cx: &Context<Self>,
+    ) {
+        self.presented_preview = selection;
+        let key = self
+            .desired_preview
+            .as_ref()
+            .and_then(|target| target.programme.clone());
+        if self.description_programme == key {
+            return;
+        }
+        self.description_programme.clone_from(&key);
         self.description = None;
+        let window_start = self.screen.displayed_window().starts_at();
+        let activation = self.activation;
+        let revision = self.preview_revision;
         self.preview_dwell = key.map(|key| {
             cx.spawn(async move |view, cx| {
                 cx.background_executor().timer(PREVIEW_DWELL).await;
-                let description = read_description(&key).await;
+                let current = |view: &Self| {
+                    view.activation == activation
+                        && view.preview_revision == revision
+                        && view.description_programme.as_ref() == Some(&key)
+                };
+                let description = read_description(&key, window_start, || {
+                    view.read_with(cx, |view, _| current(view)).unwrap_or(false)
+                })
+                .await;
                 let _ = view.update(cx, |view, cx| {
-                    if view.activation.is_some() && view.preview.as_ref() == Some(&key) {
+                    if current(view) {
                         view.description = description;
                         cx.notify();
                     }
@@ -340,61 +434,72 @@ impl GuideSurface {
     }
 }
 
-async fn read_description(key: &PreviewKey) -> Option<SharedString> {
-    let limit = PageLimit::new(4).ok()?;
-    let mut cursor = None;
-    let mut remaining = key.ordinal;
-    loop {
-        let query = ScheduleQuery::new(key.channel.clone(), PageRequest::new(cursor, limit))
-            .with_from(key.from);
-        let page = catalog::read(move |core| core.schedule(query))?
-            .await
-            .ok()?
-            .ok()?;
-        if page.generation() != key.generation {
-            return None;
-        }
-        for programme in page.items() {
-            if programme.starts_at() > key.starts_at {
-                return None;
-            }
-            if programme.starts_at() == key.starts_at && programme.ends_at() == key.ends_at {
-                if remaining == 0 {
-                    return programme.description().map(|description| {
-                        let end = description.floor_char_boundary(MAX_PREVIEW_DESCRIPTION_BYTES);
-                        SharedString::from(&description[..end])
-                    });
-                }
-                remaining -= 1;
-            }
-        }
-        cursor = Some(page.next()?.clone());
+struct CancelScheduleRead(AbortHandle);
+
+impl Drop for CancelScheduleRead {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
-fn publish_diagnostics(screen: &NowScreen) {
-    let (focus, family, group_index, chip_index) = match screen.focus() {
-        ScreenFocus::None => ("None", None, None, None),
-        ScreenFocus::Toolbar(ToolbarFocus::Search) => ("Search", None, None, None),
-        ScreenFocus::Toolbar(ToolbarFocus::Sources) => ("Sources", None, None, None),
-        ScreenFocus::GroupLane(LaneFocus::Phase) => ("Now", None, None, None),
-        ScreenFocus::GroupLane(LaneFocus::All) => ("All", None, None, None),
-        ScreenFocus::GroupLane(LaneFocus::Group(index)) => ("Group", None, Some(index), None),
-        ScreenFocus::GroupLane(LaneFocus::ChooseGroups) => ("ChooseGroups", None, None, None),
-        ScreenFocus::Board(NowFocus::Channel(family)) => ("Channel", Some(family), None, None),
-        ScreenFocus::Board(NowFocus::Variant { family, chip }) => {
-            ("Quality", Some(family), None, Some(chip))
+async fn read_description(
+    key: &PreviewProgramme,
+    window_start: DateTime<Utc>,
+    mut current: impl FnMut() -> bool,
+) -> Option<SharedString> {
+    let mut lookup = key.description(window_start);
+    while current() {
+        let query = lookup.query();
+        let read = catalog::read(move |core| core.schedule(query))?;
+        // A queued blocking read can be aborted. If it already started, it
+        // finishes one page, which cannot publish or schedule a continuation.
+        let _cancel = CancelScheduleRead(read.abort_handle());
+        let page = read.await.ok()?.ok()?;
+        match lookup.accept(&page) {
+            DescriptionPage::Finished(description) => return description.map(SharedString::from),
+            DescriptionPage::Next(next) => lookup = next,
         }
-        ScreenFocus::Board(NowFocus::Retry) => ("Retry", None, None, None),
+    }
+    None
+}
+
+fn publish_diagnostics(screen: &GuideScreen) {
+    let (focus, family, group_index, chip_index, programme_index) = match screen.focus() {
+        ScreenFocus::None => ("None", None, None, None, None),
+        ScreenFocus::Toolbar(ToolbarFocus::Search) => ("Search", None, None, None, None),
+        ScreenFocus::Toolbar(ToolbarFocus::Sources) => ("Sources", None, None, None, None),
+        ScreenFocus::GroupLane(LaneFocus::Phase) => ("Phase", None, None, None, None),
+        ScreenFocus::GroupLane(LaneFocus::All) => ("All", None, None, None, None),
+        ScreenFocus::GroupLane(LaneFocus::Group(index)) => ("Group", None, Some(index), None, None),
+        ScreenFocus::GroupLane(LaneFocus::ChooseGroups) => ("ChooseGroups", None, None, None, None),
+        ScreenFocus::Board(NowFocus::Channel(family))
+        | ScreenFocus::TimelineBoard(TimelineFocus::Channel(family)) => {
+            ("Channel", Some(family), None, None, None)
+        }
+        ScreenFocus::Board(NowFocus::Variant { family, chip })
+        | ScreenFocus::TimelineBoard(TimelineFocus::Variant { family, chip }) => {
+            ("Quality", Some(family), None, Some(chip), None)
+        }
+        ScreenFocus::TimelineBoard(TimelineFocus::Programme { family, cell }) => {
+            ("Programme", Some(family), None, None, Some(cell))
+        }
+        ScreenFocus::Board(NowFocus::Retry) | ScreenFocus::TimelineBoard(TimelineFocus::Retry) => {
+            ("Retry", None, None, None, None)
+        }
     };
     let channel = family
         .and_then(|index| screen.families().get(index))
         .map(|row| row.number());
     *GUIDE_DIAGNOSTICS.lock().unwrap() = GuideDiagnostics {
+        mode: screen.mode(),
         focus,
         channel,
         group_index,
         chip_index,
+        programme_index,
+        pan_minutes: screen.timeline().map(|timeline| {
+            (timeline.starts_at() - screen.displayed_window().starts_at()).num_minutes()
+        }),
         first_row: screen.first_visible_row(),
         scroll_offset_units: screen.scroll_offset().round() as u32,
         loaded_families: screen.families().len(),
@@ -405,18 +510,20 @@ fn publish_diagnostics(screen: &NowScreen) {
 impl Render for GuideSurface {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.screen
-            .set_viewport_height(now_view::board_height(window.viewport_size()));
+            .set_surface_height(guide_view::surface_height(window.viewport_size()));
+        self.schedule_preview_frame(window, cx);
         publish_diagnostics(&self.screen);
         div()
             .id("sparrow-guide")
             .size_full()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key))
-            .child(now_view::render(
+            .child(guide_view::render(
                 &self.screen,
                 self.now,
+                self.presented_preview.as_ref(),
                 self.description.as_ref(),
-                &mut self.lane_viewport,
+                (&mut self.now_lane, &mut self.timeline_rail),
                 window,
             ))
             .when_some(self.feedback, |surface, message| {

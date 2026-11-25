@@ -1,6 +1,6 @@
 //! Clock windows, Programme timing, and the Timeline's time-axis navigation.
 
-use chrono::{DateTime, FixedOffset, TimeDelta, Utc};
+use chrono::{DateTime, Datelike, FixedOffset, TimeDelta, Utc, Weekday};
 use sparrow_core::GuideProgramme;
 
 const HALF_HOUR_SECONDS: i64 = 30 * 60;
@@ -96,12 +96,79 @@ pub enum ProgrammeStep {
     Later,
 }
 
-/// One Programme's visible extent as a fraction of the Timeline.
+/// A Programme's position and widths as fractions of the Timeline.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ProgrammePlacement {
     pub left_fraction: f64,
+    /// Width visible inside the track.
     pub width_fraction: f64,
+    /// Width from the clipped-left start to the actual end, before right clipping.
+    pub full_width_fraction: f64,
     pub cut_at_start: bool,
+}
+
+/// The visible copy inside a Timeline Programme cell.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProgrammeCellContent {
+    Text,
+    Chevron,
+}
+
+/// A drawable Programme cell, measured before the track clips the right edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProgrammeCellAppearance {
+    pub width: f32,
+    pub content: ProgrammeCellContent,
+}
+
+impl ProgrammePlacement {
+    /// Classifies the cell using the full span after its six-unit gap.
+    /// At 90 reference units or less, only a cut tail or a focused cell draws.
+    pub fn cell_appearance(
+        self,
+        track_width: f32,
+        focused: bool,
+    ) -> Option<ProgrammeCellAppearance> {
+        const CELL_GAP: f64 = 6.;
+        const TEXT_CUTOFF: f64 = 90.;
+
+        let width = self.full_width_fraction * f64::from(track_width) - CELL_GAP;
+        let content = if width <= 0. {
+            return None;
+        } else if width > TEXT_CUTOFF {
+            ProgrammeCellContent::Text
+        } else if self.cut_at_start || focused {
+            ProgrammeCellContent::Chevron
+        } else {
+            return None;
+        };
+        Some(ProgrammeCellAppearance {
+            width: width as f32,
+            content,
+        })
+    }
+}
+
+/// Labels the first visible day relative to the current local date.
+/// Localize each instant separately so a change in UTC offset is reflected.
+pub fn timeline_day_label(
+    visible: DateTime<FixedOffset>,
+    now: DateTime<FixedOffset>,
+) -> &'static str {
+    let visible_date = visible.date_naive();
+    match (visible_date - now.date_naive()).num_days() {
+        0 => "Today",
+        1 => "Tomorrow",
+        _ => match visible_date.weekday() {
+            Weekday::Mon => "Monday",
+            Weekday::Tue => "Tuesday",
+            Weekday::Wed => "Wednesday",
+            Weekday::Thu => "Thursday",
+            Weekday::Fri => "Friday",
+            Weekday::Sat => "Saturday",
+            Weekday::Sun => "Sunday",
+        },
+    }
 }
 
 impl Timeline {
@@ -207,19 +274,30 @@ impl Timeline {
         programmes: &[GuideProgramme],
         focus: &ProgrammeFocus,
     ) -> Option<usize> {
-        let mut cells = programmes
+        let index = self.exact_focus(programmes, focus).or_else(|| {
+            programmes.iter().position(|programme| {
+                self.window.overlaps(programme)
+                    && programme.starts_at() >= focus.programme.ends_at()
+            })
+        })?;
+        self.reveal(&programmes[index]);
+        Some(index)
+    }
+
+    /// Looks up a remembered cell in its row without moving focus or panning.
+    pub fn exact_focus(
+        self,
+        programmes: &[GuideProgramme],
+        focus: &ProgrammeFocus,
+    ) -> Option<usize> {
+        programmes
             .iter()
             .enumerate()
-            .filter(|(_, programme)| self.window.overlaps(programme));
-        let (index, programme) = cells
-            .clone()
-            .filter(|(_, programme)| same_programme(programme, &focus.programme))
+            .filter(|(_, programme)| {
+                self.window.overlaps(programme) && same_programme(programme, &focus.programme)
+            })
             .nth(focus.occurrence)
-            .or_else(|| {
-                cells.find(|(_, programme)| programme.starts_at() >= focus.programme.ends_at())
-            })?;
-        self.reveal(programme);
-        Some(index)
+            .map(|(index, _)| index)
     }
 
     pub fn placement(self, programme: &GuideProgramme) -> Option<ProgrammePlacement> {
@@ -233,8 +311,19 @@ impl Timeline {
         Some(ProgrammePlacement {
             left_fraction: (start - self.starts_at).as_seconds_f64() / span,
             width_fraction: (end - start).as_seconds_f64() / span,
+            full_width_fraction: (programme.ends_at() - start).as_seconds_f64() / span,
             cut_at_start: programme.starts_at() < self.starts_at,
         })
+    }
+
+    /// Progress from the visible cell's left edge to the Programme's actual end.
+    pub fn elapsed_fraction(self, programme: &GuideProgramme, now: DateTime<Utc>) -> Option<f64> {
+        let start = programme.starts_at().max(self.starts_at);
+        let end = programme.ends_at();
+        if start >= end.min(self.ends_at()) {
+            return None;
+        }
+        Some(((now - start).as_seconds_f64() / (end - start).as_seconds_f64()).clamp(0.0, 1.0))
     }
 
     /// Position of the current time, if the Timeline shows it.
