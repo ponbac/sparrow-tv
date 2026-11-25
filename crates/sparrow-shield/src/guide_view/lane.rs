@@ -257,7 +257,7 @@ fn groups(
     let pill = |index: usize| GroupPill::new(index.checked_sub(1).map(|index| &groups[index]));
 
     let mut row = layout
-        .rect(x, CONTROL_Y, available, CONTROL_HEIGHT)
+        .rect(x, CONTROL_Y, available, CONTROL_HEIGHT + 16.)
         .overflow_hidden();
     viewport.update(
         screen.generation(),

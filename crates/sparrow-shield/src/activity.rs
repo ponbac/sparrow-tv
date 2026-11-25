@@ -17,6 +17,7 @@ type ActivityRef = Arc<Global<JObject<'static>>>;
 static ACTIVITIES: LazyLock<Mutex<HashMap<u64, ActivityRef>>> = LazyLock::new(Mutex::default);
 
 pub(super) enum Event {
+    Presented,
     Back,
     PictureBottom(i32),
     Key { code: i32, repeat: i32 },

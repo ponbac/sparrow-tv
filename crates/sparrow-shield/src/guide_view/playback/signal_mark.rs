@@ -40,11 +40,7 @@ pub(super) fn render(layout: Layout, playback: &PlaybackOverlay<'_>, focused: bo
             };
             let frame = backing(frame, 1.);
             if playback.reduce_motion {
-                return frame
-                    .child(arcs(layout, INNER, color, 1., 0.85))
-                    .child(arcs(layout, OUTER, color, 1., 0.55))
-                    .child(dot(layout, color, 10.))
-                    .into_any_element();
+                return steady(layout, frame, color).into_any_element();
             }
             searching(layout, frame, color, period, id)
         }
@@ -136,13 +132,7 @@ fn arcs(
         .opacity(opacity)
 }
 
-pub(in crate::guide_view) fn searching(
-    layout: Layout,
-    frame: Div,
-    color: u32,
-    period: u64,
-    id: &'static str,
-) -> AnyElement {
+fn searching(layout: Layout, frame: Div, color: u32, period: u64, id: &'static str) -> AnyElement {
     frame
         .with_animation(
             id,
@@ -161,12 +151,9 @@ pub(in crate::guide_view) fn searching(
         .into_any_element()
 }
 
-pub(in crate::guide_view) fn folding(layout: Layout, fold: f32) -> Div {
-    div()
-        .relative()
-        .w(layout.px(42.))
-        .h(layout.px(24.))
-        .child(arcs(layout, INNER, ICE, 0.35 + 0.65 * fold, fold))
-        .child(arcs(layout, OUTER, ICE, 0.35 + 0.65 * fold, fold))
-        .child(dot(layout, ICE, 9.))
+pub(in crate::guide_view) fn steady(layout: Layout, frame: Div, color: u32) -> Div {
+    frame
+        .child(arcs(layout, INNER, color, 1., 0.85))
+        .child(arcs(layout, OUTER, color, 1., 0.55))
+        .child(dot(layout, color, 10.))
 }

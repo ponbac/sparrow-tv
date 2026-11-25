@@ -172,11 +172,9 @@ impl GuideSurface {
     pub(super) fn new(host: u64, window: &mut Window, cx: &mut Context<Self>) -> Self {
         // open_window lays out the root before the platform presents it. Keep
         // the Activity cover through that first presentation.
-        if host == 1 {
-            window.on_next_frame(move |window, _| {
-                window.on_next_frame(move |_, _| activity::guide_presented(host));
-            });
-        }
+        window.on_next_frame(move |window, _| {
+            window.on_next_frame(move |_, _| activity::guide_presented(host));
+        });
         let now = Local::now().fixed_offset();
         let mut screen = GuideScreen::new(now.to_utc(), *now.offset(), HashSet::new());
         screen.set_surface_height(guide_view::surface_height(window.viewport_size()));
@@ -485,6 +483,10 @@ impl GuideSurface {
                 if self.playback.fullscreen() {
                     cx.notify();
                 }
+            }
+            activity::Event::Presented => {
+                self.arrival.presented = true;
+                cx.notify();
             }
             activity::Event::Source { session, update } => self.source_event(session, update, cx),
             activity::Event::Back if self.activation.is_none() => activity::finish(self.host),
@@ -1144,6 +1146,7 @@ impl Render for GuideSurface {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key));
         if let Some(setup) = self.render_setup(window) {
+            self.arrival.leave();
             self.icons.hide();
             return root.child(setup);
         }
@@ -1162,14 +1165,18 @@ impl Render for GuideSurface {
             .render(window, minute, cx.reduce_motion(), frame);
         let root = root.relative().overflow_hidden().bg(rgb(guide_view::INK));
         if frame.fullscreen >= 1. {
+            self.arrival.leave();
             self.icons.hide();
             return root.children(player);
         }
         let viewport = window.viewport_size();
-        if self.arrival.loading(&self.screen) {
-            return root.child(guide_view::arrival::loading(viewport, &self.screen));
+        if let Some(loading) = self
+            .arrival
+            .loading(&self.screen, viewport, cx.reduce_motion())
+        {
+            return root.child(loading);
         }
-        let wave = self.arrival.frame(&self.screen, window, cx.reduce_motion());
+        let wave = self.arrival.frame(window, cx.reduce_motion());
         let selected = self.playback.docked() || self.playback.fullscreen();
         let icon = if selected {
             self.playback.channel_icon()
@@ -1244,7 +1251,7 @@ impl Render for GuideSurface {
         let drift = window.viewport_size().width * (36. / 1920. * frame.fullscreen);
         let opacity = (1. - frame.fullscreen * 1.45).max(0.);
         root.child(guide.top(drift).opacity(opacity))
-            .children(wave.landing(viewport))
+            .children(self.arrival.landing(viewport, wave))
             .children(player)
             .child(
                 div()
