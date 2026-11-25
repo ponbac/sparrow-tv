@@ -903,7 +903,7 @@ mod tests {
     use gpui::{px, size};
     use sparrow_tv_guide::search::{SearchState, SearchView};
 
-    use crate::guide_view::playback::{PlaybackLayout, picture_rect};
+    use crate::guide_view::playback::{FullscreenFrame, picture_rect};
 
     use super::{
         INLINE_POPUP_Y, InlineGeometry, InlineRow, Layout, SearchFocus, inline_slice,
@@ -935,7 +935,7 @@ mod tests {
             let idle = InlineGeometry::new(layout, false);
             let docked = InlineGeometry::new(layout, true);
             let [picture_x, _, picture_width, _] =
-                picture_rect(viewport, pixel_scale, PlaybackLayout::Docked);
+                picture_rect(viewport, pixel_scale, FullscreenFrame::default());
             assert_eq!(idle.x, 420.);
             assert_eq!(docked.x, 724.);
             assert_eq!(idle.x + idle.width, docked.x + docked.width);
