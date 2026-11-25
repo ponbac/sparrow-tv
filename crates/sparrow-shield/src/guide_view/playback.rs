@@ -284,7 +284,7 @@ pub(crate) fn docked_playback(viewport: Size<Pixels>, playback: &PlaybackOverlay
         .bg(rgb(PANEL))
         .when(focused, |caption| caption.bg(rgb(ICE)))
         .when(
-            !playback.tuning_field() || playback.stage == PlaybackStage::Playing,
+            !playback.show_field() || playback.stage == PlaybackStage::Playing,
             |caption| caption.child(signal_mark::render(layout, playback, focused)),
         )
         .child(
@@ -352,8 +352,8 @@ pub(crate) fn docked_playback(viewport: Size<Pixels>, playback: &PlaybackOverlay
                 .bg(rgb(match playback.stage {
                     PlaybackStage::Reconnecting => AMBER,
                     PlaybackStage::Failed => ERROR,
-                    PlaybackStage::Paused | PlaybackStage::Stopping => FAINT,
-                    PlaybackStage::Playing if !playback.tuning_field() => TALLY,
+                    PlaybackStage::Paused => DIM >> 8,
+                    PlaybackStage::Playing => TALLY,
                     _ => ICE,
                 })),
         )
@@ -428,7 +428,7 @@ fn fullscreen_head(layout: Layout, playback: &PlaybackOverlay<'_>) -> Div {
                 .items_center()
                 .gap(layout.px(12.))
                 .when(
-                    !playback.tuning_field() || playback.stage == PlaybackStage::Playing,
+                    !playback.show_field() || playback.stage == PlaybackStage::Playing,
                     |head| head.child(signal_mark::render(layout, playback, false)),
                 )
                 .child(
