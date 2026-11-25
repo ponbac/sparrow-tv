@@ -383,6 +383,30 @@ impl GuideSurface {
         }
     }
 
+    fn arm_badge_timer(&mut self, cx: &Context<Self>) {
+        if let Some(tick) = &mut self.minute_tick
+            && tick.needs_badge_timer()
+        {
+            let fade = tick.badge_fade_at();
+            let end = tick.expires_at();
+            tick.badge_expiry = Some(cx.spawn(async move |view, cx| {
+                for deadline in [fade, end] {
+                    while let Some(delay) =
+                        deadline.checked_duration_since(std::time::Instant::now())
+                    {
+                        cx.background_executor().timer(delay).await;
+                    }
+                    let _ = view.update(cx, |view, cx| {
+                        if deadline == end {
+                            view.minute_tick = None;
+                        }
+                        cx.notify();
+                    });
+                }
+            }));
+        }
+    }
+
     fn minute_boundary(&mut self, clock: DateTime<FixedOffset>) {
         let previous = self.now;
         let rolled = self.set_clock(clock);
@@ -1242,30 +1266,10 @@ impl Render for GuideSurface {
             (wave, slide),
             viewport,
         );
-        if let Some(tick) = &mut self.minute_tick
-            && tick.needs_badge_timer()
-        {
-            let fade = tick.badge_fade_at();
-            let end = tick.expires_at();
-            tick.badge_expiry = Some(cx.spawn(async move |view, cx| {
-                for deadline in [fade, end] {
-                    while let Some(delay) =
-                        deadline.checked_duration_since(std::time::Instant::now())
-                    {
-                        cx.background_executor().timer(delay).await;
-                    }
-                    let _ = view.update(cx, |view, cx| {
-                        if deadline == end {
-                            view.minute_tick = None;
-                        }
-                        cx.notify();
-                    });
-                }
-            }));
-        }
         let opacity = (1. - frame.fullscreen * 1.45).max(0.);
+        let mut glow = Some(glow);
         root.child(backdrop.opacity(wave.backdrop_opacity()))
-            .when(frame.fullscreen == 0., |root| root.child(glow))
+            .when(frame.fullscreen == 0., |root| root.children(glow.take()))
             .child(guide)
             .when(frame.fullscreen > 0., |root| {
                 root.child(
@@ -1275,11 +1279,7 @@ impl Render for GuideSurface {
                         .bg(rgb(guide_view::INK))
                         .opacity(1. - opacity),
                 )
-                .child(self.playback.ambient.layer(
-                    viewport,
-                    picture,
-                    cx.reduce_motion(),
-                ))
+                .children(glow)
             })
             .children(self.arrival.landing(viewport, wave))
             .children(player)

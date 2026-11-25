@@ -29,7 +29,7 @@ impl Render for SectionView {
                     !cx.reduce_motion(),
                     window,
                 );
-                match self.section {
+                let section = match self.section {
                     Section::Band => guide_view::band::render(
                         layout,
                         guide_view::GuideBand {
@@ -79,7 +79,11 @@ impl Render for SectionView {
                             slide,
                         ),
                     },
+                };
+                if matches!(self.section, Section::Board) {
+                    owner.arm_badge_timer(cx);
                 }
+                section
             })
             .unwrap();
         div().relative().size_full().child(section)
