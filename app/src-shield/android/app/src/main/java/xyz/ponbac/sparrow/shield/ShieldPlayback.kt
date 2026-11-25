@@ -5,7 +5,6 @@ import android.view.PixelCopy
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import android.animation.ValueAnimator
-import kotlin.math.roundToInt
 import android.app.Activity
 import android.os.Build
 import android.os.Handler
@@ -44,7 +43,7 @@ class ShieldPlayback(
 ) {
   private val main = Handler(Looper.getMainLooper())
   private val lifecycle = NativePlaybackLifecycleFence()
-  private val placement = ShieldPlaybackPlacement(root, guide)
+  private val placement = ShieldPlaybackPlacement(root, guide) { bottom -> nativePictureBottom(hostId, bottom) }
   private val controller = NativePlaybackController(
     activity, placement, forceSilent = false,
     lifecycleFence = lifecycle,
@@ -418,6 +417,7 @@ class ShieldPlayback(
     host: Long, generation: Long, request: Long, width: Int, height: Int, pixels: ByteArray?,
   )
 
+  private external fun nativePictureBottom(host: Long, bottom: Int)
   private external fun nativePlaybackSignal(host: Long, generation: Long, signal: Int)
 
   private external fun readNativePlayback(
@@ -436,14 +436,13 @@ class ShieldPlayback(
 private class ShieldPlaybackPlacement(
   private val root: FrameLayout,
   private val guide: SurfaceView,
+  private val pictureBottom: (Int) -> Unit,
 ) : NativePlaybackPlacement {
   private var mountedPlayer: PlayerView? = null
 
   private var waitingForFrame = false
   private var pendingReveal: (() -> Unit)? = null
   private var placed = false
-  private var destination: NativePlaybackViewport? = null
-  private var resize: ValueAnimator? = null
   private var fade: ValueAnimator? = null
 
   override val showBuffering = PlayerView.SHOW_BUFFERING_NEVER
@@ -451,8 +450,6 @@ private class ShieldPlaybackPlacement(
   fun beginBinding(retainPicture: Boolean) {
     pendingReveal = null
     if (!retainPicture) {
-      resize?.cancel()
-      destination = null
       fade?.cancel()
       waitingForFrame = true
     }
@@ -500,6 +497,9 @@ private class ShieldPlaybackPlacement(
   override fun createPlayerView(activity: Activity): PlayerView = PlayerView(activity).apply {
     (videoSurfaceView as SurfaceView).setZOrderMediaOverlay(true)
     visibility = View.INVISIBLE
+    addOnLayoutChangeListener { view, _, _, _, bottom, _, _, _, oldBottom ->
+      if (view === mountedPlayer && bottom != oldBottom) pictureBottom(bottom - guide.top)
+    }
   }
 
   override fun mount(parent: ViewGroup, playerView: PlayerView) {
@@ -508,8 +508,7 @@ private class ShieldPlaybackPlacement(
   }
 
   fun hideUntilPlaced() {
-    resize?.cancel()
-    destination = null
+    placed = false
     moveOffscreen()
   }
 
@@ -522,42 +521,14 @@ private class ShieldPlaybackPlacement(
   }
 
   override fun place(parent: ViewGroup, playerView: PlayerView, viewport: NativePlaybackViewport) {
-    val previous = destination
-    destination = viewport
     val x = guide.left + viewport.left
     val y = guide.top + viewport.top
     val current = playerView.layoutParams as FrameLayout.LayoutParams
-
-    if (previous != viewport || resize?.isRunning != true) {
-      resize?.cancel()
-      val left = current.leftMargin
-      val top = current.topMargin
-      val width = current.width
-      val height = current.height
-
-      fun applyGeometry(t: Float) {
-        fun lerp(from: Int, to: Int) = (from + (to - from) * t).roundToInt()
-        current.leftMargin = lerp(left, x)
-        current.topMargin = lerp(top, y)
-        current.width = lerp(width, viewport.width)
-        current.height = lerp(height, viewport.height)
-        current.gravity = Gravity.TOP or Gravity.LEFT
-        playerView.layoutParams = current
-        if (waitingForFrame) moveOffscreen()
-      }
-
-      if (left != x || top != y || width != viewport.width || height != viewport.height) {
-        if (previous != null && playerView.visibility == View.VISIBLE && ValueAnimator.areAnimatorsEnabled()) {
-          // Match FullscreenMotion. One traversal updates all four edges together.
-          resize = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 500
-            interpolator = DecelerateInterpolator(1.5f)
-            addUpdateListener { applyGeometry(it.animatedValue as Float) }
-            start()
-          }
-        } else {
-          applyGeometry(1f)
-        }
+    if (current.leftMargin != x || current.topMargin != y ||
+        current.width != viewport.width || current.height != viewport.height) {
+      playerView.layoutParams = FrameLayout.LayoutParams(viewport.width, viewport.height, Gravity.TOP or Gravity.LEFT).apply {
+        leftMargin = x
+        topMargin = y
       }
     }
     placed = true
@@ -570,17 +541,15 @@ private class ShieldPlaybackPlacement(
 
   override fun unmount(parent: ViewGroup, playerView: PlayerView) {
     pendingReveal = null
-    resize?.cancel()
-    resize = null
-    destination = null
     fade?.cancel()
-    if (mountedPlayer === playerView) mountedPlayer = null
+    if (mountedPlayer === playerView) {
+      mountedPlayer = null
+      pictureBottom(0)
+    }
     parent.removeView(playerView)
   }
 
   override fun revealContent(parent: ViewGroup, playerView: PlayerView) {
-    resize?.cancel()
-    destination = null
     playerView.visibility = View.INVISIBLE
   }
 }

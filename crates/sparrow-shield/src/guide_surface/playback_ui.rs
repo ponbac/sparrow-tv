@@ -30,10 +30,9 @@ use crate::{
     guide_view::{
         self,
         playback::{
-            FullscreenFrame, FullscreenMotion, PlaybackControl as Control, PlaybackLayout,
-            PlaybackNext, PlaybackOverlay, PlaybackProgramme, PlaybackStage, ZapRoll,
-            docked_playback, fullscreen_actions, fullscreen_band, picker, picture_rect,
-            tuning_field,
+            FullscreenFrame, FullscreenMotion, PlaybackControl as Control, PlaybackNext,
+            PlaybackOverlay, PlaybackProgramme, PlaybackStage, ZapRoll, docked_playback,
+            fullscreen_actions, fullscreen_band, picker, picture_rect, tuning_field,
         },
     },
     playback,
@@ -44,6 +43,7 @@ mod tuning;
 
 #[derive(Default)]
 pub(super) struct PlaybackUi {
+    pub(super) picture_bottom: i32,
     motion: FullscreenMotion,
     still: Option<std::sync::Arc<gpui::RenderImage>>,
     hold_started: Option<Instant>,
@@ -343,17 +343,23 @@ impl PlaybackUi {
         }))
     }
 
+    fn retarget_motion(&mut self, cx: &Context<GuideSurface>) {
+        let scale = if cx.reduce_motion() || self.state.selected.is_none() {
+            0.
+        } else {
+            cx.try_global::<crate::AnimatorScale>()
+                .map_or(1., |scale| scale.0)
+        };
+        self.motion
+            .retarget(self.fullscreen(), self.controls_visible, scale);
+    }
+
     pub(super) fn fullscreen_frame(
         &mut self,
         window: &mut Window,
         reduced: bool,
-    ) -> FullscreenFrame {
-        self.motion.frame(
-            self.fullscreen(),
-            self.controls_visible,
-            reduced || self.state.selected.is_none(),
-            window,
-        )
+    ) -> (FullscreenFrame, FullscreenFrame) {
+        self.motion.frame(reduced, window)
     }
 
     pub(super) fn render(
@@ -377,25 +383,24 @@ impl PlaybackUi {
             gpui::div()
                 .absolute()
                 .inset_0()
-                .when(frame.fullscreen < 1., |root| {
-                    root.child(docked_playback(viewport, overlay).opacity(1. - frame.fullscreen))
-                })
+                .when_some(
+                    guide_view::playback::dock_lock(viewport, overlay, frame),
+                    |root, lock| root.child(lock),
+                )
                 .when(overlay.show_field(), |root| {
                     root.child(tuning_field(viewport, overlay, frame))
                 })
+                .when(frame.caption > 0., |root| {
+                    root.child(docked_playback(viewport, overlay, frame))
+                })
                 .when(frame.band > 0., |root| {
-                    root.child(
-                        gpui::div()
-                            .id("fullscreen-band")
-                            .absolute()
-                            .inset_0()
-                            .child(fullscreen_band(
-                                viewport,
-                                overlay,
-                                &self.fullscreen_actions(),
-                                frame.band,
-                            )),
-                    )
+                    root.child(fullscreen_band(
+                        viewport,
+                        overlay,
+                        &self.fullscreen_actions(),
+                        frame.band,
+                        self.picture_bottom as f32 / window.scale_factor(),
+                    ))
                 })
                 .children(self.menu_panel(window))
         })
@@ -538,8 +543,8 @@ impl GuideSurface {
         }
         if entering {
             self.playback.dock_focus = false;
-            self.playback.controls_visible = true;
-            self.playback.control = self.playback.fullscreen_actions().first().copied();
+            self.playback.controls_visible = false;
+            self.playback.control = None;
         }
         if !fullscreen {
             self.playback.menu = None;
@@ -577,6 +582,7 @@ impl GuideSurface {
                 });
             }
         }
+        self.playback.retarget_motion(cx);
         let closed_menu = self
             .playback
             .reconcile_fullscreen_controls(subject_changed || audio_replaced);
@@ -680,14 +686,14 @@ impl GuideSurface {
         }));
     }
 
-    pub(super) fn update_playback_viewports(&mut self, window: &Window) {
+    pub(super) fn update_playback_viewports(&mut self, window: &Window, frame: FullscreenFrame) {
         if self.activation.is_none() || playback::get().is_none() {
             self.playback.viewports = None;
             return;
         }
-        let bounds = |layout, fullscreen| {
-            let [left, top, width, height] =
-                picture_rect(window.viewport_size(), window.scale_factor(), layout);
+        let [left, top, width, height] =
+            picture_rect(window.viewport_size(), window.scale_factor(), frame);
+        let bounds = |fullscreen| {
             AndroidPlaybackViewport::parse(
                 left.max(0) as u32,
                 top.max(0) as u32,
@@ -700,14 +706,9 @@ impl GuideSurface {
         let docked = if self.search.state().view() == SearchView::Desk {
             None
         } else {
-            bounds(PlaybackLayout::Docked, false)
+            bounds(false)
         };
-        let fullscreen = bounds(
-            PlaybackLayout::Fullscreen {
-                controls_visible: !self.playback.fullscreen() || self.playback.controls_visible,
-            },
-            true,
-        );
+        let fullscreen = bounds(true);
         // The native picture sits above GPUI. Reveal the tuning field as soon
         // as a target is pending, including throughout the zap debounce.
         let viewports = if self.playback.state.pending_zap.is_some() {
@@ -800,6 +801,7 @@ impl GuideSurface {
             if self.playback.dock_focus {
                 match key {
                     ScreenKey::Activate => {
+                        self.playback.dock_focus = false;
                         playback::send(Command::Fullscreen);
                     }
                     ScreenKey::Arrow(_) => self.playback.dock_focus = false,
@@ -858,6 +860,7 @@ impl GuideSurface {
                 }
             }
         }
+        self.playback.retarget_motion(cx);
         self.arm_controls(cx);
         true
     }
@@ -1006,6 +1009,7 @@ impl GuideSurface {
                     if view.playback.fullscreen() && view.playback.stage() == PlaybackStage::Playing
                     {
                         view.playback.controls_visible = false;
+                        view.playback.retarget_motion(cx);
                         view.playback.control = None;
                         cx.notify();
                     }

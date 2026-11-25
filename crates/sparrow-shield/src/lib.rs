@@ -31,8 +31,11 @@ use tokio::sync::mpsc;
 
 static INITIALIZE_LOGS: Once = Once::new();
 static START_RENDERER: OnceLock<mpsc::UnboundedSender<host::HostId>> = OnceLock::new();
+struct AnimatorScale(f32);
+impl Global for AnimatorScale {}
+
 enum ActivityUpdate {
-    ReduceMotion(bool),
+    AnimatorScale(f32),
     Window(host::HostId, activity::Event),
 }
 
@@ -144,9 +147,10 @@ fn start_renderer() {
             cx.spawn(async move |cx| {
                 while let Some(update) = activity_updates.recv().await {
                     match update {
-                        ActivityUpdate::ReduceMotion(reduce) => {
-                            cx.update(|cx| cx.set_reduce_motion(reduce))
-                        }
+                        ActivityUpdate::AnimatorScale(scale) => cx.update(|cx| {
+                            cx.set_global(AnimatorScale(scale));
+                            cx.set_reduce_motion(scale == 0.);
+                        }),
                         ActivityUpdate::Window(id, event) => cx.update(|cx| {
                             let window =
                                 cx.global::<ActivityWindows>().0.get(&id).and_then(
@@ -277,6 +281,16 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeDestr
     }
 }
 
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldPlayback_nativePictureBottom(
+    _: EnvUnowned,
+    _: JObject,
+    id: i64,
+    bottom: i32,
+) {
+    enqueue_activity(id, activity::Event::PictureBottom(bottom));
+}
+
 fn enqueue_activity(id: i64, event: activity::Event) {
     if let Some(events) = ACTIVITY_EVENTS.get() {
         let _ = events.send(ActivityUpdate::Window(id as u64, event));
@@ -301,7 +315,7 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeAnima
 ) {
     PICTURE_REVEAL_MS.store(millis as u32, std::sync::atomic::Ordering::Relaxed);
     if let Some(events) = ACTIVITY_EVENTS.get() {
-        let _ = events.send(ActivityUpdate::ReduceMotion(scale == 0.));
+        let _ = events.send(ActivityUpdate::AnimatorScale(scale));
     }
 }
 
