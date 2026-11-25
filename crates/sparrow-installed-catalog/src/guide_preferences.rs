@@ -34,10 +34,11 @@ const MAX_RECORD_BYTES: usize = 16 * 1024 * 1024;
 #[serde(rename_all = "kebab-case")]
 pub enum GuideBackdrop {
     Flat,
-    #[default]
-    NordicGradient,
     ChannelTint,
     AuroraDrift,
+    #[default]
+    #[serde(other)]
+    NordicGradient,
 }
 
 /// A Guide preference snapshot. Names and family keys stay out of diagnostics.

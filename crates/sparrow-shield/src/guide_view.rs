@@ -99,8 +99,8 @@ impl Layout {
 
     fn surface(self, color: u32) -> gpui::Rgba {
         let mut fill = gpui::rgb(color);
-        if self.translucent && color != ICE && color != ICE_ELAPSED {
-            fill.a = 0.87;
+        if self.translucent {
+            fill.a = 0.85;
         }
         fill
     }

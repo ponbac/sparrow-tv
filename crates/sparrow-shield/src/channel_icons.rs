@@ -58,7 +58,7 @@ struct Completion {
 
 pub(super) struct IconImage {
     render_image: Arc<RenderImage>,
-    pub(super) tint: Option<u32>,
+    tint: Option<f32>,
     source_dimensions: (u32, u32),
     charged_bytes: usize,
 }
@@ -72,24 +72,16 @@ impl IconImage {
         self.source_dimensions
     }
 
+    pub(super) fn tint(&self) -> Option<f32> {
+        self.tint
+    }
+
     fn new(decoded: DecodedChannelIcon) -> Option<Self> {
         let source_dimensions = decoded.source_dimensions();
         let (width, height, bgra) = decoded.into_bgra();
         // Charge the retained pixel storage plus the sprite's texel allocation.
         let charged_bytes = bgra.capacity() + bgra.len();
-        let mut sums = [0_u64; 3];
-        let mut weight = 0;
-        for pixel in bgra.as_chunks::<4>().0 {
-            let alpha = u64::from(pixel[3]);
-            weight += alpha;
-            for (sum, component) in sums.iter_mut().zip(pixel) {
-                *sum += alpha * u64::from(*component);
-            }
-        }
-        let tint = (weight > 0).then(|| {
-            let [b, g, r] = sums.map(|sum| (sum / weight) as u32);
-            r << 16 | g << 8 | b
-        });
+        let tint = dominant_hue(&bgra);
         let pixels = RgbaImage::from_raw(width, height, bgra)?;
         Some(Self {
             render_image: Arc::new(RenderImage::new([Frame::new(pixels)])),
@@ -98,6 +90,36 @@ impl IconImage {
             tint,
         })
     }
+}
+
+/// Alpha and chroma weight the hue histogram so transparent padding and white
+/// lettering cannot outvote the coloured part of a Channel Icon.
+fn dominant_hue(bgra: &[u8]) -> Option<f32> {
+    let mut bins = [(0_f32, 0_f32); 24];
+    let mut coverage = 0.;
+    let mut chroma_sum = 0.;
+    for &[b, g, r, a] in bgra.as_chunks::<4>().0 {
+        let alpha = f32::from(a) / 255.;
+        coverage += alpha;
+        let chroma = f32::from(r.max(g).max(b) - r.min(g).min(b)) / 255.;
+        if alpha == 0. || chroma < 0.12 {
+            continue;
+        }
+        let color = gpui::Hsla::from(gpui::rgb(u32::from_be_bytes([0, r, g, b])));
+        if !(0.08..=0.92).contains(&color.l) {
+            continue;
+        }
+        let weight = alpha * chroma;
+        chroma_sum += weight;
+        let index = (color.h * bins.len() as f32) as usize % bins.len();
+        bins[index].0 += weight;
+        bins[index].1 += weight * color.h;
+    }
+    if coverage == 0. || chroma_sum < 0.12 * coverage {
+        return None;
+    }
+    let (weight, sum) = bins.into_iter().max_by(|a, b| a.0.total_cmp(&b.0))?;
+    Some(sum / weight)
 }
 
 impl ChannelIcons {

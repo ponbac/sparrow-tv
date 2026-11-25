@@ -308,7 +308,7 @@ impl GuideSurface {
         Some(guide_view::sources_sheet(
             window.viewport_size(),
             SourcePanel {
-                backdrop: self.pending_backdrop.unwrap_or_else(catalog::backdrop),
+                backdrop: self.backdrop(),
                 status: status.as_deref(),
                 focus: source.focus,
                 editing: matches!(source.request, Some(FieldRequest::Edit(..))),
@@ -394,6 +394,38 @@ impl GuideSurface {
         }
     }
 
+    fn step_backdrop(&mut self, previous: bool, cx: &Context<Self>) {
+        use sparrow_installed_catalog::GuideBackdrop::*;
+        let choice = match (self.backdrop(), previous) {
+            (Flat, false) | (ChannelTint, true) => NordicGradient,
+            (NordicGradient, false) | (AuroraDrift, true) => ChannelTint,
+            (ChannelTint, false) | (Flat, true) => AuroraDrift,
+            (AuroraDrift, false) | (NordicGradient, true) => Flat,
+        };
+        let Some(source) = self.source.as_mut() else {
+            return;
+        };
+        source.feedback = None;
+        let session = source.session;
+        let Some(saved) = catalog::save_backdrop(choice) else {
+            source.feedback = Some("Couldn’t save backdrop.");
+            return;
+        };
+        let task = cx.spawn(async move |view, cx| {
+            let success = saved.await.unwrap_or(false);
+            let _ = view.update(cx, |view, cx| {
+                view.pending_backdrop = None;
+                if !success
+                    && let Some(source) = view.source.as_mut().filter(|s| s.session == session)
+                {
+                    source.feedback = Some("Couldn’t save backdrop.");
+                }
+                cx.notify();
+            });
+        });
+        self.pending_backdrop = Some((choice, task));
+    }
+
     pub(super) fn source_key(&mut self, key: ScreenKey, window: &Window, cx: &mut Context<Self>) {
         let Some(source) = self.source.as_mut() else {
             return;
@@ -403,6 +435,11 @@ impl GuideSurface {
             .as_ref()
             .is_some_and(|s| s.configuration().is_configured());
         match key {
+            ScreenKey::Arrow(direction @ (Direction::Left | Direction::Right))
+                if source.focus == SourceFocus::Backdrop =>
+            {
+                self.step_backdrop(direction == Direction::Left, cx)
+            }
             ScreenKey::Arrow(direction) => {
                 source.focus = match (source.focus, direction) {
                     (SourceFocus::Close, Direction::Down) => SourceFocus::Backdrop,
@@ -446,30 +483,7 @@ impl GuideSurface {
                 };
             }
             ScreenKey::Activate => match source.focus {
-                SourceFocus::Backdrop => {
-                    use sparrow_installed_catalog::GuideBackdrop::*;
-                    let choice = match self.pending_backdrop.unwrap_or_else(catalog::backdrop) {
-                        Flat => NordicGradient,
-                        NordicGradient => ChannelTint,
-                        ChannelTint => AuroraDrift,
-                        AuroraDrift => Flat,
-                    };
-                    if let Some(saved) = catalog::save_backdrop(choice) {
-                        self.pending_backdrop = Some(choice);
-                        self.backdrop_save = Some(cx.spawn(async move |view, cx| {
-                            let success = saved.await.unwrap_or(false);
-                            let _ = view.update(cx, |view, cx| {
-                                view.pending_backdrop = None;
-                                if !success {
-                                    view.show_feedback(Some("Couldn’t save backdrop."), cx);
-                                }
-                                cx.notify();
-                            });
-                        }));
-                    } else {
-                        source.feedback = Some("Couldn’t save backdrop.");
-                    }
-                }
+                SourceFocus::Backdrop => self.step_backdrop(false, cx),
                 SourceFocus::Close => self.close_sources(cx),
                 SourceFocus::Refresh if configured => self.request_source_refresh(cx),
 

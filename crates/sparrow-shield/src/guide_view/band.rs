@@ -107,9 +107,6 @@ fn toolbar(
         .flex()
         .items_center()
         .gap(layout.px(9.))
-        .when(layout.translucent && !sources_focus, |sources| {
-            sources.bg(layout.surface(super::INK))
-        })
         .when(sources_focus, |sources| sources.bg(rgb(ICE)))
         .child(layout.icon(
             include_bytes!("../../assets/icons/sources.svg"),
@@ -128,13 +125,6 @@ fn toolbar(
             layout
                 .text(SAIRA_CLOCK, 30., 30., 600.)
                 .ml(layout.px(6.))
-                .when(layout.translucent, |clock| {
-                    clock
-                        .px(layout.px(12.))
-                        .py(layout.px(7.))
-                        .rounded_full()
-                        .bg(layout.surface(super::INK))
-                })
                 .flex_none()
                 .child(clock_time(now.to_utc())),
         )
@@ -249,13 +239,6 @@ fn preview(
     );
     let heading = layout
         .text(SAIRA_PREVIEW, 66., 68.64, 700.)
-        .when(layout.translucent, |heading| {
-            heading.self_start().max_w_full().shadow(vec![
-                gpui::BoxShadow::new(layout.px(0.), layout.px(0.), gpui::rgba(0x060c16d9).into())
-                    .blur_radius(layout.px(24.))
-                    .spread_radius(layout.px(5.)),
-            ])
-        })
         .mt(layout.px(4.))
         .truncate()
         .child(title);

@@ -79,7 +79,7 @@ pub(super) fn render(
             frame,
             family,
             screen.variant_preferences(),
-            TIMELINE_ROW_TOP + index as f32 * TIMELINE_ROW_PITCH - scroll,
+            index as f32 * TIMELINE_ROW_PITCH - scroll,
             focus.filter(|focus| focus.family() == Some(index)),
             family_icon(family).and_then(|icon| icons.get(icon)),
         )
@@ -89,26 +89,38 @@ pub(super) fn render(
     let mut board = layout
         .rect(BOARD_X, TIMELINE_BOARD_TOP, BOARD_WIDTH, height)
         .overflow_hidden()
-        .children(rows);
+        .child(
+            layout
+                .rect(
+                    0.,
+                    RULER_HEIGHT,
+                    BOARD_WIDTH,
+                    (height - RULER_HEIGHT).max(0.),
+                )
+                .overflow_hidden()
+                .children(rows),
+        );
     if rows_height > 0. {
         board = board
             .when_some(frame.axis.playhead_fraction(frame.now), |board, at| {
                 board.child(playhead(layout, at as f32 * TRACK_WIDTH, rows_height))
             })
-            .child(
-                layout
-                    .rect(
-                        CHANNEL_WIDTH + TRACK_WIDTH - RIGHT_FADE_WIDTH,
-                        RULER_HEIGHT,
-                        RIGHT_FADE_WIDTH,
-                        rows_height,
-                    )
-                    .bg(linear_gradient(
-                        90.,
-                        linear_color_stop(rgba(INK << 8), 0.),
-                        linear_color_stop(rgb(INK), 0.92),
-                    )),
-            );
+            .when(!layout.translucent, |board| {
+                board.child(
+                    layout
+                        .rect(
+                            CHANNEL_WIDTH + TRACK_WIDTH - RIGHT_FADE_WIDTH,
+                            RULER_HEIGHT,
+                            RIGHT_FADE_WIDTH,
+                            rows_height,
+                        )
+                        .bg(linear_gradient(
+                            90.,
+                            linear_color_stop(rgba(INK << 8), 0.),
+                            linear_color_stop(rgb(INK), 0.92),
+                        )),
+                )
+            });
     }
     if let Some(notice) = screen.notice() {
         board = board.child(board::notice_panel(
@@ -118,12 +130,14 @@ pub(super) fn render(
             retry_focus,
         ));
     }
-    board = board.child(board::bottom_fade(layout.rect(
-        0.,
-        height - 12.,
-        BOARD_WIDTH,
-        12.,
-    )));
+    if !layout.translucent {
+        board = board.child(board::bottom_fade(layout.rect(
+            0.,
+            height - 12.,
+            BOARD_WIDTH,
+            12.,
+        )));
+    }
     let footer_y = screen.footer_top();
     if !families.is_empty() && footer_y < height {
         if screen.retry_available() {
@@ -170,7 +184,7 @@ fn ruler(layout: Layout, frame: TimelineFrame, now: DateTime<FixedOffset>) -> Di
     });
     layout
         .rect(0., 0., BOARD_WIDTH, RULER_HEIGHT)
-        .bg(layout.surface(INK))
+        .when(!layout.translucent, |ruler| ruler.bg(rgb(INK)))
         .child(
             layout
                 .rect(6., 12., CHANNEL_WIDTH - 6., 24.)
