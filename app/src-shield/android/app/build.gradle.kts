@@ -18,7 +18,6 @@ val cargoMetadata = providers.exec {
 val cargoPackages = (JsonSlurper().parseText(cargoMetadata) as Map<*, *>)["packages"] as List<*>
 val verifier = cargoPackages.filterIsInstance<Map<*, *>>()
     .single { it["name"] == "rustls-platform-verifier-android" }
-val verifierMaven = file(verifier["manifest_path"] as String).parentFile.resolve("maven")
 val verifierVersion = verifier["version"] as String
 
 repositories {
@@ -27,11 +26,11 @@ repositories {
     exclusiveContent {
         forRepository {
             maven {
-                url = uri(verifierMaven)
-                metadataSources { artifact() }
+                // Pin the archive revision alongside the Cargo-selected artifact version.
+                url = uri("https://raw.githubusercontent.com/rustls/rustls-platform-verifier/1aa691352a5e0c215210dfc9a3c2f2078639dc91/android-release-support/maven/")
             }
         }
-        filter { includeModule("rustls", "rustls-platform-verifier") }
+        filter { includeModule("org.rustls", "rustls-platform-verifier") }
     }
 }
 
@@ -122,7 +121,7 @@ tasks.matching { it.name == "mergeReleaseJniLibFolders" }.configureEach {
 dependencies {
     val media3Version = "1.11.0"
 
-    implementation("rustls:rustls-platform-verifier:$verifierVersion@aar")
+    implementation("org.rustls:rustls-platform-verifier:$verifierVersion")
     implementation("org.jetbrains.kotlin:kotlin-stdlib:2.2.10")
     implementation("androidx.annotation:annotation:1.10.0")
     implementation("androidx.annotation:annotation-experimental:1.4.1")
