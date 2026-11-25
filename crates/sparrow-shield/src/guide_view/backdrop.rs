@@ -207,7 +207,7 @@ impl BackdropMotion {
                     .with_max_fps(10.),
             )
         } else if now.duration_since(fade.start) < fade.duration {
-            Some(Animation::new(fade.duration).with_max_fps(30.))
+            Some(Animation::new(fade.duration))
         } else {
             None
         };

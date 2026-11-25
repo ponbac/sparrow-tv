@@ -192,15 +192,11 @@ pub(super) fn field(
     if reduce_motion || stage == PlaybackStage::Failed {
         frame.child(draw(field, 0.))
     } else {
-        frame.child(
-            field.with_animation(
-                "tuning-field",
-                Animation::new(Duration::from_millis(if hold { 1700 } else { 4800 }))
-                    .repeat()
-                    .with_max_fps(24.),
-                draw,
-            ),
-        )
+        frame.child(field.with_animation(
+            "tuning-field",
+            Animation::new(Duration::from_millis(if hold { 1700 } else { 4800 })).repeat(),
+            draw,
+        ))
     }
 }
 
@@ -214,7 +210,7 @@ pub(super) fn lock(layout: Layout, bounds: [f32; 4], since: Instant) -> AnyEleme
         .bg(rgb(INK))
         .with_animation(
             gpui::ElementId::Name(format!("dock-lock-{since:?}").into()),
-            Animation::new(LOCK).with_max_fps(30.),
+            Animation::new(LOCK),
             move |frame, delta| {
                 let t = (since.elapsed().as_secs_f32() / LOCK.as_secs_f32()).min(1.);
                 let alpha = if delta >= 1. {

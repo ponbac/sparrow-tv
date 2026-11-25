@@ -136,9 +136,7 @@ fn searching(layout: Layout, frame: Div, color: u32, period: u64, id: &'static s
     frame
         .with_animation(
             id,
-            Animation::new(Duration::from_millis(period))
-                .repeat()
-                .with_max_fps(24.),
+            Animation::new(Duration::from_millis(period)).repeat(),
             move |frame, t| {
                 let inner = pulse(t);
                 let outer = pulse((t + 0.8).fract());

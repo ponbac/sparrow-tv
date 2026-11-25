@@ -135,7 +135,7 @@ impl Ambient {
         }
         root.child(div().absolute().inset_0().with_animation(
             ("ambient", self.revision),
-            Animation::new(FADE).with_max_fps(18.),
+            Animation::new(FADE),
             move |layer, _| layer.children(paint(mix(from, to, progress(changed)))),
         ))
     }
