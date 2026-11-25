@@ -191,6 +191,7 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeStart
         })
         .resolve::<LogErrorAndDefault>();
     if let Some(data_root) = data_root {
+        channel_icons::set_cache_dir(&data_root.join("cache"));
         catalog::start(data_root);
     } else {
         catalog::set_start_failed();

@@ -123,14 +123,14 @@ fn repeated_navigation_moves_the_fill_deadline_and_admits_the_latest_viewport() 
     cache.reconcile(["first"], now);
     assert_eq!(
         cache.deferred_admission(now),
-        Some(now + Duration::from_millis(140))
+        Some(now + Duration::from_millis(300))
     );
     assert!(cache.admit(now).is_empty());
 
     let repeat = now + Duration::from_millis(130);
     cache.note_navigation(repeat);
     cache.reconcile(["latest"], repeat);
-    let deadline = repeat + Duration::from_millis(140);
+    let deadline = repeat + Duration::from_millis(300);
     assert_eq!(cache.deferred_admission(repeat), Some(deadline));
     assert!(cache.admit(deadline - Duration::from_millis(1)).is_empty());
 
@@ -140,4 +140,21 @@ fn repeated_navigation_moves_the_fill_deadline_and_admits_the_latest_viewport() 
     assert_eq!(requests[0].location(), "latest");
     assert_eq!(cache.deferred_admission(deadline), None);
     assert!(cache.admit(deadline).is_empty());
+}
+
+#[test]
+fn stale_image_remains_visible_until_refresh_succeeds() {
+    let now = Instant::now();
+    for refreshed in [None, Some(("new", 100))] {
+        let mut cache = IconCache::default();
+        cache.reconcile(["a"], now);
+        let id = cache.admit(now)[0].id();
+        assert_eq!(cache.publish_stale(id, ("old", 100), now), (true, vec![]));
+        assert_eq!(cache.get("a"), Some(&"old"));
+        assert!(cache.admit(now).is_empty());
+        let (changed, released) = cache.complete(id, refreshed, now);
+        assert_eq!(changed, refreshed.is_some());
+        assert_eq!(released, if changed { vec!["old"] } else { vec![] });
+        assert_eq!(cache.get("a"), Some(if changed { &"new" } else { &"old" }));
+    }
 }
