@@ -46,15 +46,7 @@ pub(super) fn render(layout: Layout, playback: &PlaybackOverlay<'_>, focused: bo
                     .child(dot(layout, color, 10.))
                     .into_any_element();
             }
-            frame
-                .with_animation(
-                    id,
-                    Animation::new(Duration::from_millis(period))
-                        .repeat()
-                        .with_max_fps(24.),
-                    move |frame, t| waves(frame, layout, color, t),
-                )
-                .into_any_element()
+            searching(layout, frame, color, period, id)
         }
         PlaybackStage::Playing => {
             if let Some((start, outgoing)) = playback
@@ -142,4 +134,39 @@ fn arcs(
         .with_transformation(Transformation::scale(size(scale, scale)))
         .text_color(rgb(color))
         .opacity(opacity)
+}
+
+pub(in crate::guide_view) fn searching(
+    layout: Layout,
+    frame: Div,
+    color: u32,
+    period: u64,
+    id: &'static str,
+) -> AnyElement {
+    frame
+        .with_animation(
+            id,
+            Animation::new(Duration::from_millis(period))
+                .repeat()
+                .with_max_fps(24.),
+            move |frame, t| {
+                let inner = pulse(t);
+                let outer = pulse((t + 0.8).fract());
+                frame
+                    .child(arcs(layout, INNER, color, 1., 0.32 + 0.68 * inner))
+                    .child(arcs(layout, OUTER, color, 1., 0.32 + 0.68 * outer))
+                    .child(dot(layout, color, 7.5 + 2.5 * inner))
+            },
+        )
+        .into_any_element()
+}
+
+pub(in crate::guide_view) fn folding(layout: Layout, fold: f32) -> Div {
+    div()
+        .relative()
+        .w(layout.px(42.))
+        .h(layout.px(24.))
+        .child(arcs(layout, INNER, ICE, 0.35 + 0.65 * fold, fold))
+        .child(arcs(layout, OUTER, ICE, 0.35 + 0.65 * fold, fold))
+        .child(dot(layout, ICE, 9.))
 }

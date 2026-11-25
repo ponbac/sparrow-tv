@@ -103,6 +103,18 @@ pub(super) fn enable_key_routing(id: u64) {
     });
 }
 
+pub(super) fn guide_presented(id: u64) {
+    call(id, |env, activity| {
+        env.call_method(
+            activity,
+            jni_str!("guidePresented"),
+            jni_sig!("(J)V"),
+            &[JValue::Long(id as i64)],
+        )?;
+        Ok(())
+    });
+}
+
 pub(super) fn finish(id: u64) {
     call(id, |env, activity| {
         env.call_method(

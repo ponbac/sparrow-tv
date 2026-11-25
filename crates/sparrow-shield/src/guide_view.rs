@@ -2,6 +2,7 @@
 
 mod backdrop;
 pub(super) use backdrop::BackdropMotion;
+pub(super) mod arrival;
 mod band;
 mod board;
 mod channel_icon;
@@ -157,7 +158,7 @@ pub(super) struct GuideBand<'a> {
 pub(super) fn render(
     screen: &GuideScreen,
     band: GuideBand<'_>,
-    slide: SlideFrame,
+    (wave, slide): (arrival::Wave, SlideFrame),
     lanes: (&mut LaneViewport, &mut RailViewport),
     window: &mut Window,
     icons: &ChannelIcons,
@@ -173,11 +174,11 @@ pub(super) fn render(
         .text_color(layout.guide_text())
         .font_family(SAIRA)
         .child(backdrop)
-        .child(band::render(layout, band, icons));
+        .child(band::render(layout, band, icons, wave));
     match screen.mode() {
         GuideMode::Now => guide
-            .child(lane::render(layout, screen, lanes.0, window, slide))
-            .child(board::render(layout, screen, minute, icons, slide)),
+            .child(lane::render(layout, screen, lanes.0, window, (slide, wave)))
+            .child(board::render(layout, screen, minute, icons, slide, wave)),
         GuideMode::Timeline => guide
             .child(timeline::rail(layout, screen, lanes.1, slide))
             .child(timeline::render(layout, screen, minute, icons, slide)),

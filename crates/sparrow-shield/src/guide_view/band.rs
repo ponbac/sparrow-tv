@@ -22,7 +22,12 @@ pub(super) const TOOLBAR_HEIGHT: f32 = 58.;
 const IDLE_PREVIEW_X: f32 = GUTTER + POSTER_WIDTH + 44.;
 const NO_GUIDE_DATA: &str = "No guide data. The channel still plays.";
 
-pub(super) fn render(layout: Layout, band: GuideBand<'_>, icons: &ChannelIcons) -> Div {
+pub(super) fn render(
+    layout: Layout,
+    band: GuideBand<'_>,
+    icons: &ChannelIcons,
+    wave: super::arrival::Wave,
+) -> Div {
     let GuideBand {
         focus,
         minute,
@@ -34,11 +39,29 @@ pub(super) fn render(layout: Layout, band: GuideBand<'_>, icons: &ChannelIcons) 
     } = band;
     div()
         .when(!docked, |band| {
-            band.child(poster(layout, shown.map(|preview| &preview.family), icons))
+            band.child(wave.enter(
+                layout,
+                poster(layout, shown.map(|preview| &preview.family), icons),
+                0.,
+                -52.,
+                0.,
+            ))
         })
-        .child(toolbar(layout, focus, minute, docked, inline_search))
+        .child(wave.enter(
+            layout,
+            toolbar(layout, focus, minute, docked, inline_search),
+            42.,
+            0.,
+            -30.,
+        ))
         .when_some(shown, |band, shown| {
-            band.child(preview(layout, shown, minute, description, icons, docked))
+            band.child(wave.enter(
+                layout,
+                preview(layout, shown, minute, description, icons, docked),
+                84.,
+                0.,
+                22.,
+            ))
         })
 }
 

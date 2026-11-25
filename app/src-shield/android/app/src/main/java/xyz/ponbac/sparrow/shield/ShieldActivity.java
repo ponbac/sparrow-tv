@@ -35,6 +35,7 @@ public final class ShieldActivity extends Activity implements SurfaceHolder.Call
     private ShieldPlayback playback;
     private boolean started;
     private boolean hostKeyRouting;
+    private OpeningGuideView openingGuide;
 
     static {
         System.loadLibrary("sparrow_shield");
@@ -75,6 +76,10 @@ public final class ShieldActivity extends Activity implements SurfaceHolder.Call
         nativeStart(getApplicationContext(), getDataDir().getAbsolutePath());
         nativeRegisterHost(hostId);
         updateMotionPreference();
+        if (hostId == 1) {
+            openingGuide = new OpeningGuideView(this);
+            root.addView(openingGuide);
+        }
         setContentView(root);
         root.requestFocus();
     }
@@ -291,6 +296,15 @@ public final class ShieldActivity extends Activity implements SurfaceHolder.Call
         postForHost(id, () -> {
             hostKeyRouting = enabled;
             updateBackCallbacks();
+        });
+    }
+
+    public void guidePresented(long id) {
+        postForHost(id, () -> {
+            if (openingGuide != null) {
+                ((FrameLayout) openingGuide.getParent()).removeView(openingGuide);
+                openingGuide = null;
+            }
         });
     }
 

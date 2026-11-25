@@ -1,7 +1,7 @@
 //! Shield picture placement and the controls that fit around the native surface.
 
 mod fullscreen;
-mod signal_mark;
+pub(super) mod signal_mark;
 pub(crate) use fullscreen::{FullscreenFrame, FullscreenMotion};
 mod tune;
 mod zap;

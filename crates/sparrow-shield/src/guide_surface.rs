@@ -98,6 +98,7 @@ pub(super) struct GuideSurface {
     screen: GuideScreen,
     focus: FocusHandle,
     group_slide: guide_view::GroupSlide,
+    arrival: guide_view::arrival::Arrival,
     now_lane: guide_view::LaneViewport,
     timeline_rail: guide_view::RailViewport,
     group_viewport: guide_view::GroupViewport,
@@ -169,6 +170,13 @@ enum ReadResult {
 
 impl GuideSurface {
     pub(super) fn new(host: u64, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // open_window lays out the root before the platform presents it. Keep
+        // the Activity cover through that first presentation.
+        if host == 1 {
+            window.on_next_frame(move |window, _| {
+                window.on_next_frame(move |_, _| activity::guide_presented(host));
+            });
+        }
         let now = Local::now().fixed_offset();
         let mut screen = GuideScreen::new(now.to_utc(), *now.offset(), HashSet::new());
         screen.set_surface_height(guide_view::surface_height(window.viewport_size()));
@@ -247,6 +255,7 @@ impl GuideSurface {
             screen,
             focus,
             group_slide: Default::default(),
+            arrival: Default::default(),
             now_lane: guide_view::LaneViewport::default(),
             timeline_rail: guide_view::RailViewport::default(),
             group_viewport: guide_view::GroupViewport::default(),
@@ -434,7 +443,14 @@ impl GuideSurface {
         }));
     }
 
+    fn cancel_arrival(&mut self, cx: &mut Context<Self>) {
+        if self.arrival.cancel() {
+            cx.notify();
+        }
+    }
+
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_arrival(cx);
         let key = match event.keystroke.key.as_str() {
             "up" => ScreenKey::Arrow(Direction::Up),
             "down" => ScreenKey::Arrow(Direction::Down),
@@ -460,6 +476,9 @@ impl GuideSurface {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if matches!(event, activity::Event::Back | activity::Event::Key { .. }) {
+            self.cancel_arrival(cx);
+        }
         match event {
             activity::Event::PictureBottom(bottom) => {
                 self.playback.picture_bottom = bottom;
@@ -1146,6 +1165,11 @@ impl Render for GuideSurface {
             self.icons.hide();
             return root.children(player);
         }
+        let viewport = window.viewport_size();
+        if self.arrival.loading(&self.screen) {
+            return root.child(guide_view::arrival::loading(viewport, &self.screen));
+        }
+        let wave = self.arrival.frame(&self.screen, window, cx.reduce_motion());
         let selected = self.playback.docked() || self.playback.fullscreen();
         let icon = if selected {
             self.playback.channel_icon()
@@ -1183,10 +1207,13 @@ impl Render for GuideSurface {
                     self.screen.focus()
                 },
             },
-            self.group_slide.frame(
-                window,
-                cx.reduce_motion(),
-                !self.screen.families().is_empty(),
+            (
+                wave,
+                self.group_slide.frame(
+                    window,
+                    cx.reduce_motion(),
+                    !self.screen.families().is_empty(),
+                ),
             ),
             (&mut self.now_lane, &mut self.timeline_rail),
             window,
@@ -1217,6 +1244,7 @@ impl Render for GuideSurface {
         let drift = window.viewport_size().width * (36. / 1920. * frame.fullscreen);
         let opacity = (1. - frame.fullscreen * 1.45).max(0.);
         root.child(guide.top(drift).opacity(opacity))
+            .children(wave.landing(viewport))
             .children(player)
             .child(
                 div()

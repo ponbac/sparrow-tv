@@ -45,6 +45,7 @@ pub(super) fn render(
     minute: super::MinuteFrame<'_>,
     icons: &ChannelIcons,
     slide: super::SlideFrame,
+    wave: super::arrival::Wave,
 ) -> Div {
     let height = (layout.height - BOARD_TOP).max(0.);
     let focus = match screen.focus() {
@@ -75,7 +76,13 @@ pub(super) fn render(
         let family = &families[index];
         board = board.child(card(
             layout,
-            rect,
+            wave.enter(
+                layout,
+                rect,
+                180. + (index % NOW_COLUMNS + index / NOW_COLUMNS) as f32 * 48.,
+                0.,
+                32.,
+            ),
             screen,
             index,
             focus,

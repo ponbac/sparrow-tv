@@ -119,7 +119,7 @@ pub(super) fn render(
     screen: &GuideScreen,
     viewport: &mut LaneViewport,
     window: &Window,
-    slide: super::SlideFrame,
+    (slide, wave): (super::SlideFrame, super::arrival::Wave),
 ) -> Div {
     let lane_focus = match screen.focus() {
         ScreenFocus::GroupLane(focus) => Some(focus),
@@ -137,7 +137,13 @@ pub(super) fn render(
         .rect(0., BAND_BOTTOM, CANVAS_WIDTH, LANE_HEIGHT)
         .child(view_switch(
             layout,
-            layout.rect(GUTTER, CONTROL_Y, switch_width, CONTROL_HEIGHT),
+            wave.enter(
+                layout,
+                layout.rect(GUTTER, CONTROL_Y, switch_width, CONTROL_HEIGHT),
+                102.,
+                0.,
+                16.,
+            ),
             GuideMode::Now,
             lane_focus == Some(LaneFocus::Phase),
         ))
@@ -148,11 +154,17 @@ pub(super) fn render(
             window,
             (groups_x, available),
             lane_focus,
-            slide,
+            (slide, wave),
         ))
         .child(choose_groups(
             layout,
-            layout.rect(roster_x, CONTROL_Y, roster_width, CONTROL_HEIGHT),
+            wave.enter(
+                layout,
+                layout.rect(roster_x, CONTROL_Y, roster_width, CONTROL_HEIGHT),
+                216.,
+                0.,
+                16.,
+            ),
             lane_focus == Some(LaneFocus::ChooseGroups),
         ))
 }
@@ -236,7 +248,7 @@ fn groups(
     window: &Window,
     bounds: (f32, f32),
     focus: Option<LaneFocus>,
-    slide: super::SlideFrame,
+    (slide, wave): (super::SlideFrame, super::arrival::Wave),
 ) -> Div {
     let (x, available) = bounds;
     let groups = screen.groups();
@@ -272,7 +284,13 @@ fn groups(
         }
         pills.push(pill.render(
             layout,
-            layout.rect(left, 0., width, CONTROL_HEIGHT),
+            wave.enter(
+                layout,
+                layout.rect(left, 0., width, CONTROL_HEIGHT),
+                118. + 20. * (index - viewport.first) as f32,
+                0.,
+                16.,
+            ),
             selected == index,
             focused == Some(index),
             content_width > available,
