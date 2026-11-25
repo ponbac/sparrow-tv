@@ -30,6 +30,7 @@ use crate::{
 
 mod playback_ui;
 mod search_ui;
+mod sections;
 mod setup_ui;
 mod source_flow;
 use playback_ui::PlaybackUi;
@@ -95,6 +96,7 @@ pub(super) static GUIDE_DIAGNOSTICS: Mutex<GuideDiagnostics> = Mutex::new(GuideD
 
 pub(super) struct GuideSurface {
     host: u64,
+    sections: sections::Sections,
     screen: GuideScreen,
     focus: FocusHandle,
     group_slide: guide_view::GroupSlide,
@@ -223,6 +225,7 @@ impl GuideSurface {
                 if view
                     .update(cx, |view, cx| {
                         if view.icons.apply(batch, cx) {
+                            view.sections.icons_changed();
                             cx.notify();
                         }
                     })
@@ -238,6 +241,7 @@ impl GuideSurface {
                 let preferences = variants.borrow_and_update().clone();
                 if view
                     .update(cx, |view, cx| {
+                        view.sections.catalog_changed();
                         view.screen.set_variant_preferences(preferences);
                         view.sync_search_preferences(cx);
                         view.sync_view(cx);
@@ -251,6 +255,7 @@ impl GuideSurface {
         });
         Self {
             host,
+            sections: sections::Sections::new(cx),
             screen,
             focus,
             group_slide: Default::default(),
@@ -365,6 +370,7 @@ impl GuideSurface {
                 self.loaded_exclusions = true;
                 self.screen.set_group_exclusions(exclusions);
             }
+            self.sections.catalog_changed();
             self.status_revision = Some(revision);
             self.screen.catalog_status(status);
             self.setup_catalog(status, cx);
@@ -816,6 +822,7 @@ impl GuideSurface {
             ReadResult::Guide(request, result) => self.screen.guide_completed(request, result),
         };
         if update != PageUpdate::Superseded {
+            self.sections.catalog_changed();
             self.sync_view(cx);
         }
     }
@@ -887,6 +894,7 @@ impl GuideSurface {
         selection: Option<guide_view::PreviewSelection>,
         cx: &Context<Self>,
     ) {
+        self.sections.preview_changed();
         self.presented_preview = selection;
         let key = self
             .desired_preview
@@ -1215,32 +1223,24 @@ impl Render for GuideSurface {
                 || (self.sources_sheet_open() && !self.backdrop_preview_focused())
                 || self.screen.group_chooser().is_some(),
         );
-        let guide = guide_view::render(
-            &self.screen,
-            guide_view::GuideBand {
-                choice,
-                minute,
-                preview: self.presented_preview.as_ref(),
-                description: self.description.as_ref(),
-                docked: selected,
-                inline_search: self.search.state().view() == SearchView::Inline,
-                focus: if self.playback.dock_focused() {
-                    ScreenFocus::None
-                } else {
-                    self.screen.focus()
-                },
-            },
-            (
-                wave,
-                self.group_slide.frame(
-                    window,
-                    cx.reduce_motion(),
-                    !self.screen.families().is_empty(),
-                ),
-            ),
-            (&mut self.now_lane, &mut self.timeline_rail),
+        let slide = self.group_slide.frame(
             window,
-            &self.icons,
+            cx.reduce_motion(),
+            !self.screen.families().is_empty(),
+        );
+        let guide = self.sections.guide(
+            &self.screen,
+            self.playback.dock_focused(),
+            selected,
+            self.search.state().view() == SearchView::Inline,
+            self.description.clone(),
+            choice,
+            minute,
+            self.minute_tick
+                .as_ref()
+                .is_some_and(guide_view::MinuteTick::visible),
+            (wave, slide),
+            viewport,
         );
         if let Some(tick) = &mut self.minute_tick
             && tick.needs_badge_timer()
@@ -1263,11 +1263,24 @@ impl Render for GuideSurface {
                 }
             }));
         }
-        let drift = window.viewport_size().width * (36. / 1920. * frame.fullscreen);
         let opacity = (1. - frame.fullscreen * 1.45).max(0.);
-        root.child(backdrop.opacity(opacity * wave.backdrop_opacity()))
-            .child(glow)
-            .child(guide.top(drift).opacity(opacity))
+        root.child(backdrop.opacity(wave.backdrop_opacity()))
+            .when(frame.fullscreen == 0., |root| root.child(glow))
+            .child(guide)
+            .when(frame.fullscreen > 0., |root| {
+                root.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgb(guide_view::INK))
+                        .opacity(1. - opacity),
+                )
+                .child(self.playback.ambient.layer(
+                    viewport,
+                    picture,
+                    cx.reduce_motion(),
+                ))
+            })
             .children(self.arrival.landing(viewport, wave))
             .children(player)
             .child(

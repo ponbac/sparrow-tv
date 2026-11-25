@@ -22,7 +22,7 @@ pub(super) const TOOLBAR_HEIGHT: f32 = 58.;
 const IDLE_PREVIEW_X: f32 = GUTTER + POSTER_WIDTH + 44.;
 const NO_GUIDE_DATA: &str = "No guide data. The channel still plays.";
 
-pub(super) fn render(
+pub(crate) fn render(
     layout: Layout,
     band: GuideBand<'_>,
     icons: &ChannelIcons,

@@ -1,0 +1,298 @@
+//! Each section is laid out in Guide coordinates. Its stable origin lets GPUI
+//! replay the previous scene while independently painted decorations move.
+use super::*;
+use gpui::{Entity, StyleRefinement, WeakEntity};
+use guide_view::{Layout, SlideFrame, arrival::Wave};
+
+#[derive(Clone, Copy)]
+enum Section {
+    Band,
+    Lane,
+    Board,
+}
+
+struct SectionView {
+    owner: WeakEntity<GuideSurface>,
+    section: Section,
+}
+
+impl Render for SectionView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let section = self
+            .owner
+            .update(cx, |owner, cx| {
+                let layout = Layout::for_guide(window.viewport_size(), owner.backdrop());
+                let (wave, slide) = owner.sections.motion;
+                let minute = guide_view::MinuteFrame::new(
+                    owner.now,
+                    owner.minute_tick.as_ref(),
+                    !cx.reduce_motion(),
+                    window,
+                );
+                match self.section {
+                    Section::Band => guide_view::band::render(
+                        layout,
+                        guide_view::GuideBand {
+                            minute,
+                            preview: owner.presented_preview.as_ref(),
+                            description: owner.description.as_ref(),
+                            docked: owner.playback.docked() || owner.playback.fullscreen(),
+                            inline_search: owner.search.state().view() == SearchView::Inline,
+                            focus: if owner.playback.dock_focused() {
+                                ScreenFocus::None
+                            } else {
+                                owner.screen.focus()
+                            },
+                        },
+                        &owner.icons,
+                        wave,
+                    ),
+                    Section::Lane => match owner.screen.mode() {
+                        GuideMode::Now => guide_view::lane::render(
+                            layout,
+                            &owner.screen,
+                            &mut owner.now_lane,
+                            window,
+                            (slide, wave),
+                        ),
+                        GuideMode::Timeline => guide_view::timeline::rail(
+                            layout,
+                            &owner.screen,
+                            &mut owner.timeline_rail,
+                            slide,
+                        ),
+                    },
+                    Section::Board => match owner.screen.mode() {
+                        GuideMode::Now => guide_view::board::render(
+                            layout,
+                            &owner.screen,
+                            minute,
+                            &owner.icons,
+                            slide,
+                            wave,
+                        ),
+                        GuideMode::Timeline => guide_view::timeline::render(
+                            layout,
+                            &owner.screen,
+                            minute,
+                            &owner.icons,
+                            slide,
+                        ),
+                    },
+                }
+            })
+            .unwrap();
+        div().relative().size_full().child(section)
+    }
+}
+
+struct Cached<K> {
+    name: &'static str,
+    view: Entity<SectionView>,
+    key: Option<K>,
+    revision: usize,
+}
+
+impl<K: PartialEq> Cached<K> {
+    fn new(section: Section, cx: &mut Context<GuideSurface>) -> Self {
+        let owner = cx.weak_entity();
+        Self {
+            name: match section {
+                Section::Band => "band",
+                Section::Lane => "lane",
+                Section::Board => "board",
+            },
+            view: cx.new(|_| SectionView { owner, section }),
+            key: None,
+            revision: 0,
+        }
+    }
+
+    fn element(
+        &mut self,
+        key: K,
+        moving: bool,
+        viewport: gpui::Size<gpui::Pixels>,
+    ) -> impl IntoElement {
+        // A new element id discards the old scene during this very draw.
+        // notify() during render would take effect on a later frame.
+        if self.key.as_ref() != Some(&key) {
+            self.key = Some(key);
+            self.revision = self.revision.wrapping_add(1);
+        }
+        let layer = div().id((self.name, self.revision)).absolute().inset_0();
+        if moving {
+            layer.child(self.view.clone())
+        } else {
+            layer.child(
+                self.view.clone().cached(
+                    StyleRefinement::default()
+                        .w(viewport.width)
+                        .h(viewport.height),
+                ),
+            )
+        }
+    }
+}
+
+#[derive(PartialEq)]
+struct BandInputs {
+    toolbar: Option<ToolbarFocus>,
+    docked: bool,
+    inline_search: bool,
+    translucent: bool,
+    preview: u64,
+    description: Option<SharedString>,
+    now: i64,
+    icons: u64,
+}
+
+#[derive(PartialEq)]
+struct LaneInputs {
+    mode: GuideMode,
+    selected: LaneFocus,
+    focus: Option<LaneFocus>,
+    translucent: bool,
+    catalog: u64,
+    groups: usize,
+}
+
+#[derive(PartialEq)]
+struct BoardInputs {
+    mode: GuideMode,
+    focus: ScreenFocus,
+    selected: LaneFocus,
+    scroll: f32,
+    translucent: bool,
+    catalog: u64,
+    page: Option<PageStatus>,
+    notice: Option<sparrow_tv_guide::guide_screen::ScreenNotice>,
+    families: usize,
+    now: i64,
+    axis: i64,
+    icons: u64,
+}
+
+pub(super) struct Sections {
+    band: Cached<BandInputs>,
+    lane: Cached<LaneInputs>,
+    board: Cached<BoardInputs>,
+    motion: (Wave, SlideFrame),
+    catalog_revision: u64,
+    icon_revision: u64,
+    preview_revision: u64,
+}
+
+impl Sections {
+    pub(super) fn new(cx: &mut Context<GuideSurface>) -> Self {
+        Self {
+            band: Cached::new(Section::Band, cx),
+            lane: Cached::new(Section::Lane, cx),
+            board: Cached::new(Section::Board, cx),
+            motion: (Wave::REST, SlideFrame::SETTLED),
+            catalog_revision: 0,
+            icon_revision: 0,
+            preview_revision: 0,
+        }
+    }
+}
+
+impl Sections {
+    pub(super) fn icons_changed(&mut self) {
+        self.icon_revision = self.icon_revision.wrapping_add(1);
+    }
+    pub(super) fn catalog_changed(&mut self) {
+        self.catalog_revision = self.catalog_revision.wrapping_add(1);
+    }
+    pub(super) fn preview_changed(&mut self) {
+        self.preview_revision = self.preview_revision.wrapping_add(1);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn guide(
+        &mut self,
+        screen: &GuideScreen,
+        dock_focused: bool,
+        docked: bool,
+        inline_search: bool,
+        description: Option<SharedString>,
+        choice: sparrow_installed_catalog::GuideBackdrop,
+        minute: guide_view::MinuteFrame<'_>,
+        ticking: bool,
+        (wave, slide): (Wave, SlideFrame),
+        viewport: gpui::Size<gpui::Pixels>,
+    ) -> Div {
+        self.motion = (wave, slide);
+        let layout = Layout::for_guide(viewport, choice);
+        let translucent = choice != sparrow_installed_catalog::GuideBackdrop::Flat;
+        let arriving = wave != Wave::REST;
+        let sliding = slide != SlideFrame::SETTLED;
+        let focus = screen.focus();
+        let toolbar = match focus {
+            ScreenFocus::Toolbar(t) if !dock_focused => Some(t),
+            _ => None,
+        };
+        let lane = match focus {
+            ScreenFocus::GroupLane(l) => Some(l),
+            _ => None,
+        };
+        let active = match focus {
+            ScreenFocus::Board(_) | ScreenFocus::TimelineBoard(_) => focus,
+            _ => ScreenFocus::None,
+        };
+        let now = minute.now.timestamp();
+        let band = self.band.element(
+            BandInputs {
+                toolbar,
+                docked,
+                inline_search,
+                translucent,
+                preview: self.preview_revision,
+                description,
+                now,
+                icons: self.icon_revision,
+            },
+            arriving || ticking,
+            viewport,
+        );
+        let lane = self.lane.element(
+            LaneInputs {
+                mode: screen.mode(),
+                selected: screen.selected_lane(),
+                focus: lane,
+                translucent,
+                catalog: self.catalog_revision,
+                groups: screen.groups().len(),
+            },
+            arriving || sliding,
+            viewport,
+        );
+        let board = self.board.element(
+            BoardInputs {
+                mode: screen.mode(),
+                focus: active,
+                selected: screen.selected_lane(),
+                scroll: screen.scroll_offset(),
+                translucent,
+                catalog: self.catalog_revision,
+                page: screen.page_status(),
+                notice: screen.notice(),
+                families: screen.families().len(),
+                now,
+                axis: screen.timeline().map_or(0, |t| t.starts_at().timestamp()),
+                icons: self.icon_revision,
+            },
+            arriving || sliding || ticking,
+            viewport,
+        );
+        div()
+            .relative()
+            .size_full()
+            .overflow_hidden()
+            .font_family(guide_view::SAIRA)
+            .text_color(layout.guide_text())
+            .child(band)
+            .child(lane)
+            .child(board)
+    }
+}

@@ -4,20 +4,20 @@ mod backdrop;
 pub(super) use backdrop::BackdropMotion;
 pub(crate) mod ambient;
 pub(super) mod arrival;
-mod band;
-mod board;
+pub(super) mod band;
+pub(super) mod board;
 mod channel_icon;
 mod glow;
 mod group_slide;
 mod groups;
-mod lane;
+pub(super) mod lane;
 mod minute;
 pub(crate) use minute::{MinuteFrame, MinuteTick};
 pub(super) mod playback;
 mod search_panel;
 mod setup;
 mod sources;
-mod timeline;
+pub(super) mod timeline;
 
 use std::sync::Arc;
 
@@ -30,13 +30,12 @@ pub(super) use setup::{SetupPanel, render as setup_screen, setup_editor_rect};
 pub(super) use sources::{SourceFocus, SourcePanel, source_editor_rect, sources_sheet};
 pub(crate) use timeline::RailViewport;
 
-use crate::channel_icons::ChannelIcons;
 use chrono::{DateTime, FixedOffset, Local, Utc};
-use gpui::{Div, FontWeight, IntoElement, Pixels, Size, Styled, Window, div, prelude::*, px, svg};
+use gpui::{Div, FontWeight, IntoElement, Pixels, Size, Styled, div, px, svg};
 use sparrow_core::{GuideProgramme, GuideWindowChannel};
 use sparrow_tv_guide::{
     GuideFamily, VariantPreferences,
-    guide_screen::{GuideMode, GuideScreen, NOW_BOARD_TOP as BOARD_TOP, ScreenFocus},
+    guide_screen::{GuideScreen, NOW_BOARD_TOP as BOARD_TOP, ScreenFocus},
     preview::select_programme,
 };
 
@@ -62,7 +61,7 @@ const ICE_ELAPSED: u32 = 0x78c8ee;
 const ON_ICE: u32 = 0x06121c;
 const ON_ICE_DIM: u32 = 0x06121cb8;
 
-const SAIRA: &str = "Sparrow Guide 92";
+pub(super) const SAIRA: &str = "Sparrow Guide 92";
 const SAIRA_PREVIEW: &str = "Sparrow Guide 72";
 const SAIRA_TITLE: &str = "Sparrow Guide 80";
 const SAIRA_NOTICE: &str = "Sparrow Guide 84";
@@ -70,7 +69,7 @@ const SAIRA_CLOCK: &str = "Sparrow Guide 100";
 const SAIRA_NUMBER: &str = "Sparrow Guide 110";
 
 #[derive(Clone, Copy)]
-struct Layout {
+pub(super) struct Layout {
     translucent: bool,
     scale: f32,
     height: f32,
@@ -86,14 +85,17 @@ impl Layout {
         }
     }
 
-    fn for_guide(viewport: Size<Pixels>, choice: sparrow_installed_catalog::GuideBackdrop) -> Self {
+    pub(super) fn for_guide(
+        viewport: Size<Pixels>,
+        choice: sparrow_installed_catalog::GuideBackdrop,
+    ) -> Self {
         Self {
             translucent: choice != sparrow_installed_catalog::GuideBackdrop::Flat,
             ..Self::new(viewport)
         }
     }
 
-    fn guide_text(self) -> gpui::Rgba {
+    pub(super) fn guide_text(self) -> gpui::Rgba {
         gpui::rgb(if self.translucent { 0xffffff } else { TEXT })
     }
 
@@ -148,40 +150,12 @@ pub(super) fn surface_height(viewport: Size<Pixels>) -> f32 {
 }
 
 pub(super) struct GuideBand<'a> {
-    pub(super) choice: sparrow_installed_catalog::GuideBackdrop,
     pub(super) minute: MinuteFrame<'a>,
     pub(super) preview: Option<&'a PreviewSelection>,
     pub(super) description: Option<&'a gpui::SharedString>,
     pub(super) docked: bool,
     pub(super) inline_search: bool,
     pub(super) focus: ScreenFocus,
-}
-
-pub(super) fn render(
-    screen: &GuideScreen,
-    band: GuideBand<'_>,
-    (wave, slide): (arrival::Wave, SlideFrame),
-    lanes: (&mut LaneViewport, &mut RailViewport),
-    window: &mut Window,
-    icons: &ChannelIcons,
-) -> Div {
-    let layout = Layout::for_guide(window.viewport_size(), band.choice);
-    let minute = band.minute;
-    let guide = div()
-        .size_full()
-        .relative()
-        .overflow_hidden()
-        .text_color(layout.guide_text())
-        .font_family(SAIRA)
-        .child(band::render(layout, band, icons, wave));
-    match screen.mode() {
-        GuideMode::Now => guide
-            .child(lane::render(layout, screen, lanes.0, window, (slide, wave)))
-            .child(board::render(layout, screen, minute, icons, slide, wave)),
-        GuideMode::Timeline => guide
-            .child(timeline::rail(layout, screen, lanes.1, slide))
-            .child(timeline::render(layout, screen, minute, icons, slide)),
-    }
 }
 
 pub(super) struct PreviewSelection {

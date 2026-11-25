@@ -39,7 +39,7 @@ fn card_bounds(index: usize, scroll: f32) -> [f32; 4] {
     ]
 }
 
-pub(super) fn render(
+pub(crate) fn render(
     layout: Layout,
     screen: &GuideScreen,
     minute: super::MinuteFrame<'_>,

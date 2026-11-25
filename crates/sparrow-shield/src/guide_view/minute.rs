@@ -45,6 +45,10 @@ impl MinuteTick {
         }
     }
 
+    pub(crate) fn visible(&self) -> bool {
+        self.started.elapsed() < Self::FADE_AT + Self::FADE
+    }
+
     pub(crate) fn needs_badge_timer(&self) -> bool {
         self.has_badge.get() && self.badge_expiry.is_none()
     }

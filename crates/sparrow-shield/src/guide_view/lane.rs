@@ -40,6 +40,8 @@ impl GroupReveal {
 #[derive(Default)]
 pub(crate) struct LaneViewport {
     generation: Option<CatalogGeneration>,
+    widths: std::collections::HashMap<(SharedString, Option<SharedString>), f32>,
+    measured_scale: f32,
     first: usize,
     clipped: f32,
     group_reveal: GroupReveal,
@@ -114,7 +116,7 @@ impl LaneViewport {
     }
 }
 
-pub(super) fn render(
+pub(crate) fn render(
     layout: Layout,
     screen: &GuideScreen,
     viewport: &mut LaneViewport,
@@ -259,19 +261,30 @@ fn groups(
     let mut row = layout
         .rect(x, CONTROL_Y, available, CONTROL_HEIGHT + 16.)
         .overflow_hidden();
+    let mut widths = std::mem::take(&mut viewport.widths);
+    if viewport.generation != screen.generation() || viewport.measured_scale != layout.scale {
+        widths.clear();
+    }
+    let widths = std::cell::RefCell::new(widths);
+    let measure_pill = |pill: &GroupPill| {
+        *widths
+            .borrow_mut()
+            .entry((pill.label.clone(), pill.count.clone()))
+            .or_insert_with(|| pill.width(layout, window))
+    };
     viewport.update(
         screen.generation(),
         selected,
         focused,
         groups.len() + 1,
         available,
-        |index| pill(index).width(layout, window).min(available),
+        |index| measure_pill(&pill(index)).min(available),
     );
     let mut left = -viewport.clipped;
     let mut pills = Vec::new();
     for index in viewport.first..=groups.len() {
         let pill = pill(index);
-        let content_width = pill.width(layout, window);
+        let content_width = measure_pill(&pill);
         let width = content_width.min(available);
         let enter = |rect| {
             wave.enter(
@@ -303,6 +316,8 @@ fn groups(
             break;
         }
     }
+    viewport.widths = widths.into_inner();
+    viewport.measured_scale = layout.scale;
     row.children(pills)
 }
 

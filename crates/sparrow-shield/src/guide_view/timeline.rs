@@ -40,7 +40,7 @@ struct TimelineFrame {
     now: DateTime<Utc>,
 }
 
-pub(super) fn rail(
+pub(crate) fn rail(
     layout: Layout,
     screen: &GuideScreen,
     viewport: &mut RailViewport,
@@ -58,7 +58,7 @@ fn channel_bounds() -> [f32; 4] {
     ]
 }
 
-pub(super) fn render(
+pub(crate) fn render(
     layout: Layout,
     screen: &GuideScreen,
     minute: super::MinuteFrame<'_>,
