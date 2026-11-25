@@ -1,6 +1,6 @@
 //! Persistent downscaled BGRA frames. Call on a bounded blocking worker.
 use std::{
-    fs::{self, File, FileTimes},
+    fs::{self, File},
     io::{self, Read, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
@@ -48,7 +48,6 @@ impl DiskCache {
             let file = File::open(&path)?;
             let modified = file.metadata()?.modified()?;
             let icon = read_frame(&file)?;
-            let _ = file.set_times(FileTimes::new().set_accessed(SystemTime::now()));
             Ok(CachedIcon {
                 icon,
                 stale: modified.elapsed().unwrap_or_default() >= MAX_AGE,
@@ -57,7 +56,10 @@ impl DiskCache {
         match result {
             Ok(hit) => Some(hit),
             Err(e) => {
-                if io::Error::kind(&e) != io::ErrorKind::NotFound {
+                if matches!(
+                    io::Error::kind(&e),
+                    io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
+                ) {
                     let _ = fs::remove_file(path);
                 }
                 None
@@ -65,7 +67,8 @@ impl DiskCache {
         }
     }
 
-    pub fn store(&self, location: &str, icon: &DecodedChannelIcon) -> io::Result<()> {
+    /// Returns true when the caller should schedule a cache sweep.
+    pub fn store(&self, location: &str, icon: &DecodedChannelIcon) -> io::Result<bool> {
         fs::create_dir_all(&self.directory)?;
         let mut tmp = tempfile::NamedTempFile::new_in(&self.directory)?;
         let mut gzip = GzEncoder::new(tmp.as_file_mut(), Compression::fast());
@@ -76,23 +79,27 @@ impl DiskCache {
         gzip.write_all(icon.bgra.as_raw())?;
         gzip.finish()?;
         tmp.persist(self.path(location))?;
-        if self
+        Ok(self
             .writes
             .fetch_add(1, Ordering::Relaxed)
-            .is_multiple_of(32)
-        {
-            self.trim(MAX_BYTES)?;
-        }
-        Ok(())
+            .is_multiple_of(32))
     }
 
-    fn trim(&self, budget: u64) -> io::Result<()> {
+    pub fn trim(&self) -> io::Result<()> {
+        self.trim_to(MAX_BYTES)
+    }
+
+    fn trim_to(&self, budget: u64) -> io::Result<()> {
         let mut entries = Vec::new();
         let mut size = 0;
         for entry in fs::read_dir(&self.directory)?.flatten() {
+            // A concurrent store may still be writing its temporary file.
+            if entry.file_name().as_encoded_bytes().starts_with(b".") {
+                continue;
+            }
             if let Ok(meta) = entry.metadata() {
                 entries.push((
-                    meta.accessed().unwrap_or(SystemTime::UNIX_EPOCH),
+                    meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
                     entry.path(),
                     meta.len(),
                 ));
@@ -116,7 +123,10 @@ fn read_frame(file: &File) -> io::Result<DecodedChannelIcon> {
     // Include the original geometry used for Guide layout. Reading to EOF
     // verifies the gzip checksum, with a hard bound on the expanded frame.
     let invalid = || io::Error::from(io::ErrorKind::InvalidData);
-    if file.metadata()?.len() > 300 * 1024 {
+    const FRAME_BYTES: u64 = (MAX_OUTPUT_EDGE as u64).pow(2) * 4 + 4 * size_of::<u32>() as u64;
+    // Allow 1% for DEFLATE block overhead plus the gzip header and trailer.
+    const MAX_GZIP_BYTES: u64 = FRAME_BYTES + FRAME_BYTES.div_ceil(100) + 18;
+    if file.metadata()?.len() > MAX_GZIP_BYTES {
         return Err(invalid());
     }
     let mut gzip = GzDecoder::new(file);
@@ -188,18 +198,19 @@ mod tests {
     }
 
     #[test]
-    fn trimming_preserves_recently_read_frames() {
+    fn trimming_preserves_the_last_fetched_frame() {
         let root = tempfile::tempdir().unwrap();
         let disk = DiskCache::new(root.path());
-        for location in ["a", "b", "c"] {
+        for location in ["b", "c"] {
             disk.store(location, &icon()).unwrap();
             File::open(disk.path(location))
                 .unwrap()
-                .set_times(FileTimes::new().set_accessed(SystemTime::UNIX_EPOCH))
+                .set_modified(SystemTime::UNIX_EPOCH)
                 .unwrap();
         }
-        assert!(disk.load("a").is_some());
-        disk.trim(fs::metadata(disk.path("a")).unwrap().len())
+        disk.store("a", &icon()).unwrap();
+        assert!(disk.load("b").is_some());
+        disk.trim_to(fs::metadata(disk.path("a")).unwrap().len())
             .unwrap();
         assert!(disk.load("a").is_some());
         assert!(disk.load("b").is_none());

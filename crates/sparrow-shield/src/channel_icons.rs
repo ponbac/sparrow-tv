@@ -389,12 +389,17 @@ impl IconWorker {
         let decode = spawn_blocking(move || {
             // Cancellation stops the async task immediately. A started decode
             // keeps both permits until it finishes and releases its buffers.
-            let (_request, _decoder) = (request, decoder);
+            let permits = (request, decoder);
             let decoded = encoded.decode().ok()?;
-            if let Some(disk) = DISK.get() {
-                let _ = disk.store(&location, &decoded);
+            let sweep = DISK
+                .get()
+                .filter(|disk| disk.store(&location, &decoded).unwrap_or(false));
+            let image = IconImage::new(decoded);
+            drop(permits);
+            if let Some(disk) = sweep {
+                spawn_blocking(move || disk.trim());
             }
-            IconImage::new(decoded)
+            image
         });
         let _cancel = AbortOnDrop(decode.abort_handle());
         decode.await.ok().flatten()

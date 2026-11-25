@@ -15,7 +15,7 @@ const CACHE_BYTES: usize = 16 * 1024 * 1024;
 // Leave room for the largest decoded icon on both CPU and GPU per desired location.
 const MAX_LOCATION_BYTES: usize = CACHE_BYTES / MAX_DESIRED - (256 * 256 * 8);
 const NEGATIVE_TTL: Duration = Duration::from_secs(30);
-const NAVIGATION_QUIET: Duration = Duration::from_millis(300);
+const NAVIGATION_QUIET: Duration = Duration::from_millis(140);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct RequestId(u64);
@@ -203,6 +203,7 @@ impl<V> IconCache<V> {
     }
 
     /// Display a stale frame while its refresh still owns the request slot.
+    /// Scrolling can cancel the refresh. The session keeps the stale icon and the next launch retries.
     pub fn publish_stale(
         &mut self,
         id: RequestId,
