@@ -160,33 +160,29 @@ impl ChannelCatalog {
         number: u32,
         direction: ChannelDirection,
         excluded_groups: &HashSet<String>,
-        wrap: bool,
     ) -> Option<ChannelFamily> {
         let anchor = self.flat.channel_index_by_number(number)?;
         let current = self.flat.channel_family_range(anchor);
-        let channels = self.flat.channels_hot();
-        let before = 0..current.start;
-        let after = current.end..channels.len();
-        let ranges = match direction {
-            ChannelDirection::Next => [after, before],
-            ChannelDirection::Previous => [before, after],
+        let mut index = match direction {
+            ChannelDirection::Previous => current.start.checked_sub(1)?,
+            ChannelDirection::Next => current.end,
         };
-        for mut range in ranges.into_iter().take(if wrap { 2 } else { 1 }) {
-            while !range.is_empty() {
-                let index = match direction {
-                    ChannelDirection::Next => range.start,
-                    ChannelDirection::Previous => range.end - 1,
-                };
-                let group_index = channels[index].group_index.get() as usize;
-                if !excluded_groups.contains(self.flat.group_name(group_index)) {
-                    return Some(self.project_channel_family(index));
-                }
-                let group = &self.flat.groups()[group_index];
-                match direction {
-                    ChannelDirection::Next => range.start = group.channel_end.get() as usize,
-                    ChannelDirection::Previous => range.end = group.channel_start.get() as usize,
-                }
+        let channels = self.flat.channels_hot();
+        while let Some(channel) = channels.get(index) {
+            let group_index = channel.group_index.get() as usize;
+            if !excluded_groups.contains(self.flat.group_name(group_index)) {
+                return Some(self.project_channel_family(index));
             }
+
+            // Group records cover contiguous runs, so an excluded group costs
+            // one lookup regardless of how many Channels it contains.
+            let group = &self.flat.groups()[group_index];
+            index = match direction {
+                ChannelDirection::Previous => {
+                    (group.channel_start.get() as usize).checked_sub(1)?
+                }
+                ChannelDirection::Next => group.channel_end.get() as usize,
+            };
         }
         None
     }

@@ -150,9 +150,9 @@ impl GuideSurface {
                 && last.is_none_or(|last| now.duration_since(last).as_millis() >= 240)
                 && !self.playback.zap_running
             {
-                self.playback.overlay(self.now.to_utc(), true, |overlay| {
-                    super::ZapRoll::new(overlay, direction, now)
-                })
+                self.playback
+                    .shown_subject()
+                    .map(|subject| subject.start_roll(self.now.to_utc(), direction))
             } else {
                 None
             };
@@ -185,7 +185,7 @@ impl GuideSurface {
         let Some(query) = catalog::playback_query(move |core| {
             let number = core.channel_number(generation, &channel_id).ok()??;
             let family = core
-                .wrapping_adjacent_channel_family(generation, number, direction, &excluded)
+                .adjacent_channel_family(generation, number, direction, &excluded)
                 .ok()??;
             let channel = preferred(&family, &preferences)?;
             Some(tune_target(&family, channel))
