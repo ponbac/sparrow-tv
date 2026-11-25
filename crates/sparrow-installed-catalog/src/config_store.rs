@@ -43,6 +43,28 @@ impl StoredSourceConfiguration {
     }
 }
 
+/// The saved locations, handed to a native editor so the viewer can correct
+/// them in place. Like [`StoredSourceConfiguration`], it implements neither
+/// `Debug` nor `Display`.
+pub struct SavedSourceLocations(StoredSourceConfiguration);
+
+impl SavedSourceLocations {
+    pub(crate) const fn new(stored: StoredSourceConfiguration) -> Self {
+        Self(stored)
+    }
+
+    /// Whether an EPG Source was saved. Saved locations are trimmed and
+    /// validated, so the M3U Source location is never empty.
+    pub const fn has_epg(&self) -> bool {
+        self.0.epg_location.is_some()
+    }
+
+    /// The M3U Source location and the optional EPG Source location.
+    pub fn into_locations(self) -> (String, Option<String>) {
+        (self.0.m3u_location, self.0.epg_location)
+    }
+}
+
 pub(crate) struct SourceConfigurationStore {
     root: PathBuf,
 }

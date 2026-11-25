@@ -65,8 +65,13 @@ final class TvTextEditor {
         retireRequest(latestRequest.get());
     }
 
+    /** Whether a request has outlived a stop or close that retired it. */
+    boolean retired(long requestedGeneration) {
+        return requestedGeneration <= retiredRequest.get();
+    }
+
     int rejectionEvent(long requestedGeneration, boolean started) {
-        return !started || requestedGeneration <= retiredRequest.get() ? CANCELED : REJECTED;
+        return !started || retired(requestedGeneration) ? CANCELED : REJECTED;
     }
 
     boolean open(long nextGeneration, int mode, int x, int y, int width, int height,

@@ -16,6 +16,7 @@ use sparrow_tv_guide::{
     now_focus::{Direction, NowFocus},
     preview::{DescriptionPage, PreviewProgramme},
     search::{SearchDebounce, SearchView},
+    setup::{Setup, SetupControl, SetupGate, SetupStep},
     timeline_focus::TimelineFocus,
 };
 use tokio::task::AbortHandle;
@@ -29,6 +30,7 @@ use crate::{
 
 mod playback_ui;
 mod search_ui;
+mod setup_ui;
 mod source_flow;
 use playback_ui::PlaybackUi;
 use source_flow::SourceFlow;
@@ -60,6 +62,8 @@ pub(super) struct WorkflowDiagnostics {
     pub(super) groups_open: bool,
     pub(super) sources_open: bool,
     pub(super) editor_open: bool,
+    pub(super) setup: &'static str,
+    pub(super) setup_focus: &'static str,
 }
 
 pub(super) static WORKFLOW_DIAGNOSTICS: Mutex<WorkflowDiagnostics> =
@@ -71,6 +75,8 @@ pub(super) static WORKFLOW_DIAGNOSTICS: Mutex<WorkflowDiagnostics> =
         groups_open: false,
         sources_open: false,
         editor_open: false,
+        setup: "None",
+        setup_focus: "None",
     });
 
 pub(super) static GUIDE_DIAGNOSTICS: Mutex<GuideDiagnostics> = Mutex::new(GuideDiagnostics {
@@ -103,6 +109,8 @@ pub(super) struct GuideSurface {
     search_dwell: Option<Task<()>>,
     source: Option<SourceFlow>,
     source_sequence: u64,
+    setup: Option<Setup>,
+    setup_gate: SetupGate,
     now: DateTime<FixedOffset>,
     description: Option<SharedString>,
     description_programme: Option<PreviewProgramme>,
@@ -245,6 +253,8 @@ impl GuideSurface {
             search_dwell: None,
             source: None,
             source_sequence: 0,
+            setup: None,
+            setup_gate: SetupGate::default(),
             now,
             description: None,
             description_programme: None,
@@ -290,7 +300,7 @@ impl GuideSurface {
             self.feedback_timeout = None;
             self.retire_query_editor();
             self.icons.hide();
-            self.source_visibility_changed();
+            self.source_visibility_changed(cx);
         }
 
         if phase == catalog::Phase::StartupFailed {
@@ -337,6 +347,7 @@ impl GuideSurface {
             }
             self.status_revision = Some(revision);
             self.screen.catalog_status(status);
+            self.setup_catalog(status, cx);
             self.icons.set_generation(self.screen.generation());
             self.refresh_playback_subject(cx);
             let timer = self.search.set_generation(self.screen.generation());
@@ -412,6 +423,20 @@ impl GuideSurface {
             activity::Event::Source { session, update } => self.source_event(session, update, cx),
             activity::Event::Back if self.activation.is_none() => activity::finish(self.host),
             _ if self.activation.is_none() => {}
+            activity::Event::Back if self.setup.is_some() => {
+                // Android can pass Back on before it mounts a requested editor,
+                // or before it hands over a submitted draft. Acting on it then
+                // would strand the draft.
+                if !self.setup_settling() {
+                    self.setup_back(cx);
+                }
+            }
+            // Setup owns the remote: media, channel and held keys stop here.
+            activity::Event::Key { code, repeat } if self.setup.is_some() => {
+                if let Some(key) = remote_key(code, repeat) {
+                    self.press(key, window, cx);
+                }
+            }
             activity::Event::PlaybackDiagnosticsCopied { attempt, copied } => {
                 self.playback_diagnostics_copied(attempt, copied, cx);
             }
@@ -433,24 +458,16 @@ impl GuideSurface {
                 if self.media_key(code, repeat, cx) {
                     return;
                 }
-                let key = match code {
-                    19 => ScreenKey::Arrow(Direction::Up),
-                    20 => ScreenKey::Arrow(Direction::Down),
-                    21 => ScreenKey::Arrow(Direction::Left),
-                    22 => ScreenKey::Arrow(Direction::Right),
-                    23 | 66 if repeat == 0 => ScreenKey::Activate,
-                    23 | 66
-                        if self.source.is_none()
-                            && self.screen.group_chooser().is_none()
-                            && self.search.state().view() == SearchView::Closed
-                            && !self.playback.fullscreen() =>
-                    {
-                        self.guide_tune(true, cx);
-                        return;
-                    }
-                    _ => return,
-                };
-                self.press(key, window, cx);
+                if let Some(key) = remote_key(code, repeat) {
+                    self.press(key, window, cx);
+                } else if matches!(code, 23 | 66)
+                    && self.source.is_none()
+                    && self.screen.group_chooser().is_none()
+                    && self.search.state().view() == SearchView::Closed
+                    && !self.playback.fullscreen()
+                {
+                    self.guide_tune(true, cx);
+                }
             }
             activity::Event::Edited { generation, edit } => {
                 let Some((current, target)) = self.active_editor else {
@@ -491,6 +508,10 @@ impl GuideSurface {
             return;
         }
         self.icons.note_navigation();
+        if self.setup.is_some() {
+            self.setup_key(key, window, cx);
+            return;
+        }
         if self.source.is_some() {
             self.source_key(key, window, cx);
             return;
@@ -650,6 +671,7 @@ impl GuideSurface {
             // newly queued requests so their pager tickets remain valid on resume.
             return;
         };
+        self.setup_roster();
         self.dispatch_reads(cx);
         let next_ticket = self.screen.prefetch_ticket();
         if next_ticket != self.group_ticket {
@@ -839,6 +861,41 @@ async fn read_description(
     None
 }
 
+/// D-pad arrows, and a fresh Center or Enter press. A held Center is not one.
+const fn remote_key(code: i32, repeat: i32) -> Option<ScreenKey> {
+    Some(match code {
+        19 => ScreenKey::Arrow(Direction::Up),
+        20 => ScreenKey::Arrow(Direction::Down),
+        21 => ScreenKey::Arrow(Direction::Left),
+        22 => ScreenKey::Arrow(Direction::Right),
+        23 | 66 if repeat == 0 => ScreenKey::Activate,
+        _ => return None,
+    })
+}
+
+const fn step_name(step: SetupStep) -> &'static str {
+    match step {
+        SetupStep::Channels => "Channels",
+        SetupStep::Guide => "Guide",
+        SetupStep::Loading => "Loading",
+        SetupStep::Failed(_) => "Failed",
+        SetupStep::Found => "Found",
+    }
+}
+
+const fn control_name(control: SetupControl) -> &'static str {
+    match control {
+        SetupControl::Field => "Field",
+        SetupControl::Clear => "Clear",
+        SetupControl::Next => "Next",
+        SetupControl::Skip => "Skip",
+        SetupControl::Load => "Load",
+        SetupControl::TryAgain => "TryAgain",
+        SetupControl::ChangeSources => "ChangeSources",
+        SetupControl::OpenGuide => "OpenGuide",
+    }
+}
+
 fn publish_diagnostics(screen: &GuideScreen, focused_dock: Option<u32>) {
     let chooser_focus = screen.group_chooser().map(|chooser| match chooser.focus() {
         GroupChooserFocus::Close => ("GroupClose", None),
@@ -949,14 +1006,26 @@ impl Render for GuideSurface {
             programme_results: self.search.state().programmes().len(),
             hidden_groups: self.screen.exclusions().len(),
             groups_open: self.screen.group_chooser().is_some(),
-            sources_open: self.source.is_some(),
+            sources_open: self.sources_sheet_open(),
             editor_open: self.active_editor.is_some() || self.source_editor_open(),
+            setup: self
+                .setup
+                .as_ref()
+                .map_or("None", |setup| step_name(setup.step())),
+            setup_focus: self
+                .setup
+                .as_ref()
+                .map_or("None", |setup| control_name(setup.focus())),
         };
         let root = div()
             .id("sparrow-guide")
             .size_full()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key));
+        if let Some(setup) = self.render_setup(window) {
+            self.icons.hide();
+            return root.child(setup);
+        }
         let player = self.playback.render(window, self.now.to_utc());
         if self.playback.fullscreen() {
             self.icons.hide();

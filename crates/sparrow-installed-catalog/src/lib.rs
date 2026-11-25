@@ -18,7 +18,7 @@ use sparrow_snapshot_store::{AtomicFileSnapshotStore, InstanceLock, InstanceLock
 use sparrow_source_http::HttpSourceAccess;
 use tokio::{runtime::Handle, sync::Mutex};
 
-pub use config_store::{ConfigurationStoreError, ensure_private_directory};
+pub use config_store::{ConfigurationStoreError, SavedSourceLocations, ensure_private_directory};
 pub use guide_preferences::{GuidePreferenceChange, GuidePreferenceError, GuidePreferences};
 
 use config_store::{SourceConfigurationStore, StoredSourceConfiguration};
@@ -140,6 +140,25 @@ impl InstalledCatalog {
             })
             .await
             .map_err(|_| GuidePreferenceError::Unavailable)?
+    }
+
+    /// Reads the saved locations on the catalog's blocking pool, so a native
+    /// editor can start from them. Waits for any configuration change in flight.
+    pub async fn saved_source_locations(
+        self: &Arc<Self>,
+    ) -> Result<Option<SavedSourceLocations>, ConfigurationStoreError> {
+        let mutation = Arc::clone(&self.configuration_mutation).lock_owned().await;
+        let catalog = Arc::clone(self);
+        self.runtime
+            .spawn_blocking(move || {
+                let _mutation = mutation;
+                catalog
+                    .configuration_store
+                    .load()
+                    .map(|stored| stored.map(SavedSourceLocations::new))
+            })
+            .await
+            .map_err(|_| ConfigurationStoreError::Unavailable)?
     }
 
     /// Runs on Tokio. Once admitted, the save and core replacement finish even if the caller stops waiting.

@@ -72,3 +72,41 @@ pub async fn open(m3u: String, epg: Option<String>) -> Fixture {
         _directory: directory,
     }
 }
+
+/// A catalog opened on an empty device, before any Source Configuration.
+#[allow(dead_code, reason = "only the Setup tests open an empty device")]
+pub async fn open_unconfigured() -> Fixture {
+    let directory = tempfile::tempdir().unwrap();
+    let catalog = InstalledCatalog::prepare(directory.path())
+        .unwrap()
+        .finish_open()
+        .await
+        .unwrap();
+    Fixture {
+        catalog,
+        _directory: directory,
+    }
+}
+
+/// A catalog whose first M3U Source load fails because nothing listens there.
+#[allow(dead_code, reason = "only the Setup tests need a failed first load")]
+pub async fn open_unreachable() -> Fixture {
+    let origin = {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        format!("http://{}", listener.local_addr().unwrap())
+    };
+    let fixture = open_unconfigured().await;
+    let change = SourceConfigurationUpdate::parse(format!("{origin}/catalog.m3u"), None).unwrap();
+    let status = timeout(
+        Duration::from_secs(10),
+        fixture.catalog.replace_configuration(change),
+    )
+    .await
+    .expect("unreachable Source Configuration finishes")
+    .unwrap();
+    assert!(
+        status.generation().is_none(),
+        "nothing loads from a closed port"
+    );
+    fixture
+}

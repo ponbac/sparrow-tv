@@ -471,7 +471,7 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeSnaps
     let workflows = *guide_surface::WORKFLOW_DIAGNOSTICS.lock().unwrap();
     let (playback, playback_channel, fullscreen, decoded_frames) = playback::diagnostics();
     let snapshot = format!(
-        "sparrow-shield-v3 phase={:?} generation_changes={} active={} refreshing={} https={:?} seed={:?} renderer={:?} graphics_failed={} software={:?} initial_window_ms={:?} gpui_windows={} windows_opened={} catalog_subscriptions={} mode={:?} focus={} channel={:?} group_index={:?} chip_index={:?} programme_index={:?} pan_minutes={:?} first_row={} scroll_offset_units={} loaded_families={} page_status={:?} search={:?} channel_results={} programme_results={} hidden_groups={} groups_open={} sources_open={} editor_open={} playback={} playback_channel={:?} fullscreen={} decoded_frames={}",
+        "sparrow-shield-v3 phase={:?} generation_changes={} active={} refreshing={} https={:?} seed={:?} renderer={:?} graphics_failed={} software={:?} initial_window_ms={:?} gpui_windows={} windows_opened={} catalog_subscriptions={} mode={:?} focus={} channel={:?} group_index={:?} chip_index={:?} programme_index={:?} pan_minutes={:?} first_row={} scroll_offset_units={} loaded_families={} page_status={:?} search={:?} channel_results={} programme_results={} hidden_groups={} groups_open={} sources_open={} editor_open={} setup={} setup_focus={} playback={} playback_channel={:?} fullscreen={} decoded_frames={}",
         catalog.phase,
         catalog.generation_changes,
         catalog.active,
@@ -503,6 +503,8 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeSnaps
         workflows.groups_open,
         workflows.sources_open,
         workflows.editor_open,
+        workflows.setup,
+        workflows.setup_focus,
         playback,
         playback_channel,
         fullscreen,

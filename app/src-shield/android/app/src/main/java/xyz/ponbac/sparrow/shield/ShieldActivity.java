@@ -216,8 +216,13 @@ public final class ShieldActivity extends Activity implements SurfaceHolder.Call
         }
     }
 
-    public void beginSourceDraft(long id, long session) {
-        postForHost(id, () -> sourceDraft.begin(session, started));
+    public void beginSourceDraft(long id, long session, String m3u, String epg) {
+        postForHost(id, () -> sourceDraft.begin(session, started, m3u, epg));
+    }
+
+    public void clearSourceField(long id, long session, long editorGeneration, int field) {
+        postEditorRequest(id, editorGeneration, () -> sourceDraft.clear(
+                session, editorGeneration, field, started));
     }
 
     public void openSourceField(long id, long session, long editorGeneration, int field,

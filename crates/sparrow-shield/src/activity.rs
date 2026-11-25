@@ -5,6 +5,8 @@ use std::{
     sync::{Arc, LazyLock, Mutex, OnceLock},
 };
 
+use sparrow_installed_catalog::SavedSourceLocations;
+
 use jni::{
     Env, JavaVM, jni_sig, jni_str,
     objects::{Global, JObject, JString, JValue},
@@ -147,18 +149,60 @@ pub(super) fn close_text_editor(id: u64, generation: u64) {
     });
 }
 
-pub(super) fn source_session(id: u64, session: u64, open: bool) -> bool {
+/// Opens a Source Configuration draft, prefilled with saved locations when given.
+/// The locations pass straight to the Activity's draft and are not retained.
+pub(super) fn begin_source_draft(
+    id: u64,
+    session: u64,
+    seed: Option<SavedSourceLocations>,
+) -> bool {
     call(id, |env, activity| {
-        let method = if open {
-            jni_str!("beginSourceDraft")
-        } else {
-            jni_str!("closeSourceDraft")
-        };
+        let (m3u, epg) = seed.map_or((None, None), |seed| {
+            let (m3u, epg) = seed.into_locations();
+            (Some(m3u), epg)
+        });
+        let m3u = m3u.map(|text| JString::from_str(env, &text)).transpose()?;
+        let epg = epg.map(|text| JString::from_str(env, &text)).transpose()?;
+        let null = JObject::null();
         env.call_method(
             activity,
-            method,
+            jni_str!("beginSourceDraft"),
+            jni_sig!("(JJLjava/lang/String;Ljava/lang/String;)V"),
+            &[
+                JValue::Long(id as i64),
+                JValue::Long(session as i64),
+                JValue::Object(m3u.as_ref().map_or(&null, |text| text.as_ref())),
+                JValue::Object(epg.as_ref().map_or(&null, |text| text.as_ref())),
+            ],
+        )?;
+        Ok(())
+    })
+}
+
+pub(super) fn close_source_draft(id: u64, session: u64) {
+    call(id, |env, activity| {
+        env.call_method(
+            activity,
+            jni_str!("closeSourceDraft"),
             jni_sig!("(JJ)V"),
             &[JValue::Long(id as i64), JValue::Long(session as i64)],
+        )?;
+        Ok(())
+    });
+}
+
+pub(super) fn clear_source_field(id: u64, session: u64, generation: u64, field: i32) -> bool {
+    call(id, |env, activity| {
+        env.call_method(
+            activity,
+            jni_str!("clearSourceField"),
+            jni_sig!("(JJJI)V"),
+            &[
+                JValue::Long(id as i64),
+                JValue::Long(session as i64),
+                JValue::Long(generation as i64),
+                JValue::Int(field),
+            ],
         )?;
         Ok(())
     })

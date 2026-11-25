@@ -6,9 +6,15 @@ use sparrow_core::{
     SourceState, StoreError,
 };
 
-use sparrow_tv_guide::{guide_screen::ScreenKey, now_focus::Direction};
+use sparrow_tv_guide::{
+    guide_screen::ScreenKey,
+    now_focus::Direction,
+    setup::{CatalogProgress, DraftView, SetupField, SetupMessage},
+};
 
 use super::GuideSurface;
+use sparrow_installed_catalog::SavedSourceLocations;
+
 use crate::{
     activity::{self, SourceEvent},
     catalog::{self, SourceSaveFailure},
@@ -16,14 +22,41 @@ use crate::{
 };
 
 const SOURCE_OPEN_FAILED: &str = "Couldn’t open Source Configuration.";
+const EDITOR_COMMITTED: i32 = 1;
+const EDITOR_REJECTED: i32 = 3;
+/// `SourceDraft.CLEARED`: the Activity emptied a field on request.
+const FIELD_CLEARED: i32 = 4;
+
+/// Where the draft is shown. Both use one Activity draft session.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum Presentation {
+    Sheet,
+    Setup,
+}
+
+/// Setup prefills its draft from the saved Source Configuration.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Seed {
+    Off,
+    /// The saved locations are being read for this session.
+    Reading,
+    /// The Activity was handed the saved locations; presence applies on Begun.
+    Sent {
+        has_m3u: bool,
+        has_epg: bool,
+    },
+}
 
 pub(super) struct SourceFlow {
     session: u64,
+    presentation: Presentation,
+    seed: Seed,
     focus: SourceFocus,
     draft_ready: bool,
     has_m3u: bool,
     has_epg: bool,
-    editor: Option<(u64, i32)>,
+    /// An edit or a clear the Activity has yet to report on.
+    request: Option<FieldRequest>,
     next_attempt: u64,
     pending: Option<SourceSave>,
     refreshing: bool,
@@ -33,9 +66,26 @@ pub(super) struct SourceFlow {
     feedback: Option<&'static str>,
 }
 
+/// A field operation waiting for the Activity's field event.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum FieldRequest {
+    Edit(u64, SetupField),
+    Clear(u64, SetupField),
+}
+
+impl FieldRequest {
+    fn matches(self, generation: u64, field: SetupField) -> bool {
+        match self {
+            Self::Edit(pending, requested) | Self::Clear(pending, requested) => {
+                pending == generation && requested == field
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum SourceSave {
-    Request(u64),
+    Request { attempt: u64, include_epg: bool },
     Admitted(u64),
 }
 
@@ -58,39 +108,125 @@ impl DiagnosticCopy {
     }
 }
 
+const fn field_index(field: SetupField) -> i32 {
+    match field {
+        SetupField::M3u => 0,
+        SetupField::Epg => 1,
+    }
+}
+
+const fn setup_field(index: i32) -> Option<SetupField> {
+    match index {
+        0 => Some(SetupField::M3u),
+        1 => Some(SetupField::Epg),
+        _ => None,
+    }
+}
+
 impl GuideSurface {
     pub(super) fn source_editor_open(&self) -> bool {
         self.source
             .as_ref()
-            .is_some_and(|source| source.editor.is_some())
+            .is_some_and(|source| matches!(source.request, Some(FieldRequest::Edit(..))))
     }
 
-    pub(super) fn source_visibility_changed(&mut self) {
+    /// An edit or clear is in flight. Back may reach the host before the
+    /// Activity mounts its editor, and must not close the draft then.
+    pub(super) fn source_request_pending(&self) -> bool {
+        self.source
+            .as_ref()
+            .is_some_and(|source| source.request.is_some())
+    }
+
+    /// Setup's draft is missing or the Activity refused to open it.
+    pub(super) fn setup_draft_missing(&self) -> bool {
+        self.source.as_ref().is_none_or(|source| {
+            source.presentation != Presentation::Setup
+                || (!source.draft_ready
+                    && source.seed != Seed::Reading
+                    && source.feedback == Some(SOURCE_OPEN_FAILED))
+        })
+    }
+
+    pub(super) fn sources_sheet_open(&self) -> bool {
+        self.source
+            .as_ref()
+            .is_some_and(|source| source.presentation == Presentation::Sheet)
+    }
+
+    /// The Setup draft as the Setup state machine sees it.
+    pub(super) fn setup_draft(&self) -> DraftView {
+        self.source
+            .as_ref()
+            .filter(|source| source.presentation == Presentation::Setup)
+            .map_or(
+                DraftView {
+                    busy: true,
+                    ..DraftView::default()
+                },
+                |source| DraftView {
+                    has_m3u: source.has_m3u,
+                    has_epg: source.has_epg,
+                    busy: !source.draft_ready
+                        || source.request.is_some()
+                        || source.pending.is_some(),
+                },
+            )
+    }
+
+    pub(super) fn setup_saving(&self) -> bool {
+        self.source.as_ref().is_some_and(|source| {
+            source.presentation == Presentation::Setup
+                && matches!(source.pending, Some(SourceSave::Request { .. }))
+        })
+    }
+
+    pub(super) fn source_visibility_changed(&mut self, cx: &mut Context<Self>) {
         let renew = self.source.as_ref().and_then(|source| {
             (self.activation.is_some() && !source.draft_ready && source.pending.is_none())
-                .then_some(source.feedback)
+                .then_some((source.feedback, source.presentation))
         });
-        if let Some(feedback) = renew {
-            self.begin_source_draft(feedback);
+        if let Some((feedback, presentation)) = renew {
+            self.begin_source_draft(feedback, presentation, cx);
         }
     }
 
     pub(super) fn open_sources(&mut self, cx: &mut Context<Self>) {
-        self.begin_source_draft(None);
+        self.begin_source_draft(None, Presentation::Sheet, cx);
         cx.notify();
     }
 
-    fn begin_source_draft(&mut self, feedback: Option<&'static str>) {
+    /// Reserves a new draft session. Setup reads the saved locations first and
+    /// opens the Activity draft with them, so a correction starts prefilled.
+    pub(super) fn begin_source_draft(
+        &mut self,
+        feedback: Option<&'static str>,
+        presentation: Presentation,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(FieldRequest::Edit(generation, _)) =
+            self.source.take().and_then(|previous| previous.request)
+        {
+            activity::close_text_editor(self.host, generation);
+        }
         self.source_sequence += 1;
         let session = self.source_sequence;
-        let requested = activity::source_session(self.host, session, true);
+        let (requested, seed) = match presentation {
+            Presentation::Sheet => (
+                activity::begin_source_draft(self.host, session, None),
+                Seed::Off,
+            ),
+            Presentation::Setup => (self.read_source_seed(session, cx), Seed::Reading),
+        };
         self.source = Some(SourceFlow {
             session,
+            presentation,
+            seed,
             focus: SourceFocus::Close,
             draft_ready: false,
             has_m3u: false,
             has_epg: false,
-            editor: None,
+            request: None,
             next_attempt: 0,
             pending: None,
             refreshing: false,
@@ -103,27 +239,78 @@ impl GuideSurface {
                 Some(SOURCE_OPEN_FAILED)
             },
         });
+        if !requested && let Some(setup) = self.setup.as_mut() {
+            setup.show_message(SetupMessage::DraftUnavailable);
+        }
+    }
+
+    fn read_source_seed(&mut self, session: u64, cx: &mut Context<Self>) -> bool {
+        let Some(read) = catalog::saved_source_locations() else {
+            return false;
+        };
+        cx.spawn(async move |view, cx| {
+            let saved = read.await.unwrap_or(Err(()));
+            let _ = view.update(cx, |view, cx| view.source_seed_read(session, saved, cx));
+        })
+        .detach();
+        true
+    }
+
+    fn source_seed_read(
+        &mut self,
+        session: u64,
+        saved: Result<Option<SavedSourceLocations>, ()>,
+        cx: &mut Context<Self>,
+    ) {
+        // A renewal or a newer draft supersedes this read.
+        let Some(source) = self
+            .source
+            .as_mut()
+            .filter(|source| source.session == session && source.seed == Seed::Reading)
+        else {
+            return;
+        };
+        let seed = saved.unwrap_or_else(|()| {
+            if let Some(setup) = self.setup.as_mut() {
+                setup.show_message(SetupMessage::SavedAddressesUnavailable);
+            }
+            None
+        });
+        source.seed = Seed::Sent {
+            has_m3u: seed.is_some(),
+            has_epg: seed.as_ref().is_some_and(SavedSourceLocations::has_epg),
+        };
+        if !activity::begin_source_draft(self.host, session, seed) {
+            source.feedback = Some(SOURCE_OPEN_FAILED);
+            if let Some(setup) = self.setup.as_mut() {
+                setup.show_message(SetupMessage::DraftUnavailable);
+            }
+        }
+        cx.notify();
     }
 
     pub(super) fn close_sources(&mut self, cx: &mut Context<Self>) {
         if let Some(source) = self.source.take() {
-            if let Some((generation, _)) = source.editor {
+            if let Some(FieldRequest::Edit(generation, _)) = source.request {
                 activity::close_text_editor(self.host, generation);
             }
-            activity::source_session(self.host, source.session, false);
+            activity::close_source_draft(self.host, source.session);
             self.sync_view(cx);
         }
     }
 
     pub(super) fn sources_sheet(&self, window: &Window) -> Option<Div> {
-        let source = self.source.as_ref()?;
+        let source = self
+            .source
+            .as_ref()
+            .filter(|source| source.presentation == Presentation::Sheet)?;
         let status = catalog::status();
         Some(guide_view::sources_sheet(
             window.viewport_size(),
             SourcePanel {
                 status: status.as_deref(),
                 focus: source.focus,
-                editing: source.editor.is_some(),
+                editing: matches!(source.request, Some(FieldRequest::Edit(..))),
                 has_m3u: source.has_m3u,
                 has_epg: source.has_epg,
                 saving: source.pending.is_some(),
@@ -134,6 +321,76 @@ impl GuideSurface {
                 feedback: source.feedback,
             },
         ))
+    }
+
+    /// Opens the Activity editor on one field. `false` means it could not open.
+    pub(super) fn edit_source_field(&mut self, field: SetupField, rect: Option<[i32; 4]>) -> bool {
+        let Some(source) = self
+            .source
+            .as_mut()
+            .filter(|source| source.draft_ready && source.pending.is_none())
+        else {
+            return false;
+        };
+        self.editor_generation += 1;
+        let generation = self.editor_generation;
+        source.request = Some(FieldRequest::Edit(generation, field));
+        let opened = rect.is_some_and(|rect| {
+            activity::edit_source(
+                self.host,
+                source.session,
+                generation,
+                field_index(field),
+                rect,
+            )
+        });
+        if !opened {
+            source.request = None;
+        }
+        opened
+    }
+
+    /// Asks the Activity to empty one field. Its field event confirms it.
+    pub(super) fn clear_source_field(&mut self, field: SetupField) -> bool {
+        let Some(source) = self
+            .source
+            .as_mut()
+            .filter(|source| source.draft_ready && source.pending.is_none())
+        else {
+            return false;
+        };
+        self.editor_generation += 1;
+        let generation = self.editor_generation;
+        source.request = Some(FieldRequest::Clear(generation, field));
+        let requested =
+            activity::clear_source_field(self.host, source.session, generation, field_index(field));
+        if !requested {
+            source.request = None;
+        }
+        requested
+    }
+
+    /// Asks the Activity to hand over the draft for saving.
+    pub(super) fn submit_source_draft(&mut self, include_epg: bool) -> bool {
+        let Some(source) = self
+            .source
+            .as_mut()
+            .filter(|source| source.draft_ready && source.pending.is_none())
+        else {
+            return false;
+        };
+        source.next_attempt += 1;
+        let attempt = source.next_attempt;
+        if activity::submit_sources(self.host, source.session, attempt) {
+            source.pending = Some(SourceSave::Request {
+                attempt,
+                include_epg,
+            });
+            source.feedback = None;
+            true
+        } else {
+            false
+        }
     }
 
     pub(super) fn source_key(&mut self, key: ScreenKey, window: &Window, cx: &mut Context<Self>) {
@@ -221,34 +478,28 @@ impl GuideSurface {
                         };
                     }
                 }
-                SourceFocus::M3u | SourceFocus::Epg
+                focus @ (SourceFocus::M3u | SourceFocus::Epg)
                     if source.draft_ready && source.pending.is_none() =>
                 {
-                    self.editor_generation += 1;
-                    let generation = self.editor_generation;
-                    let field = i32::from(source.focus == SourceFocus::Epg);
-                    source.editor = Some((generation, field));
+                    let field = if focus == SourceFocus::Epg {
+                        SetupField::Epg
+                    } else {
+                        SetupField::M3u
+                    };
                     let rect = guide_view::source_editor_rect(
                         window.viewport_size(),
                         window.scale_factor(),
                     );
-                    source.feedback = if rect.is_some_and(|rect| {
-                        activity::edit_source(self.host, source.session, generation, field, rect)
-                    }) {
-                        None
-                    } else {
-                        source.editor = None;
-                        Some("Couldn’t open the keyboard.")
-                    };
+                    let opened = self.edit_source_field(field, rect);
+                    if let Some(source) = self.source.as_mut() {
+                        source.feedback = (!opened).then_some("Couldn’t open the keyboard.");
+                    }
                 }
                 SourceFocus::Save if source.draft_ready && source.pending.is_none() => {
                     if source.has_m3u {
-                        source.next_attempt += 1;
-                        let attempt = source.next_attempt;
-                        if activity::submit_sources(self.host, source.session, attempt) {
-                            source.pending = Some(SourceSave::Request(attempt));
-                            source.feedback = None;
-                        } else {
+                        if !self.submit_source_draft(true)
+                            && let Some(source) = self.source.as_mut()
+                        {
                             source.feedback = Some("Couldn’t save sources.");
                         }
                     } else {
@@ -266,7 +517,7 @@ impl GuideSurface {
         let Some(source) = self.source.as_mut().filter(|source| !source.refreshing) else {
             return;
         };
-        let Some(refresh) = catalog::refresh_sources() else {
+        let Some(refresh) = catalog::refresh_now() else {
             source.feedback = Some("Couldn’t refresh sources.");
             return;
         };
@@ -274,7 +525,9 @@ impl GuideSurface {
         source.feedback = None;
         let session = source.session;
         cx.spawn(async move |view, cx| {
-            let feedback = refresh.await.unwrap_or("Couldn’t refresh sources.");
+            let feedback = refresh.await.map_or("Couldn’t refresh sources.", |report| {
+                catalog::refresh_summary(&report)
+            });
             let _ = view.update(cx, |view, cx| {
                 if let Some(source) = view
                     .source
@@ -303,6 +556,10 @@ impl GuideSurface {
         else {
             return;
         };
+        let setup = self
+            .setup
+            .as_mut()
+            .filter(|_| source.presentation == Presentation::Setup);
         match update {
             SourceEvent::Copied { attempt, copied }
                 if source.copy == DiagnosticCopy::Pending(attempt) =>
@@ -318,8 +575,20 @@ impl GuideSurface {
                 status: 0,
             } => {
                 source.draft_ready = true;
+                if let Seed::Sent { has_m3u, has_epg } = source.seed {
+                    source.has_m3u = has_m3u;
+                    source.has_epg = has_epg;
+                }
                 if source.feedback == Some(SOURCE_OPEN_FAILED) {
                     source.feedback = None;
+                }
+                let draft = DraftView {
+                    has_m3u: source.has_m3u,
+                    has_epg: source.has_epg,
+                    busy: false,
+                };
+                if let Some(setup) = setup {
+                    setup.draft_opened(draft);
                 }
             }
             SourceEvent::DraftStatus {
@@ -327,35 +596,79 @@ impl GuideSurface {
                 status: 1,
             } => {
                 source.feedback = Some(SOURCE_OPEN_FAILED);
+                if let Some(setup) = setup {
+                    setup.show_message(SetupMessage::DraftUnavailable);
+                }
             }
             SourceEvent::DraftStatus { attempt, status: 2 }
-                if source.pending == Some(SourceSave::Request(attempt)) =>
+                if matches!(
+                    source.pending,
+                    Some(SourceSave::Request { attempt: pending, .. }) if pending == attempt
+                ) =>
             {
                 source.pending = None;
                 source.feedback = Some("Couldn’t save sources.");
+                if let Some(setup) = setup {
+                    setup.show_message(SetupMessage::SaveFailed);
+                }
             }
             SourceEvent::Field {
                 generation,
                 field,
                 event,
                 has_text,
-            } if source.editor == Some((generation, field)) => {
-                source.editor = None;
-                if event == 1 {
-                    if field == 0 {
-                        source.has_m3u = has_text;
-                    } else {
-                        source.has_epg = has_text;
+            } => {
+                let Some((request, field)) = source.request.zip(setup_field(field)) else {
+                    return;
+                };
+                if !request.matches(generation, field) {
+                    return;
+                }
+                source.request = None;
+                if matches!(event, EDITOR_COMMITTED | FIELD_CLEARED) {
+                    match field {
+                        SetupField::M3u => source.has_m3u = has_text,
+                        SetupField::Epg => source.has_epg = has_text,
                     }
                     source.feedback = None;
-                } else if event == 3 {
+                } else if event == EDITOR_REJECTED {
                     source.feedback = Some("Couldn’t open the keyboard.");
                 }
+                let draft = DraftView {
+                    has_m3u: source.has_m3u,
+                    has_epg: source.has_epg,
+                    busy: false,
+                };
+                if let Some(setup) = setup {
+                    match (event, request) {
+                        (EDITOR_COMMITTED, _) => setup.field_committed(field, draft),
+                        (FIELD_CLEARED, _) => setup.field_cleared(field),
+                        (EDITOR_REJECTED, FieldRequest::Edit(..)) => {
+                            setup.show_message(SetupMessage::KeyboardUnavailable);
+                        }
+                        (EDITOR_REJECTED, FieldRequest::Clear(..)) => {
+                            setup.show_message(SetupMessage::DraftUnavailable);
+                        }
+                        _ => setup.reconcile_focus(draft),
+                    }
+                }
             }
-            SourceEvent::Submit { attempt, m3u, epg }
-                if source.pending == Some(SourceSave::Request(attempt)) =>
-            {
+            SourceEvent::Submit { attempt, m3u, epg } => {
+                let Some(SourceSave::Request {
+                    attempt: pending,
+                    include_epg,
+                }) = source.pending
+                else {
+                    return;
+                };
+                if pending != attempt {
+                    return;
+                }
                 source.pending = Some(SourceSave::Admitted(attempt));
+                if let Some(setup) = setup {
+                    setup.save_started();
+                }
+                let epg = epg.filter(|_| include_epg);
                 if let Some(save) = catalog::save_sources(m3u, epg) {
                     cx.spawn(async move |view, cx| {
                         let result = save.await.unwrap_or(Err(SourceSaveFailure::Unavailable));
@@ -377,7 +690,7 @@ impl GuideSurface {
         &mut self,
         session: u64,
         attempt: u64,
-        result: Result<(), SourceSaveFailure>,
+        result: Result<CatalogStatus, SourceSaveFailure>,
         cx: &mut Context<Self>,
     ) {
         if result.is_ok() {
@@ -391,9 +704,30 @@ impl GuideSurface {
         };
         activity::finish_source_save(self.host, session, attempt, result.is_ok());
         source.pending = None;
+        if source.presentation == Presentation::Setup {
+            if result.is_ok() {
+                // The Activity closed the draft. Setup continues without one.
+                self.source = None;
+            }
+            if let Some(setup) = self.setup.as_mut() {
+                match &result {
+                    Ok(status) => setup
+                        .save_succeeded(CatalogProgress::from_status(status), status.generation()),
+                    Err(failure) => setup.save_failed(match failure {
+                        SourceSaveFailure::M3u => SetupMessage::InvalidM3u,
+                        SourceSaveFailure::Epg => SetupMessage::InvalidEpg,
+                        SourceSaveFailure::Unavailable => SetupMessage::SaveFailed,
+                    }),
+                }
+            }
+            self.sync_view(cx);
+            return;
+        }
         match result {
-            Ok(()) if self.activation.is_some() => self.begin_source_draft(Some("Sources saved.")),
-            Ok(()) => {
+            Ok(_) if self.activation.is_some() => {
+                self.begin_source_draft(Some("Sources saved."), Presentation::Sheet, cx);
+            }
+            Ok(_) => {
                 source.draft_ready = false;
                 source.feedback = Some("Sources saved.");
             }

@@ -242,3 +242,40 @@ async fn serve_fixture_response(listener: TcpListener, status: &str, body: &str)
     );
     connection.write_all(response.as_bytes()).await.unwrap();
 }
+
+#[tokio::test]
+async fn saved_source_locations_return_what_the_viewer_last_saved() {
+    let directory = tempdir().unwrap();
+    let catalog = InstalledCatalog::prepare(directory.path())
+        .unwrap()
+        .finish_open()
+        .await
+        .unwrap();
+    assert!(catalog.saved_source_locations().await.unwrap().is_none());
+
+    let origin = {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        format!("http://{}", listener.local_addr().unwrap())
+    };
+    let change = SourceConfigurationUpdate::parse(
+        format!(" {origin}/catalog.m3u "),
+        Some(format!("{origin}/guide.xml")),
+    )
+    .unwrap();
+    timeout(
+        Duration::from_secs(10),
+        catalog.replace_configuration(change),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    let (m3u, epg) = catalog
+        .saved_source_locations()
+        .await
+        .unwrap()
+        .expect("the configuration was saved")
+        .into_locations();
+    assert_eq!(m3u, format!("{origin}/catalog.m3u"));
+    assert_eq!(epg, Some(format!("{origin}/guide.xml")));
+}
