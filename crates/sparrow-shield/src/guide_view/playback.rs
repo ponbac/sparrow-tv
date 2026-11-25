@@ -1,6 +1,8 @@
 //! Shield picture placement and the controls that fit around the native surface.
 
+mod fullscreen;
 mod signal_mark;
+pub(crate) use fullscreen::{FullscreenFrame, FullscreenMotion};
 mod tune;
 mod zap;
 pub(crate) use zap::ZapRoll;
@@ -72,7 +74,7 @@ pub(crate) enum PlaybackStage {
 }
 
 impl PlaybackOverlay<'_> {
-    fn show_field(&self) -> bool {
+    pub(crate) fn show_field(&self) -> bool {
         self.tuning_field() || self.still.is_some() || self.stage == PlaybackStage::Reconnecting
     }
 }
@@ -127,7 +129,7 @@ pub(crate) struct PlaybackNext<'a> {
 }
 
 impl PlaybackOverlay<'_> {
-    fn tuning_field(&self) -> bool {
+    pub(crate) fn tuning_field(&self) -> bool {
         match self.first_picture {
             Some(first) => {
                 self.stage == PlaybackStage::Playing
@@ -199,6 +201,8 @@ pub(crate) fn picker(
         .left(layout.px(42.))
         .right(layout.px(42.))
         .bottom(layout.px(8.))
+        .font_family(SAIRA)
+        .text_color(rgb(TEXT))
         .h(layout.px(72.))
         .px(layout.px(8.))
         .flex()
@@ -276,7 +280,6 @@ pub(crate) fn docked_playback(viewport: Size<Pixels>, playback: &PlaybackOverlay
     let focused = playback.focus == Some(PlaybackControl::EnterFullscreen);
     let primary = if focused { ON_ICE } else { TEXT };
     let secondary = if focused { ON_ICE_DIM } else { DIM };
-    let bounds = [left, top, width, height];
     let caption = layout
         .rect(left, top + height, width, DOCK_CAPTION)
         .rounded_b(layout.px(8.))
@@ -342,14 +345,6 @@ pub(crate) fn docked_playback(viewport: Size<Pixels>, playback: &PlaybackOverlay
             }),
             |root, since| root.child(tune::lock(layout, [left, top, width, height], since)),
         )
-        .when(playback.show_field(), |root| {
-            root.child(tune::field(
-                layout,
-                bounds,
-                tune::FieldPlacement::Docked,
-                playback,
-            ))
-        })
         .child(
             layout
                 .rect(left, top - 5., width, 5.)
@@ -364,60 +359,74 @@ pub(crate) fn docked_playback(viewport: Size<Pixels>, playback: &PlaybackOverlay
         .child(caption)
 }
 
-pub(crate) fn fullscreen_playback(
+pub(crate) fn tuning_field(
+    viewport: Size<Pixels>,
+    playback: &PlaybackOverlay<'_>,
+    frame: FullscreenFrame,
+) -> Div {
+    let layout = Layout::new(viewport);
+    let dock = picture_reference(layout, PlaybackLayout::Docked);
+    let full = picture_reference(
+        layout,
+        PlaybackLayout::Fullscreen {
+            controls_visible: false,
+        },
+    );
+    let band = picture_reference(
+        layout,
+        PlaybackLayout::Fullscreen {
+            controls_visible: true,
+        },
+    );
+    let bounds = std::array::from_fn(|i| {
+        dock[i] * (1. - frame.fullscreen)
+            + full[i] * (frame.fullscreen - frame.band)
+            + band[i] * frame.band
+    });
+    tune::field(
+        layout,
+        bounds,
+        if frame.fullscreen >= 1. {
+            tune::FieldPlacement::Fullscreen
+        } else {
+            tune::FieldPlacement::Docked
+        },
+        playback,
+    )
+}
+
+pub(crate) fn fullscreen_band(
     viewport: Size<Pixels>,
     playback: &PlaybackOverlay<'_>,
     actions: &[PlaybackControl],
+    visible: f32,
 ) -> Div {
     let layout = Layout::new(viewport);
-    let root = div()
-        .size_full()
-        .relative()
-        .overflow_hidden()
-        .font_family(SAIRA)
-        .text_color(rgb(TEXT))
-        .bg(rgb(INK))
-        .when(playback.show_field(), |root| {
-            root.child(tune::field(
-                layout,
-                picture_reference(
-                    layout,
-                    PlaybackLayout::Fullscreen {
-                        controls_visible: !actions.is_empty(),
-                    },
-                ),
-                tune::FieldPlacement::Fullscreen,
-                playback,
-            ))
-        });
-    if actions.is_empty() {
-        return root;
-    }
     let [_, _, _, picture_height] = picture_reference(
         layout,
         PlaybackLayout::Fullscreen {
             controls_visible: true,
         },
     );
-    root.child(
-        layout
-            .rect(
-                0.,
-                picture_height,
-                CANVAS_WIDTH,
-                layout.height - picture_height,
-            )
-            .bg(rgb(PANEL))
-            .border_t(layout.px(2.))
-            .border_color(rgba(FAINT))
-            .child(fullscreen_head(layout, playback))
-            .child(fullscreen_controls(
-                layout,
-                layout.height - picture_height,
-                playback,
-                actions,
-            )),
-    )
+    layout
+        .rect(
+            0.,
+            layout.height - (layout.height - picture_height) * visible,
+            CANVAS_WIDTH,
+            layout.height - picture_height,
+        )
+        .font_family(SAIRA)
+        .text_color(rgb(TEXT))
+        .bg(rgb(PANEL))
+        .border_t(layout.px(2.))
+        .border_color(rgba(FAINT))
+        .child(fullscreen_head(layout, playback))
+        .child(fullscreen_controls(
+            layout,
+            layout.height - picture_height,
+            playback,
+            actions,
+        ))
 }
 
 fn fullscreen_head(layout: Layout, playback: &PlaybackOverlay<'_>) -> Div {

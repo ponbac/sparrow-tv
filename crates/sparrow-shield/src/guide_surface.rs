@@ -1030,21 +1030,24 @@ impl Render for GuideSurface {
             self.icons.hide();
             return root.child(setup);
         }
+        let frame = self.playback.fullscreen_frame(window, cx.reduce_motion());
         let player = self
             .playback
-            .render(window, self.now.to_utc(), cx.reduce_motion());
-        if self.playback.fullscreen() {
+            .render(window, self.now.to_utc(), cx.reduce_motion(), frame);
+        let root = root.relative().overflow_hidden().bg(rgb(guide_view::INK));
+        if frame.fullscreen >= 1. {
             self.icons.hide();
             return root.children(player);
         }
         let search = self.render_search(window);
-        root.child(guide_view::render(
+        let docked = self.playback.docked() || self.playback.fullscreen();
+        let guide = guide_view::render(
             &self.screen,
             guide_view::GuideBand {
                 now: self.now,
                 preview: self.presented_preview.as_ref(),
                 description: self.description.as_ref(),
-                docked: self.playback.docked(),
+                docked,
                 inline_search: self.search.state().view() == SearchView::Inline,
                 focus: if self.playback.dock_focused() {
                     ScreenFocus::None
@@ -1055,31 +1058,33 @@ impl Render for GuideSurface {
             (&mut self.now_lane, &mut self.timeline_rail),
             window,
             &self.icons,
-        ))
-        .children(player)
-        .children(guide_view::group_sheet(
-            window.viewport_size(),
-            &self.screen,
-            &mut self.group_viewport,
-            self.active_editor
-                .is_some_and(|(_, target)| target == TextTarget::GroupFilter),
-        ))
-        .children(self.sources_sheet(window))
-        .children(search)
-        .when_some(self.feedback, |surface, message| {
-            surface.child(
-                div()
-                    .absolute()
-                    .right(px(20.))
-                    .top(px(78.))
-                    .rounded(px(8.))
-                    .bg(rgb(0x22324f))
-                    .text_color(rgb(0xeef3f8))
-                    .px(px(12.))
-                    .py(px(8.))
-                    .child(message),
-            )
-        })
+        );
+        let drift = window.viewport_size().width * (36. / 1920. * frame.fullscreen);
+        root.child(guide.top(drift).opacity(1. - frame.fullscreen))
+            .children(player)
+            .children(guide_view::group_sheet(
+                window.viewport_size(),
+                &self.screen,
+                &mut self.group_viewport,
+                self.active_editor
+                    .is_some_and(|(_, target)| target == TextTarget::GroupFilter),
+            ))
+            .children(self.sources_sheet(window))
+            .children(search)
+            .when_some(self.feedback, |surface, message| {
+                surface.child(
+                    div()
+                        .absolute()
+                        .right(px(20.))
+                        .top(px(78.))
+                        .rounded(px(8.))
+                        .bg(rgb(0x22324f))
+                        .text_color(rgb(0xeef3f8))
+                        .px(px(12.))
+                        .py(px(8.))
+                        .child(message),
+                )
+            })
     }
 }
 

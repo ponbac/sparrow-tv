@@ -30,9 +30,10 @@ use crate::{
     guide_view::{
         self,
         playback::{
-            PlaybackControl as Control, PlaybackLayout, PlaybackNext, PlaybackOverlay,
-            PlaybackProgramme, PlaybackStage, ZapRoll, docked_playback, fullscreen_actions,
-            fullscreen_playback, picker, picture_rect,
+            FullscreenFrame, FullscreenMotion, PlaybackControl as Control, PlaybackLayout,
+            PlaybackNext, PlaybackOverlay, PlaybackProgramme, PlaybackStage, ZapRoll,
+            docked_playback, fullscreen_actions, fullscreen_band, picker, picture_rect,
+            tuning_field,
         },
     },
     playback,
@@ -43,6 +44,7 @@ mod tuning;
 
 #[derive(Default)]
 pub(super) struct PlaybackUi {
+    motion: FullscreenMotion,
     still: Option<std::sync::Arc<gpui::RenderImage>>,
     hold_started: Option<Instant>,
     release_still: Option<gpui::Task<()>>,
@@ -341,11 +343,25 @@ impl PlaybackUi {
         }))
     }
 
+    pub(super) fn fullscreen_frame(
+        &mut self,
+        window: &mut Window,
+        reduced: bool,
+    ) -> FullscreenFrame {
+        self.motion.frame(
+            self.fullscreen(),
+            self.controls_visible,
+            reduced || self.state.selected.is_none(),
+            window,
+        )
+    }
+
     pub(super) fn render(
         &self,
         window: &mut Window,
         now: DateTime<Utc>,
         reduce_motion: bool,
+        frame: FullscreenFrame,
     ) -> Option<Div> {
         self.overlay(now, reduce_motion, |overlay| {
             if overlay.still.is_some()
@@ -357,17 +373,31 @@ impl PlaybackUi {
             if overlay.roll.is_some() {
                 window.request_animation_frame();
             }
-            if self.fullscreen() {
-                let actions = if self.controls_visible {
-                    self.fullscreen_actions()
-                } else {
-                    Vec::new()
-                };
-                let player = fullscreen_playback(window.viewport_size(), overlay, &actions);
-                player.children(self.menu_panel(window))
-            } else {
-                docked_playback(window.viewport_size(), overlay)
-            }
+            let viewport = window.viewport_size();
+            gpui::div()
+                .absolute()
+                .inset_0()
+                .when(frame.fullscreen < 1., |root| {
+                    root.child(docked_playback(viewport, overlay).opacity(1. - frame.fullscreen))
+                })
+                .when(overlay.show_field(), |root| {
+                    root.child(tuning_field(viewport, overlay, frame))
+                })
+                .when(frame.band > 0., |root| {
+                    root.child(
+                        gpui::div()
+                            .id("fullscreen-band")
+                            .absolute()
+                            .inset_0()
+                            .child(fullscreen_band(
+                                viewport,
+                                overlay,
+                                &self.fullscreen_actions(),
+                                frame.band,
+                            )),
+                    )
+                })
+                .children(self.menu_panel(window))
         })
     }
 
@@ -508,8 +538,8 @@ impl GuideSurface {
         }
         if entering {
             self.playback.dock_focus = false;
-            self.playback.controls_visible = false;
-            self.playback.control = None;
+            self.playback.controls_visible = true;
+            self.playback.control = self.playback.fullscreen_actions().first().copied();
         }
         if !fullscreen {
             self.playback.menu = None;
@@ -550,7 +580,7 @@ impl GuideSurface {
         let closed_menu = self
             .playback
             .reconcile_fullscreen_controls(subject_changed || audio_replaced);
-        if fullscreen && (began_playing || zap_settled || closed_menu) {
+        if fullscreen && (entering || began_playing || zap_settled || closed_menu) {
             self.arm_controls(cx);
         } else {
             cx.notify();
@@ -674,7 +704,7 @@ impl GuideSurface {
         };
         let fullscreen = bounds(
             PlaybackLayout::Fullscreen {
-                controls_visible: self.playback.controls_visible,
+                controls_visible: !self.playback.fullscreen() || self.playback.controls_visible,
             },
             true,
         );
