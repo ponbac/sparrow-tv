@@ -7,6 +7,7 @@ pub(super) mod arrival;
 mod band;
 mod board;
 mod channel_icon;
+mod glow;
 mod group_slide;
 mod groups;
 mod lane;

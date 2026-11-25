@@ -1113,6 +1113,9 @@ impl Owner {
                     sample = visible
                         && self.snapshot.phase == Phase::Playing
                         && status.phase() == AndroidPlaybackPhase::Playing
+                        && session.first_frame.is_some_and(|first| {
+                            now.saturating_duration_since(first) >= Duration::from_millis(1500)
+                        })
                         && session.sampled_at.is_none_or(|last| {
                             now.saturating_duration_since(last) >= Duration::from_secs(2)
                         });

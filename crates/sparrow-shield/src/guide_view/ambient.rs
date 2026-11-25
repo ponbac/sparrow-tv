@@ -1,7 +1,7 @@
 //! Light cast by the picture, painted below Guide text and playback controls.
 use std::time::{Duration, Instant};
 
-use gpui::{Animation, AnimationExt, BoxShadow, Div, Hsla, Rgba, div, prelude::*, rgb};
+use gpui::{Animation, AnimationExt, Div, Hsla, Rgba, div, prelude::*, rgb};
 
 use super::{
     Layout,
@@ -14,6 +14,7 @@ const FADE: Duration = Duration::from_millis(450);
 
 #[derive(Default)]
 pub(crate) struct Ambient {
+    sprites: [super::glow::Glow; 3],
     from: Palette,
     to: Palette,
     changed: Option<Instant>,
@@ -105,7 +106,9 @@ impl Ambient {
             [x + w - 260., y - 130., 300., h + 260.],
             dock[2],
         ];
+        let sprites = self.sprites.clone();
         let paint = move |colors: Palette| {
+            let sprites = sprites.clone();
             colors
                 .into_iter()
                 .enumerate()
@@ -116,11 +119,12 @@ impl Ambient {
                     }
                     let [x, y, w, h] =
                         std::array::from_fn(|j| dock[i][j] + (full[i][j] - dock[i][j]) * t);
-                    let mut ink = Hsla::from(color);
-                    ink.a = alpha;
-                    let shadow = BoxShadow::new(layout.px(0.), layout.px(0.), ink)
-                        .blur_radius(layout.px(210. - 20. * t));
-                    Some(layout.rect(x, y, w, h).rounded_full().shadow(vec![shadow]))
+                    Some(sprites[i].paint(
+                        layout,
+                        [x, y, w, h],
+                        210. - 20. * t,
+                        Rgba { a: alpha, ..color },
+                    ))
                 })
         };
         let root = div().absolute().inset_0().overflow_hidden();
