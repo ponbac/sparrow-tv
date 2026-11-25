@@ -69,6 +69,17 @@ pub(crate) enum PlaybackStage {
     Failed,
 }
 
+impl PlaybackOverlay<'_> {
+    fn show_field(&self) -> bool {
+        self.tuning_field()
+            || self.still.is_some()
+            || matches!(
+                self.stage,
+                PlaybackStage::Tuning | PlaybackStage::Reconnecting
+            )
+    }
+}
+
 impl PlaybackStage {
     fn label(self) -> &'static str {
         match self {
@@ -91,6 +102,8 @@ pub(crate) struct PlaybackOverlay<'a> {
     pub(crate) first_picture: Option<Instant>,
     pub(crate) signal_landing: Option<(Instant, PlaybackStage)>,
     pub(crate) reduce_motion: bool,
+    pub(crate) still: Option<&'a std::sync::Arc<gpui::RenderImage>>,
+    pub(crate) attempt: u8,
     pub(crate) audio_track: Option<&'a str>,
     pub(crate) quality: Option<&'a str>,
     pub(crate) copy_label: &'static str,
@@ -329,12 +342,12 @@ pub(crate) fn docked_playback(viewport: Size<Pixels>, playback: &PlaybackOverlay
             }),
             |root, since| root.child(tune::lock(layout, [left, top, width, height], since)),
         )
-        .when(playback.tuning_field(), |root| {
+        .when(playback.show_field(), |root| {
             root.child(tune::field(
                 layout,
                 bounds,
                 tune::FieldPlacement::Docked,
-                playback.reduce_motion,
+                playback,
             ))
         })
         .child(
@@ -358,7 +371,7 @@ pub(crate) fn fullscreen_playback(
         .font_family(SAIRA)
         .text_color(rgb(TEXT))
         .bg(rgb(INK))
-        .when(playback.tuning_field(), |root| {
+        .when(playback.show_field(), |root| {
             root.child(tune::field(
                 layout,
                 picture_reference(
@@ -368,7 +381,7 @@ pub(crate) fn fullscreen_playback(
                     },
                 ),
                 tune::FieldPlacement::Fullscreen,
-                playback.reduce_motion,
+                playback,
             ))
         });
     if actions.is_empty() {
