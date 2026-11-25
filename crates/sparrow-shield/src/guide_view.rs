@@ -37,7 +37,7 @@ const BAND_BOTTOM: f32 = 444.;
 const LANE_HEIGHT: f32 = BOARD_TOP - BAND_BOTTOM;
 const CARD_GAP: f32 = 11.;
 
-const INK: u32 = 0x0a111e;
+pub(super) const INK: u32 = 0x0a111e;
 const PANEL: u32 = 0x0f1828;
 const CELL: u32 = 0x131d30;
 const CELL_ELAPSED: u32 = 0x1a2842;

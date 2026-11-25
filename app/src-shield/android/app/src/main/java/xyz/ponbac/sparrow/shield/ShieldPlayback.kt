@@ -5,6 +5,7 @@ import android.view.PixelCopy
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import android.animation.ValueAnimator
+import kotlin.math.roundToInt
 import android.app.Activity
 import android.os.Build
 import android.os.Handler
@@ -441,6 +442,8 @@ private class ShieldPlaybackPlacement(
   private var waitingForFrame = false
   private var pendingReveal: (() -> Unit)? = null
   private var placed = false
+  private var destination: NativePlaybackViewport? = null
+  private var resize: ValueAnimator? = null
   private var fade: ValueAnimator? = null
 
   override val showBuffering = PlayerView.SHOW_BUFFERING_NEVER
@@ -448,6 +451,8 @@ private class ShieldPlaybackPlacement(
   fun beginBinding(retainPicture: Boolean) {
     pendingReveal = null
     if (!retainPicture) {
+      resize?.cancel()
+      destination = null
       fade?.cancel()
       waitingForFrame = true
     }
@@ -503,7 +508,8 @@ private class ShieldPlaybackPlacement(
   }
 
   fun hideUntilPlaced() {
-    placed = false
+    resize?.cancel()
+    destination = null
     moveOffscreen()
   }
 
@@ -516,14 +522,42 @@ private class ShieldPlaybackPlacement(
   }
 
   override fun place(parent: ViewGroup, playerView: PlayerView, viewport: NativePlaybackViewport) {
+    val previous = destination
+    destination = viewport
     val x = guide.left + viewport.left
     val y = guide.top + viewport.top
     val current = playerView.layoutParams as FrameLayout.LayoutParams
-    if (current.leftMargin != x || current.topMargin != y ||
-        current.width != viewport.width || current.height != viewport.height) {
-      playerView.layoutParams = FrameLayout.LayoutParams(viewport.width, viewport.height, Gravity.TOP or Gravity.LEFT).apply {
-        leftMargin = x
-        topMargin = y
+
+    if (previous != viewport || resize?.isRunning != true) {
+      resize?.cancel()
+      val left = current.leftMargin
+      val top = current.topMargin
+      val width = current.width
+      val height = current.height
+
+      fun applyGeometry(t: Float) {
+        fun lerp(from: Int, to: Int) = (from + (to - from) * t).roundToInt()
+        current.leftMargin = lerp(left, x)
+        current.topMargin = lerp(top, y)
+        current.width = lerp(width, viewport.width)
+        current.height = lerp(height, viewport.height)
+        current.gravity = Gravity.TOP or Gravity.LEFT
+        playerView.layoutParams = current
+        if (waitingForFrame) moveOffscreen()
+      }
+
+      if (left != x || top != y || width != viewport.width || height != viewport.height) {
+        if (previous != null && playerView.visibility == View.VISIBLE && ValueAnimator.areAnimatorsEnabled()) {
+          // Match FullscreenMotion. One traversal updates all four edges together.
+          resize = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 500
+            interpolator = DecelerateInterpolator(1.5f)
+            addUpdateListener { applyGeometry(it.animatedValue as Float) }
+            start()
+          }
+        } else {
+          applyGeometry(1f)
+        }
       }
     }
     placed = true
@@ -536,12 +570,17 @@ private class ShieldPlaybackPlacement(
 
   override fun unmount(parent: ViewGroup, playerView: PlayerView) {
     pendingReveal = null
+    resize?.cancel()
+    resize = null
+    destination = null
     fade?.cancel()
     if (mountedPlayer === playerView) mountedPlayer = null
     parent.removeView(playerView)
   }
 
   override fun revealContent(parent: ViewGroup, playerView: PlayerView) {
+    resize?.cancel()
+    destination = null
     playerView.visibility = View.INVISIBLE
   }
 }
