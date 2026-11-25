@@ -1,6 +1,5 @@
 import groovy.json.JsonSlurper
 import org.gradle.api.artifacts.dsl.LockMode
-import java.io.File
 import java.util.Properties
 
 plugins {
@@ -16,9 +15,7 @@ val tauriProperties = Properties().apply {
     }
 }
 
-data class RustlsPlatformVerifierProject(val repository: File, val version: String)
-
-fun findRustlsPlatformVerifierProject(): RustlsPlatformVerifierProject {
+val verifierVersion = run {
     val manifest = file("../../../Cargo.toml").canonicalFile
     val metadata = providers.exec {
         workingDir = manifest.parentFile
@@ -37,15 +34,9 @@ fun findRustlsPlatformVerifierProject(): RustlsPlatformVerifierProject {
     val packages = (JsonSlurper().parseText(metadata) as Map<*, *>)["packages"] as List<*>
     val verifier = packages
         .filterIsInstance<Map<*, *>>()
-        .first { it["name"] == "rustls-platform-verifier-android" }
-    val verifierManifest = file(verifier["manifest_path"] as String)
-    return RustlsPlatformVerifierProject(
-        File(verifierManifest.parentFile, "maven"),
-        verifier["version"] as String,
-    )
+        .single { it["name"] == "rustls-platform-verifier-android" }
+    verifier["version"] as String
 }
-
-val rustlsPlatformVerifierProject = findRustlsPlatformVerifierProject()
 
 val releaseSigningValues = mapOf(
     "storeFile" to System.getenv("SPARROW_ANDROID_KEYSTORE_PATH"),
@@ -60,9 +51,14 @@ check(!hasPartialReleaseSigning || hasCompleteReleaseSigning) {
 }
 
 repositories {
-    maven {
-        url = uri(rustlsPlatformVerifierProject.repository)
-        metadataSources { artifact() }
+    exclusiveContent {
+        forRepository {
+            maven {
+                // Pin the archive revision alongside the Cargo-selected artifact version.
+                url = uri("https://raw.githubusercontent.com/rustls/rustls-platform-verifier/1aa691352a5e0c215210dfc9a3c2f2078639dc91/android-release-support/maven/")
+            }
+        }
+        filter { includeModule("org.rustls", "rustls-platform-verifier") }
     }
 }
 
@@ -151,9 +147,7 @@ rust {
 dependencies {
     val media3Version = "1.11.0"
 
-    implementation(
-        "rustls:rustls-platform-verifier:${rustlsPlatformVerifierProject.version}@aar"
-    )
+    implementation("org.rustls:rustls-platform-verifier:$verifierVersion")
     implementation("androidx.media3:media3-exoplayer:$media3Version")
     implementation("androidx.media3:media3-ui:$media3Version")
     // FFmpeg audio decoders for codecs the device has none for. Each release

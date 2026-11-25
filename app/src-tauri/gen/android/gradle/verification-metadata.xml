@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<verification-metadata xmlns="https://schema.gradle.org/dependency-verification">
+    <configuration>
+        <verify-metadata>true</verify-metadata>
+        <verify-signatures>false</verify-signatures>
+        <trusted-artifacts>
+            <trust group="^(?!org\.rustls$).*" regex="true" reason="This verification file covers the verifier's dedicated Maven repository."/>
+        </trusted-artifacts>
+    </configuration>
+    <components>
+        <component group="org.rustls" name="rustls-platform-verifier" version="0.2.0">
+            <artifact name="rustls-platform-verifier-0.2.0.aar">
+                <sha256 value="aa021794230fbc2f0be355999e2cf67398dd563de066a2e17001ffbd0b69101b"/>
+            </artifact>
+            <artifact name="rustls-platform-verifier-0.2.0.pom">
+                <sha256 value="78dcb69a1a20e91e72017de9a67104bba1874a7ecc8e6dcdfb2fe1a85de6b362"/>
+            </artifact>
+        </component>
+    </components>
+</verification-metadata>

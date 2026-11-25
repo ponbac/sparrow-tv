@@ -31,7 +31,7 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "=0.22.4"
-rustls-platform-verifier = "=0.7.0"
+rustls-platform-verifier = "=0.7.1"
 
 [dev-dependencies]
 sparrow-snapshot-store = { path = "../../crates/sparrow-snapshot-store" }
