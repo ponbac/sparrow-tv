@@ -60,7 +60,7 @@ pub(super) struct PlaybackUi {
     last_zap: Option<Instant>,
     roll: Option<ZapRoll>,
     dock_focus: bool,
-    pub(super) controls_visible: bool,
+    controls_visible: bool,
     control: Option<Control>,
     copy_sequence: u64,
     copy: DiagnosticCopy,
@@ -137,6 +137,10 @@ impl PlaybackUi {
         if let Some(image) = self.still.take() {
             cx.drop_image(image, None);
         }
+    }
+
+    pub(super) fn controls_visible(&self) -> bool {
+        self.controls_visible
     }
 
     pub(super) fn fullscreen(&self) -> bool {
@@ -266,10 +270,11 @@ impl PlaybackUi {
 
     fn overlay<R>(
         &self,
-        now: DateTime<Utc>,
+        minute: guide_view::MinuteFrame,
         reduce_motion: bool,
         render: impl FnOnce(&PlaybackOverlay<'_>) -> R,
     ) -> Option<R> {
+        let now = minute.now.to_utc();
         let selected = self.shown()?;
         // Keep the last resolved identity on screen while the zap's Guide query runs.
         let subject =
@@ -294,7 +299,7 @@ impl PlaybackUi {
             starts: starts.as_deref().unwrap_or_default(),
             ends: ends.as_deref().unwrap_or_default(),
             minutes_left: ((slot.ends_at() - now).num_seconds().max(0) + 59) / 60,
-            elapsed: ((now - slot.starts_at()).num_seconds() as f32
+            elapsed: ((minute.meter_time() - slot.starts_at()).as_seconds_f32()
                 / (slot.ends_at() - slot.starts_at()).num_seconds().max(1) as f32)
                 .clamp(0., 1.),
             next: next
@@ -370,7 +375,7 @@ impl PlaybackUi {
         reduce_motion: bool,
         frame: FullscreenFrame,
     ) -> Option<Div> {
-        self.overlay(minute.now.to_utc(), reduce_motion, |overlay| {
+        self.overlay(minute, reduce_motion, |overlay| {
             if overlay.still.is_some()
                 && let Some(handoff) = self.state.still_handoff.clone()
             {

@@ -3,7 +3,7 @@ use gpui::{Div, div, linear_color_stop, linear_gradient, prelude::*, rgb, rgba};
 use sparrow_core::ChannelQuality;
 use sparrow_core::GuideProgramme;
 use sparrow_tv_guide::{
-    GuideFamily, PageStatus, VariantPreferences,
+    GuideFamily, PageStatus,
     guide_screen::{
         GuideScreen, NOW_COLUMNS, NOW_MORE_HEIGHT, NOW_RETAINED_RETRY_HEIGHT,
         NOW_ROW_HEIGHT as CARD_HEIGHT, NOW_ROW_PITCH as CARD_PITCH, NOW_ROW_TOP as BOARD_PAD,
@@ -70,8 +70,8 @@ pub(super) fn render(
         board = board.child(card(
             layout,
             rect,
-            family,
-            screen.variant_preferences(),
+            screen,
+            index,
             focus.filter(|focus| focus.family() == Some(index)),
             minute,
             family_icon(family).and_then(|icon| icons.get(icon)),
@@ -147,23 +147,28 @@ pub(super) fn more_footer(layout: Layout, rect: Div, loading: bool) -> Div {
 fn card(
     layout: Layout,
     rect: Div,
-    family: &GuideFamily,
-    preferences: &VariantPreferences,
+    screen: &GuideScreen,
+    index: usize,
     focus: Option<NowFocus>,
     minute: super::MinuteFrame<'_>,
     icon: Option<&IconImage>,
 ) -> Div {
+    let family = &screen.families()[index];
     let focused = matches!(focus, Some(NowFocus::Channel(_)));
     let focused_chip = match focus {
         Some(NowFocus::Variant { chip, .. }) => Some(chip),
         _ => None,
     };
-    let (preferred, source) = family.preferred_with_schedule(preferences);
+    let (preferred, source) = family.preferred_with_schedule(screen.variant_preferences());
     let programmes = source.programmes();
     let instant = minute.now.to_utc();
     let live = programme_at(programmes, instant);
     let supporting = rgba(if focused { ON_ICE_DIM } else { DIM });
-    let rollover = minute.rollover(source.channel().id());
+    let rollover = minute.rollover(
+        source,
+        live,
+        index.saturating_sub(screen.visible_families(0).start),
+    );
     let caption_height = if live.is_some() || icon.is_some() {
         28.
     } else {
@@ -202,23 +207,32 @@ fn card(
             );
         }
     }
-    if let Some((_, progress, _)) = rollover
-        && progress < 1.
-    {
-        card = card.child(
-            layout
-                .rect(
-                    -112. + (COLUMN_WIDTH + 112.) * progress,
-                    0.,
-                    112.,
-                    CARD_HEIGHT,
-                )
-                .bg(linear_gradient(
-                    90.,
-                    linear_color_stop(rgba(0xffffff00), 0.),
-                    linear_color_stop(rgba(0xffffff22), 1.),
-                )),
-        );
+    if let Some(roll) = &rollover {
+        if roll.outgoing < 1.
+            && let Some(old) = programme_at(roll.prior_programmes, roll.previous)
+        {
+            let width = COLUMN_WIDTH * elapsed_fraction(old, roll.previous) as f32;
+            card = card.child(
+                layout
+                    .rect(0., 0., width, CARD_HEIGHT)
+                    .rounded_l(layout.px(8.))
+                    .bg(rgb(if focused { ICE_ELAPSED } else { CELL_ELAPSED }))
+                    .opacity(1. - roll.outgoing),
+            );
+        }
+        if roll.sweep > 0. && roll.sweep < 1. {
+            let x = -180. + (COLUMN_WIDTH + 180.) * roll.sweep;
+            let peak = if focused { 0xffffff20 } else { 0x9fe0ff18 };
+            for (offset, from, to) in [(0., peak & !0xff, peak), (90., peak, peak & !0xff)] {
+                card = card.child(layout.rect(x + offset, 0., 90., CARD_HEIGHT).bg(
+                    linear_gradient(
+                        90.,
+                        linear_color_stop(rgba(from), 0.),
+                        linear_color_stop(rgba(to), 1.),
+                    ),
+                ));
+            }
+        }
     }
     if caption_height != 0. {
         let caption = layout.text(SAIRA, 18., 28., 400.).text_color(supporting);
@@ -252,16 +266,22 @@ fn card(
                 .items_center()
                 .gap(layout.px(8.))
                 .child(caption.min_w_0())
-                .when_some(rollover, |line, (_, _, opacity)| {
+                .when_some(rollover.as_ref(), |line, roll| {
+                    let ink = if focused {
+                        rgb(0x0b4a66)
+                    } else {
+                        rgba(0x9fe0ffdd)
+                    };
                     line.child(
                         layout
                             .text(SAIRA, 15., 22., 600.)
                             .flex_none()
-                            .px(layout.px(6.))
-                            .rounded(layout.px(4.))
-                            .bg(rgb(if focused { ON_ICE } else { ICE }))
-                            .text_color(rgb(if focused { ICE } else { ON_ICE }))
-                            .opacity(opacity)
+                            .flex()
+                            .items_center()
+                            .gap(layout.px(6.))
+                            .text_color(ink)
+                            .opacity(roll.badge)
+                            .child(div().size(layout.px(7.)).rounded_full().bg(ink))
                             .child("Starting now"),
                     )
                 }),
@@ -276,7 +296,7 @@ fn card(
     )
     .child({
         let height = TITLE_HEIGHT + LINE_GAP + last_height;
-        let block = |at, dy| {
+        let block = |programmes: &[GuideProgramme], at, dy| {
             programme_lines(layout, family, programmes, at, focused)
                 .absolute()
                 .top(layout.px(dy))
@@ -285,10 +305,17 @@ fn card(
             .rect(CONTENT_X, title_top, CONTENT_WIDTH, height)
             .overflow_hidden();
         match rollover {
-            Some((previous, p, _)) if p < 1. => body
-                .child(block(previous, -height * p))
-                .child(block(instant, height * (1. - p))),
-            _ => body.child(block(instant, 0.)),
+            Some(roll) if roll.incoming < 1. => body
+                .when(roll.outgoing < 1., |body| {
+                    body.child(
+                        block(roll.prior_programmes, roll.previous, -28. * roll.outgoing)
+                            .opacity(1. - roll.outgoing),
+                    )
+                })
+                .child(
+                    block(programmes, instant, 28. * (1. - roll.incoming)).opacity(roll.incoming),
+                ),
+            _ => body.child(block(programmes, instant, 0.)),
         }
     })
     .when(quality_count > 0, |card| {

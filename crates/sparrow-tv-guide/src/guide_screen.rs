@@ -622,13 +622,11 @@ impl GuideScreen {
         self.schedule_reads();
     }
 
-    pub fn set_clock(&mut self, now: DateTime<Utc>, offset: FixedOffset) {
-        self.set_window(GuideWindow::at(now, offset, self.extended));
-    }
-
-    fn set_window(&mut self, window: GuideWindow) {
+    /// Advances the Guide clock and reports whether it requested a new window.
+    pub fn set_clock(&mut self, now: DateTime<Utc>, offset: FixedOffset) -> bool {
+        let window = GuideWindow::at(now, offset, self.extended);
         if self.window == window {
-            return;
+            return false;
         }
         let displayed = self.displayed_window();
         self.window = window;
@@ -642,6 +640,7 @@ impl GuideScreen {
         self.reanchor_timeline(displayed);
         self.recover_focus();
         self.schedule_reads();
+        true
     }
 
     pub fn groups_completed(
