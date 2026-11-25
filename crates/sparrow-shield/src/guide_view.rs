@@ -2,6 +2,7 @@
 
 mod backdrop;
 pub(super) use backdrop::BackdropMotion;
+pub(crate) mod ambient;
 pub(super) mod arrival;
 mod band;
 mod board;
@@ -68,14 +69,14 @@ const SAIRA_CLOCK: &str = "Sparrow Guide 100";
 const SAIRA_NUMBER: &str = "Sparrow Guide 110";
 
 #[derive(Clone, Copy)]
-struct Layout {
+pub(super) struct Layout {
     translucent: bool,
     scale: f32,
     height: f32,
 }
 
 impl Layout {
-    fn new(viewport: Size<Pixels>) -> Self {
+    pub(super) fn new(viewport: Size<Pixels>) -> Self {
         let scale = (f32::from(viewport.width) / CANVAS_WIDTH).max(f32::EPSILON);
         Self {
             scale,
@@ -162,7 +163,6 @@ pub(super) fn render(
     lanes: (&mut LaneViewport, &mut RailViewport),
     window: &mut Window,
     icons: &ChannelIcons,
-    backdrop: Div,
 ) -> Div {
     let layout = Layout::for_guide(window.viewport_size(), band.choice);
     let minute = band.minute;
@@ -170,10 +170,8 @@ pub(super) fn render(
         .size_full()
         .relative()
         .overflow_hidden()
-        .bg(gpui::rgb(INK))
         .text_color(layout.guide_text())
         .font_family(SAIRA)
-        .child(backdrop)
         .child(band::render(layout, band, icons, wave));
     match screen.mode() {
         GuideMode::Now => guide

@@ -180,6 +180,27 @@ class ShieldPlayback(
     }
   }
 
+  private var ambientEpoch = 0L
+  private var resumed = false
+
+  fun setAmbientSampling(epoch: Long) { main.post { ambientEpoch = epoch } }
+
+  fun setAmbientResumed(value: Boolean) { resumed = value }
+
+  private fun publishAmbient(bitmap: Bitmap, epoch: Long) {
+    val tiny = Bitmap.createScaledBitmap(bitmap, 4, 3, true)
+    val colors = IntArray(12)
+    tiny.getPixels(colors, 0, 4, 0, 0, 4, 3)
+    if (tiny !== bitmap) tiny.recycle()
+    fun average(vararg positions: Int): Int {
+      fun channel(shift: Int) = positions.sumOf { (colors[it] ushr shift) and 255 } / positions.size
+      return (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+    }
+    nativeAmbient(hostId, epoch, average(0, 1, 4), average(2, 3, 7), average(5, 6, 9, 10))
+  }
+
+  private external fun nativeAmbient(host: Long, epoch: Long, left: Int, right: Int, bottom: Int)
+
   fun capturePlaybackFrame(
     host: Long, generation: Long, request: Long, session: String, stream: String,
   ): Boolean {
@@ -197,6 +218,7 @@ class ShieldPlayback(
         complete(null)
         return@post
       }
+      val epoch = ambientEpoch
       val scale = minOf(1f, 640f / surface.width, 360f / surface.height)
       val bitmap = try {
         Bitmap.createBitmap(
@@ -212,6 +234,10 @@ class ShieldPlayback(
         PixelCopy.request(surface, bitmap, { result ->
           try {
             if (result == PixelCopy.SUCCESS) {
+              if (epoch != 0L && epoch == ambientEpoch && resumed && !destroyed &&
+                  binding?.presentation == presentation && placement.visiblePicture() === surface) {
+                publishAmbient(bitmap, epoch)
+              }
               val colors = IntArray(bitmap.width * bitmap.height)
               bitmap.getPixels(colors, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
               val bgra = ByteBuffer.allocate(colors.size * 4).order(ByteOrder.LITTLE_ENDIAN)
@@ -465,6 +491,10 @@ private class ShieldPlaybackPlacement(
       fade?.cancel()
       waitingForFrame = true
     }
+  }
+
+  fun visiblePicture() = pictureSurface()?.takeIf {
+    placed && !waitingForFrame && it.isShown && it.holder.surface.isValid
   }
 
   fun pictureSurface() = mountedPlayer?.videoSurfaceView as? SurfaceView

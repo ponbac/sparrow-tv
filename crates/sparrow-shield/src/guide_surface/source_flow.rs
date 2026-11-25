@@ -316,6 +316,7 @@ impl GuideSurface {
             SourcePanel {
                 backdrop: self.backdrop(),
                 status: status.as_deref(),
+                ambient: catalog::ambient_light(),
                 focus: source.focus,
                 editing: matches!(source.request, Some(FieldRequest::Edit(..))),
                 has_m3u: source.has_m3u,
@@ -468,6 +469,8 @@ impl GuideSurface {
                     }
                     (SourceFocus::M3u, Direction::Down) => SourceFocus::Epg,
                     (SourceFocus::Epg, Direction::Down) => SourceFocus::Save,
+                    (SourceFocus::Save, Direction::Down) => SourceFocus::Ambient,
+                    (SourceFocus::Ambient, Direction::Up) => SourceFocus::Save,
                     (SourceFocus::Save, Direction::Up) => SourceFocus::Epg,
                     (SourceFocus::Epg, Direction::Up) => SourceFocus::M3u,
                     (SourceFocus::M3u, Direction::Up) if source.diagnostics.is_some() => {
@@ -491,6 +494,23 @@ impl GuideSurface {
             ScreenKey::Activate => match source.focus {
                 SourceFocus::Backdrop => self.step_backdrop(false, cx),
                 SourceFocus::Close => self.close_sources(cx),
+                SourceFocus::Ambient => {
+                    let saved = catalog::toggle_ambient();
+                    cx.spawn(async move |view, cx| {
+                        let success = if let Some(saved) = saved {
+                            saved.await.unwrap_or(false)
+                        } else {
+                            false
+                        };
+                        let _ = view.update(cx, |view, cx| {
+                            if !success {
+                                view.show_feedback(Some("Couldn’t save ambient light."), cx);
+                            }
+                            cx.notify();
+                        });
+                    })
+                    .detach();
+                }
                 SourceFocus::Refresh if configured => self.request_source_refresh(cx),
 
                 SourceFocus::Diagnostics => {

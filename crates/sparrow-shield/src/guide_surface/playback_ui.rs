@@ -45,6 +45,9 @@ mod tuning;
 pub(super) struct PlaybackUi {
     pub(super) picture_bottom: i32,
     motion: FullscreenMotion,
+    pub(super) ambient: guide_view::ambient::Ambient,
+    ambient_sampling: bool,
+    ambient_epoch: u64,
     still: Option<std::sync::Arc<gpui::RenderImage>>,
     hold_started: Option<Instant>,
     release_still: Option<gpui::Task<()>>,
@@ -60,7 +63,7 @@ pub(super) struct PlaybackUi {
     last_zap: Option<Instant>,
     roll: Option<ZapRoll>,
     dock_focus: bool,
-    controls_visible: bool,
+    pub(super) controls_visible: bool,
     control: Option<Control>,
     copy_sequence: u64,
     copy: DiagnosticCopy,
@@ -698,6 +701,40 @@ impl GuideSurface {
                 }
             });
         }));
+    }
+
+    pub(super) fn sync_ambient(&mut self, reduced: bool) {
+        let visible = self.activation.is_some()
+            && self.setup.is_none()
+            && catalog::ambient_light()
+            && self.search.state().view() != SearchView::Desk
+            && (!self.playback.fullscreen() || self.playback.controls_visible);
+        let player = &mut self.playback;
+        let stage = (visible && player.shown().is_some()).then(|| player.stage());
+        let sampling = stage == Some(PlaybackStage::Playing);
+        if sampling != player.ambient_sampling {
+            player.ambient_sampling = sampling;
+            player.ambient_epoch += 1;
+            crate::android_player::set_ambient_sampling(
+                self.host,
+                if sampling { player.ambient_epoch } else { 0 },
+            );
+        }
+        match stage {
+            Some(PlaybackStage::Playing | PlaybackStage::Paused) => {}
+            Some(PlaybackStage::Tuning) => player.ambient.field(Some(0x438eb6), reduced),
+            Some(PlaybackStage::Reconnecting) => player.ambient.field(Some(0x636974), reduced),
+            _ => player.ambient.field(None, reduced),
+        }
+    }
+
+    pub(super) fn ambient_sample(&mut self, epoch: u64, colors: [u32; 3], cx: &mut Context<Self>) {
+        if self.playback.ambient_sampling
+            && epoch == self.playback.ambient_epoch
+            && self.playback.ambient.sample(colors, cx.reduce_motion())
+        {
+            cx.notify();
+        }
     }
 
     pub(super) fn update_playback_viewports(&mut self, window: &Window, frame: FullscreenFrame) {

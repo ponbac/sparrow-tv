@@ -185,6 +185,38 @@ impl Call {
     }
 }
 
+pub(super) fn set_ambient_sampling(host: u64, epoch: u64) {
+    activity::call(host, |env, activity| {
+        let player = playback_host(env, activity)?;
+        env.call_method(
+            &player,
+            jni_str!("setAmbientSampling"),
+            jni_sig!("(J)V"),
+            &[JValue::Long(epoch as i64)],
+        )?;
+        Ok(())
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldPlayback_nativeAmbient(
+    _: EnvUnowned,
+    _: JObject,
+    host: i64,
+    epoch: i64,
+    left: u32,
+    right: u32,
+    bottom: u32,
+) {
+    crate::enqueue_activity(
+        host,
+        activity::Event::Ambient {
+            epoch: epoch as u64,
+            colors: [left, right, bottom],
+        },
+    );
+}
+
 fn playback_host<'local>(
     env: &mut Env<'local>,
     activity: &JObject<'_>,

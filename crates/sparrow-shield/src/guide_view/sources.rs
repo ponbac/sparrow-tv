@@ -43,6 +43,7 @@ pub(in super::super) enum SourceFocus {
     M3u,
     Epg,
     Save,
+    Ambient,
 }
 
 #[derive(Clone, Copy)]
@@ -87,6 +88,7 @@ impl SourcePositions {
             SourceFocus::CopyDiagnostics => (self.copy, BUTTON_HEIGHT),
             SourceFocus::M3u => (self.m3u, FIELD_HEIGHT),
             SourceFocus::Epg => (self.epg, FIELD_HEIGHT),
+            SourceFocus::Ambient => (self.save + BUTTON_HEIGHT + 24., BUTTON_HEIGHT),
             SourceFocus::Save => (self.save, BUTTON_HEIGHT),
         };
         // Keep the label and editor at the top of the content so the TV
@@ -100,6 +102,7 @@ impl SourcePositions {
 
 pub(in super::super) struct SourcePanel<'a> {
     pub(in super::super) backdrop: sparrow_installed_catalog::GuideBackdrop,
+    pub(in super::super) ambient: bool,
     pub(in super::super) status: Option<&'a CatalogStatus>,
     pub(in super::super) focus: SourceFocus,
     pub(in super::super) editing: bool,
@@ -148,7 +151,27 @@ pub(in super::super) fn sources_sheet(size: Size<Pixels>, panel: SourcePanel<'_>
         .map(|status| status.configuration().is_configured());
     let epg_configured = panel.status.map(|status| status.configuration().has_epg());
     let section = layout
-        .rect(0., -scroll, CONTENT_WIDTH, positions.save + BUTTON_HEIGHT)
+        .rect(
+            0.,
+            -scroll,
+            CONTENT_WIDTH,
+            positions.save + 2. * BUTTON_HEIGHT + 24.,
+        )
+        .child(action(
+            layout,
+            layout.rect(
+                0.,
+                positions.save + BUTTON_HEIGHT + 24.,
+                CONTENT_WIDTH,
+                BUTTON_HEIGHT,
+            ),
+            if panel.ambient {
+                "Ambient light · On"
+            } else {
+                "Ambient light · Off"
+            },
+            panel.focus == SourceFocus::Ambient,
+        ))
         .child(
             layout
                 .text(SAIRA_NOTICE, 28., 34., 700.)

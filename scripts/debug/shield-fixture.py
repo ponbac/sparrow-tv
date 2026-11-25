@@ -23,13 +23,18 @@ BASE = "http://127.0.0.1:18108"
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "sparrow/shield-fixture-v1"
 
 
+def media_file(i, ext):
+    stem = "0-scenes" if i == 0 and ext == "mp4" else str(i)
+    return CACHE / f"{stem}.{ext}"
+
+
 def generate_media():
     CACHE.mkdir(parents=True, exist_ok=True)
     for i, (_, name) in enumerate(CHANNELS):
         color = colorsys.hsv_to_rgb((i * 0.618 + 0.08) % 1, 0.8, 0.8)
         rgb = "".join(f"{round(value * 255):02x}" for value in color)
         for ext in ("png", "mp4"):
-            path = CACHE / f"{i}.{ext}"
+            path = media_file(i, ext)
             if path.exists():
                 continue
             temp = path.with_stem(f"{i}-partial")
@@ -40,8 +45,9 @@ def generate_media():
                 args += ["-vf", f"scale=128:128,drawtext=text={initials}:fontsize=54:"
                          "fontcolor=white:x=(w-tw)/2:y=(h-th)/2", "-frames:v", "1"]
             else:
+                scene_filter = "hue=h=120*floor(t/3)," if i == 0 else ""
                 args += ["-f", "lavfi", "-i", f"sine=frequency={220 + i * 16}",
-                         "-vf", f"drawtext=text='{name}':fontcolor=white:fontsize=46:"
+                         "-vf", f"{scene_filter}drawtext=text='{name}':fontcolor=white:fontsize=46:"
                          "x=(w-tw)/2+60*sin(t*PI/4):y=(h-th)/2+40*cos(t*PI/4)",
                          "-t", "8", "-c:v", "libx264", "-threads", "2", "-g", "24",
                          "-pix_fmt", "yuv420p", "-c:a", "aac"]
@@ -101,7 +107,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "video/mp2t")
         self.end_headers()
         with subprocess.Popen(["ffmpeg", "-loglevel", "error", "-stream_loop", "-1", "-re",
-                               "-i", CACHE / f"{i}.mp4", "-c", "copy", "-f", "mpegts", "-"],
+                               "-i", media_file(i, "mp4"), "-c", "copy", "-f", "mpegts", "-"],
                               stdout=subprocess.PIPE) as ffmpeg:
             try:
                 shutil.copyfileobj(ffmpeg.stdout, self.wfile, 4096)
