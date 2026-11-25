@@ -10,6 +10,8 @@ const MAX_DECODER_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_OUTPUT_EDGE: u32 = 256;
 
 thread_local! {
+    // Android Clippy flags the const initializer in the expanded thread_local macro.
+    #[cfg_attr(target_os = "android", allow(clippy::missing_const_for_thread_local))]
     static ICON_DECODE_CAN_UNWIND: Cell<bool> = const { Cell::new(false) };
 }
 
