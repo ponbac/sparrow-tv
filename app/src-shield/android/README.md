@@ -37,6 +37,42 @@ Center on a Channel starts playback. A fresh Center press on the playing Channel
 
 The dump includes Search result counts, the hidden Channel Group count, panel state, Playback Session phase, Channel Number, fullscreen, and decoded frames. Source locations, Search terms and Channel names stay out of the dump.
 
+## Android TV emulator
+
+Install the SDK emulator, platform-tools, and `system-images;android-36;android-tv;x86_64` under `ANDROID_HOME`. The harness uses Java 17, the `x86_64-linux-android` Rust target, Python 3, FFmpeg with libx264 and drawtext, and ImageMagick. From the workspace root, build your worktree's APK and create the shared 1080p TV AVD once.
+
+```sh
+SPARROW_SHIELD_ABI=x86_64 SPARROW_SHIELD_FIXTURE=1 just build-shield-host
+scripts/debug/shield-emulator.py create
+```
+
+Run `scripts/debug/shield-fixture.py` in a separate terminal. One loopback server on port 18108 serves all instances. It caches the synthetic media in `${XDG_CACHE_HOME:-$HOME/.cache}/sparrow/shield-fixture-v1`, loops it during playback, and generates current XMLTV schedules on request.
+
+Choose a free even console port from 5554 through 5584 for each instance. Each headless emulator uses the same read-only AVD with a disposable data layer. Agents can use separate worktrees, build outputs and serials concurrently. The default GPU is `host`; `start --gpu swiftshader` selects software rendering.
+
+```sh
+emu() { scripts/debug/shield-emulator.py --serial emulator-5576 "$@"; }
+emu start
+emu install
+emu reverse
+emu seed
+emu dump
+emu shot guide.png
+emu key CENTER                 # Start docked playback on the focused Channel.
+emu shot docked.png
+emu key CENTER                 # Enter fullscreen.
+emu key BACK
+emu record focus.mp4 5 &
+record_pid=$!
+sleep 1
+emu key --delay 0.5 RIGHT RIGHT DOWN LEFT UP
+wait "$record_pid"
+emu frames focus.mp4 focus-frames 3
+emu stop
+```
+
+`start` waits for boot and `seed` waits for the Channel Catalog and validated EPG Source. Use `dump` to confirm `playback=Playing` and decoded frames before capturing video. `frames` writes PNG frames and a contact sheet to a new or empty directory.
+
 ## Code map
 
 | Behavior | Source |
