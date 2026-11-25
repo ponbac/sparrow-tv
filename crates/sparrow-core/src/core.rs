@@ -310,7 +310,20 @@ impl CatalogAccess {
         excluded_groups: &HashSet<String>,
     ) -> Result<Option<ChannelFamily>, CoreError> {
         self.query_generation(expected, |catalog| {
-            catalog.adjacent_channel_family(number, direction, excluded_groups)
+            catalog.adjacent_channel_family(number, direction, excluded_groups, false)
+        })
+    }
+
+    /// Finds the next distinct visible family in circular Channel Number order.
+    pub fn wrapping_adjacent_channel_family(
+        &self,
+        expected: CatalogGeneration,
+        number: u32,
+        direction: ChannelDirection,
+        excluded_groups: &HashSet<String>,
+    ) -> Result<Option<ChannelFamily>, CoreError> {
+        self.query_generation(expected, |catalog| {
+            catalog.adjacent_channel_family(number, direction, excluded_groups, true)
         })
     }
 

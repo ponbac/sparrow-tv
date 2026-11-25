@@ -136,8 +136,26 @@ impl GuideSurface {
         .detach();
     }
 
-    pub(super) fn zap(&mut self, direction: ChannelDirection, cx: &mut Context<Self>) {
+    pub(super) fn zap(
+        &mut self,
+        direction: ChannelDirection,
+        repeat: bool,
+        cx: &mut Context<Self>,
+    ) {
         if self.playback.state.selected.is_some() && self.playback.zap_keys.len() < MAX_ZAP_KEYS {
+            let now = std::time::Instant::now();
+            let last = self.playback.last_zap.replace(now);
+            self.playback.roll = if !repeat
+                && !cx.reduce_motion()
+                && last.is_none_or(|last| now.duration_since(last).as_millis() >= 240)
+                && !self.playback.zap_running
+            {
+                self.playback.overlay(self.now.to_utc(), true, |overlay| {
+                    super::ZapRoll::new(overlay, direction, now)
+                })
+            } else {
+                None
+            };
             self.playback.zap_keys.push_back(direction);
             self.advance_zap(cx);
         }
@@ -167,7 +185,7 @@ impl GuideSurface {
         let Some(query) = catalog::playback_query(move |core| {
             let number = core.channel_number(generation, &channel_id).ok()??;
             let family = core
-                .adjacent_channel_family(generation, number, direction, &excluded)
+                .wrapping_adjacent_channel_family(generation, number, direction, &excluded)
                 .ok()??;
             let channel = preferred(&family, &preferences)?;
             Some(tune_target(&family, channel))

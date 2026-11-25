@@ -271,6 +271,13 @@ async fn adjacent_families_follow_catalog_order_skip_exact_hidden_groups_and_sto
             .unwrap()
             .is_none()
     );
+    for (anchor, direction, expected) in [(2, Next, 1), (1, Previous, 2)] {
+        let family = core
+            .wrapping_adjacent_channel_family(generation, anchor, direction, &hidden_tail)
+            .unwrap()
+            .unwrap();
+        assert_eq!(family.number(), expected);
+    }
     assert_eq!(source.open_count(), 1);
 }
 

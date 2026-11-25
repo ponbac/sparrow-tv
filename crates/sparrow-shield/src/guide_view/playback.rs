@@ -2,6 +2,8 @@
 
 mod signal_mark;
 mod tune;
+mod zap;
+pub(crate) use zap::ZapRoll;
 
 use std::time::Instant;
 
@@ -89,6 +91,8 @@ impl PlaybackStage {
 }
 
 pub(crate) struct PlaybackOverlay<'a> {
+    pub(crate) reel: Option<&'a [Option<String>; 2]>,
+    pub(crate) roll: Option<&'a ZapRoll>,
     pub(crate) channel_number: u32,
     pub(crate) channel_name: &'a str,
     pub(crate) programme: Option<PlaybackProgramme<'a>>,
@@ -292,7 +296,7 @@ pub(crate) fn docked_playback(viewport: Size<Pixels>, playback: &PlaybackOverlay
                 .text(SAIRA, 20., 20., 600.)
                 .flex_none()
                 .text_color(rgb(primary))
-                .child(playback.channel_number.to_string()),
+                .child(zap::number(layout, playback, 22.)),
         )
         .child(
             layout
@@ -472,12 +476,18 @@ fn fullscreen_head(layout: Layout, playback: &PlaybackOverlay<'_>) -> Div {
                 .justify_center()
                 .rounded(layout.px(10.))
                 .bg(rgb(TALLY))
-                .child(playback.channel_number.to_string()),
+                .child(zap::number(layout, playback, 68.)),
         )
-        .child(identity)
-        .when_some(playback.programme.as_ref(), |head, programme| {
-            head.child(progress(layout, programme, playback.stage))
-        })
+        .child(zap::identity(layout, identity, playback.roll))
+        .child(zap::channel_reel(layout, playback))
+        .child(
+            div().w(layout.px(552.)).flex_none().children(
+                playback
+                    .programme
+                    .as_ref()
+                    .map(|p| progress(layout, p, playback.stage)),
+            ),
+        )
         .child(
             layout
                 .text(SAIRA_CLOCK, 40., 40., 600.)
@@ -530,8 +540,6 @@ fn progress(layout: Layout, programme: &PlaybackProgramme<'_>, stage: PlaybackSt
         });
 
     div()
-        .w(layout.px(552.))
-        .flex_none()
         .child(
             div()
                 .h(layout.px(26.))

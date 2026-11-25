@@ -31,7 +31,7 @@ use crate::{
         self,
         playback::{
             PlaybackControl as Control, PlaybackLayout, PlaybackNext, PlaybackOverlay,
-            PlaybackProgramme, PlaybackStage, docked_playback, fullscreen_actions,
+            PlaybackProgramme, PlaybackStage, ZapRoll, docked_playback, fullscreen_actions,
             fullscreen_playback, picker, picture_rect,
         },
     },
@@ -55,6 +55,8 @@ pub(super) struct PlaybackUi {
     zap_keys: VecDeque<ChannelDirection>,
     zap_target: Option<TvTuneTarget>,
     zap_running: bool,
+    last_zap: Option<Instant>,
+    roll: Option<ZapRoll>,
     dock_focus: bool,
     controls_visible: bool,
     control: Option<Control>,
@@ -90,6 +92,7 @@ struct PlaybackSubject {
     title: String,
     family: ChannelFamily,
     schedule: Option<Page<ProgrammeSummary>>,
+    reel: [Option<String>; 2],
 }
 
 enum PlayerMenu {
@@ -160,6 +163,8 @@ impl PlaybackUi {
     }
 
     fn reset_zap(&mut self) {
+        self.roll = None;
+        self.last_zap = None;
         self.zap_keys.clear();
         self.zap_target = None;
         self.zap_running = false;
@@ -271,10 +276,21 @@ impl PlaybackUi {
         };
         Some(render(&PlaybackOverlay {
             channel_number: self.shown_number(selected),
+            reel: subject.map(|s| &s.reel),
+            roll: self
+                .roll
+                .as_ref()
+                .filter(|r| !reduce_motion && r.active(self.shown_number(selected))),
             channel_name: subject.map_or("", |subject| &subject.title),
             programme,
             clock: &clock,
-            stage: self.stage(),
+            stage: if self.state.pending_zap.is_some()
+                || (self.state.phase == TvPlaybackPhase::Stopping && self.state.selected.is_some())
+            {
+                PlaybackStage::Tuning
+            } else {
+                self.stage()
+            },
             signal_landing: self.signal_landing,
             // Paint beneath the outgoing surface while a retune or queued zap awaits selection.
             first_picture: self.state.first_picture.filter(|_| {
@@ -301,7 +317,7 @@ impl PlaybackUi {
 
     pub(super) fn render(
         &self,
-        window: &Window,
+        window: &mut Window,
         now: DateTime<Utc>,
         reduce_motion: bool,
     ) -> Option<Div> {
@@ -312,6 +328,9 @@ impl PlaybackUi {
                 window.on_next_frame(move |_, _| handoff.painted());
             }
 
+            if overlay.roll.is_some() {
+                window.request_animation_frame();
+            }
             if self.fullscreen() {
                 let actions = if self.controls_visible {
                     self.fullscreen_actions()
@@ -538,6 +557,7 @@ impl GuideSurface {
             return;
         };
         let from = self.now.to_utc();
+        let excluded = self.screen.exclusions().clone();
         let requested_channel = channel_id.clone();
         let Some(query) = catalog::playback_subject_query(move |core| {
             let number = core.channel_number(generation, &channel_id).ok()??;
@@ -556,7 +576,23 @@ impl GuideSurface {
                     .ok()
                 })
                 .find(|page| page.generation() == generation && !page.items().is_empty());
+            let reel = [ChannelDirection::Next, ChannelDirection::Previous].map(|direction| {
+                let neighbour = core
+                    .wrapping_adjacent_channel_family(
+                        generation,
+                        family.number(),
+                        direction,
+                        &excluded,
+                    )
+                    .ok()??;
+                Some(format!(
+                    "{}  {}",
+                    neighbour.number(),
+                    channel_title(neighbour.variants().first()?)
+                ))
+            });
             Some(PlaybackSubject {
+                reel,
                 id: channel_id,
                 title,
                 family,
@@ -611,7 +647,13 @@ impl GuideSurface {
             },
             true,
         );
-        let viewports = [docked, fullscreen];
+        // The native picture sits above GPUI. Reveal the tuning field as soon
+        // as a target is pending, including throughout the zap debounce.
+        let viewports = if self.playback.state.pending_zap.is_some() {
+            [None, None]
+        } else {
+            [docked, fullscreen]
+        };
         if self.playback.viewports != Some(viewports)
             && playback::send(Command::SetViewports {
                 host: self.host,
@@ -663,8 +705,8 @@ impl GuideSurface {
             return true;
         }
         match code {
-            103 | 166 => self.zap(ChannelDirection::Next, cx),
-            102 | 167 => self.zap(ChannelDirection::Previous, cx),
+            103 | 166 => self.zap(ChannelDirection::Next, repeat > 0, cx),
+            102 | 167 => self.zap(ChannelDirection::Previous, repeat > 0, cx),
             85 | 86 | 126 | 127 => {
                 if repeat == 0 {
                     let command = match code {
@@ -687,7 +729,12 @@ impl GuideSurface {
         true
     }
 
-    pub(super) fn player_key(&mut self, key: ScreenKey, cx: &mut Context<Self>) -> bool {
+    pub(super) fn player_key(
+        &mut self,
+        key: ScreenKey,
+        repeat: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if !self.playback.fullscreen() {
             if self.playback.dock_focus {
                 match key {
@@ -723,8 +770,8 @@ impl GuideSurface {
                 }
             }
             ScreenKey::Arrow(Direction::Down) if self.playback.control.is_some() => {}
-            ScreenKey::Arrow(Direction::Up) => self.zap(ChannelDirection::Previous, cx),
-            ScreenKey::Arrow(Direction::Down) => self.zap(ChannelDirection::Next, cx),
+            ScreenKey::Arrow(Direction::Up) => self.zap(ChannelDirection::Previous, repeat, cx),
+            ScreenKey::Arrow(Direction::Down) => self.zap(ChannelDirection::Next, repeat, cx),
             _ if !self.playback.controls_visible => {
                 self.playback.controls_visible = true;
                 self.playback.control = self.playback.fullscreen_actions().first().copied();
