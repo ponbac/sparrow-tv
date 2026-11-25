@@ -6,6 +6,7 @@ members = [
   "crates/sparrow-core",
   "crates/sparrow-installed-catalog",
   "crates/sparrow-server",
+  "crates/sparrow-shield",
   "crates/sparrow-snapshot-store",
   "crates/sparrow-source-http",
   "crates/sparrow-tv-guide",
