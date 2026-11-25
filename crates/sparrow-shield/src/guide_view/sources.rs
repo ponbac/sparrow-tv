@@ -13,7 +13,8 @@ const PADDING: f32 = 30.;
 const CONTENT_WIDTH: f32 = WIDTH - 2. * PADDING;
 const CONTENT_Y: f32 = 116.;
 const BUTTON_HEIGHT: f32 = 48.;
-const STATUS_Y: f32 = BUTTON_HEIGHT + 16.;
+const BACKDROP_Y: f32 = 42.;
+const STATUS_Y: f32 = BACKDROP_Y + BUTTON_HEIGHT + 16.;
 const CARD_Y: f32 = STATUS_Y + BUTTON_HEIGHT + 12.;
 const CARD_HEIGHT: f32 = 112.;
 const GUIDE_CARD_Y: f32 = CARD_Y + CARD_HEIGHT + 4.;
@@ -135,7 +136,7 @@ pub(in super::super) fn source_editor_rect(
 }
 
 pub(in super::super) fn sources_sheet(size: Size<Pixels>, panel: SourcePanel<'_>) -> Div {
-    let layout = Layout::for_guide(size, panel.backdrop);
+    let layout = Layout::new(size);
     let content_height = layout.height - CONTENT_Y;
     let positions = SourcePositions::new(panel.diagnostics);
     let scroll = positions.scroll(content_height, panel.focus, panel.editing);
@@ -149,9 +150,14 @@ pub(in super::super) fn sources_sheet(size: Size<Pixels>, panel: SourcePanel<'_>
     let section = layout
         .rect(0., -scroll, CONTENT_WIDTH, positions.save + BUTTON_HEIGHT)
         .child(
+            layout
+                .text(SAIRA_NOTICE, 28., 34., 700.)
+                .child("Appearance"),
+        )
+        .child(
             action_frame(
                 layout,
-                layout.rect(0., 0., CONTENT_WIDTH, BUTTON_HEIGHT),
+                layout.rect(0., BACKDROP_Y, CONTENT_WIDTH, BUTTON_HEIGHT),
                 panel.focus == SourceFocus::Backdrop,
             )
             .justify_between()
@@ -160,12 +166,16 @@ pub(in super::super) fn sources_sheet(size: Size<Pixels>, panel: SourcePanel<'_>
                 layout
                     .text(SAIRA, 21., 30., 500.)
                     .child(match panel.backdrop {
-                        sparrow_installed_catalog::GuideBackdrop::Flat => "Flat  ›",
+                        sparrow_installed_catalog::GuideBackdrop::Flat => "‹  Flat  ›",
                         sparrow_installed_catalog::GuideBackdrop::NordicGradient => {
-                            "Nordic gradient  ›"
+                            "‹  Nordic gradient  ›"
                         }
-                        sparrow_installed_catalog::GuideBackdrop::ChannelTint => "Channel tint  ›",
-                        sparrow_installed_catalog::GuideBackdrop::AuroraDrift => "Aurora drift  ›",
+                        sparrow_installed_catalog::GuideBackdrop::ChannelTint => {
+                            "‹  Channel tint  ›"
+                        }
+                        sparrow_installed_catalog::GuideBackdrop::AuroraDrift => {
+                            "‹  Aurora drift  ›"
+                        }
                     }),
             ),
         )
@@ -280,7 +290,7 @@ pub(in super::super) fn sources_sheet(size: Size<Pixels>, panel: SourcePanel<'_>
         );
     let sheet = layout
         .rect(LEFT, 0., WIDTH, layout.height)
-        .bg(layout.surface(PANEL))
+        .bg(rgb(PANEL))
         .text_color(rgb(TEXT))
         .overflow_hidden()
         .child(
@@ -316,7 +326,15 @@ pub(in super::super) fn sources_sheet(size: Size<Pixels>, panel: SourcePanel<'_>
                 .overflow_hidden()
                 .child(section),
         );
-    div().absolute().inset_0().bg(rgba(0x050910b3)).child(sheet)
+    div()
+        .absolute()
+        .inset_0()
+        .bg(rgba(if panel.focus == SourceFocus::Backdrop {
+            0x05091040
+        } else {
+            0x050910b3
+        }))
+        .child(sheet)
 }
 
 fn source_diagnostics(layout: Layout, panel: &SourcePanel<'_>, positions: SourcePositions) -> Div {

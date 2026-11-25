@@ -177,7 +177,7 @@ pub(super) fn view_switch(layout: Layout, rect: Div, mode: GuideMode, focused: b
     ] {
         let (ink, fill) = match (active, focused) {
             (true, true) => (rgb(ICE), rgb(ON_ICE)),
-            (true, false) => (rgb(TEXT), rgb(CELL_ELAPSED)),
+            (true, false) => (rgb(TEXT), layout.surface(CELL_ELAPSED)),
             (false, true) => (rgb(ON_ICE), rgba(0)),
             (false, false) => (layout.secondary(DIM), rgba(0)),
         };
@@ -322,7 +322,11 @@ impl GroupPill {
         let (text, count, fill) = if focused {
             (rgb(ON_ICE), rgba(ON_ICE_DIM), rgb(ICE))
         } else if selected {
-            (rgb(TEXT), layout.secondary(DIM), rgb(CELL_ELAPSED))
+            (
+                rgb(TEXT),
+                layout.secondary(DIM),
+                layout.surface(CELL_ELAPSED),
+            )
         } else {
             (layout.secondary(DIM), layout.secondary(MUTE), rgba(0))
         };

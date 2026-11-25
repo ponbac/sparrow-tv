@@ -92,6 +92,30 @@ async fn guide_preferences_round_trip_offline_with_webview_v1_fields() {
 }
 
 #[tokio::test]
+async fn future_backdrop_preserves_other_guide_preferences() {
+    let directory = tempdir().unwrap();
+    let catalog = open(directory.path()).await;
+    catalog
+        .update_guide_preferences(vec![prefer(ChannelQuality::Hd), visibility("Local", true)])
+        .await
+        .unwrap();
+    let path = catalog.private_root().join("guide-preferences.json");
+    drop(catalog);
+    let mut record: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    record["sparrow.backdrop:v1"] = json!("future-backdrop");
+    fs::write(path, serde_json::to_vec(&record).unwrap()).unwrap();
+
+    let catalog = open(directory.path()).await;
+    let preferences = catalog.load_guide_preferences().await.unwrap();
+    assert_eq!(preferences.backdrop(), GuideBackdrop::NordicGradient);
+    assert!(preferences.excluded_groups().contains("Local"));
+    assert_eq!(
+        preferences.variant_preferences().get(FAMILY),
+        Some(&ChannelQuality::Hd)
+    );
+}
+
+#[tokio::test]
 async fn concurrent_visibility_choices_compose_and_show_all_respects_batch_order() {
     let directory = tempdir().unwrap();
     let catalog = open(directory.path()).await;

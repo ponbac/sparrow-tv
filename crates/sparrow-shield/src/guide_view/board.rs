@@ -76,12 +76,14 @@ pub(super) fn render(
             family_icon(family).and_then(|icon| icons.get(icon)),
         ));
     }
-    board = board.child(bottom_fade(layout.rect(
-        0.,
-        height - 12.,
-        CANVAS_WIDTH,
-        12.,
-    )));
+    if !layout.translucent {
+        board = board.child(bottom_fade(layout.rect(
+            0.,
+            height - 12.,
+            CANVAS_WIDTH,
+            12.,
+        )));
+    }
     let footer_y = screen.footer_top();
     if !families.is_empty() && footer_y < height {
         let width = CANVAS_WIDTH - GUTTER * 2.;
@@ -189,7 +191,11 @@ fn card(
     let mut card = rect
         .rounded(layout.px(8.))
         .overflow_hidden()
-        .bg(layout.surface(if focused { ICE } else { CELL }));
+        .bg(if focused {
+            rgb(ICE)
+        } else {
+            layout.surface(CELL)
+        });
     if let Some(live) = live {
         let width = COLUMN_WIDTH * elapsed_fraction(live, instant) as f32;
         if width > 0. {
@@ -197,7 +203,11 @@ fn card(
                 layout
                     .rect(0., 0., width, CARD_HEIGHT)
                     .rounded_l(layout.px(8.))
-                    .bg(layout.surface(if focused { ICE_ELAPSED } else { CELL_ELAPSED })),
+                    .bg(if focused {
+                        rgb(ICE_ELAPSED)
+                    } else {
+                        layout.surface(CELL_ELAPSED)
+                    }),
             );
         }
     }
@@ -421,7 +431,11 @@ fn action(layout: Layout, label: &'static str, focused: bool) -> Div {
         .h(layout.px(54.))
         .px(layout.px(24.))
         .rounded_full()
-        .bg(layout.surface(if focused { ICE } else { CELL_ELAPSED }))
+        .bg(if focused {
+            rgb(ICE)
+        } else {
+            layout.surface(CELL_ELAPSED)
+        })
         .text_color(rgb(if focused { ON_ICE } else { TEXT }))
         .flex()
         .items_center()

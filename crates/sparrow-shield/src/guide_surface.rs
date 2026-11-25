@@ -102,8 +102,8 @@ pub(super) struct GuideSurface {
     group_viewport: guide_view::GroupViewport,
     loaded_exclusions: bool,
     pending_exclusions: Option<u64>,
-    pending_backdrop: Option<sparrow_installed_catalog::GuideBackdrop>,
-    backdrop_save: Option<gpui::Task<()>>,
+    pending_backdrop: Option<(sparrow_installed_catalog::GuideBackdrop, Task<()>)>,
+    tint_dwell: Option<Task<()>>,
     backdrop_motion: guide_view::BackdropMotion,
     editor_generation: u64,
     active_editor: Option<(u64, TextTarget)>,
@@ -250,7 +250,7 @@ impl GuideSurface {
             loaded_exclusions: false,
             pending_exclusions: None,
             pending_backdrop: None,
-            backdrop_save: None,
+            tint_dwell: None,
             backdrop_motion: Default::default(),
             editor_generation: 0,
             active_editor: None,
@@ -555,6 +555,9 @@ impl GuideSurface {
             return;
         }
         let now = Local::now().fixed_offset();
+        if matches!(key, ScreenKey::Arrow(_)) && self.tint_dwell.is_some() {
+            self.defer_tint(cx);
+        }
         let prior_mode = self.screen.mode();
         let action = self.screen.press(key, now.to_utc(), *now.offset());
         if self.screen.mode() != prior_mode {
@@ -761,6 +764,7 @@ impl GuideSurface {
             }
         });
         if self.desired_preview != desired {
+            self.defer_tint(cx);
             self.desired_preview = desired;
             self.retire_preview_read();
             if self.presented_preview.is_some() {
@@ -969,6 +973,28 @@ fn publish_diagnostics(screen: &GuideScreen, focused_dock: Option<u32>) {
 }
 
 impl GuideSurface {
+    fn backdrop(&self) -> sparrow_installed_catalog::GuideBackdrop {
+        self.pending_backdrop
+            .as_ref()
+            .map_or_else(catalog::backdrop, |(choice, _)| *choice)
+    }
+
+    fn defer_tint(&mut self, cx: &Context<Self>) {
+        if self.backdrop() == sparrow_installed_catalog::GuideBackdrop::ChannelTint
+            && !self.playback.docked()
+        {
+            self.tint_dwell = Some(cx.spawn(async move |view, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(380))
+                    .await;
+                let _ = view.update(cx, |view, cx| {
+                    view.tint_dwell = None;
+                    cx.notify();
+                });
+            }));
+        }
+    }
+
     fn render_search(
         &mut self,
         window: &Window,
@@ -977,7 +1003,6 @@ impl GuideSurface {
         let (surface, search_icons) = guide_view::search_panel(
             window.viewport_size(),
             guide_view::SearchPanel {
-                choice,
                 state: self.search.state(),
                 display_term: self.search.term(),
                 focus: self.search.focus(),
@@ -1065,7 +1090,7 @@ impl Render for GuideSurface {
             return root.children(player);
         }
         let selected = self.playback.docked() || self.playback.fullscreen();
-        let choice = self.pending_backdrop.unwrap_or_else(catalog::backdrop);
+        let choice = self.backdrop();
         let search = self.render_search(window, choice);
         let icon = if selected {
             self.playback.channel_icon()
@@ -1076,14 +1101,17 @@ impl Render for GuideSurface {
         };
         let tint = icon
             .and_then(|i| self.icons.get(i))
-            .and_then(|image| image.tint);
+            .and_then(|image| image.tint());
         let backdrop = self.backdrop_motion.render(
             choice,
             tint,
+            self.tint_dwell.is_some() && !self.playback.docked(),
             window,
             cx.reduce_motion()
                 || self.activation.is_none()
-                || self.search.state().view() == SearchView::Desk,
+                || self.search.state().view() == SearchView::Desk
+                || self.sources_sheet_open()
+                || self.screen.group_chooser().is_some(),
         );
         let guide = guide_view::render(
             &self.screen,
@@ -1117,7 +1145,6 @@ impl Render for GuideSurface {
                     .children(guide_view::group_sheet(
                         window.viewport_size(),
                         &self.screen,
-                        choice,
                         &mut self.group_viewport,
                         self.active_editor
                             .is_some_and(|(_, target)| target == TextTarget::GroupFilter),
