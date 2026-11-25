@@ -45,10 +45,8 @@ pub trait TvPresentation: Send + Sync + 'static {
         controls: AndroidPlaybackControls,
     ) -> TvPresentationFuture<()>;
     fn stop(&self, key: TvPresentationKey, stop: TvPresentationStop) -> TvPresentationFuture<()>;
-    /// Samples the bound surface before recovery clears it.
-    fn capture_frame(&self, _key: TvPresentationKey) -> TvPresentationFuture<Arc<TvRecoveryFrame>> {
-        Box::pin(async { Err(AndroidPlaybackError) })
-    }
+    /// Samples the currently bound visible surface.
+    fn capture_frame(&self, key: TvPresentationKey) -> TvPresentationFuture<Arc<TvRecoveryFrame>>;
     fn status(&self, key: TvPresentationKey) -> TvPresentationFuture<AndroidPlaybackStatus>;
     fn set_controls(
         &self,
@@ -215,7 +213,7 @@ pub struct TvPlaybackAudio {
 }
 
 /// A downsampled BGRA still for recovery. Keep pixels out of diagnostics.
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq)]
 pub struct TvRecoveryFrame {
     pub width: u32,
     pub height: u32,
@@ -225,6 +223,22 @@ pub struct TvRecoveryFrame {
 impl std::fmt::Debug for TvRecoveryFrame {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("TvRecoveryFrame")
+    }
+}
+
+/// Acknowledges one handoff after the still has painted beneath the native picture.
+#[derive(Clone, Debug, Default)]
+pub struct TvStillHandoff(Arc<tokio::sync::Notify>);
+
+impl TvStillHandoff {
+    pub fn painted(&self) {
+        self.0.notify_one();
+    }
+}
+
+impl PartialEq for TvStillHandoff {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 }
 
@@ -243,6 +257,7 @@ pub struct TvPlaybackSnapshot {
     pub transport_token: Option<TvTransportToken>,
     pub status: Option<AndroidPlaybackStatus>,
     pub visible_host: Option<TvHostId>,
+    pub still_handoff: Option<TvStillHandoff>,
     pub recovery_frame: Option<Arc<TvRecoveryFrame>>,
     pub recovery_attempts: u8,
     pub quality_fallback: Option<(ChannelQuality, ChannelQuality)>,
@@ -263,6 +278,7 @@ impl Default for TvPlaybackSnapshot {
             status: None,
             visible_host: None,
             recovery_frame: None,
+            still_handoff: None,
             recovery_attempts: 0,
             quality_fallback: None,
         }

@@ -19,7 +19,8 @@ use crate::{
 use super::{
     TvHostId, TvPauseCause, TvPlaybackCommand as Command, TvPlaybackFailure as Failure,
     TvPlaybackPhase as Phase, TvPlaybackSnapshot as Snapshot, TvPresentation, TvPresentationEvent,
-    TvPresentationKey, TvPresentationStop, TvTransportToken, TvTuneTarget,
+    TvPresentationKey, TvPresentationStop, TvRecoveryFrame, TvStillHandoff, TvTransportToken,
+    TvTuneTarget,
     transport::{Open, Opened, Opening, Transport},
 };
 
@@ -54,6 +55,8 @@ struct Session {
     first_frame: Option<Instant>,
     last_frame: Option<Instant>,
     decoded: u64,
+    sampled_at: Option<Instant>,
+    clean_frame: Option<Arc<TvRecoveryFrame>>,
 }
 
 impl Session {
@@ -71,6 +74,8 @@ impl Session {
             first_frame: None,
             last_frame: None,
             decoded: 0,
+            sampled_at: None,
+            clean_frame: None,
         }
     }
 
@@ -341,7 +346,12 @@ impl Owner {
             }
             return true;
         }
-        if !matches!(self.snapshot.phase, Phase::Starting | Phase::ReplacingAudio) {
+        if self.retry_at.is_some()
+            || !matches!(
+                self.snapshot.phase,
+                Phase::Starting | Phase::ReplacingAudio | Phase::Recovering { .. }
+            )
+        {
             return false;
         }
         if self
@@ -399,6 +409,8 @@ impl Owner {
             Open::Reopen
         };
         session.opens = session.opens.saturating_add(1);
+        session.clean_frame = None;
+        session.sampled_at = None;
         session.first_frame = None;
         session.last_frame = None;
         session.decoded = 0;
@@ -487,7 +499,9 @@ impl Owner {
         };
         self.transport_revision = revision;
         self.snapshot.transport_token = Some(TvTransportToken(revision));
-        self.snapshot.phase = Phase::Starting;
+        if !matches!(self.snapshot.phase, Phase::Recovering { .. }) {
+            self.snapshot.phase = Phase::Starting;
+        }
         let now = Instant::now();
         self.start_by = Some(now + START_TIMEOUT);
         self.status_at = Some(now + STATUS_INTERVAL);
@@ -879,17 +893,16 @@ impl Owner {
             return;
         }
         if retryable
-            && let Some(session) = self.session.as_ref()
+            && self.snapshot.recovery_frame.is_none()
+            && self.current_viewport().is_some()
+            && let Some(session) = self.session.as_mut()
             && session.first_frame.is_some()
-            && let Some(key) = session.active_picture()
+            && let Some(key) = session.active_picture().cloned()
         {
-            self.snapshot.recovery_frame = tokio::time::timeout(
-                std::time::Duration::from_millis(180),
-                self.presentation.capture_frame(key.clone()),
-            )
-            .await
-            .ok()
-            .and_then(Result::ok);
+            self.snapshot.recovery_frame = match session.clean_frame.take() {
+                Some(frame) => Some(frame),
+                None => self.capture_frame(key).await,
+            };
         }
         let attempt = self.snapshot.recovery_attempts;
         if let Some(delay) = RECOVERY
@@ -901,14 +914,18 @@ impl Owner {
                 attempt: attempt + 1,
                 failure,
             };
-            // Prepare the GPUI underlay while the native surface still covers it.
-            self.publish();
-            // Recovery replaces the native surface with the sampled still or tuning field.
-            if self
-                .suspend_session(TvPresentationStop::ClearPicture, None)
-                .await
-                .is_err()
+            let painted = self.wait_for_still().await;
+            let stop = if painted
+                || self
+                    .session
+                    .as_ref()
+                    .is_some_and(|s| s.attempted_picture.is_some())
             {
+                TvPresentationStop::ClearPicture
+            } else {
+                TvPresentationStop::RetainPicture
+            };
+            if self.suspend_session(stop, None).await.is_err() {
                 self.cleanup_unconfirmed();
                 return;
             }
@@ -933,11 +950,32 @@ impl Owner {
         }
     }
 
+    /// Leave the native picture in place until the visible host has drawn its replacement.
+    async fn wait_for_still(&mut self) -> bool {
+        if self.snapshot.recovery_frame.is_none()
+            || self
+                .session
+                .as_ref()
+                .and_then(Session::active_picture)
+                .is_none()
+        {
+            return false;
+        }
+        let handoff = TvStillHandoff::default();
+        self.snapshot.still_handoff = Some(handoff.clone());
+        self.publish();
+        let painted = tokio::time::timeout(Duration::from_millis(350), handoff.0.notified())
+            .await
+            .is_ok();
+        self.snapshot.still_handoff = None;
+        painted
+    }
+
     async fn finish_failure(&mut self, failure: Failure) {
+        self.set_failed(failure);
+        self.wait_for_still().await;
         if self.stop_session().await.is_err() {
             self.cleanup_unconfirmed();
-        } else {
-            self.set_failed(failure);
         }
     }
 
@@ -954,7 +992,6 @@ impl Owner {
         }
         if self.retry_at.is_some_and(|at| at <= now) {
             self.retry_at = None;
-            self.ready_to_resume();
             return;
         }
         if self.status_at.is_some_and(|at| at <= now) {
@@ -988,15 +1025,28 @@ impl Owner {
         }
     }
 
+    async fn capture_frame(&mut self, key: TvPresentationKey) -> Option<Arc<TvRecoveryFrame>> {
+        let presentation = self.presentation.clone();
+        tokio::time::timeout(
+            Duration::from_millis(180),
+            self.gate
+                .presentation_call(move || presentation.capture_frame(key)),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok)
+    }
+
     async fn poll_status(&mut self, now: Instant) {
         let Some(key) = self.current_picture().cloned() else {
             self.status_at = None;
             return;
         };
         let presentation = Arc::clone(&self.presentation);
+        let status_key = key.clone();
         let result = self
             .gate
-            .presentation_call(move || presentation.status(key))
+            .presentation_call(move || presentation.status(status_key))
             .await;
         let status = match result {
             Ok(status) => status,
@@ -1022,11 +1072,28 @@ impl Owner {
                 }
             }
             AndroidPlaybackPhase::Starting | AndroidPlaybackPhase::Playing => {
+                let visible = self.current_viewport().is_some();
+                let mut sample = false;
                 if let Some(session) = &mut self.session
                     && status.decoded_frames() > session.decoded
                 {
+                    sample = visible
+                        && self.snapshot.phase == Phase::Playing
+                        && status.phase() == AndroidPlaybackPhase::Playing
+                        && session.sampled_at.is_none_or(|last| {
+                            now.saturating_duration_since(last) >= Duration::from_secs(2)
+                        });
+                    if sample {
+                        session.sampled_at = Some(now);
+                    }
                     session.decoded = status.decoded_frames();
                     session.last_frame = Some(now);
+                }
+                if sample
+                    && let Some(frame) = self.capture_frame(key).await
+                    && let Some(session) = self.session.as_mut()
+                {
+                    session.clean_frame = Some(frame);
                 }
                 if status.phase() == AndroidPlaybackPhase::Playing && status.decoded_frames() > 0 {
                     self.mark_playing(now).await;
