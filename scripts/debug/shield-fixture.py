@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Serve a loopback-only synthetic Shield Channel Catalog, guide, icons and live TV."""
+import argparse
 import colorsys
 import os
 import shutil
@@ -114,7 +115,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    with ThreadingHTTPServer(("127.0.0.1", 18108), Handler) as server:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--port", type=int, default=18108, help="host listen port (device uses 18108)")
+    port = parser.parse_args().port
+    with ThreadingHTTPServer(("127.0.0.1", port), Handler) as server:
         generate_media()
-        print("Shield fixture ready on loopback port 18108", flush=True)
+        print(f"Shield fixture ready on loopback port {port}", flush=True)
         server.serve_forever()
