@@ -37,7 +37,7 @@ pub(crate) struct FullscreenMotion {
 }
 
 impl FullscreenMotion {
-    pub(crate) fn retarget(&mut self, fullscreen: bool, controls: bool, scale: f32) {
+    pub(crate) fn retarget(&mut self, fullscreen: bool, controls: bool, cut: bool) {
         let dock = f32::from(!fullscreen);
         let target = FullscreenFrame {
             fullscreen: f32::from(fullscreen),
@@ -45,7 +45,7 @@ impl FullscreenMotion {
             caption: dock,
             stripe: dock,
         };
-        if scale <= 0. {
+        if cut {
             if target.fullscreen != self.target.fullscreen {
                 self.cut_from = Some(self.sample(Instant::now()));
             }
@@ -63,7 +63,7 @@ impl FullscreenMotion {
             self.flight = Some(Transition {
                 start,
                 from: self.sample(start),
-                seconds: seconds * scale,
+                seconds,
                 power,
             });
         }

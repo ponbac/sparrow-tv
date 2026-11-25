@@ -442,6 +442,18 @@ private class ShieldPlaybackPlacement(
 
   private var waitingForFrame = false
   private var pendingReveal: (() -> Unit)? = null
+  private var lastBottom = 0
+
+  private fun reportBottom() {
+    val player = mountedPlayer
+    val bottom = if (player != null && player.visibility == View.VISIBLE &&
+        placed && !waitingForFrame && player.translationX == 0f) player.bottom - guide.top else 0
+    if (bottom != lastBottom) {
+      lastBottom = bottom
+      pictureBottom(bottom)
+    }
+  }
+
   private var placed = false
   private var fade: ValueAnimator? = null
 
@@ -487,6 +499,7 @@ private class ShieldPlaybackPlacement(
       }
     }
     player.translationX = 0f
+    reportBottom()
     report()
   }
 
@@ -498,7 +511,7 @@ private class ShieldPlaybackPlacement(
     (videoSurfaceView as SurfaceView).setZOrderMediaOverlay(true)
     visibility = View.INVISIBLE
     addOnLayoutChangeListener { view, _, _, _, bottom, _, _, _, oldBottom ->
-      if (view === mountedPlayer && bottom != oldBottom) pictureBottom(bottom - guide.top)
+      if (view === mountedPlayer && bottom != oldBottom) reportBottom()
     }
   }
 
@@ -509,6 +522,7 @@ private class ShieldPlaybackPlacement(
 
   fun hideUntilPlaced() {
     placed = false
+    reportBottom()
     moveOffscreen()
   }
 
@@ -535,6 +549,7 @@ private class ShieldPlaybackPlacement(
     pendingReveal?.also { pendingReveal = null }?.invoke()
     if (waitingForFrame) moveOffscreen() else playerView.translationX = 0f
     playerView.visibility = View.VISIBLE
+    reportBottom()
   }
 
   override fun fillWindow(parent: ViewGroup, playerView: PlayerView) = Unit // TV has no PiP.
@@ -544,12 +559,13 @@ private class ShieldPlaybackPlacement(
     fade?.cancel()
     if (mountedPlayer === playerView) {
       mountedPlayer = null
-      pictureBottom(0)
+      reportBottom()
     }
     parent.removeView(playerView)
   }
 
   override fun revealContent(parent: ViewGroup, playerView: PlayerView) {
     playerView.visibility = View.INVISIBLE
+    reportBottom()
   }
 }

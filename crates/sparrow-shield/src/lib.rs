@@ -31,8 +31,6 @@ use tokio::sync::mpsc;
 
 static INITIALIZE_LOGS: Once = Once::new();
 static START_RENDERER: OnceLock<mpsc::UnboundedSender<host::HostId>> = OnceLock::new();
-struct AnimatorScale(f32);
-impl Global for AnimatorScale {}
 
 enum ActivityUpdate {
     AnimatorScale(f32),
@@ -148,7 +146,6 @@ fn start_renderer() {
                 while let Some(update) = activity_updates.recv().await {
                     match update {
                         ActivityUpdate::AnimatorScale(scale) => cx.update(|cx| {
-                            cx.set_global(AnimatorScale(scale));
                             cx.set_reduce_motion(scale == 0.);
                         }),
                         ActivityUpdate::Window(id, event) => cx.update(|cx| {

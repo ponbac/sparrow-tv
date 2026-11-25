@@ -664,11 +664,28 @@ async fn stopping_a_pending_open_releases_it_without_starting_a_presentation() {
 }
 
 #[tokio::test]
+async fn viewport_bursts_leave_the_command_queue_available() {
+    let (_, owner) = setup();
+    let (commands, _inbox) = mpsc::channel(1);
+    let runner = super::super::TvPlaybackRunner {
+        commands,
+        pending_viewports: Arc::clone(&owner.pending_viewports),
+        snapshot: owner.published.subscribe(),
+    };
+    for left in 0..100 {
+        let dock = AndroidPlaybackViewport::parse(left, 0, 100, 100, false).unwrap();
+        runner.set_viewports(1, Some(dock), None);
+    }
+    runner.commands().try_send(Command::ExitFullscreen).unwrap();
+}
+
+#[tokio::test]
 async fn source_change_confirms_release_and_fences_tune_until_the_guard_drops() {
     let (fixture, owner) = setup();
     let (commands, inbox) = mpsc::channel(32);
     let snapshot = owner.published.subscribe();
     let runner = super::super::TvPlaybackRunner {
+        pending_viewports: Arc::clone(&owner.pending_viewports),
         commands: commands.clone(),
         snapshot,
     };
