@@ -1225,7 +1225,7 @@ impl Render for GuideSurface {
             (&mut self.now_lane, &mut self.timeline_rail),
             window,
             &self.icons,
-            backdrop,
+            backdrop.opacity(wave.backdrop_opacity()),
         );
         if let Some(tick) = &mut self.minute_tick
             && tick.needs_badge_timer()

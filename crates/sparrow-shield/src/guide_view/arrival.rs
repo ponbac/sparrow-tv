@@ -104,6 +104,10 @@ pub(crate) struct Wave {
 }
 
 impl Wave {
+    pub(crate) fn backdrop_opacity(self) -> f32 {
+        (self.ms / 220.).clamp(0., 1.)
+    }
+
     pub(super) fn card(
         self,
         layout: Layout,
@@ -116,7 +120,7 @@ impl Wave {
             110. + (END_MS - TRAVEL_MS - 110.) * diagonal.min(last) as f32 / last.max(1) as f32;
         let rect = self.enter(layout, rect, delay, 0., 32.);
         if focused {
-            rect.opacity(if self.ms >= delay { 1. } else { 0. })
+            rect.opacity(0.25 + 0.75 * ((self.ms - delay) / 180.).clamp(0., 1.))
         } else {
             rect
         }
