@@ -4,6 +4,8 @@ import argparse
 import math
 import os
 import re
+import signal
+import socket
 import subprocess
 import tempfile
 import time
@@ -23,7 +25,9 @@ def dump(adb):
 
 def start(sdk, adb, port, gpu):
     log = Path(tempfile.gettempdir()) / f"sparrow-emulator-{port}.log"
-    if subprocess.run([*adb, "get-state"], capture_output=True).returncode == 0:
+    with socket.socket() as probe:
+        taken = probe.connect_ex(("127.0.0.1", port)) == 0
+    if taken or subprocess.run([*adb, "get-state"], capture_output=True).returncode == 0:
         raise SystemExit(f"Emulator port {port} already in use")
     with log.open("w") as output:
         process = subprocess.Popen([sdk / "emulator/emulator", "-avd", AVD, "-port", str(port),
@@ -34,14 +38,19 @@ def start(sdk, adb, port, gpu):
         for _ in range(150):
             if process.poll() is not None:
                 raise SystemExit(f"Emulator exited. See {log}")
-            boot = subprocess.run([*adb, "shell", "getprop", "sys.boot_completed"],
-                                  capture_output=True, text=True, timeout=10)
+            try:
+                boot = subprocess.run([*adb, "shell", "getprop", "sys.boot_completed"],
+                                      capture_output=True, text=True, timeout=10)
+            except subprocess.TimeoutExpired:
+                continue
             if boot.stdout.strip() == "1":
+                # A fresh boot keeps no reverse mappings; the fixture needs this one.
+                subprocess.run([*adb, "reverse", "tcp:18108", "tcp:18108"], check=True)
                 return
             time.sleep(2)
         raise SystemExit(f"Emulator boot timed out. See {log}")
     except BaseException:
-        process.terminate()
+        os.killpg(process.pid, signal.SIGTERM)
         raise
 
 
@@ -64,14 +73,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--serial", help="explicit emulator-NNNN serial")
     sub = parser.add_subparsers(dest="command", required=True)
-    for command in ("create", "seed", "reverse", "dump", "stop"):
+    for command in ("create", "seed", "dump", "stop"):
         sub.add_parser(command)
     sub.add_parser("start").add_argument("--gpu", default="host", choices=["host", "swiftshader"])
     sub.add_parser("install").add_argument("apk", nargs="?", default=APK)
     key = sub.add_parser("key")
     key.add_argument("keys", nargs="+", choices=("UP", "DOWN", "LEFT", "RIGHT", "CENTER", "BACK",
                                                 "CHANNEL_UP", "CHANNEL_DOWN"))
-    key.add_argument("--delay", type=float, default=0.25, help="seconds between keys")
+    key.add_argument("--delay", type=float, default=0.25,
+                     help="seconds between keys, slept on the device in one shell session")
     sub.add_parser("shot").add_argument("png", type=Path)
     record = sub.add_parser("record")
     record.add_argument("mp4", type=Path)
@@ -84,6 +94,7 @@ def main():
     if args.command == "frames":
         return frames(args.video, args.directory, args.fps)
     sdk = Path(os.environ["ANDROID_HOME"])
+    # avdmanager on this host writes AVDs under $XDG_CONFIG_HOME/.android; point the emulator there.
     config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home()))
     android_user_home = os.environ.setdefault("ANDROID_USER_HOME", str(config_home / ".android"))
     avds = Path(os.environ.setdefault("ANDROID_AVD_HOME", str(Path(android_user_home) / "avd")))
@@ -98,7 +109,8 @@ def main():
     match = re.fullmatch(r"emulator-([0-9]{4})", args.serial or "")
     if not match or int(match[1]) not in range(5554, 5586, 2):
         parser.error("supply --serial emulator-NNNN with an even console port from 5554 to 5584")
-    adb = [sdk / "platform-tools/adb", "-s", args.serial]
+    # Use the adb on PATH, like every other Shield command, so one client talks to the shared server.
+    adb = ["adb", "-s", args.serial]
 
     def run(*command, **kwargs):
         subprocess.run([*adb, *command], check=True, **kwargs)
@@ -107,8 +119,6 @@ def main():
         start(sdk, adb, int(match[1]), args.gpu)
     elif args.command == "install":
         run("install", "-r", args.apk)
-    elif args.command == "reverse":
-        run("reverse", "tcp:18108", "tcp:18108")
     elif args.command == "seed":
         run("shell", "am", "start", "-S", "-W", "-n", ACTIVITY)
         run("shell", "am", "broadcast", "-n", f"{PACKAGE}/.FixtureReceiver", "-a",
@@ -125,14 +135,17 @@ def main():
     elif args.command == "dump":
         print(dump(adb) or "No Guide snapshot available")
     elif args.command == "key":
-        for i, key in enumerate(args.keys):
-            if i:
-                time.sleep(args.delay)
-            run("shell", "input", "keyevent", key if key.startswith("CHANNEL_") or key == "BACK"
-                else f"DPAD_{key}")
+        codes = [key if key.startswith("CHANNEL_") or key == "BACK" else f"DPAD_{key}"
+                 for key in args.keys]
+        if args.delay > 0:
+            script = f"; sleep {args.delay}; ".join(f"input keyevent {code}" for code in codes)
+        else:
+            script = "input keyevent " + " ".join(codes)
+        run("shell", script)
     elif args.command == "shot":
-        with args.png.open("wb") as output:
-            run("exec-out", "screencap", "-p", stdout=output)
+        image = subprocess.run([*adb, "exec-out", "screencap", "-p"], check=True,
+                               capture_output=True).stdout
+        args.png.write_bytes(image)
     elif args.command == "record":
         remote = f"/data/local/tmp/sparrow-{os.getpid()}.mp4"
         try:

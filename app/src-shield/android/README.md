@@ -10,7 +10,7 @@ just build-shield-host
 SPARROW_SHIELD_FIXTURE=1 just build-shield-host
 ```
 
-The default build omits fixture commands. The fixture-enabled build takes the same development application ID, `xyz.ponbac.sparrow.shield`. The ARM64 APK is non-debuggable and development-signed at `app/src-shield/android/app/build/outputs/apk/release/app-release.apk`. The shared Gradle wrapper supplies the pinned build and Kotlin dependencies. The GPUI backend requires Android API 26 for `libnativewindow`. Cargo resolves the pinned `gpui-mobile` Git revision from the shared workspace lock, including when building the hosted server and Tauri.
+The default build omits fixture commands. The fixture-enabled build takes the same development application ID, `xyz.ponbac.sparrow.shield`. The APK for `SPARROW_SHIELD_ABI` (default `arm64-v8a`) is non-debuggable and development-signed at `app/src-shield/android/app/build/outputs/apk/release/app-release.apk`. The shared Gradle wrapper supplies the pinned build and Kotlin dependencies. The GPUI backend requires Android API 26 for `libnativewindow`. Cargo resolves the pinned `gpui-mobile` Git revision from the shared workspace lock, including when building the hosted server and Tauri.
 
 Set `ANDROID_SERIAL` on the ADB host to the intended Shield. The following commands address only the development APK. Serve a synthetic `catalog.m3u` and `guide.xml` on the ADB host's loopback port 18108 before seeding. The HTTPS command separately tests platform certificate verification at a fixed public endpoint.
 
@@ -54,7 +54,6 @@ Choose a free even console port from 5554 through 5584 for each instance. Each h
 emu() { scripts/debug/shield-emulator.py --serial emulator-5576 "$@"; }
 emu start
 emu install
-emu reverse
 emu seed
 emu dump
 emu shot guide.png
@@ -64,14 +63,14 @@ emu key CENTER                 # Enter fullscreen.
 emu key BACK
 emu record focus.mp4 5 &
 record_pid=$!
-sleep 1
+sleep 1                        # screenrecord needs about a second to start.
 emu key --delay 0.5 RIGHT RIGHT DOWN LEFT UP
 wait "$record_pid"
 emu frames focus.mp4 focus-frames 3
 emu stop
 ```
 
-`start` waits for boot and `seed` waits for the Channel Catalog and validated EPG Source. Use `dump` to confirm `playback=Playing` and decoded frames before capturing video. `frames` writes PNG frames and a contact sheet to a new or empty directory.
+`start` waits for boot and maps the fixture port. `seed` waits for the Channel Catalog and validated EPG Source. Use `dump` to confirm `playback=Playing` and decoded frames before capturing video. `frames` writes PNG frames and a contact sheet to a new or empty directory.
 
 ## Code map
 
