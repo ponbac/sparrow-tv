@@ -104,6 +104,7 @@ pub(super) struct GuideSurface {
     group_viewport: guide_view::GroupViewport,
     loaded_exclusions: bool,
     pending_exclusions: Option<u64>,
+    pending_ambient: Option<(bool, Task<()>)>,
     pending_backdrop: Option<(sparrow_installed_catalog::GuideBackdrop, Task<()>)>,
     tint_dwell: Option<Task<()>>,
     backdrop_motion: guide_view::BackdropMotion,
@@ -259,6 +260,7 @@ impl GuideSurface {
             group_viewport: guide_view::GroupViewport::default(),
             loaded_exclusions: false,
             pending_exclusions: None,
+            pending_ambient: None,
             pending_backdrop: None,
             tint_dwell: None,
             backdrop_motion: Default::default(),
@@ -1042,6 +1044,12 @@ fn publish_diagnostics(screen: &GuideScreen, focused_dock: Option<u32>) {
 }
 
 impl GuideSurface {
+    fn ambient_light(&self) -> bool {
+        self.pending_ambient
+            .as_ref()
+            .map_or_else(catalog::ambient_light, |(enabled, _)| *enabled)
+    }
+
     fn backdrop(&self) -> sparrow_installed_catalog::GuideBackdrop {
         self.pending_backdrop
             .as_ref()
@@ -1169,12 +1177,12 @@ impl Render for GuideSurface {
         let glow = self
             .playback
             .ambient
-            .layer(guide_view::Layout::new(window.viewport_size()), picture);
+            .layer(window.viewport_size(), picture, cx.reduce_motion());
         if frame.fullscreen >= 1. {
             self.arrival.leave();
             self.icons.hide();
             return root
-                .when(self.playback.controls_visible, |root| root.child(glow))
+                .when(self.ambient_exposed(), |root| root.child(glow))
                 .children(player);
         }
         let viewport = window.viewport_size();

@@ -46,8 +46,7 @@ pub(super) struct PlaybackUi {
     pub(super) picture_bottom: i32,
     motion: FullscreenMotion,
     pub(super) ambient: guide_view::ambient::Ambient,
-    ambient_sampling: bool,
-    ambient_epoch: u64,
+    ambient_epoch: Option<u64>,
     still: Option<std::sync::Arc<gpui::RenderImage>>,
     hold_started: Option<Instant>,
     release_still: Option<gpui::Task<()>>,
@@ -63,7 +62,7 @@ pub(super) struct PlaybackUi {
     last_zap: Option<Instant>,
     roll: Option<ZapRoll>,
     dock_focus: bool,
-    pub(super) controls_visible: bool,
+    controls_visible: bool,
     control: Option<Control>,
     copy_sequence: u64,
     copy: DiagnosticCopy,
@@ -703,21 +702,30 @@ impl GuideSurface {
         }));
     }
 
+    fn dock_hidden(&self) -> bool {
+        self.search.state().view() == SearchView::Desk
+    }
+
+    pub(super) fn ambient_exposed(&self) -> bool {
+        !self.playback.fullscreen() || self.playback.controls_visible
+    }
+
     pub(super) fn sync_ambient(&mut self, reduced: bool) {
         let visible = self.activation.is_some()
             && self.setup.is_none()
-            && catalog::ambient_light()
-            && self.search.state().view() != SearchView::Desk
-            && (!self.playback.fullscreen() || self.playback.controls_visible);
+            && self.ambient_light()
+            && !self.dock_hidden();
+        let exposed = self.ambient_exposed();
         let player = &mut self.playback;
         let stage = (visible && player.shown().is_some()).then(|| player.stage());
-        let sampling = stage == Some(PlaybackStage::Playing);
-        if sampling != player.ambient_sampling {
-            player.ambient_sampling = sampling;
-            player.ambient_epoch += 1;
+        let sampling = exposed && stage == Some(PlaybackStage::Playing);
+        if sampling != player.ambient_epoch.is_some() {
+            static NEXT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            player.ambient_epoch =
+                sampling.then(|| NEXT_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
             crate::android_player::set_ambient_sampling(
                 self.host,
-                if sampling { player.ambient_epoch } else { 0 },
+                player.ambient_epoch.unwrap_or(0),
             );
         }
         match stage {
@@ -729,8 +737,7 @@ impl GuideSurface {
     }
 
     pub(super) fn ambient_sample(&mut self, epoch: u64, colors: [u32; 3], cx: &mut Context<Self>) {
-        if self.playback.ambient_sampling
-            && epoch == self.playback.ambient_epoch
+        if Some(epoch) == self.playback.ambient_epoch
             && self.playback.ambient.sample(colors, cx.reduce_motion())
         {
             cx.notify();
@@ -754,7 +761,7 @@ impl GuideSurface {
             )
             .ok()
         };
-        let docked = if self.search.state().view() == SearchView::Desk {
+        let docked = if self.dock_hidden() {
             None
         } else {
             bounds(false)

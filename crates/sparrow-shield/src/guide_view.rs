@@ -69,14 +69,14 @@ const SAIRA_CLOCK: &str = "Sparrow Guide 100";
 const SAIRA_NUMBER: &str = "Sparrow Guide 110";
 
 #[derive(Clone, Copy)]
-pub(super) struct Layout {
+struct Layout {
     translucent: bool,
     scale: f32,
     height: f32,
 }
 
 impl Layout {
-    pub(super) fn new(viewport: Size<Pixels>) -> Self {
+    fn new(viewport: Size<Pixels>) -> Self {
         let scale = (f32::from(viewport.width) / CANVAS_WIDTH).max(f32::EPSILON);
         Self {
             scale,

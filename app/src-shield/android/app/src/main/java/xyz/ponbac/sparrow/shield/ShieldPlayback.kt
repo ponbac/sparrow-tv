@@ -181,17 +181,28 @@ class ShieldPlayback(
   }
 
   private var ambientEpoch = 0L
+  private var lastAmbientAt = 0L
   private var resumed = false
 
-  fun setAmbientSampling(epoch: Long) { main.post { ambientEpoch = epoch } }
+  fun setAmbientSampling(epoch: Long) {
+    main.post {
+      ambientEpoch = epoch
+      lastAmbientAt = 0L
+    }
+  }
 
   fun setAmbientResumed(value: Boolean) { resumed = value }
 
-  private fun publishAmbient(bitmap: Bitmap, epoch: Long) {
-    val tiny = Bitmap.createScaledBitmap(bitmap, 4, 3, true)
-    val colors = IntArray(12)
-    tiny.getPixels(colors, 0, 4, 0, 0, 4, 3)
-    if (tiny !== bitmap) tiny.recycle()
+  private fun publishAmbient(pixels: IntArray, width: Int, height: Int, epoch: Long) {
+    val now = android.os.SystemClock.elapsedRealtime()
+    if (!ValueAnimator.areAnimatorsEnabled() && lastAmbientAt != 0L && now - lastAmbientAt < 3000L) return
+    lastAmbientAt = now
+    // Sample the centres of a 4 × 3 grid from the rolling still's pixels.
+    val colors = IntArray(12) { i ->
+      val x = (2 * (i % 4) + 1) * width / 8
+      val y = (2 * (i / 4) + 1) * height / 6
+      pixels[y * width + x]
+    }
     fun average(vararg positions: Int): Int {
       fun channel(shift: Int) = positions.sumOf { (colors[it] ushr shift) and 255 } / positions.size
       return (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
@@ -234,12 +245,12 @@ class ShieldPlayback(
         PixelCopy.request(surface, bitmap, { result ->
           try {
             if (result == PixelCopy.SUCCESS) {
-              if (epoch != 0L && epoch == ambientEpoch && resumed && !destroyed &&
-                  binding?.presentation == presentation && placement.visiblePicture() === surface) {
-                publishAmbient(bitmap, epoch)
-              }
               val colors = IntArray(bitmap.width * bitmap.height)
               bitmap.getPixels(colors, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+              if (epoch != 0L && epoch == ambientEpoch && resumed && !destroyed &&
+                  binding?.presentation == presentation && placement.visiblePicture() === surface) {
+                publishAmbient(colors, bitmap.width, bitmap.height, epoch)
+              }
               val bgra = ByteBuffer.allocate(colors.size * 4).order(ByteOrder.LITTLE_ENDIAN)
               bgra.asIntBuffer().put(colors)
               complete(bgra.array(), bitmap.width, bitmap.height)

@@ -216,7 +216,6 @@ fn ruler(layout: Layout, frame: TimelineFrame, now: DateTime<FixedOffset>) -> Di
     });
     layout
         .rect(0., 0., BOARD_WIDTH, RULER_HEIGHT)
-        .when(!layout.translucent, |ruler| ruler.bg(rgb(INK)))
         .child(
             layout
                 .rect(6., 12., CHANNEL_WIDTH - 6., 24.)

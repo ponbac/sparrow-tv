@@ -25,6 +25,8 @@ CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "sparro
 
 def media_file(i, ext):
     stem = "0-scenes" if i == 0 and ext == "mp4" else str(i)
+    if i == 1 and ext == "mp4":
+        stem = "1-drift"
     return CACHE / f"{stem}.{ext}"
 
 
@@ -46,6 +48,8 @@ def generate_media():
                          "fontcolor=white:x=(w-tw)/2:y=(h-th)/2", "-frames:v", "1"]
             else:
                 scene_filter = "hue=h=120*floor(t/3)," if i == 0 else ""
+                if i == 1:
+                    scene_filter = "hue=h=45*t,"
                 args += ["-f", "lavfi", "-i", f"sine=frequency={220 + i * 16}",
                          "-vf", f"{scene_filter}drawtext=text='{name}':fontcolor=white:fontsize=46:"
                          "x=(w-tw)/2+60*sin(t*PI/4):y=(h-th)/2+40*cos(t*PI/4)",
