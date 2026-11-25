@@ -143,24 +143,22 @@ fn start_renderer() {
             .detach();
             cx.spawn(async move |cx| {
                 while let Some(update) = activity_updates.recv().await {
-                    cx.update(|cx| {
-                        let (id, event) = match update {
-                            ActivityUpdate::ReduceMotion(reduce) => {
-                                return cx.set_reduce_motion(reduce);
-                            }
-                            ActivityUpdate::Window(id, event) => (id, event),
-                        };
-                        let window = cx
-                            .global::<ActivityWindows>()
-                            .0
-                            .get(&id)
-                            .and_then(AnyWindowHandle::downcast::<guide_surface::GuideSurface>);
-                        if let Some(window) = window {
-                            let _ = window.update(cx, |view, window, cx| {
-                                view.activity_event(event, window, cx);
-                            });
+                    match update {
+                        ActivityUpdate::ReduceMotion(reduce) => {
+                            cx.update(|cx| cx.set_reduce_motion(reduce))
                         }
-                    });
+                        ActivityUpdate::Window(id, event) => cx.update(|cx| {
+                            let window =
+                                cx.global::<ActivityWindows>().0.get(&id).and_then(
+                                    AnyWindowHandle::downcast::<guide_surface::GuideSurface>,
+                                );
+                            if let Some(window) = window {
+                                let _ = window.update(cx, |view, window, cx| {
+                                    view.activity_event(event, window, cx);
+                                });
+                            }
+                        }),
+                    }
                 }
             })
             .detach();

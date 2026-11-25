@@ -1,11 +1,11 @@
-//! Signal waves share one clock so their phase stays aligned on a slow frame.
+//! Playback signal mark for tuning, reconnecting, and the landing into live playback.
 use std::time::Duration;
 
 use gpui::{
     Animation, AnimationExt, AnyElement, Div, Transformation, div, prelude::*, rgb, size, svg,
 };
 
-use super::{ERROR, ICE, Layout, PANEL, PlaybackOverlay, PlaybackStage, TALLY, TEXT};
+use super::{AMBER, ERROR, ICE, Layout, PANEL, PlaybackOverlay, PlaybackStage, TALLY, TEXT};
 
 const LAND: Duration = Duration::from_millis(550);
 const INNER: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 24"><path d="M15.5 7.5a8 8 0 0 0 0 9m17-9a8 8 0 0 1 0 9" fill="none" stroke="white" stroke-width="2.6" stroke-linecap="round"/></svg>"#;
@@ -16,16 +16,36 @@ pub(super) fn render(layout: Layout, playback: &PlaybackOverlay<'_>, focused: bo
         .relative()
         .flex_none()
         .w(layout.px(42.))
-        .h(layout.px(24.))
-        .when(focused, |frame| frame.rounded_full().bg(rgb(PANEL)));
+        .h(layout.px(24.));
+    let backing = move |frame: Div, fold: f32| {
+        frame.when(focused, |frame| {
+            let width = 20. + 22. * fold;
+            let height = 20. + 4. * fold;
+            frame.child(
+                layout
+                    .rect((42. - width) / 2., (24. - height) / 2., width, height)
+                    .rounded_full()
+                    .bg(rgb(PANEL)),
+            )
+        })
+    };
     let stage = playback.stage;
     match stage {
         PlaybackStage::Tuning | PlaybackStage::Reconnecting => {
-            let (color, period, id) = if stage == PlaybackStage::Tuning {
-                (ICE, 1100, "signal-tuning")
+            let color = signal_color(stage);
+            let (period, id) = if stage == PlaybackStage::Tuning {
+                (1100, "signal-tuning")
             } else {
-                (0xffb45d, 1600, "signal-reconnecting")
+                (1600, "signal-reconnecting")
             };
+            let frame = backing(frame, 1.);
+            if playback.reduce_motion {
+                return frame
+                    .child(arcs(layout, INNER, color, 1., 0.85))
+                    .child(arcs(layout, OUTER, color, 1., 0.55))
+                    .child(dot(layout, color, 10.))
+                    .into_any_element();
+            }
             frame
                 .with_animation(
                     id,
@@ -38,42 +58,56 @@ pub(super) fn render(layout: Layout, playback: &PlaybackOverlay<'_>, focused: bo
                         frame
                             .child(arcs(layout, INNER, color, 1., 0.32 + 0.68 * inner))
                             .child(arcs(layout, OUTER, color, 1., 0.32 + 0.68 * outer))
-                            .child(dot(layout, color, 7. + 2. * inner))
+                            .child(dot(layout, color, 7.5 + 2.5 * inner))
                     },
                 )
                 .into_any_element()
         }
         PlaybackStage::Playing => {
-            if let Some(start) = playback
-                .playing_since
-                .filter(|start| start.elapsed() < LAND)
+            if let Some((start, outgoing)) = playback
+                .signal_landing
+                .filter(|(start, _)| start.elapsed() < LAND)
             {
                 return frame
                     .with_animation(
                         "signal-landing",
                         Animation::new(LAND),
                         move |frame, delta| {
-                            // Tie the landing to the stage change across chrome remounts.
+                            // Reduced motion supplies the end delta. Otherwise keep the original
+                            // stage-change clock across chrome remounts.
                             let t = if delta >= 1. {
                                 1.
                             } else {
                                 (start.elapsed().as_secs_f32() / LAND.as_secs_f32()).min(1.)
                             };
-                            let fold = (1. - t).powi(3);
-                            frame
-                                .child(arcs(layout, INNER, TALLY, 0.35 + 0.65 * fold, fold))
-                                .child(arcs(layout, OUTER, TALLY, 0.35 + 0.65 * fold, fold))
-                                .child(dot(layout, TALLY, 9. + 5. * pulse(t)))
+                            let fold = (1. - (t / 0.65).min(1.)).powi(2);
+                            let color = signal_color(outgoing);
+                            backing(frame, fold)
+                                .child(arcs(layout, INNER, color, 0.35 + 0.65 * fold, 0.75 * fold))
+                                .child(arcs(layout, OUTER, color, 0.35 + 0.65 * fold, 0.75 * fold))
+                                .child(dot(layout, TALLY, 10. + 5. * pulse(t)))
                         },
                     )
                     .into_any_element();
             }
-            frame.child(dot(layout, TALLY, 9.)).into_any_element()
+            backing(frame, 0.)
+                .child(dot(layout, TALLY, 10.))
+                .into_any_element()
         }
-        PlaybackStage::Paused | PlaybackStage::Stopping => {
-            frame.child(dot(layout, TEXT, 9.)).into_any_element()
-        }
-        PlaybackStage::Failed => frame.child(dot(layout, ERROR, 9.)).into_any_element(),
+        PlaybackStage::Paused | PlaybackStage::Stopping => backing(frame, 0.)
+            .child(dot(layout, TEXT, 10.))
+            .into_any_element(),
+        PlaybackStage::Failed => backing(frame, 0.)
+            .child(dot(layout, ERROR, 10.))
+            .into_any_element(),
+    }
+}
+
+fn signal_color(stage: PlaybackStage) -> u32 {
+    if stage == PlaybackStage::Reconnecting {
+        AMBER
+    } else {
+        ICE
     }
 }
 

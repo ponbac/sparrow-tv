@@ -44,7 +44,8 @@ mod tuning;
 #[derive(Default)]
 pub(super) struct PlaybackUi {
     state: TvPlaybackSnapshot,
-    playing_since: Option<Instant>,
+    start_origin: Option<PlaybackStage>,
+    signal_landing: Option<(Instant, PlaybackStage)>,
     subject: Option<PlaybackSubject>,
     subject_task: Option<gpui::Task<()>>,
     tune_revision: u64,
@@ -156,6 +157,9 @@ impl PlaybackUi {
 
     fn stage(&self) -> PlaybackStage {
         match self.state.phase {
+            TvPlaybackPhase::Starting if self.start_origin == Some(PlaybackStage::Reconnecting) => {
+                PlaybackStage::Reconnecting
+            }
             TvPlaybackPhase::Idle | TvPlaybackPhase::Starting | TvPlaybackPhase::ReplacingAudio => {
                 PlaybackStage::Tuning
             }
@@ -216,6 +220,7 @@ impl PlaybackUi {
     fn overlay<R>(
         &self,
         now: DateTime<Utc>,
+        reduce_motion: bool,
         render: impl FnOnce(&PlaybackOverlay<'_>) -> R,
     ) -> Option<R> {
         let selected = self.shown()?;
@@ -263,7 +268,8 @@ impl PlaybackUi {
             programme,
             clock: &clock,
             stage: self.stage(),
-            playing_since: self.playing_since,
+            signal_landing: self.signal_landing,
+            reduce_motion,
             audio_track: self.selected_audio_track().map(AudioTrack::display_name),
             quality: selected.quality.map(quality_name),
             copy_label: self.copy.label(),
@@ -276,8 +282,13 @@ impl PlaybackUi {
         }))
     }
 
-    pub(super) fn render(&self, window: &Window, now: DateTime<Utc>) -> Option<Div> {
-        self.overlay(now, |overlay| {
+    pub(super) fn render(
+        &self,
+        window: &Window,
+        now: DateTime<Utc>,
+        reduce_motion: bool,
+    ) -> Option<Div> {
+        self.overlay(now, reduce_motion, |overlay| {
             if self.fullscreen() {
                 let actions = if self.controls_visible {
                     self.fullscreen_actions()
@@ -342,8 +353,26 @@ impl GuideSurface {
             self.playback.reset_zap();
         }
         if began_playing {
-            self.playback.playing_since = Some(Instant::now());
+            let outgoing = self.playback.stage();
+            self.playback.signal_landing = (self.playback.start_origin
+                != Some(PlaybackStage::Paused)
+                && matches!(
+                    outgoing,
+                    PlaybackStage::Tuning | PlaybackStage::Reconnecting
+                ))
+            .then(|| (Instant::now(), outgoing));
         }
+        // Both retry and resume pass through Starting while the transport is rebound.
+        self.playback.start_origin = if snapshot.phase == TvPlaybackPhase::Starting
+            && snapshot.selected == self.playback.state.selected
+        {
+            match self.playback.state.phase {
+                TvPlaybackPhase::Starting => self.playback.start_origin,
+                _ => Some(self.playback.stage()),
+            }
+        } else {
+            None
+        };
         self.playback.state = snapshot;
         let fullscreen = self.playback.fullscreen();
         let entering = !was_fullscreen && fullscreen;

@@ -1026,7 +1026,9 @@ impl Render for GuideSurface {
             self.icons.hide();
             return root.child(setup);
         }
-        let player = self.playback.render(window, self.now.to_utc());
+        let player = self
+            .playback
+            .render(window, self.now.to_utc(), cx.reduce_motion());
         if self.playback.fullscreen() {
             self.icons.hide();
             return root.children(player);
