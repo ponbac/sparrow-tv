@@ -1,5 +1,9 @@
 package xyz.ponbac.sparrow.shield
 
+import android.graphics.Bitmap
+import android.view.PixelCopy
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import android.animation.ValueAnimator
 import android.app.Activity
 import android.os.Build
@@ -172,6 +176,57 @@ class ShieldPlayback(
           current.focus.setPlaying(!effective.paused)
         }
         applied.result()
+      }
+    }
+  }
+
+  fun capturePlaybackFrame(
+    host: Long, generation: Long, request: Long, session: String, stream: String,
+  ): Boolean {
+    val identity = NativePlaybackIdentity.parse(session, stream) ?: return false
+    val presentation = Presentation(generation, identity)
+    if (destroyed || host != hostId || generation <= 0 || request <= 0) return false
+    return main.post {
+      if (destroyed) return@post
+      val surface = placement.pictureSurface()
+      fun complete(pixels: ByteArray?, width: Int = 0, height: Int = 0) {
+        val valid = !destroyed && binding?.presentation == presentation
+        nativePlaybackFrame(host, generation, request, width, height, if (valid) pixels else null)
+      }
+      if (binding?.presentation != presentation || surface == null || surface.width <= 0 || surface.height <= 0) {
+        complete(null)
+        return@post
+      }
+      val scale = minOf(1f, 640f / surface.width, 360f / surface.height)
+      val bitmap = try {
+        Bitmap.createBitmap(
+          maxOf(1, (surface.width * scale).toInt()),
+          maxOf(1, (surface.height * scale).toInt()),
+          Bitmap.Config.ARGB_8888,
+        )
+      } catch (_: RuntimeException) {
+        complete(null)
+        return@post
+      }
+      try {
+        PixelCopy.request(surface, bitmap, { result ->
+          try {
+            if (result == PixelCopy.SUCCESS) {
+              val colors = IntArray(bitmap.width * bitmap.height)
+              bitmap.getPixels(colors, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+              val bgra = ByteBuffer.allocate(colors.size * 4).order(ByteOrder.LITTLE_ENDIAN)
+              bgra.asIntBuffer().put(colors)
+              complete(bgra.array(), bitmap.width, bitmap.height)
+            } else complete(null)
+          } catch (_: RuntimeException) {
+            complete(null)
+          } finally {
+            bitmap.recycle()
+          }
+        }, main)
+      } catch (_: RuntimeException) {
+        bitmap.recycle()
+        complete(null)
       }
     }
   }
@@ -358,6 +413,10 @@ class ShieldPlayback(
     host: Long, generation: Long, request: Long, operation: Int, accepted: Boolean, status: String,
   )
 
+  private external fun nativePlaybackFrame(
+    host: Long, generation: Long, request: Long, width: Int, height: Int, pixels: ByteArray?,
+  )
+
   private external fun nativePlaybackSignal(host: Long, generation: Long, signal: Int)
 
   private external fun readNativePlayback(
@@ -393,6 +452,8 @@ private class ShieldPlaybackPlacement(
       waitingForFrame = true
     }
   }
+
+  fun pictureSurface() = mountedPlayer?.videoSurfaceView as? SurfaceView
 
   fun firstFrame(report: () -> Unit) {
     if (!waitingForFrame) return report()

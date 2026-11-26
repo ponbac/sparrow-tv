@@ -16,6 +16,7 @@ enum Call {
     SelectAudio,
     Suspend,
     StopTransport,
+    Capture,
     StartPicture,
     StopPicture(TvPresentationStop),
     Lifecycle(bool),
@@ -38,6 +39,7 @@ struct Engine {
     status_unavailable: bool,
     frame_count: Option<u64>,
     fail_release: bool,
+    fail_capture: bool,
     controls_unavailable: bool,
     viewport_unavailable: bool,
 }
@@ -140,6 +142,24 @@ impl Transport for Fixture {
 }
 
 impl TvPresentation for Fixture {
+    fn capture_frame(&self, _: TvPresentationKey) -> TvPresentationFuture<Arc<TvRecoveryFrame>> {
+        let engine = self.0.clone();
+        Box::pin(async move {
+            let mut engine = engine.lock().unwrap();
+            assert!(engine.picture_open);
+            engine.calls.push(Call::Capture);
+            if engine.fail_capture {
+                Err(AndroidPlaybackError)
+            } else {
+                Ok(Arc::new(TvRecoveryFrame {
+                    width: 1,
+                    height: 1,
+                    bgra: vec![42; 4],
+                }))
+            }
+        })
+    }
+
     fn start(
         &self,
         _: TvPresentationKey,
@@ -647,12 +667,12 @@ async fn stopping_a_pending_open_releases_it_without_starting_a_presentation() {
 async fn source_change_confirms_release_and_fences_tune_until_the_guard_drops() {
     let (fixture, owner) = setup();
     let (commands, inbox) = mpsc::channel(32);
-    let (published, snapshot) = watch::channel(Snapshot::default());
+    let snapshot = owner.published.subscribe();
     let runner = super::super::TvPlaybackRunner {
         commands: commands.clone(),
         snapshot,
     };
-    let owner_task = tokio::spawn(owner.run(inbox, published));
+    let owner_task = tokio::spawn(owner.run(inbox));
     runner.host_visibility(1, true).await.unwrap();
     commands
         .send(Command::SetViewports {
@@ -841,13 +861,72 @@ async fn decoder_deadlines_use_first_frame_progress_and_reset_recovery_after_six
     assert_eq!(owner.snapshot.recovery_attempts, 0);
     owner.on_deadline(first + Duration::from_secs(69)).await;
     assert_eq!(owner.snapshot.phase, Phase::Playing);
+    let captures = || {
+        fixture
+            .calls()
+            .iter()
+            .filter(|c| **c == Call::Capture)
+            .count()
+    };
+    let before_interruption = captures();
+    assert!((1..=30).contains(&before_interruption));
+    let mut snapshots = owner.published.subscribe();
+    let ack = tokio::spawn(async move {
+        snapshots
+            .wait_for(|s| s.still_handoff.is_some())
+            .await
+            .unwrap()
+            .still_handoff
+            .as_ref()
+            .unwrap()
+            .painted();
+    });
     owner.on_deadline(first + Duration::from_secs(70)).await;
+    ack.await.unwrap();
+    assert_eq!(captures(), before_interruption);
+    assert!(owner.snapshot.recovery_frame.is_some());
+    let calls = fixture.calls();
+    let capture = calls.iter().rposition(|c| *c == Call::Capture).unwrap();
+    assert!(calls[capture + 1..].contains(&Call::StopPicture(TvPresentationStop::ClearPicture)));
+
+    assert!(fixture.0.lock().unwrap().retained_picture.is_none());
     assert_eq!(
         owner.snapshot.phase,
         Phase::Recovering {
             attempt: 1,
             failure: Failure::StreamInterrupted
         }
+    );
+    owner.on_deadline(owner.retry_at.unwrap()).await;
+    open(&mut owner).await;
+    assert!(owner.drive().await);
+    let key = owner.current_picture().unwrap().clone();
+    assert!(matches!(owner.snapshot.phase, Phase::Recovering { .. }));
+    owner
+        .presentation_event(&key, TvPresentationEvent::FirstFrame, Instant::now())
+        .await;
+    assert!(owner.snapshot.recovery_frame.is_none());
+    owner
+        .presentation_event(&key, TvPresentationEvent::StreamInterrupted, Instant::now())
+        .await;
+    assert!(owner.snapshot.recovery_frame.is_some());
+    owner.select(target(2), false);
+    assert!(owner.snapshot.recovery_frame.is_none());
+}
+
+#[tokio::test]
+async fn failed_capture_keeps_the_confirmed_native_picture() {
+    let (fixture, mut owner) = setup();
+    visible(&mut owner, 1).await;
+    let key = tune(&mut owner, target(1)).await;
+    fixture.0.lock().unwrap().fail_capture = true;
+    owner
+        .presentation_event(&key, TvPresentationEvent::StreamInterrupted, Instant::now())
+        .await;
+    assert!(owner.snapshot.recovery_frame.is_none());
+    assert_eq!(
+        fixture.0.lock().unwrap().retained_picture.as_ref(),
+        Some(&key)
     );
 }
 
@@ -877,7 +956,7 @@ async fn visible_host_handoffs_preserve_the_pending_recovery_deadline_and_budget
         }
     );
     owner.on_deadline(original_deadline).await;
-    assert_eq!(owner.snapshot.phase, Phase::Starting);
+    assert!(matches!(owner.snapshot.phase, Phase::Recovering { .. }));
 }
 
 #[tokio::test]
@@ -900,22 +979,22 @@ async fn pausing_retires_the_live_status() {
 #[tokio::test]
 async fn frame_samples_update_diagnostics_without_notifying_viewers() {
     let (fixture, mut owner) = setup();
-    let (published, mut updates) = watch::channel(Snapshot::default());
+    let mut updates = owner.published.subscribe();
     visible(&mut owner, 1).await;
     tune(&mut owner, target(1)).await;
     owner.on_deadline(owner.status_at.unwrap()).await;
-    owner.publish(&published);
+    owner.publish();
     assert_eq!(updates.borrow_and_update().phase, Phase::Playing);
 
     fixture.0.lock().unwrap().frame_count = Some(2);
     owner.on_deadline(owner.status_at.unwrap()).await;
-    owner.publish(&published);
+    owner.publish();
 
     assert_eq!(updates.borrow().status.unwrap().decoded_frames(), 2);
     assert!(!updates.has_changed().unwrap());
 
     owner.command(Command::Pause).await;
-    owner.publish(&published);
+    owner.publish();
     assert!(updates.has_changed().unwrap());
     let snapshot = updates.borrow_and_update();
     assert_eq!(snapshot.phase, Phase::Paused(TvPauseCause::User));

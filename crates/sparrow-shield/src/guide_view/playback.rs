@@ -69,6 +69,12 @@ pub(crate) enum PlaybackStage {
     Failed,
 }
 
+impl PlaybackOverlay<'_> {
+    fn show_field(&self) -> bool {
+        self.tuning_field() || self.still.is_some() || self.stage == PlaybackStage::Reconnecting
+    }
+}
+
 impl PlaybackStage {
     fn label(self) -> &'static str {
         match self {
@@ -91,6 +97,9 @@ pub(crate) struct PlaybackOverlay<'a> {
     pub(crate) first_picture: Option<Instant>,
     pub(crate) signal_landing: Option<(Instant, PlaybackStage)>,
     pub(crate) reduce_motion: bool,
+    pub(crate) hold_started: Option<Instant>,
+    pub(crate) still: Option<&'a std::sync::Arc<gpui::RenderImage>>,
+    pub(crate) attempt: u8,
     pub(crate) audio_track: Option<&'a str>,
     pub(crate) quality: Option<&'a str>,
     pub(crate) copy_label: &'static str,
@@ -275,7 +284,7 @@ pub(crate) fn docked_playback(viewport: Size<Pixels>, playback: &PlaybackOverlay
         .bg(rgb(PANEL))
         .when(focused, |caption| caption.bg(rgb(ICE)))
         .when(
-            !playback.tuning_field() || playback.stage == PlaybackStage::Playing,
+            !playback.show_field() || playback.stage == PlaybackStage::Playing,
             |caption| caption.child(signal_mark::render(layout, playback, focused)),
         )
         .child(
@@ -329,18 +338,24 @@ pub(crate) fn docked_playback(viewport: Size<Pixels>, playback: &PlaybackOverlay
             }),
             |root, since| root.child(tune::lock(layout, [left, top, width, height], since)),
         )
-        .when(playback.tuning_field(), |root| {
+        .when(playback.show_field(), |root| {
             root.child(tune::field(
                 layout,
                 bounds,
                 tune::FieldPlacement::Docked,
-                playback.reduce_motion,
+                playback,
             ))
         })
         .child(
             layout
                 .rect(left, top - 5., width, 5.)
-                .bg(rgb(if playback.tuning_field() { ICE } else { TALLY })),
+                .bg(rgb(match playback.stage {
+                    PlaybackStage::Reconnecting => AMBER,
+                    PlaybackStage::Failed => ERROR,
+                    PlaybackStage::Paused => DIM >> 8,
+                    PlaybackStage::Playing => TALLY,
+                    _ => ICE,
+                })),
         )
         .child(caption)
 }
@@ -358,7 +373,7 @@ pub(crate) fn fullscreen_playback(
         .font_family(SAIRA)
         .text_color(rgb(TEXT))
         .bg(rgb(INK))
-        .when(playback.tuning_field(), |root| {
+        .when(playback.show_field(), |root| {
             root.child(tune::field(
                 layout,
                 picture_reference(
@@ -368,7 +383,7 @@ pub(crate) fn fullscreen_playback(
                     },
                 ),
                 tune::FieldPlacement::Fullscreen,
-                playback.reduce_motion,
+                playback,
             ))
         });
     if actions.is_empty() {
@@ -413,7 +428,7 @@ fn fullscreen_head(layout: Layout, playback: &PlaybackOverlay<'_>) -> Div {
                 .items_center()
                 .gap(layout.px(12.))
                 .when(
-                    !playback.tuning_field() || playback.stage == PlaybackStage::Playing,
+                    !playback.show_field() || playback.stage == PlaybackStage::Playing,
                     |head| head.child(signal_mark::render(layout, playback, false)),
                 )
                 .child(

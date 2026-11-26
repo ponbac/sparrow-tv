@@ -43,6 +43,9 @@ mod tuning;
 
 #[derive(Default)]
 pub(super) struct PlaybackUi {
+    still: Option<std::sync::Arc<gpui::RenderImage>>,
+    hold_started: Option<Instant>,
+    release_still: Option<gpui::Task<()>>,
     state: TvPlaybackSnapshot,
     start_origin: Option<PlaybackStage>,
     signal_landing: Option<(Instant, PlaybackStage)>,
@@ -104,6 +107,13 @@ impl PlayerMenu {
 }
 
 impl PlaybackUi {
+    pub(super) fn drop_still(&mut self, cx: &mut gpui::App) {
+        self.hold_started = None;
+        if let Some(image) = self.still.take() {
+            cx.drop_image(image, None);
+        }
+    }
+
     pub(super) fn fullscreen(&self) -> bool {
         self.state.controls.fullscreen && self.state.selected.is_some()
     }
@@ -157,9 +167,6 @@ impl PlaybackUi {
 
     fn stage(&self) -> PlaybackStage {
         match self.state.phase {
-            TvPlaybackPhase::Starting if self.start_origin == Some(PlaybackStage::Reconnecting) => {
-                PlaybackStage::Reconnecting
-            }
             TvPlaybackPhase::Idle | TvPlaybackPhase::Starting | TvPlaybackPhase::ReplacingAudio => {
                 PlaybackStage::Tuning
             }
@@ -277,6 +284,9 @@ impl PlaybackUi {
                     .is_some_and(|target| target.channel == selected.channel)
             }),
             reduce_motion,
+            still: self.still.as_ref(),
+            hold_started: self.hold_started,
+            attempt: self.state.recovery_attempts,
             audio_track: self.selected_audio_track().map(AudioTrack::display_name),
             quality: selected.quality.map(quality_name),
             copy_label: self.copy.label(),
@@ -296,6 +306,12 @@ impl PlaybackUi {
         reduce_motion: bool,
     ) -> Option<Div> {
         self.overlay(now, reduce_motion, |overlay| {
+            if overlay.still.is_some()
+                && let Some(handoff) = self.state.still_handoff.clone()
+            {
+                window.on_next_frame(move |_, _| handoff.painted());
+            }
+
             if self.fullscreen() {
                 let actions = if self.controls_visible {
                     self.fullscreen_actions()
@@ -345,7 +361,14 @@ impl PlaybackUi {
 }
 
 impl GuideSurface {
-    pub(super) fn playback_update(&mut self, snapshot: TvPlaybackSnapshot, cx: &mut Context<Self>) {
+    pub(super) fn playback_update(
+        &mut self,
+        mut snapshot: TvPlaybackSnapshot,
+        cx: &mut Context<Self>,
+    ) {
+        if snapshot.visible_host != Some(self.host) {
+            snapshot.still_handoff = None;
+        }
         let prior_subject = self.playback.shown().map(|target| target.channel.clone());
         let was_fullscreen = self.playback.fullscreen();
         let began_playing = self.playback.state.phase != TvPlaybackPhase::Playing
@@ -381,7 +404,7 @@ impl GuideSurface {
             };
             self.playback.signal_landing = lands.then(|| (Instant::now(), outgoing));
         }
-        // Both retry and resume pass through Starting while the transport is rebound.
+        // A resume passes through Starting and must not replay the tuning landing.
         self.playback.start_origin = if snapshot.phase == TvPlaybackPhase::Starting
             && snapshot.selected == self.playback.state.selected
         {
@@ -392,6 +415,41 @@ impl GuideSurface {
         } else {
             None
         };
+        let previous = self.playback.state.recovery_frame.as_ref();
+        if let Some(frame) = snapshot.recovery_frame.as_ref()
+            && previous.is_none_or(|old| !std::sync::Arc::ptr_eq(old, frame))
+        {
+            self.playback.release_still = None;
+            self.playback.drop_still(cx);
+            self.playback.hold_started = Some(Instant::now());
+            self.playback.still = image::RgbaImage::from_raw(
+                frame.width,
+                frame.height,
+                frame.bgra.clone(),
+            )
+            .map(|pixels| std::sync::Arc::new(gpui::RenderImage::new([image::Frame::new(pixels)])));
+        } else if self.playback.still.is_some() && snapshot.recovery_frame.is_none() {
+            if began_playing
+                && !cx.reduce_motion()
+                && snapshot.selected == self.playback.state.selected
+            {
+                // Keep the GPUI underlay through the native first-frame reveal.
+                self.playback.release_still = Some(cx.spawn(async move |view, cx| {
+                    cx.background_executor()
+                        .timer(crate::picture_reveal_duration())
+                        .await;
+                    let _ = view.update(cx, |view, cx| {
+                        view.playback.drop_still(cx);
+                        cx.notify();
+                    });
+                }));
+            } else if snapshot.phase != TvPlaybackPhase::Playing
+                || self.playback.release_still.is_none()
+            {
+                self.playback.release_still = None;
+                self.playback.drop_still(cx);
+            }
+        }
         self.playback.state = snapshot;
         let fullscreen = self.playback.fullscreen();
         let entering = !was_fullscreen && fullscreen;
