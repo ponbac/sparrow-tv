@@ -586,7 +586,7 @@ impl GuideSurface {
             }
             if self.playback.docked()
                 && key == ScreenKey::Arrow(Direction::Left)
-                && matches!(self.screen.focus(), ScreenFocus::Toolbar(_))
+                && self.screen.focus() == ScreenFocus::Toolbar(ToolbarFocus::Search)
             {
                 self.playback.dock_focus = true;
                 cx.notify();
