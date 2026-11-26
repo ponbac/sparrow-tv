@@ -928,16 +928,20 @@ impl Owner {
             self.snapshot.quality_fallback = Some(quality);
             return;
         }
+        // The host can park a visible picture briefly, for example while the
+        // Guide flies a still to fullscreen. A cached frame stays usable then;
+        // only a fresh capture needs the picture on screen.
+        let visible = self.current_viewport().is_some();
         if retryable
             && self.snapshot.recovery_frame.is_none()
-            && self.current_viewport().is_some()
             && let Some(session) = self.session.as_mut()
             && session.first_frame.is_some()
             && let Some(key) = session.active_picture().cloned()
         {
             self.snapshot.recovery_frame = match session.clean_frame.take() {
                 Some(frame) => Some(frame),
-                None => self.capture_frame(key).await,
+                None if visible => self.capture_frame(key).await,
+                None => None,
             };
         }
         let attempt = self.snapshot.recovery_attempts;

@@ -940,6 +940,38 @@ async fn decoder_deadlines_use_first_frame_progress_and_reset_recovery_after_six
 }
 
 #[tokio::test]
+async fn a_parked_picture_recovers_with_its_cached_still() {
+    let (fixture, mut owner) = setup();
+    visible(&mut owner, 1).await;
+    let key = tune(&mut owner, target(1)).await;
+    owner.session.as_mut().unwrap().clean_frame = Some(Arc::new(TvRecoveryFrame {
+        width: 1,
+        height: 1,
+        bgra: vec![7; 4],
+    }));
+    // The Guide parks the native picture while it flies a still.
+    owner
+        .command(Command::SetViewports {
+            host: 1,
+            docked: None,
+            fullscreen: None,
+        })
+        .await;
+    owner
+        .presentation_event(&key, TvPresentationEvent::StreamInterrupted, Instant::now())
+        .await;
+    assert_eq!(
+        owner
+            .snapshot
+            .recovery_frame
+            .as_ref()
+            .map(|frame| frame.bgra[0]),
+        Some(7)
+    );
+    assert!(!fixture.calls().contains(&Call::Capture));
+}
+
+#[tokio::test]
 async fn a_stalled_capture_does_not_hold_up_the_next_command() {
     let (fixture, mut owner) = setup();
     visible(&mut owner, 1).await;
