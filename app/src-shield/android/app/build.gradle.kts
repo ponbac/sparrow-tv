@@ -49,12 +49,13 @@ val stageLauncherResources = tasks.register<Sync>("stageLauncherResources") {
     into(launcherResources)
 }
 
-val guideNotices = layout.buildDirectory.dir("generated/guide-notices")
-val stageGuideNotices = tasks.register<Sync>("stageGuideNotices") {
+val guideAssetsDir = layout.buildDirectory.dir("generated/guide-assets")
+val stageGuideAssets = tasks.register<Sync>("stageGuideAssets") {
     val guideAssets = rootProject.file("../../../crates/sparrow-shield/assets")
-    from(guideAssets.resolve("fonts/OFL-Saira.txt"))
-    from(guideAssets.resolve("icons/LICENSE-Lucide.txt"))
-    into(guideNotices.map { it.dir("licenses") })
+    from(guideAssets.resolve("fonts/sparrow-guide-80-700.ttf"))
+    from(guideAssets.resolve("fonts/OFL-Saira.txt")) { into("licenses") }
+    from(guideAssets.resolve("icons/LICENSE-Lucide.txt")) { into("licenses") }
+    into(guideAssetsDir)
 }
 
 android {
@@ -88,7 +89,7 @@ android {
     sourceSets.named("main") {
         java.srcDir(rootProject.file("../../android-playback/src/main/java"))
         res.srcDir(launcherResources)
-        assets.srcDir(guideNotices)
+        assets.srcDir(guideAssetsDir)
         jniLibs.setSrcDirs(nativeLibraries.orNull?.let(::listOf).orEmpty())
     }
     sourceSets.named("test") {
@@ -103,7 +104,7 @@ kotlin {
 }
 
 tasks.named("preBuild") {
-    dependsOn(stageLauncherResources, stageGuideNotices)
+    dependsOn(stageLauncherResources, stageGuideAssets)
 }
 
 val verifyNativeLibrary = tasks.register("verifyNativeLibrary") {

@@ -45,6 +45,7 @@ pub(super) fn render(
     minute: super::MinuteFrame<'_>,
     icons: &ChannelIcons,
     slide: super::SlideFrame,
+    wave: super::arrival::Wave,
 ) -> Div {
     let height = (layout.height - BOARD_TOP).max(0.);
     let focus = match screen.focus() {
@@ -65,6 +66,10 @@ pub(super) fn render(
     }
     let families = screen.families();
     let scroll = screen.scroll_offset();
+    let visible = screen.visible_families(0);
+    let first_row = visible.start / NOW_COLUMNS;
+    let last_diagonal =
+        (visible.end.saturating_sub(1) / NOW_COLUMNS).saturating_sub(first_row) + NOW_COLUMNS - 1;
     for (ordinal, index) in screen.visible_families(OVERSCAN_LINES).enumerate() {
         let focus = focus.filter(|focus| focus.family() == Some(index));
         let (offset, opacity) = slide.item(ordinal / NOW_COLUMNS, SLIDE_TRAVEL, focus.is_some());
@@ -73,9 +78,10 @@ pub(super) fn render(
             .rect(x - GUTTER + offset, y - BOARD_TOP, w, h)
             .opacity(opacity);
         let family = &families[index];
+        let diagonal = (index / NOW_COLUMNS).saturating_sub(first_row) + index % NOW_COLUMNS;
         board = board.child(card(
             layout,
-            rect,
+            wave.card(layout, rect, diagonal, last_diagonal, focus.is_some()),
             screen,
             index,
             focus,

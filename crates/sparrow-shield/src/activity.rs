@@ -17,6 +17,7 @@ type ActivityRef = Arc<Global<JObject<'static>>>;
 static ACTIVITIES: LazyLock<Mutex<HashMap<u64, ActivityRef>>> = LazyLock::new(Mutex::default);
 
 pub(super) enum Event {
+    Presented,
     Back,
     PictureBottom(i32),
     Key { code: i32, repeat: i32 },
@@ -98,6 +99,18 @@ pub(super) fn enable_key_routing(id: u64) {
             jni_str!("setHostKeyRouting"),
             jni_sig!("(JZ)V"),
             &[JValue::Long(id as i64), JValue::Bool(true)],
+        )?;
+        Ok(())
+    });
+}
+
+pub(super) fn guide_presented(id: u64) {
+    call(id, |env, activity| {
+        env.call_method(
+            activity,
+            jni_str!("guidePresented"),
+            jni_sig!("(J)V"),
+            &[JValue::Long(id as i64)],
         )?;
         Ok(())
     });

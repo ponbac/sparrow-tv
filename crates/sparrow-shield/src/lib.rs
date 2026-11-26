@@ -317,6 +317,15 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeAnima
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativePresented(
+    _: EnvUnowned,
+    _: JObject,
+    id: i64,
+) {
+    enqueue_activity(id, activity::Event::Presented);
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeBack(
     _: EnvUnowned,
     _: JObject,

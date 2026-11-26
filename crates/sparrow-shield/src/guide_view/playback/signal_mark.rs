@@ -40,21 +40,9 @@ pub(super) fn render(layout: Layout, playback: &PlaybackOverlay<'_>, focused: bo
             };
             let frame = backing(frame, 1.);
             if playback.reduce_motion {
-                return frame
-                    .child(arcs(layout, INNER, color, 1., 0.85))
-                    .child(arcs(layout, OUTER, color, 1., 0.55))
-                    .child(dot(layout, color, 10.))
-                    .into_any_element();
+                return steady(layout, frame, color).into_any_element();
             }
-            frame
-                .with_animation(
-                    id,
-                    Animation::new(Duration::from_millis(period))
-                        .repeat()
-                        .with_max_fps(24.),
-                    move |frame, t| waves(frame, layout, color, t),
-                )
-                .into_any_element()
+            searching(layout, frame, color, period, id)
         }
         PlaybackStage::Playing => {
             if let Some((start, outgoing)) = playback
@@ -142,4 +130,30 @@ fn arcs(
         .with_transformation(Transformation::scale(size(scale, scale)))
         .text_color(rgb(color))
         .opacity(opacity)
+}
+
+fn searching(layout: Layout, frame: Div, color: u32, period: u64, id: &'static str) -> AnyElement {
+    frame
+        .with_animation(
+            id,
+            Animation::new(Duration::from_millis(period))
+                .repeat()
+                .with_max_fps(24.),
+            move |frame, t| {
+                let inner = pulse(t);
+                let outer = pulse((t + 0.8).fract());
+                frame
+                    .child(arcs(layout, INNER, color, 1., 0.32 + 0.68 * inner))
+                    .child(arcs(layout, OUTER, color, 1., 0.32 + 0.68 * outer))
+                    .child(dot(layout, color, 7.5 + 2.5 * inner))
+            },
+        )
+        .into_any_element()
+}
+
+pub(in crate::guide_view) fn steady(layout: Layout, frame: Div, color: u32) -> Div {
+    frame
+        .child(arcs(layout, INNER, color, 1., 0.85))
+        .child(arcs(layout, OUTER, color, 1., 0.55))
+        .child(dot(layout, color, 10.))
 }

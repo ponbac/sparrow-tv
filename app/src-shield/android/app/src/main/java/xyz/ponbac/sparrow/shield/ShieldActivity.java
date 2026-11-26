@@ -35,6 +35,7 @@ public final class ShieldActivity extends Activity implements SurfaceHolder.Call
     private ShieldPlayback playback;
     private boolean started;
     private boolean hostKeyRouting;
+    private OpeningGuideView openingGuide;
 
     static {
         System.loadLibrary("sparrow_shield");
@@ -75,6 +76,10 @@ public final class ShieldActivity extends Activity implements SurfaceHolder.Call
         nativeStart(getApplicationContext(), getDataDir().getAbsolutePath());
         nativeRegisterHost(hostId);
         updateMotionPreference();
+        if (hostId == 1) {
+            openingGuide = new OpeningGuideView(this);
+            root.addView(openingGuide);
+        }
         setContentView(root);
         root.requestFocus();
     }
@@ -294,6 +299,16 @@ public final class ShieldActivity extends Activity implements SurfaceHolder.Call
         });
     }
 
+    public void guidePresented(long id) {
+        postForHost(id, () -> {
+            if (openingGuide != null) {
+                ((FrameLayout) openingGuide.getParent()).removeView(openingGuide);
+                openingGuide = null;
+            }
+            nativePresented(id);
+        });
+    }
+
     public void finishFromNative(long id) {
         postForHost(id, () -> {
             if (!editor.isOpen()) {
@@ -403,6 +418,7 @@ public final class ShieldActivity extends Activity implements SurfaceHolder.Call
     private native void nativeDestroy(long id, boolean finishing);
     private native void nativeKey(int keyCode, int action, int modifiers);
     private native void nativeHostKey(long id, int keyCode, int action, int modifiers, int repeatCount);
+    private native void nativePresented(long id);
     private native void nativeBack(long id);
     private native void nativeEditorEvent(long id, long generation, int event, String text);
     private native void nativeSourceDraftStatus(long id, long session, long attempt, int status);
