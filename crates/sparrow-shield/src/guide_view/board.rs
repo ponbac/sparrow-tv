@@ -70,7 +70,7 @@ pub(super) fn render(
         let (offset, opacity) = slide.item(ordinal / NOW_COLUMNS, SLIDE_TRAVEL, focus.is_some());
         let [x, y, w, h] = card_bounds(index, scroll);
         let rect = layout
-            .rect(x + offset, y - BOARD_TOP, w, h)
+            .rect(x - GUTTER + offset, y - BOARD_TOP, w, h)
             .opacity(opacity);
         let family = &families[index];
         board = board.child(card(
