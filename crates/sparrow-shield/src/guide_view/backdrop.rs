@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Animation, AnimationExt, BoxShadow, Div, Hsla, Rgba, Window, div, hsla, linear_color_stop,
+    Animation, AnimationExt, Div, Hsla, Rgba, Window, div, hsla, linear_color_stop,
     linear_gradient, prelude::*, rgb,
 };
 use sparrow_installed_catalog::GuideBackdrop;
@@ -64,19 +64,13 @@ impl Wash {
         }
     }
 
-    fn paint(self, layout: Layout, layer: Div) -> Div {
+    fn paint(self, layout: Layout, layer: Div, sprites: &[super::glow::Glow; 3]) -> Div {
         if self.strength == 0. {
             return layer;
         }
-        let glow = |x, y, w, h, mut color: Rgba, opacity| {
+        let glow = |index: usize, x, y, w, h, mut color: Rgba, opacity| {
             color.a = opacity * self.strength;
-            layout
-                .rect(x, y, w, h)
-                .rounded(layout.px(h / 2.))
-                .shadow(vec![
-                    BoxShadow::new(layout.px(0.), layout.px(0.), color.into())
-                        .blur_radius(layout.px(220.)),
-                ])
+            sprites[index].paint(layout, [x, y, w, h], 220., color)
         };
         layer
             .bg(linear_gradient(
@@ -85,6 +79,7 @@ impl Wash {
                 linear_color_stop(mix(rgb(INK), rgb(0x070c17), self.strength), 1.),
             ))
             .child(glow(
+                0,
                 900. - 480. * self.drift[0],
                 -380. + 180. * self.drift[0],
                 1300.,
@@ -93,6 +88,7 @@ impl Wash {
                 0.48,
             ))
             .child(glow(
+                1,
                 -420. + 340. * self.drift[1],
                 layout.height - 540. - 100. * self.drift[1],
                 1100.,
@@ -102,6 +98,7 @@ impl Wash {
             ))
             .when(self.drift[2] > 0., |layer| {
                 layer.child(glow(
+                    2,
                     760. + 240. * self.drift[2],
                     layout.height - 180.,
                     820.,
@@ -153,6 +150,7 @@ impl Fade {
 #[derive(Default)]
 pub(in super::super) struct BackdropMotion {
     fade: Option<Fade>,
+    sprites: [super::glow::Glow; 3],
     revision: usize,
 }
 
@@ -209,19 +207,20 @@ impl BackdropMotion {
                     .with_max_fps(10.),
             )
         } else if now.duration_since(fade.start) < fade.duration {
-            Some(Animation::new(fade.duration).with_max_fps(30.))
+            Some(Animation::new(fade.duration))
         } else {
             None
         };
         if let Some(animation) = animation {
             let fade = *fade;
+            let sprites = self.sprites.clone();
             div().absolute().inset_0().child(layer.with_animation(
                 ("guide-backdrop", self.revision),
                 animation,
-                move |layer, _| fade.sample(Instant::now()).paint(layout, layer),
+                move |layer, _| fade.sample(Instant::now()).paint(layout, layer, &sprites),
             ))
         } else {
-            fade.sample(now).paint(layout, layer)
+            fade.sample(now).paint(layout, layer, &self.sprites)
         }
     }
 }

@@ -98,12 +98,13 @@ impl Arrival {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(crate) struct Wave {
     ms: f32,
 }
 
 impl Wave {
+    pub(crate) const REST: Self = Self { ms: END_MS };
     pub(crate) fn backdrop_opacity(self) -> f32 {
         (self.ms / 220.).clamp(0., 1.)
     }

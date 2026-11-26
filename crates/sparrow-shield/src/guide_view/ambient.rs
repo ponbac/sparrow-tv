@@ -1,7 +1,7 @@
 //! Light cast by the picture, painted below Guide text and playback controls.
 use std::time::{Duration, Instant};
 
-use gpui::{Animation, AnimationExt, BoxShadow, Div, Hsla, Rgba, div, prelude::*, rgb};
+use gpui::{Div, Hsla, Rgba, div, prelude::*, rgb};
 
 use super::{
     Layout,
@@ -14,10 +14,11 @@ const FADE: Duration = Duration::from_millis(450);
 
 #[derive(Default)]
 pub(crate) struct Ambient {
+    dock_sprites: [super::glow::Glow; 3],
+    full_sprites: [super::glow::Glow; 2],
     from: Palette,
     to: Palette,
     changed: Option<Instant>,
-    revision: usize,
 }
 
 fn mix(from: Palette, to: Palette, t: f32) -> Palette {
@@ -78,17 +79,25 @@ impl Ambient {
         self.from = mix(self.from, self.to, t);
         self.to = next;
         self.changed = (!reduced).then(Instant::now);
-        self.revision = self.revision.wrapping_add(1);
         true
     }
 
     pub(crate) fn layer(
         &self,
-        viewport: gpui::Size<gpui::Pixels>,
+        window: &gpui::Window,
         frame: FullscreenFrame,
         reduced: bool,
-    ) -> Div {
-        let layout = Layout::new(viewport);
+    ) -> impl Fn() -> Div + use<> {
+        let layout = Layout::new(window.viewport_size());
+        let fade = if reduced { 1. } else { progress(self.changed) };
+        let colors = if fade < 1. {
+            if frame.fullscreen < 1. || frame.band > 0. {
+                window.request_animation_frame();
+            }
+            mix(self.from, self.to, fade)
+        } else {
+            self.to
+        };
         let [x, y, w, h] = moving_picture(
             layout,
             frame,
@@ -101,39 +110,40 @@ impl Ambient {
             [x - 80., y + h - 80., 760., 340.],
         ];
         let full = [
-            [x - 40., y - 130., 300., h + 260.],
-            [x + w - 260., y - 130., 300., h + 260.],
-            dock[2],
+            [x - 40., y - 130., 300., layout.height + 260.],
+            [x + w - 260., y - 130., 300., layout.height + 260.],
         ];
-        let paint = move |colors: Palette| {
-            colors
-                .into_iter()
-                .enumerate()
-                .filter_map(move |(i, color)| {
-                    let alpha = color.a * 0.48 * if i == 2 { 1. - t } else { 1. };
-                    if alpha <= 0. {
-                        return None;
-                    }
-                    let [x, y, w, h] =
-                        std::array::from_fn(|j| dock[i][j] + (full[i][j] - dock[i][j]) * t);
-                    let mut ink = Hsla::from(color);
-                    ink.a = alpha;
-                    let shadow = BoxShadow::new(layout.px(0.), layout.px(0.), ink)
-                        .blur_radius(layout.px(210. - 20. * t));
-                    Some(layout.rect(x, y, w, h).rounded_full().shadow(vec![shadow]))
-                })
-        };
-        let root = div().absolute().inset_0().overflow_hidden();
-        let (from, to) = (self.from, self.to);
-        let changed = self.changed;
-        if reduced || progress(changed) >= 1. {
-            return root.children(paint(to));
+        let dock_sprites = self.dock_sprites.clone();
+        let full_sprites = self.full_sprites.clone();
+        move || {
+            let mut layer = div().absolute().inset_0().overflow_hidden();
+            for (i, color) in colors.into_iter().enumerate() {
+                let alpha = color.a * 0.48;
+                if alpha > 0. && t < 1. {
+                    layer = layer.child(dock_sprites[i].paint(
+                        layout,
+                        dock[i],
+                        210.,
+                        Rgba {
+                            a: alpha * (1. - t),
+                            ..color
+                        },
+                    ));
+                }
+                if alpha > 0. && t > 0. && i < full.len() {
+                    layer = layer.child(full_sprites[i].paint(
+                        layout,
+                        full[i],
+                        190.,
+                        Rgba {
+                            a: alpha * t,
+                            ..color
+                        },
+                    ));
+                }
+            }
+            layer
         }
-        root.child(div().absolute().inset_0().with_animation(
-            ("ambient", self.revision),
-            Animation::new(FADE).with_max_fps(18.),
-            move |layer, _| layer.children(paint(mix(from, to, progress(changed)))),
-        ))
     }
 }
 

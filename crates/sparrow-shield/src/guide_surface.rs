@@ -30,6 +30,7 @@ use crate::{
 
 mod playback_ui;
 mod search_ui;
+mod sections;
 mod setup_ui;
 mod source_flow;
 use playback_ui::PlaybackUi;
@@ -95,6 +96,7 @@ pub(super) static GUIDE_DIAGNOSTICS: Mutex<GuideDiagnostics> = Mutex::new(GuideD
 
 pub(super) struct GuideSurface {
     host: u64,
+    sections: sections::Sections,
     screen: GuideScreen,
     focus: FocusHandle,
     group_slide: guide_view::GroupSlide,
@@ -251,6 +253,7 @@ impl GuideSurface {
         });
         Self {
             host,
+            sections: sections::Sections::new(cx),
             screen,
             focus,
             group_slide: Default::default(),
@@ -374,6 +377,30 @@ impl GuideSurface {
             self.schedule_search(timer, cx);
             self.sync_search_preferences(cx);
             self.sync_view(cx);
+        }
+    }
+
+    fn arm_badge_timer(&mut self, cx: &Context<Self>) {
+        if let Some(tick) = &mut self.minute_tick
+            && tick.needs_badge_timer()
+        {
+            let fade = tick.badge_fade_at();
+            let end = tick.expires_at();
+            tick.badge_expiry = Some(cx.spawn(async move |view, cx| {
+                for deadline in [fade, end] {
+                    while let Some(delay) =
+                        deadline.checked_duration_since(std::time::Instant::now())
+                    {
+                        cx.background_executor().timer(delay).await;
+                    }
+                    let _ = view.update(cx, |view, cx| {
+                        if deadline == end {
+                            view.minute_tick = None;
+                        }
+                        cx.notify();
+                    });
+                }
+            }));
         }
     }
 
@@ -1177,12 +1204,17 @@ impl Render for GuideSurface {
         let glow = self
             .playback
             .ambient
-            .layer(window.viewport_size(), picture, cx.reduce_motion());
-        if frame.fullscreen >= 1. {
-            self.arrival.leave();
-            self.icons.hide();
+            .layer(window, picture, cx.reduce_motion());
+        let opacity = (1. - frame.fullscreen * 1.45).max(0.);
+        if opacity == 0. {
+            if frame.fullscreen >= 1. {
+                self.arrival.leave();
+                self.icons.hide();
+            }
             return root
-                .when(frame.band > 0., |root| root.child(glow))
+                .when(frame.fullscreen < 1. || frame.band > 0., |root| {
+                    root.child(glow())
+                })
                 .children(player);
         }
         let viewport = window.viewport_size();
@@ -1215,59 +1247,46 @@ impl Render for GuideSurface {
                 || (self.sources_sheet_open() && !self.backdrop_preview_focused())
                 || self.screen.group_chooser().is_some(),
         );
-        let guide = guide_view::render(
+        let slide = self.group_slide.frame(
+            window,
+            cx.reduce_motion(),
+            !self.screen.families().is_empty(),
+        );
+        let guide = self.sections.guide(
             &self.screen,
-            guide_view::GuideBand {
-                choice,
-                minute,
-                preview: self.presented_preview.as_ref(),
-                description: self.description.as_ref(),
+            self.presented_preview.as_ref(),
+            self.description.as_ref(),
+            &self.icons,
+            sections::GuideFrame {
+                viewport,
+                layout: guide_view::Layout::for_guide(viewport, choice),
+                minute: minute.sample(),
+                wave,
+                slide,
                 docked: selected,
                 inline_search: self.search.state().view() == SearchView::Inline,
-                focus: if self.playback.dock_focused() {
+                band_focus: if self.playback.dock_focused() {
                     ScreenFocus::None
                 } else {
                     self.screen.focus()
                 },
             },
-            (
-                wave,
-                self.group_slide.frame(
-                    window,
-                    cx.reduce_motion(),
-                    !self.screen.families().is_empty(),
-                ),
-            ),
-            (&mut self.now_lane, &mut self.timeline_rail),
-            window,
-            &self.icons,
+            minute,
         );
-        if let Some(tick) = &mut self.minute_tick
-            && tick.needs_badge_timer()
-        {
-            let fade = tick.badge_fade_at();
-            let end = tick.expires_at();
-            tick.badge_expiry = Some(cx.spawn(async move |view, cx| {
-                for deadline in [fade, end] {
-                    while let Some(delay) =
-                        deadline.checked_duration_since(std::time::Instant::now())
-                    {
-                        cx.background_executor().timer(delay).await;
-                    }
-                    let _ = view.update(cx, |view, cx| {
-                        if deadline == end {
-                            view.minute_tick = None;
-                        }
-                        cx.notify();
-                    });
-                }
-            }));
-        }
-        let drift = window.viewport_size().width * (36. / 1920. * frame.fullscreen);
-        let opacity = (1. - frame.fullscreen * 1.45).max(0.);
-        root.child(backdrop.opacity(opacity * wave.backdrop_opacity()))
-            .child(glow)
-            .child(guide.top(drift).opacity(opacity))
+
+        root.child(backdrop.opacity(wave.backdrop_opacity()))
+            .child(glow())
+            .child(guide)
+            .when(frame.fullscreen > 0., |root| {
+                root.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgb(guide_view::INK))
+                        .opacity(1. - opacity),
+                )
+                .child(glow().opacity(1. - opacity))
+            })
             .children(self.arrival.landing(viewport, wave))
             .children(player)
             .child(

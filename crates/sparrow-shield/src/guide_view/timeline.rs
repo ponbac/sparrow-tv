@@ -29,7 +29,7 @@ const BOARD_WIDTH: f32 = CANVAS_WIDTH - BOARD_X;
 const CHANNEL_WIDTH: f32 = 336.;
 const TRACK_WIDTH: f32 = BOARD_WIDTH - CHANNEL_WIDTH - GUTTER;
 const RULER_HEIGHT: f32 = TIMELINE_ROW_TOP;
-const OVERSCAN_LINES: usize = 2;
+const OVERSCAN_LINES: usize = 0;
 const RIGHT_FADE_WIDTH: f32 = 84.;
 const CHANNEL_CONTROL_X: f32 = 52.;
 
@@ -40,7 +40,7 @@ struct TimelineFrame {
     now: DateTime<Utc>,
 }
 
-pub(super) fn rail(
+pub(crate) fn rail(
     layout: Layout,
     screen: &GuideScreen,
     viewport: &mut RailViewport,
@@ -58,7 +58,7 @@ fn channel_bounds() -> [f32; 4] {
     ]
 }
 
-pub(super) fn render(
+pub(crate) fn render(
     layout: Layout,
     screen: &GuideScreen,
     minute: super::MinuteFrame<'_>,

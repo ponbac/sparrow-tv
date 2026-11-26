@@ -84,7 +84,7 @@ impl GroupSlide {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(crate) struct SlideFrame {
     ms: f32,
     ink_ms: f32,
@@ -92,7 +92,7 @@ pub(crate) struct SlideFrame {
 }
 
 impl SlideFrame {
-    const SETTLED: Self = Self {
+    pub(crate) const SETTLED: Self = Self {
         ms: TOTAL_MS,
         ink_ms: INK_MS,
         direction: 0.,

@@ -227,6 +227,7 @@ impl BoardGeometry {
 /// The host dispatches read intents off the UI thread and delivers the results on it.
 /// Focus movement over loaded families never waits for a catalog read.
 pub struct GuideScreen {
+    content_revision: u64,
     window: GuideWindow,
     exclusions: HashSet<String>,
     preferences: Arc<VariantPreferences>,
@@ -253,6 +254,7 @@ pub struct GuideScreen {
 impl GuideScreen {
     pub fn new(now: DateTime<Utc>, offset: FixedOffset, exclusions: HashSet<String>) -> Self {
         Self {
+            content_revision: 0,
             window: GuideWindow::at(now, offset, false),
             exclusions,
             preferences: Arc::default(),
@@ -278,6 +280,15 @@ impl GuideScreen {
             surface_height: 0.,
             reads: Vec::new(),
         }
+    }
+
+    /// Changes when catalog data displayed by the Guide may have changed.
+    pub fn content_revision(&self) -> u64 {
+        self.content_revision
+    }
+
+    fn content_changed(&mut self) {
+        self.content_revision = self.content_revision.wrapping_add(1);
     }
 
     pub fn generation(&self) -> Option<CatalogGeneration> {
@@ -365,6 +376,7 @@ impl GuideScreen {
         if self.timeline().is_some() {
             self.cancel_pending_navigation();
         }
+        self.content_changed();
         self.preferences = preferences;
         self.reconcile_timeline_return();
         self.reconcile_preview();
@@ -566,6 +578,7 @@ impl GuideScreen {
 
     pub fn catalog_status(&mut self, status: &CatalogStatus) {
         let displayed = self.displayed_window();
+        self.content_changed();
         self.open_failed = false;
         self.configured = Some(status.configuration().is_configured());
         let generation = status.generation();
@@ -1255,6 +1268,7 @@ impl GuideScreen {
         };
         let focused = self.board_target();
         let displayed = self.displayed_window();
+        self.content_changed();
         self.exclusions = exclusions;
         if let Some(chooser) = &mut self.group_chooser {
             chooser.reconcile_show_all(!self.exclusions.is_empty());
@@ -1365,6 +1379,7 @@ impl GuideScreen {
         if update == PageUpdate::Superseded {
             return;
         }
+        self.content_changed();
         if update == PageUpdate::ReconcileGeneration {
             self.request_status();
         }

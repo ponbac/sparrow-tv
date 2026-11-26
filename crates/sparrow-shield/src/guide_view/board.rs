@@ -24,7 +24,7 @@ use super::{
 
 const SLIDE_TRAVEL: f32 = 80.;
 const COLUMN_WIDTH: f32 = (CANVAS_WIDTH - GUTTER * 2. - CARD_GAP * 2.) / NOW_COLUMNS as f32;
-const OVERSCAN_LINES: usize = 2;
+const OVERSCAN_LINES: usize = 0;
 const CONTENT_X: f32 = 96.;
 const CONTENT_WIDTH: f32 = COLUMN_WIDTH - CONTENT_X - 21.;
 const TITLE_HEIGHT: f32 = 35.65;
@@ -39,7 +39,7 @@ fn card_bounds(index: usize, scroll: f32) -> [f32; 4] {
     ]
 }
 
-pub(super) fn render(
+pub(crate) fn render(
     layout: Layout,
     screen: &GuideScreen,
     minute: super::MinuteFrame<'_>,
