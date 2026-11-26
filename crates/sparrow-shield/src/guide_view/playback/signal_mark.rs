@@ -52,14 +52,7 @@ pub(super) fn render(layout: Layout, playback: &PlaybackOverlay<'_>, focused: bo
                     Animation::new(Duration::from_millis(period))
                         .repeat()
                         .with_max_fps(24.),
-                    move |frame, t| {
-                        let inner = pulse(t);
-                        let outer = pulse((t + 0.8).fract());
-                        frame
-                            .child(arcs(layout, INNER, color, 1., 0.32 + 0.68 * inner))
-                            .child(arcs(layout, OUTER, color, 1., 0.32 + 0.68 * outer))
-                            .child(dot(layout, color, 7.5 + 2.5 * inner))
-                    },
+                    move |frame, t| waves(frame, layout, color, t),
                 )
                 .into_any_element()
         }
@@ -101,6 +94,15 @@ pub(super) fn render(layout: Layout, playback: &PlaybackOverlay<'_>, focused: bo
             .child(dot(layout, ERROR, 10.))
             .into_any_element(),
     }
+}
+
+pub(super) fn waves(frame: Div, layout: Layout, color: u32, t: f32) -> Div {
+    let inner = pulse(t);
+    let outer = pulse((t + 0.8).fract());
+    frame
+        .child(arcs(layout, INNER, color, 1., 0.32 + 0.68 * inner))
+        .child(arcs(layout, OUTER, color, 1., 0.32 + 0.68 * outer))
+        .child(dot(layout, color, 7.5 + 2.5 * inner))
 }
 
 fn signal_color(stage: PlaybackStage) -> u32 {

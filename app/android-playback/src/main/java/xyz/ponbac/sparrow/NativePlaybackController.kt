@@ -31,6 +31,7 @@ import kotlin.math.max
 /** Main-thread placement for an attached PlayerView. Viewports are in host content pixels. */
 @OptIn(UnstableApi::class)
 internal interface NativePlaybackPlacement {
+  val showBuffering: Int get() = PlayerView.SHOW_BUFFERING_WHEN_PLAYING
   val televisionFullscreen: Boolean?
   fun container(): ViewGroup?
   fun createPlayerView(activity: Activity): PlayerView = PlayerView(activity)
@@ -327,7 +328,7 @@ internal class NativePlaybackController(
         useController = false
         resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
         setShutterBackgroundColor(Color.BLACK)
-        setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
+        setShowBuffering(placement.showBuffering)
         setKeepContentOnPlayerReset(true)
         isClickable = false
         isFocusable = false

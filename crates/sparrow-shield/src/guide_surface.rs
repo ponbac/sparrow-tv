@@ -410,7 +410,9 @@ impl GuideSurface {
         {
             return;
         }
-        self.press(key, window, cx);
+        if key != ScreenKey::Activate || !event.is_held {
+            self.press(key, window, cx);
+        }
     }
 
     pub(super) fn activity_event(

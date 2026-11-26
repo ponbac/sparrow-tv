@@ -5,7 +5,7 @@ use gpui::{
 use sparrow_core::GuideProgramme;
 use sparrow_tv_guide::{
     guide_screen::TIMELINE_ROW_HEIGHT,
-    time::{ProgrammeCellAppearance, ProgrammeCellContent},
+    time::{ProgrammeCellContent, ProgrammePlacement},
 };
 
 use super::super::{
@@ -21,6 +21,18 @@ const CLIP_POINT: f32 = 12.;
 const CORNER_RADIUS: f32 = 8.;
 const WASH: u32 = 0x243858;
 
+fn geometry(
+    placement: ProgrammePlacement,
+    focused: bool,
+) -> Option<([f32; 4], ProgrammeCellContent)> {
+    let left = placement.left_fraction as f32 * TRACK_WIDTH;
+    let appearance = placement.cell_appearance(TRACK_WIDTH, focused)?;
+    Some((
+        [left, INSET_Y, appearance.width, CELL_HEIGHT],
+        appearance.content,
+    ))
+}
+
 pub(super) fn render(
     layout: Layout,
     frame: TimelineFrame,
@@ -28,11 +40,7 @@ pub(super) fn render(
     focused: bool,
 ) -> Option<Div> {
     let placement = frame.axis.placement(programme)?;
-    let left = placement.left_fraction as f32 * TRACK_WIDTH;
-    let ProgrammeCellAppearance {
-        width: full_width,
-        content,
-    } = placement.cell_appearance(TRACK_WIDTH, focused)?;
+    let ([left, top, full_width, height], content) = geometry(placement, focused)?;
     let cut = placement.cut_at_start;
     let live = programme.starts_at() <= frame.now && frame.now < programme.ends_at();
     let fill_color = match (focused, live) {
@@ -53,7 +61,7 @@ pub(super) fn render(
     // back into view. Bound the painted shape even for very long programmes.
     let paint_width = full_width.min(TRACK_WIDTH - left + CORNER_RADIUS);
     let text_width = full_width.min(TRACK_WIDTH - left + RIGHT_FADE_WIDTH);
-    let cell = layout.rect(left, INSET_Y, text_width, CELL_HEIGHT).child(
+    let cell = layout.rect(left, top, text_width, height).child(
         layout
             .rect(0., 0., paint_width, CELL_HEIGHT)
             .child(cell_fill(layout, cut, fill_color, progress)),

@@ -28,6 +28,15 @@ const CONTENT_WIDTH: f32 = COLUMN_WIDTH - CONTENT_X - 21.;
 const TITLE_HEIGHT: f32 = 35.65;
 const LINE_GAP: f32 = 4.;
 
+fn card_bounds(index: usize, scroll: f32) -> [f32; 4] {
+    [
+        GUTTER + (index % NOW_COLUMNS) as f32 * (COLUMN_WIDTH + CARD_GAP),
+        BOARD_TOP + BOARD_PAD + (index / NOW_COLUMNS) as f32 * CARD_PITCH - scroll,
+        COLUMN_WIDTH,
+        CARD_HEIGHT,
+    ]
+}
+
 pub(super) fn render(
     layout: Layout,
     screen: &GuideScreen,
@@ -54,14 +63,8 @@ pub(super) fn render(
     let families = screen.families();
     let scroll = screen.scroll_offset();
     for index in screen.visible_families(OVERSCAN_LINES) {
-        let column = (index % NOW_COLUMNS) as f32;
-        let row = (index / NOW_COLUMNS) as f32;
-        let rect = layout.rect(
-            GUTTER + column * (COLUMN_WIDTH + CARD_GAP),
-            BOARD_PAD + row * CARD_PITCH - scroll,
-            COLUMN_WIDTH,
-            CARD_HEIGHT,
-        );
+        let [x, y, w, h] = card_bounds(index, scroll);
+        let rect = layout.rect(x, y - BOARD_TOP, w, h);
         let family = &families[index];
         board = board.child(card(
             layout,
