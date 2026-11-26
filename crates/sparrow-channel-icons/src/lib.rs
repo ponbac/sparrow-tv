@@ -1,6 +1,7 @@
 //! Anonymous Channel Icon transport and bounded raster decoding for native clients.
 
 pub mod cache;
+pub mod disk;
 mod raster;
 
 use std::time::Duration;
@@ -47,7 +48,17 @@ pub struct ChannelIconClient(Client);
 
 impl ChannelIconClient {
     pub fn new() -> Result<Self, ChannelIconError> {
+        let roots =
+            rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let tls = rustls::ClientConfig::builder_with_provider(
+            rustls::crypto::aws_lc_rs::default_provider().into(),
+        )
+        .with_safe_default_protocol_versions()
+        .map_err(|_| ChannelIconError::Network)?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
         Client::builder()
+            .tls_backend_preconfigured(tls)
             .connect_timeout(CONNECT_TIMEOUT)
             .referer(false)
             .redirect(Policy::none())

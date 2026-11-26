@@ -199,6 +199,27 @@ impl<V> IconCache<V> {
         value: Option<(V, usize)>,
         now: Instant,
     ) -> (bool, Vec<V>) {
+        self.publish(id, value, now, true)
+    }
+
+    /// Display a stale frame while its refresh still owns the request slot.
+    /// Scrolling can cancel the refresh. The session keeps the stale icon and the next launch retries.
+    pub fn publish_stale(
+        &mut self,
+        id: RequestId,
+        value: (V, usize),
+        now: Instant,
+    ) -> (bool, Vec<V>) {
+        self.publish(id, Some(value), now, false)
+    }
+
+    fn publish(
+        &mut self,
+        id: RequestId,
+        value: Option<(V, usize)>,
+        now: Instant,
+        finished: bool,
+    ) -> (bool, Vec<V>) {
         let Some(key) = self
             .pending
             .iter()
@@ -206,12 +227,14 @@ impl<V> IconCache<V> {
         else {
             return (false, Vec::new());
         };
-        self.pending.remove(&key);
+        if finished {
+            self.pending.remove(&key);
+        }
         if let Some((value, bytes)) = value {
             let bytes = bytes.saturating_add(key.0.len());
             if bytes <= CACHE_BYTES {
                 self.bytes += bytes;
-                self.ready.insert(
+                let old = self.ready.insert(
                     key,
                     Cached {
                         value,
@@ -219,7 +242,13 @@ impl<V> IconCache<V> {
                         bytes,
                     },
                 );
-                return (true, self.evict());
+                let mut evicted = Vec::new();
+                if let Some(old) = old {
+                    self.bytes -= old.bytes;
+                    evicted.push(old.value);
+                }
+                evicted.extend(self.evict());
+                return (true, evicted);
             }
         }
         if self.failed.len() >= MAX_ENTRIES

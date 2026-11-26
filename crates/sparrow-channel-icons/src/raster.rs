@@ -7,7 +7,7 @@ use crate::ChannelIconError;
 const MAX_SOURCE_EDGE: u32 = 4096;
 const MAX_SOURCE_PIXELS: u64 = 16_000_000;
 const MAX_DECODER_BYTES: u64 = 128 * 1024 * 1024;
-const MAX_OUTPUT_EDGE: u32 = 256;
+pub(crate) const MAX_OUTPUT_EDGE: u32 = 256;
 
 thread_local! {
     // Android Clippy flags the const initializer in the expanded thread_local macro.
@@ -34,8 +34,8 @@ impl Drop for DecodePanicScope<'_> {
 
 /// One decoded frame, downscaled for the guide renderer.
 pub struct DecodedChannelIcon {
-    source_dimensions: (u32, u32),
-    bgra: image::RgbaImage,
+    pub(crate) source_dimensions: (u32, u32),
+    pub(crate) bgra: image::RgbaImage,
 }
 
 impl DecodedChannelIcon {
@@ -108,7 +108,7 @@ fn decode_raster(bytes: &[u8]) -> Result<DecodedChannelIcon, ChannelIconError> {
     })
 }
 
-fn check_dimensions(width: u32, height: u32) -> Result<(), ChannelIconError> {
+pub(crate) fn check_dimensions(width: u32, height: u32) -> Result<(), ChannelIconError> {
     if width == 0 || height == 0 {
         return Err(ChannelIconError::InvalidImage);
     }

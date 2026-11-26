@@ -10,6 +10,7 @@ use image::{Frame, RgbaImage};
 use sparrow_channel_icons::{
     ChannelIconClient, DecodedChannelIcon,
     cache::{IconCache, REQUEST_LIMIT, RequestId},
+    disk::DiskCache,
 };
 use sparrow_core::{CatalogGeneration, ChannelIcon};
 use tokio::{
@@ -51,9 +52,20 @@ impl Drop for AbortOnDrop {
     }
 }
 
+static DISK: OnceLock<DiskCache> = OnceLock::new();
+
+pub(super) fn set_cache_dir(path: &std::path::Path) {
+    DISK.get_or_init(|| DiskCache::new(path));
+}
+
 struct Completion {
     request: RequestId,
-    image: Option<IconImage>,
+    result: LoadResult,
+}
+
+enum LoadResult {
+    Stale(IconImage),
+    Finished(Option<IconImage>),
 }
 
 pub(super) struct IconImage {
@@ -188,13 +200,18 @@ impl ChannelIcons {
     pub(super) fn apply(&mut self, batch: IconBatch, cx: &mut App) -> bool {
         let now = Instant::now();
         let mut changed = false;
-        for Completion { request, image } in batch.0 {
-            self.requests.remove(&request);
-            let value = image.map(|image| {
+        for Completion { request, result } in batch.0 {
+            let charge = |image: IconImage| {
                 let bytes = image.charged_bytes;
                 (image, bytes)
-            });
-            let (published, evicted) = self.cache.complete(request, value, now);
+            };
+            let (published, evicted) = match result {
+                LoadResult::Stale(image) => self.cache.publish_stale(request, charge(image), now),
+                LoadResult::Finished(image) => {
+                    self.requests.remove(&request);
+                    self.cache.complete(request, image.map(charge), now)
+                }
+            };
             changed |= published;
             for image in evicted {
                 cx.drop_image(image.render_image, None);
@@ -219,8 +236,30 @@ impl ChannelIcons {
             };
             let sender = self.completions.clone();
             let task = worker.runtime.spawn(async move {
-                let image = worker.load(request.location()).await;
-                let _ = sender.send(Completion { request: id, image }).await;
+                let location = request.location();
+                let image = match worker.cached(location).await {
+                    Some((image, false)) => Some(image),
+                    cached => {
+                        if let Some((image, true)) = cached
+                            && sender
+                                .send(Completion {
+                                    request: id,
+                                    result: LoadResult::Stale(image),
+                                })
+                                .await
+                                .is_err()
+                        {
+                            return;
+                        }
+                        worker.load(location).await
+                    }
+                };
+                let _ = sender
+                    .send(Completion {
+                        request: id,
+                        result: LoadResult::Finished(image),
+                    })
+                    .await;
             });
             self.requests.insert(id, AbortOnDrop(task.abort_handle()));
         }
@@ -325,6 +364,19 @@ impl IconWorker {
             .as_ref()
     }
 
+    async fn cached(&'static self, location: &str) -> Option<(IconImage, bool)> {
+        let disk = DISK.get()?;
+        let decoder = self.decoder.acquire().await.ok()?;
+        let location = location.to_owned();
+        let task = spawn_blocking(move || {
+            let _permit = decoder;
+            let hit = disk.load(&location)?;
+            Some((IconImage::new(hit.icon)?, hit.stale))
+        });
+        let _cancel = AbortOnDrop(task.abort_handle());
+        task.await.ok().flatten()
+    }
+
     async fn load(&'static self, location: &str) -> Option<IconImage> {
         let request = self.requests.acquire().await.ok()?;
         let client = self
@@ -333,11 +385,21 @@ impl IconWorker {
             .as_ref()?;
         let encoded = client.fetch(location).await.ok()?;
         let decoder = self.decoder.acquire().await.ok()?;
+        let location = location.to_owned();
         let decode = spawn_blocking(move || {
             // Cancellation stops the async task immediately. A started decode
             // keeps both permits until it finishes and releases its buffers.
-            let (_request, _decoder) = (request, decoder);
-            encoded.decode().ok().and_then(IconImage::new)
+            let permits = (request, decoder);
+            let decoded = encoded.decode().ok()?;
+            let sweep = DISK
+                .get()
+                .filter(|disk| disk.store(&location, &decoded).unwrap_or(false));
+            let image = IconImage::new(decoded);
+            drop(permits);
+            if let Some(disk) = sweep {
+                spawn_blocking(move || disk.trim());
+            }
+            image
         });
         let _cancel = AbortOnDrop(decode.abort_handle());
         decode.await.ok().flatten()

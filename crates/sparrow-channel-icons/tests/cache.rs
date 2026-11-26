@@ -141,3 +141,32 @@ fn repeated_navigation_moves_the_fill_deadline_and_admits_the_latest_viewport() 
     assert_eq!(cache.deferred_admission(deadline), None);
     assert!(cache.admit(deadline).is_empty());
 }
+
+#[test]
+fn failed_refresh_preserves_the_stale_image() {
+    let now = Instant::now();
+    let mut cache = IconCache::default();
+    cache.reconcile(["a"], now);
+    let id = cache.admit(now)[0].id();
+    assert_eq!(cache.publish_stale(id, ("old", 100), now), (true, vec![]));
+    assert_eq!(cache.get("a"), Some(&"old"));
+    assert!(cache.admit(now).is_empty());
+    assert_eq!(cache.complete(id, None, now), (false, vec![]));
+    assert_eq!(cache.get("a"), Some(&"old"));
+}
+
+#[test]
+fn successful_refresh_replaces_the_stale_image() {
+    let now = Instant::now();
+    let mut cache = IconCache::default();
+    cache.reconcile(["a"], now);
+    let id = cache.admit(now)[0].id();
+    assert_eq!(cache.publish_stale(id, ("old", 100), now), (true, vec![]));
+    assert_eq!(cache.get("a"), Some(&"old"));
+    assert!(cache.admit(now).is_empty());
+    assert_eq!(
+        cache.complete(id, Some(("new", 100)), now),
+        (true, vec!["old"])
+    );
+    assert_eq!(cache.get("a"), Some(&"new"));
+}
