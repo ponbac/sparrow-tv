@@ -49,6 +49,15 @@ pub(super) fn field(
         FieldPlacement::Fullscreen => frame,
         FieldPlacement::Docked => frame.rounded_t(layout.px(8.)),
     };
+    if stage == PlaybackStage::Paused {
+        // Paused while a held picture covers the stopped video: keep it grey and
+        // still. The dock caption and the fullscreen controls say Paused.
+        return frame.bg(rgb(INK)).when_some(image, |frame, image| {
+            frame
+                .child(gpui::img(image).absolute().size_full().grayscale(true))
+                .child(div().absolute().inset_0().bg(rgba(0x00000099)))
+        });
+    }
     let draw = move |field: Div, phase: f32| {
         // Three turns of the arc per sweep of the background bands.
         let entrance = if reduce_motion {
