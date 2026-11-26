@@ -1,6 +1,7 @@
 //! Shield picture placement and the controls that fit around the native surface.
 
 mod signal_mark;
+mod tune;
 
 use std::time::Instant;
 
@@ -87,6 +88,7 @@ pub(crate) struct PlaybackOverlay<'a> {
     pub(crate) programme: Option<PlaybackProgramme<'a>>,
     pub(crate) clock: &'a str,
     pub(crate) stage: PlaybackStage,
+    pub(crate) first_picture: Option<Instant>,
     pub(crate) signal_landing: Option<(Instant, PlaybackStage)>,
     pub(crate) reduce_motion: bool,
     pub(crate) audio_track: Option<&'a str>,
@@ -109,6 +111,21 @@ pub(crate) struct PlaybackProgramme<'a> {
 pub(crate) struct PlaybackNext<'a> {
     pub(crate) starts: &'a str,
     pub(crate) title: &'a str,
+}
+
+impl PlaybackOverlay<'_> {
+    fn tuning_field(&self) -> bool {
+        match self.first_picture {
+            Some(first) => {
+                self.stage == PlaybackStage::Playing
+                    && first.elapsed() < crate::picture_reveal_duration()
+            }
+            None => matches!(
+                self.stage,
+                PlaybackStage::Tuning | PlaybackStage::Stopping | PlaybackStage::Playing
+            ),
+        }
+    }
 }
 
 /// Bounds in the logical coordinates used by GPUI. The Activity gets the
@@ -246,6 +263,7 @@ pub(crate) fn docked_playback(viewport: Size<Pixels>, playback: &PlaybackOverlay
     let focused = playback.focus == Some(PlaybackControl::EnterFullscreen);
     let primary = if focused { ON_ICE } else { TEXT };
     let secondary = if focused { ON_ICE_DIM } else { DIM };
+    let bounds = [left, top, width, height];
     let caption = layout
         .rect(left, top + height, width, DOCK_CAPTION)
         .rounded_b(layout.px(8.))
@@ -254,8 +272,12 @@ pub(crate) fn docked_playback(viewport: Size<Pixels>, playback: &PlaybackOverlay
         .flex()
         .items_center()
         .gap(layout.px(10.))
+        .bg(rgb(PANEL))
         .when(focused, |caption| caption.bg(rgb(ICE)))
-        .child(signal_mark::render(layout, playback, focused))
+        .when(
+            !playback.tuning_field() || playback.stage == PlaybackStage::Playing,
+            |caption| caption.child(signal_mark::render(layout, playback, focused)),
+        )
         .child(
             layout
                 .text(SAIRA, 20., 20., 600.)
@@ -299,7 +321,27 @@ pub(crate) fn docked_playback(viewport: Size<Pixels>, playback: &PlaybackOverlay
     div()
         .absolute()
         .inset_0()
-        .child(layout.rect(left, top - 5., width, 5.).bg(rgb(TALLY)))
+        .when_some(
+            playback.first_picture.filter(|since| {
+                playback.stage == PlaybackStage::Playing
+                    && !playback.reduce_motion
+                    && since.elapsed() < tune::LOCK
+            }),
+            |root, since| root.child(tune::lock(layout, [left, top, width, height], since)),
+        )
+        .when(playback.tuning_field(), |root| {
+            root.child(tune::field(
+                layout,
+                bounds,
+                tune::FieldPlacement::Docked,
+                playback.reduce_motion,
+            ))
+        })
+        .child(
+            layout
+                .rect(left, top - 5., width, 5.)
+                .bg(rgb(if playback.tuning_field() { ICE } else { TALLY })),
+        )
         .child(caption)
 }
 
@@ -315,7 +357,20 @@ pub(crate) fn fullscreen_playback(
         .overflow_hidden()
         .font_family(SAIRA)
         .text_color(rgb(TEXT))
-        .bg(rgb(INK));
+        .bg(rgb(INK))
+        .when(playback.tuning_field(), |root| {
+            root.child(tune::field(
+                layout,
+                picture_reference(
+                    layout,
+                    PlaybackLayout::Fullscreen {
+                        controls_visible: !actions.is_empty(),
+                    },
+                ),
+                tune::FieldPlacement::Fullscreen,
+                playback.reduce_motion,
+            ))
+        });
     if actions.is_empty() {
         return root;
     }
@@ -357,7 +412,10 @@ fn fullscreen_head(layout: Layout, playback: &PlaybackOverlay<'_>) -> Div {
                 .flex()
                 .items_center()
                 .gap(layout.px(12.))
-                .child(signal_mark::render(layout, playback, false))
+                .when(
+                    !playback.tuning_field() || playback.stage == PlaybackStage::Playing,
+                    |head| head.child(signal_mark::render(layout, playback, false)),
+                )
                 .child(
                     layout
                         .text(SAIRA, 22., 26., 600.)
@@ -517,7 +575,7 @@ fn fullscreen_controls(
         .unwrap_or(controls.len());
     let (left, right) = controls.split_at(leading);
     let feedback = playback.feedback.or(match playback.stage {
-        PlaybackStage::Playing | PlaybackStage::Paused => None,
+        PlaybackStage::Playing | PlaybackStage::Paused | PlaybackStage::Tuning => None,
         stage => Some(stage.label()),
     });
     layout
@@ -596,6 +654,10 @@ fn control(layout: Layout, action: PlaybackControl, playback: &PlaybackOverlay<'
 }
 
 fn status_tag(layout: Layout, stage: PlaybackStage, fullscreen: bool) -> Div {
+    if fullscreen && stage == PlaybackStage::Tuning {
+        return div();
+    }
+
     let (fill, ink) = match stage {
         PlaybackStage::Playing => (0xff5d5dff, TEXT),
         PlaybackStage::Reconnecting => (0x6b4817ff, 0xffe2bd),

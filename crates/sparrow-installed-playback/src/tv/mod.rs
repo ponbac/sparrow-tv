@@ -212,6 +212,8 @@ pub struct TvPlaybackAudio {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TvPlaybackSnapshot {
+    /// First visible frame of the selection, retained across transport rebinds.
+    pub first_picture: Option<std::time::Instant>,
     pub phase: TvPlaybackPhase,
     pub selected: Option<TvTuneTarget>,
     pub pending_zap: Option<TvTuneTarget>,
@@ -231,6 +233,7 @@ impl Default for TvPlaybackSnapshot {
     fn default() -> Self {
         Self {
             phase: TvPlaybackPhase::Idle,
+            first_picture: None,
             selected: None,
             pending_zap: None,
             zap_revision: 0,

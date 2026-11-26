@@ -285,6 +285,13 @@ fn enqueue_activity(id: i64, event: activity::Event) {
 
 static PICTURE_REVEAL_MS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(240);
 
+// Rust motions use their designed timing unless motion is disabled. A handoff
+// to the Android surface tracks its scaled reveal plus one placement allowance.
+fn picture_reveal_duration() -> std::time::Duration {
+    let millis = PICTURE_REVEAL_MS.load(std::sync::atomic::Ordering::Relaxed);
+    std::time::Duration::from_millis(u64::from(millis) + 40)
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeAnimatorScale(
     _: EnvUnowned,

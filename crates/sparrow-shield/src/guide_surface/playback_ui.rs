@@ -269,6 +269,13 @@ impl PlaybackUi {
             clock: &clock,
             stage: self.stage(),
             signal_landing: self.signal_landing,
+            // Paint beneath the outgoing surface while a retune or queued zap awaits selection.
+            first_picture: self.state.first_picture.filter(|_| {
+                self.state
+                    .selected
+                    .as_ref()
+                    .is_some_and(|target| target.channel == selected.channel)
+            }),
             reduce_motion,
             audio_track: self.selected_audio_track().map(AudioTrack::display_name),
             quality: selected.quality.map(quality_name),
@@ -352,15 +359,27 @@ impl GuideSurface {
         if snapshot.zap_revision != self.playback.state.zap_revision {
             self.playback.reset_zap();
         }
+        let first_picture = snapshot.first_picture.is_some()
+            && snapshot.first_picture != self.playback.state.first_picture;
+        if first_picture && cx.reduce_motion() {
+            // A static reduced-motion field has no animation tick to retire it.
+            let overlap = crate::picture_reveal_duration();
+            cx.spawn(async move |view, cx| {
+                cx.background_executor().timer(overlap).await;
+                let _ = view.update(cx, |_, cx| cx.notify());
+            })
+            .detach();
+        }
         if began_playing {
             let outgoing = self.playback.stage();
-            self.playback.signal_landing = (self.playback.start_origin
-                != Some(PlaybackStage::Paused)
-                && matches!(
-                    outgoing,
-                    PlaybackStage::Tuning | PlaybackStage::Reconnecting
-                ))
-            .then(|| (Instant::now(), outgoing));
+            let lands = match outgoing {
+                PlaybackStage::Reconnecting => true,
+                PlaybackStage::Tuning => {
+                    first_picture && self.playback.start_origin != Some(PlaybackStage::Paused)
+                }
+                _ => false,
+            };
+            self.playback.signal_landing = lands.then(|| (Instant::now(), outgoing));
         }
         // Both retry and resume pass through Starting while the transport is rebound.
         self.playback.start_origin = if snapshot.phase == TvPlaybackPhase::Starting
