@@ -36,6 +36,7 @@ const STALL_TIMEOUT: Duration = Duration::from_secs(10);
 const EARLY_STALL: Duration = Duration::from_secs(20);
 const FIRST_STILL_DELAY: Duration = Duration::from_millis(825);
 const STILL_INTERVAL: Duration = Duration::from_secs(2);
+const CAPTURE_DEADLINE: Duration = Duration::from_millis(180);
 const STABLE_TIME: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
@@ -1060,16 +1061,13 @@ impl Owner {
         }
     }
 
+    /// Captures run outside the presentation gate: an abandoned capture must
+    /// not hold the next status poll, pause or stop until the host answers.
     async fn capture_frame(&mut self, key: TvPresentationKey) -> Option<Arc<TvRecoveryFrame>> {
-        let presentation = self.presentation.clone();
-        tokio::time::timeout(
-            Duration::from_millis(180),
-            self.gate
-                .presentation_call(move || presentation.capture_frame(key)),
-        )
-        .await
-        .ok()
-        .and_then(Result::ok)
+        tokio::time::timeout(CAPTURE_DEADLINE, self.presentation.capture_frame(key))
+            .await
+            .ok()
+            .and_then(Result::ok)
     }
 
     async fn poll_status(&mut self, now: Instant) {

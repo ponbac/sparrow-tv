@@ -181,6 +181,9 @@ class ShieldPlayback(
   }
 
   private var ambientEpoch = 0L
+  // Main thread only. Rust may abandon a slow capture, so decline new ones
+  // until the pending PixelCopy calls back.
+  private var capturing = false
   private var lastAmbientAt = 0L
   private var resumed = false
 
@@ -225,7 +228,8 @@ class ShieldPlayback(
         val valid = !destroyed && binding?.presentation == presentation
         nativePlaybackFrame(host, generation, request, width, height, if (valid) pixels else null)
       }
-      if (binding?.presentation != presentation || surface == null || surface.width <= 0 || surface.height <= 0) {
+      if (capturing || binding?.presentation != presentation || surface == null ||
+          surface.width <= 0 || surface.height <= 0) {
         complete(null)
         return@post
       }
@@ -241,6 +245,7 @@ class ShieldPlayback(
         complete(null)
         return@post
       }
+      capturing = true
       try {
         PixelCopy.request(surface, bitmap, { result ->
           try {
@@ -258,10 +263,12 @@ class ShieldPlayback(
           } catch (_: RuntimeException) {
             complete(null)
           } finally {
+            capturing = false
             bitmap.recycle()
           }
         }, main)
       } catch (_: RuntimeException) {
+        capturing = false
         bitmap.recycle()
         complete(null)
       }
