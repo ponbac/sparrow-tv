@@ -508,6 +508,9 @@ impl GuideSurface {
         }
         match event {
             activity::Event::PictureBottom(bottom) => {
+                if self.playback.picture_bottom == 0 && bottom != 0 {
+                    self.flight_picture_placed(cx);
+                }
                 self.playback.picture_bottom = bottom;
                 if self.playback.fullscreen() {
                     cx.notify();
@@ -535,6 +538,9 @@ impl GuideSurface {
                 }
             }
             activity::Event::Ambient { epoch, colors } => self.ambient_sample(epoch, colors, cx),
+            activity::Event::FlightStill(request, frame) => {
+                self.flight_still_captured(request, frame, cx);
+            }
             activity::Event::PlaybackDiagnosticsCopied { attempt, copied } => {
                 self.playback_diagnostics_copied(attempt, copied, cx);
             }
@@ -1158,7 +1164,7 @@ impl Render for GuideSurface {
         self.screen
             .set_surface_height(guide_view::surface_height(window.viewport_size()));
         let (frame, picture) = self.playback.fullscreen_frame(window, cx.reduce_motion());
-        self.update_playback_viewports(window, picture);
+        self.update_playback_viewports(window, picture, cx);
         self.sync_ambient(cx.reduce_motion());
         self.schedule_preview_frame(window, cx);
         publish_diagnostics(&self.screen, self.playback.focused_dock_channel());

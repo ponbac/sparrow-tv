@@ -360,6 +360,20 @@ pub(crate) fn docked_playback(
         .child(caption.opacity(frame.caption))
 }
 
+/// The captured picture, letterboxed like the native surface, flying in its place.
+pub(crate) fn flight_still(
+    viewport: Size<Pixels>,
+    frame: FullscreenFrame,
+    image: std::sync::Arc<gpui::RenderImage>,
+) -> Div {
+    let layout = Layout::new(viewport);
+    let dock = picture_reference(layout, PlaybackLayout::Docked);
+    let [x, y, w, h] = moving_picture(layout, frame, dock);
+    layout
+        .rect(x, y, w, h)
+        .child(gpui::img(image).absolute().size_full())
+}
+
 pub(crate) fn tuning_field(
     viewport: Size<Pixels>,
     playback: &PlaybackOverlay<'_>,

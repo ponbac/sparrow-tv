@@ -32,13 +32,20 @@ use crate::{
         playback::{
             FullscreenFrame, FullscreenMotion, PlaybackControl as Control, PlaybackNext,
             PlaybackOverlay, PlaybackProgramme, PlaybackStage, ZapRoll, docked_playback,
-            fullscreen_actions, fullscreen_band, picker, picture_rect, tuning_field,
+            flight_still, fullscreen_actions, fullscreen_band, picker, picture_rect, tuning_field,
         },
     },
     playback,
 };
 
 const CONTROLS_IDLE: Duration = Duration::from_secs(4);
+/// How long the flight still stays under the native picture after Android
+/// reports it placed, so the platform has shown it before GPUI stops covering.
+const FLIGHT_LANDING: Duration = Duration::from_millis(150);
+/// Releases the flight still if Android never reports the landing placement.
+const FLIGHT_LANDING_FALLBACK: Duration = Duration::from_secs(1);
+/// The largest still copied for a flight, in physical pixels.
+const FLIGHT_STILL_SIZE: [u32; 2] = [960, 540];
 mod tuning;
 
 #[derive(Default)]
@@ -69,6 +76,37 @@ pub(super) struct PlaybackUi {
     menu: Option<PlayerMenu>,
     idle: Option<gpui::Task<()>>,
     viewports: Option<[Option<AndroidPlaybackViewport>; 2]>,
+    flight: FlightStill,
+    flight_request: u64,
+    flight_landing: Option<gpui::Task<()>>,
+    /// The Channel the flight still was copied from.
+    flight_channel: Option<TvTuneTarget>,
+}
+
+/// A still of the picture that GPUI moves between the dock and fullscreen
+/// while the native surface waits offscreen.
+#[derive(Default)]
+enum FlightStill {
+    #[default]
+    Idle,
+    Requested(u64),
+    /// No still this flight; the native picture moves instead.
+    Unavailable,
+    /// The native picture parks once GPUI has painted the still.
+    Flying {
+        image: std::sync::Arc<gpui::RenderImage>,
+        painted: bool,
+    },
+    Landing(std::sync::Arc<gpui::RenderImage>),
+}
+
+impl FlightStill {
+    fn image(&self) -> Option<&std::sync::Arc<gpui::RenderImage>> {
+        match self {
+            Self::Flying { image, .. } | Self::Landing(image) => Some(image),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -429,6 +467,10 @@ impl PlaybackUi {
                         minute,
                     ))
                 })
+                // Above the band, where the native picture it stands in for would be.
+                .when_some(self.flight.image().cloned(), |root, image| {
+                    root.child(flight_still(viewport, frame, image))
+                })
                 .children(self.menu_panel(window))
         })
     }
@@ -755,7 +797,130 @@ impl GuideSurface {
         }
     }
 
-    pub(super) fn update_playback_viewports(&mut self, window: &Window, frame: FullscreenFrame) {
+    /// Steps the flight still and reports whether the native picture should wait
+    /// offscreen.
+    fn update_flight_still(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let flying = self.playback.motion.flying();
+        // A zap, a retune, a reconnect or a recovery still takes the picture
+        // over until the flight ends.
+        let available = matches!(
+            self.playback.stage(),
+            PlaybackStage::Playing | PlaybackStage::Paused
+        ) && self.playback.still.is_none();
+        let owned = available && self.playback.state.selected == self.playback.flight_channel;
+        let settled = if flying {
+            FlightStill::Unavailable
+        } else {
+            FlightStill::Idle
+        };
+        self.playback.flight = match std::mem::take(&mut self.playback.flight) {
+            FlightStill::Flying { image, .. } | FlightStill::Landing(image) if !owned => {
+                self.playback.flight_landing = None;
+                cx.drop_image(image, Some(window));
+                settled
+            }
+            FlightStill::Requested(_) if !owned => settled,
+            FlightStill::Idle if flying && available => self.request_flight_still(),
+            FlightStill::Requested(_) | FlightStill::Unavailable if !flying => FlightStill::Idle,
+            FlightStill::Flying { image, .. } if !flying => {
+                let lands = self.activation.is_some()
+                    && self.playback.state.selected.is_some()
+                    && (self.playback.fullscreen() || !self.dock_hidden());
+                if lands {
+                    self.release_flight_still(FLIGHT_LANDING_FALLBACK, cx);
+                    FlightStill::Landing(image)
+                } else {
+                    cx.drop_image(image, Some(window));
+                    FlightStill::Idle
+                }
+            }
+            // The live picture has played since this still; copy it again.
+            FlightStill::Landing(image) if flying => {
+                self.playback.flight_landing = None;
+                cx.drop_image(image, Some(window));
+                self.request_flight_still()
+            }
+            other => other,
+        };
+        if let FlightStill::Flying { painted: false, .. } = self.playback.flight {
+            let view = cx.entity().downgrade();
+            window.on_next_frame(move |_, cx| {
+                let _ = view.update(cx, |view, cx| {
+                    if let FlightStill::Flying { painted, .. } = &mut view.playback.flight {
+                        *painted = true;
+                        cx.notify();
+                    }
+                });
+            });
+        }
+        matches!(
+            self.playback.flight,
+            FlightStill::Flying { painted: true, .. }
+        )
+    }
+
+    fn request_flight_still(&mut self) -> FlightStill {
+        self.playback.flight_channel = self.playback.state.selected.clone();
+        self.playback.flight_request += 1;
+        crate::android_player::capture_flight_still(
+            self.host,
+            self.playback.flight_request,
+            FLIGHT_STILL_SIZE,
+        );
+        FlightStill::Requested(self.playback.flight_request)
+    }
+
+    /// Drops a landed still after `delay`, replacing any earlier release.
+    fn release_flight_still(&mut self, delay: Duration, cx: &mut Context<Self>) {
+        self.playback.flight_landing = Some(cx.spawn(async move |view, cx| {
+            cx.background_executor().timer(delay).await;
+            let _ = view.update(cx, |view, cx| {
+                if matches!(view.playback.flight, FlightStill::Landing(_))
+                    && let FlightStill::Landing(image) = std::mem::take(&mut view.playback.flight)
+                {
+                    cx.drop_image(image, None);
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    /// Android placed the native picture again; it covers the landed still shortly.
+    pub(super) fn flight_picture_placed(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.playback.flight, FlightStill::Landing(_)) {
+            self.release_flight_still(FLIGHT_LANDING, cx);
+        }
+    }
+
+    pub(super) fn flight_still_captured(
+        &mut self,
+        request: u64,
+        frame: Option<image::RgbaImage>,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(self.playback.flight, FlightStill::Requested(id) if id == request) {
+            return;
+        }
+        let [max_width, max_height] = FLIGHT_STILL_SIZE;
+        let frame =
+            frame.filter(|pixels| pixels.width() <= max_width && pixels.height() <= max_height);
+        self.playback.flight = match frame {
+            Some(pixels) => FlightStill::Flying {
+                image: std::sync::Arc::new(gpui::RenderImage::new([image::Frame::new(pixels)])),
+                painted: false,
+            },
+            None => FlightStill::Unavailable,
+        };
+        cx.notify();
+    }
+
+    pub(super) fn update_playback_viewports(
+        &mut self,
+        window: &mut Window,
+        frame: FullscreenFrame,
+        cx: &mut Context<Self>,
+    ) {
+        let parked = self.update_flight_still(window, cx);
         let Some(playback) = playback::get().filter(|_| self.activation.is_some()) else {
             self.playback.viewports = None;
             return;
@@ -780,7 +945,7 @@ impl GuideSurface {
         let fullscreen = bounds(true);
         // The native picture sits above GPUI. Reveal the tuning field as soon
         // as a target is pending, including throughout the zap debounce.
-        let viewports = if self.playback.state.pending_zap.is_some() {
+        let viewports = if self.playback.state.pending_zap.is_some() || parked {
             [None, None]
         } else {
             [docked, fullscreen]
