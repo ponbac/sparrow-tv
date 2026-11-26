@@ -15,6 +15,7 @@ use sparrow_tv_guide::{
 
 use crate::{channel_icons::ChannelIcons, search_flow::SearchFocus};
 
+use super::playing_marker::{PlayingMarker, mark_row};
 use super::{
     CANVAS_WIDTH, CELL, CELL_ELAPSED, DIM, FAINT, ICE, INK, Layout, MUTE, ON_ICE, ON_ICE_DIM,
     PANEL, SAIRA, TEXT,
@@ -52,6 +53,7 @@ const DESK_FOOTER_SPACE: f32 = 96.;
 const INCLUDE_WIDTH: f32 = 140.6;
 
 pub(in super::super) struct SearchPanel<'a> {
+    pub(in super::super) marker: Option<&'a PlayingMarker>,
     pub(in super::super) state: &'a SearchState,
     pub(in super::super) display_term: &'a str,
     pub(in super::super) focus: SearchFocus,
@@ -163,14 +165,9 @@ fn inline<'a>(
             .iter()
             .filter_map(InlineRow::icon)
             .collect();
-        overlay = overlay.bg(rgba(0x060a12b8)).child(inline_popup(
-            layout,
-            &geometry,
-            panel.focus,
-            &rows,
-            slice,
-            icons,
-        ));
+        overlay = overlay
+            .bg(rgba(0x060a12b8))
+            .child(inline_popup(layout, &geometry, panel, &rows, slice, icons));
         visible_icons
     };
     let field_focus = panel.focus == SearchFocus::Field || panel.editing;
@@ -300,7 +297,7 @@ fn inline_slice(
 fn inline_popup(
     layout: Layout,
     geometry: &InlineGeometry,
-    focus: SearchFocus,
+    panel: &SearchPanel<'_>,
     rows: &[InlineRow<'_>],
     slice: SearchSlice,
     icons: &ChannelIcons,
@@ -324,7 +321,14 @@ fn inline_popup(
                 geometry.width - INLINE_PADDING * 2.,
                 INLINE_ROW_HEIGHT,
             );
-            inline_row(layout, row_rect, item, item.focus() == Some(focus), icons)
+            inline_row(
+                layout,
+                row_rect,
+                item,
+                item.focus() == Some(panel.focus),
+                icons,
+                panel.marker,
+            )
         }))
 }
 
@@ -334,7 +338,12 @@ fn inline_row(
     item: &InlineRow<'_>,
     focused: bool,
     icons: &ChannelIcons,
+    marker: Option<&PlayingMarker>,
 ) -> Div {
+    let tint = match item {
+        InlineRow::Channel(hit) => marker.and_then(|marker| marker.tint(hit.variants().iter())),
+        _ => None,
+    };
     let ink = if focused { rgb(ON_ICE) } else { rgb(TEXT) };
     let supporting = if focused { rgba(ON_ICE_DIM) } else { rgba(DIM) };
     let icon = item.icon().and_then(|location| icons.get(location));
@@ -385,8 +394,8 @@ fn inline_row(
             );
         }
     };
-    row.rounded(layout.px(8.))
-        .when(focused, |row| row.bg(rgb(ICE)))
+    mark_row(row, layout, tint, focused, INLINE_ROW_HEIGHT, rgb)
+        .rounded(layout.px(8.))
         .pl(layout.px(7.))
         .pr(layout.px(18.))
         .gap(layout.px(16.))
@@ -665,11 +674,15 @@ fn desk_row(
         .binary_search_by_key(&number, GuideFamily::number)
         .ok()
         .and_then(|index| hit.programme_on_now(&panel.families[index], panel.now));
-    let ink = rgb(if focused { ON_ICE } else { TEXT });
+    let tint = panel
+        .marker
+        .and_then(|marker| marker.tint(hit.variants().iter()));
+    let ink = if focused { rgb(ON_ICE) } else { rgb(TEXT) };
     layout
         .rect(0., y, DESK_CONTENT_WIDTH, DESK_ROW_HEIGHT)
         .rounded(layout.px(8.))
-        .bg(rgb(if focused { ICE } else { CELL }))
+        .bg(rgb(CELL))
+        .map(|row| mark_row(row, layout, tint, focused, DESK_ROW_HEIGHT, rgb))
         .flex()
         .items_center()
         .pl(layout.px(10.))

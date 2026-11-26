@@ -15,6 +15,8 @@ use sparrow_tv_guide::{
 
 use crate::channel_icons::{ChannelIcons, IconImage};
 
+use super::playing_marker::PlayingMarker;
+
 use super::{
     BOARD_TOP, CANVAS_WIDTH, CARD_GAP, CELL, CELL_ELAPSED, DIM, GUTTER, ICE, ICE_ELAPSED, INK,
     Layout, ON_ICE, ON_ICE_DIM, PANEL, SAIRA, SAIRA_NOTICE, SAIRA_TITLE, TEXT,
@@ -44,6 +46,7 @@ pub(crate) fn render(
     screen: &GuideScreen,
     minute: super::MinuteFrame<'_>,
     icons: &ChannelIcons,
+    marker: Option<&PlayingMarker>,
     slide: super::SlideFrame,
     wave: super::arrival::Wave,
 ) -> Div {
@@ -82,6 +85,7 @@ pub(crate) fn render(
         board = board.child(card(
             layout,
             wave.card(layout, rect, diagonal, last_diagonal, focus.is_some()),
+            marker,
             screen,
             index,
             focus,
@@ -156,9 +160,11 @@ pub(super) fn more_footer(layout: Layout, rect: Div, loading: bool) -> Div {
         .child(action(layout, label, false))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn card(
     layout: Layout,
     rect: Div,
+    marker: Option<&PlayingMarker>,
     screen: &GuideScreen,
     index: usize,
     focus: Option<NowFocus>,
@@ -167,6 +173,8 @@ fn card(
 ) -> Div {
     let family = &screen.families()[index];
     let focused = matches!(focus, Some(NowFocus::Channel(_)));
+    let tint = marker.and_then(|marker| marker.family_tint(family));
+    let fill = tint.map_or((CELL, CELL_ELAPSED), |tint| (tint.base, tint.elapsed));
     let focused_chip = match focus {
         Some(NowFocus::Variant { chip, .. }) => Some(chip),
         _ => None,
@@ -202,7 +210,7 @@ fn card(
         .bg(if focused {
             rgb(ICE)
         } else {
-            layout.surface(CELL)
+            layout.surface(fill.0)
         });
     if let Some(live) = live {
         let width = COLUMN_WIDTH * elapsed_fraction(live, minute.meter_time()) as f32;
@@ -214,7 +222,7 @@ fn card(
                     .bg(if focused {
                         rgb(ICE_ELAPSED)
                     } else {
-                        layout.surface(CELL_ELAPSED)
+                        layout.surface(fill.1)
                     }),
             );
         }
@@ -228,7 +236,11 @@ fn card(
                 layout
                     .rect(0., 0., width, CARD_HEIGHT)
                     .rounded_l(layout.px(8.))
-                    .bg(rgb(if focused { ICE_ELAPSED } else { CELL_ELAPSED }))
+                    .bg(if focused {
+                        rgb(ICE_ELAPSED)
+                    } else {
+                        layout.surface(fill.1)
+                    })
                     .opacity(1. - roll.outgoing),
             );
         }
@@ -245,6 +257,9 @@ fn card(
                 ));
             }
         }
+    }
+    if focused && let Some(tint) = tint {
+        card = card.child(tint.edge(layout, CARD_HEIGHT));
     }
     if caption_height != 0. {
         let caption = layout.text(SAIRA, 18., 28., 400.).text_color(supporting);

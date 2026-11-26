@@ -17,6 +17,7 @@ use sparrow_tv_guide::{
 
 use crate::channel_icons::{ChannelIcons, IconImage};
 
+use super::playing_marker::{PlayingMarker, Tint, mark_row};
 use super::{
     CANVAS_WIDTH, DIM, FAINT, GUTTER, ICE, INK, Layout, MUTE, ON_ICE, SAIRA, TEXT, board,
     channel_icon::{Plate, family_icon, plate},
@@ -63,6 +64,7 @@ pub(crate) fn render(
     screen: &GuideScreen,
     minute: super::MinuteFrame<'_>,
     icons: &ChannelIcons,
+    marker: Option<&PlayingMarker>,
     slide: super::SlideFrame,
 ) -> Div {
     let now = minute.now;
@@ -92,6 +94,7 @@ pub(crate) fn render(
             let row = render_row(
                 layout,
                 frame,
+                marker,
                 family,
                 screen.variant_preferences(),
                 layout.rect(
@@ -265,9 +268,11 @@ fn playhead(layout: Layout, x: f32, height: f32) -> Div {
         )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_row(
     layout: Layout,
     frame: TimelineFrame,
+    marker: Option<&PlayingMarker>,
     family: &GuideFamily,
     preferences: &VariantPreferences,
     rect: Div,
@@ -285,6 +290,7 @@ fn render_row(
         _ => None,
     };
     let programmes = source.programmes();
+    let tint = marker.and_then(|marker| marker.family_tint(family));
     let track = layout
         .rect(CHANNEL_WIDTH, 0., TRACK_WIDTH, TIMELINE_ROW_HEIGHT)
         .overflow_hidden();
@@ -326,6 +332,7 @@ fn render_row(
         channel_focus,
         chip_focus,
         icon,
+        tint,
     ))
     .child(track)
 }
@@ -337,13 +344,18 @@ fn channel(
     focused: bool,
     focused_chip: Option<usize>,
     icon: Option<&IconImage>,
+    tint: Option<Tint>,
 ) -> Div {
     let [x, y, width, height] = channel_bounds();
     let variants = family.quality_variants().next().is_some();
     layout
         .rect(x, y, width, height)
         .rounded(layout.px(8.))
-        .when(focused, |channel| channel.bg(rgb(ICE)))
+        .map(|channel| {
+            mark_row(channel, layout, tint, focused, height, |base| {
+                layout.surface(base)
+            })
+        })
         .child(
             plate(layout, Plate::Timeline, family.number(), focused, icon)
                 .absolute()
