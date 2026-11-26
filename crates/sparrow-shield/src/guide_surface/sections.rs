@@ -29,6 +29,12 @@ impl Render for SectionView {
                 let wave = frame.wave;
                 let slide = frame.slide;
                 let minute = frame.minute.frame(owner.minute_tick.as_ref());
+                let marker = owner
+                    .sections
+                    .board
+                    .key
+                    .as_ref()
+                    .and_then(|key| key.marker.as_ref());
                 let section = match self.section {
                     Section::Band => guide_view::band::render(
                         layout,
@@ -69,6 +75,7 @@ impl Render for SectionView {
                             &owner.screen,
                             minute,
                             &owner.icons,
+                            marker,
                             slide,
                             wave,
                         ),
@@ -77,6 +84,7 @@ impl Render for SectionView {
                             &owner.screen,
                             minute,
                             &owner.icons,
+                            marker,
                             slide,
                         ),
                     },
@@ -163,6 +171,7 @@ struct LaneInputs {
 
 #[derive(PartialEq)]
 struct BoardInputs {
+    marker: Option<guide_view::playing_marker::PlayingMarker>,
     mode: GuideMode,
     focus: ScreenFocus,
     selected: LaneFocus,
@@ -207,12 +216,14 @@ impl Sections {
 }
 
 impl Sections {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn guide(
         &mut self,
         screen: &GuideScreen,
         preview: Option<&guide_view::PreviewSelection>,
         description: Option<&SharedString>,
         icons: &ChannelIcons,
+        marker: Option<guide_view::playing_marker::PlayingMarker>,
         frame: GuideFrame,
         minute: guide_view::MinuteFrame,
     ) -> Div {
@@ -271,6 +282,7 @@ impl Sections {
         );
         let board = self.board.element(
             BoardInputs {
+                marker,
                 mode: screen.mode(),
                 focus: active,
                 selected: screen.selected_lane(),

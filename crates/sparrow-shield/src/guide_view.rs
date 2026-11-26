@@ -14,6 +14,7 @@ pub(super) mod lane;
 mod minute;
 pub(crate) use minute::{MinuteFrame, MinuteSample, MinuteTick};
 pub(super) mod playback;
+pub(super) mod playing_marker;
 mod search_panel;
 mod setup;
 mod sources;

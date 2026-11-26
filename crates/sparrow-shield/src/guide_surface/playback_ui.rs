@@ -206,6 +206,17 @@ impl PlaybackUi {
         self.zap_running = false;
     }
 
+    pub(super) fn playing_marker(
+        &self,
+    ) -> Option<crate::guide_view::playing_marker::PlayingMarker> {
+        let shown = self.shown()?;
+        crate::guide_view::playing_marker::PlayingMarker::new(
+            self.stage(),
+            &shown.channel,
+            self.subject_for(shown).map(|subject| &subject.family),
+        )
+    }
+
     fn stage(&self) -> PlaybackStage {
         if self.state.pending_zap.is_some()
             || (self.state.phase == TvPlaybackPhase::Stopping && self.state.selected.is_some())

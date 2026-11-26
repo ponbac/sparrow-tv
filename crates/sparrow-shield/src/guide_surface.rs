@@ -1103,10 +1103,12 @@ impl GuideSurface {
         &mut self,
         window: &Window,
         choice: sparrow_installed_catalog::GuideBackdrop,
+        marker: Option<&guide_view::playing_marker::PlayingMarker>,
     ) -> Option<Div> {
         let (surface, search_icons) = guide_view::search_panel(
             window.viewport_size(),
             guide_view::SearchPanel {
+                marker,
                 state: self.search.state(),
                 display_term: self.search.term(),
                 focus: self.search.focus(),
@@ -1188,8 +1190,9 @@ impl Render for GuideSurface {
             return root.child(setup);
         }
         let choice = self.backdrop();
+        let marker = self.playback.playing_marker();
         let search = (!self.playback.fullscreen())
-            .then(|| self.render_search(window, choice))
+            .then(|| self.render_search(window, choice, marker.as_ref()))
             .flatten();
         let minute = guide_view::MinuteFrame::new(
             self.now,
@@ -1257,6 +1260,7 @@ impl Render for GuideSurface {
             self.presented_preview.as_ref(),
             self.description.as_ref(),
             &self.icons,
+            marker,
             sections::GuideFrame {
                 viewport,
                 layout: guide_view::Layout::for_guide(viewport, choice),
