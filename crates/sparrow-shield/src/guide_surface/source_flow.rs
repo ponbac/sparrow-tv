@@ -154,6 +154,12 @@ impl GuideSurface {
             .is_some_and(|source| source.presentation == Presentation::Sheet)
     }
 
+    pub(super) fn backdrop_preview_focused(&self) -> bool {
+        self.source.as_ref().is_some_and(|source| {
+            source.presentation == Presentation::Sheet && source.focus == SourceFocus::Backdrop
+        })
+    }
+
     /// The Setup draft as the Setup state machine sees it.
     pub(super) fn setup_draft(&self) -> DraftView {
         self.source
@@ -308,6 +314,7 @@ impl GuideSurface {
         Some(guide_view::sources_sheet(
             window.viewport_size(),
             SourcePanel {
+                backdrop: self.backdrop(),
                 status: status.as_deref(),
                 focus: source.focus,
                 editing: matches!(source.request, Some(FieldRequest::Edit(..))),
@@ -393,6 +400,38 @@ impl GuideSurface {
         }
     }
 
+    fn step_backdrop(&mut self, previous: bool, cx: &Context<Self>) {
+        use sparrow_installed_catalog::GuideBackdrop::*;
+        let choice = match (self.backdrop(), previous) {
+            (Flat, false) | (ChannelTint, true) => NordicGradient,
+            (NordicGradient, false) | (AuroraDrift, true) => ChannelTint,
+            (ChannelTint, false) | (Flat, true) => AuroraDrift,
+            (AuroraDrift, false) | (NordicGradient, true) => Flat,
+        };
+        let Some(source) = self.source.as_mut() else {
+            return;
+        };
+        source.feedback = None;
+        let session = source.session;
+        let Some(saved) = catalog::save_backdrop(choice) else {
+            source.feedback = Some("Couldn’t save backdrop.");
+            return;
+        };
+        let task = cx.spawn(async move |view, cx| {
+            let success = saved.await.unwrap_or(false);
+            let _ = view.update(cx, |view, cx| {
+                view.pending_backdrop = None;
+                if !success
+                    && let Some(source) = view.source.as_mut().filter(|s| s.session == session)
+                {
+                    source.feedback = Some("Couldn’t save backdrop.");
+                }
+                cx.notify();
+            });
+        });
+        self.pending_backdrop = Some((choice, task));
+    }
+
     pub(super) fn source_key(&mut self, key: ScreenKey, window: &Window, cx: &mut Context<Self>) {
         let Some(source) = self.source.as_mut() else {
             return;
@@ -402,15 +441,22 @@ impl GuideSurface {
             .as_ref()
             .is_some_and(|s| s.configuration().is_configured());
         match key {
+            ScreenKey::Arrow(direction @ (Direction::Left | Direction::Right))
+                if source.focus == SourceFocus::Backdrop =>
+            {
+                self.step_backdrop(direction == Direction::Left, cx)
+            }
             ScreenKey::Arrow(direction) => {
                 source.focus = match (source.focus, direction) {
-                    (SourceFocus::Close, Direction::Down) if configured => SourceFocus::Refresh,
-                    (SourceFocus::Close | SourceFocus::Refresh, Direction::Down)
+                    (SourceFocus::Close, Direction::Down) => SourceFocus::Backdrop,
+                    (SourceFocus::Backdrop, Direction::Up) => SourceFocus::Close,
+                    (SourceFocus::Backdrop, Direction::Down) if configured => SourceFocus::Refresh,
+                    (SourceFocus::Backdrop | SourceFocus::Refresh, Direction::Down)
                         if status.is_some() =>
                     {
                         SourceFocus::Diagnostics
                     }
-                    (SourceFocus::Close | SourceFocus::Refresh, Direction::Down) => {
+                    (SourceFocus::Backdrop | SourceFocus::Refresh, Direction::Down) => {
                         SourceFocus::M3u
                     }
                     (SourceFocus::Diagnostics, Direction::Down) if source.diagnostics.is_some() => {
@@ -438,11 +484,12 @@ impl GuideSurface {
                     (
                         SourceFocus::M3u | SourceFocus::Refresh | SourceFocus::Diagnostics,
                         Direction::Up,
-                    ) => SourceFocus::Close,
+                    ) => SourceFocus::Backdrop,
                     (focus, _) => focus,
                 };
             }
             ScreenKey::Activate => match source.focus {
+                SourceFocus::Backdrop => self.step_backdrop(false, cx),
                 SourceFocus::Close => self.close_sources(cx),
                 SourceFocus::Refresh if configured => self.request_source_refresh(cx),
 

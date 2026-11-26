@@ -151,6 +151,14 @@ impl PlaybackUi {
         self.docked() && self.dock_focus
     }
 
+    pub(super) fn channel_icon(&self) -> Option<&sparrow_core::ChannelIcon> {
+        self.subject_for(self.state.selected.as_ref()?)?
+            .family
+            .variants()
+            .first()?
+            .icon()
+    }
+
     pub(super) fn focused_dock_channel(&self) -> Option<u32> {
         self.shown()
             .filter(|_| self.dock_focused())

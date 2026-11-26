@@ -44,9 +44,9 @@ pub(super) fn render(
     let cut = placement.cut_at_start;
     let live = programme.starts_at() <= frame.now && frame.now < programme.ends_at();
     let fill_color = match (focused, live) {
-        (true, _) => ICE,
-        (false, true) => CELL_ELAPSED,
-        (false, false) => CELL,
+        (true, _) => rgb(ICE),
+        (false, true) => layout.surface(CELL_ELAPSED),
+        (false, false) => layout.surface(CELL),
     };
     let progress = live
         .then(|| frame.axis.elapsed_fraction(programme, frame.now))
@@ -54,13 +54,22 @@ pub(super) fn render(
         .map(|fraction| {
             (
                 (fraction as f32 * full_width).clamp(0., full_width),
-                if focused { ICE_ELAPSED } else { WASH },
+                if focused {
+                    rgb(ICE_ELAPSED)
+                } else {
+                    layout.surface(WASH)
+                },
             )
         });
     // Geometry past the track's clip cannot affect its image unless it rounds
     // back into view. Bound the painted shape even for very long programmes.
     let paint_width = full_width.min(TRACK_WIDTH - left + CORNER_RADIUS);
-    let text_width = full_width.min(TRACK_WIDTH - left + RIGHT_FADE_WIDTH);
+    let fade = if layout.translucent {
+        0.
+    } else {
+        RIGHT_FADE_WIDTH
+    };
+    let text_width = full_width.min(TRACK_WIDTH - left + fade);
     let cell = layout.rect(left, top, text_width, height).child(
         layout
             .rect(0., 0., paint_width, CELL_HEIGHT)
@@ -117,8 +126,8 @@ pub(super) fn render(
 fn cell_fill(
     layout: Layout,
     cut: bool,
-    fill_color: u32,
-    elapsed: Option<(f32, u32)>,
+    fill_color: gpui::Rgba,
+    elapsed: Option<(f32, gpui::Rgba)>,
 ) -> impl gpui::IntoElement {
     canvas(
         |_, _, _| (),
@@ -127,9 +136,9 @@ fn cell_fill(
             let path = cut.then(|| left_cut(bounds, layout.px(CLIP_POINT), radius));
             let paint = |window: &mut Window, color| {
                 if let Some(path) = path.as_ref().and_then(|path| path.as_ref()) {
-                    window.paint_path(path.clone(), rgb(color));
+                    window.paint_path(path.clone(), color);
                 } else {
-                    window.paint_quad(fill(bounds, rgb(color)).corner_radii(radius));
+                    window.paint_quad(fill(bounds, color).corner_radii(radius));
                 }
             };
             paint(window, fill_color);

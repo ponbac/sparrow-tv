@@ -19,7 +19,10 @@ use sparrow_source_http::HttpSourceAccess;
 use tokio::{runtime::Handle, sync::Mutex};
 
 pub use config_store::{ConfigurationStoreError, SavedSourceLocations, ensure_private_directory};
-pub use guide_preferences::{GuidePreferenceChange, GuidePreferenceError, GuidePreferences};
+pub use guide_preferences::{
+    GuideBackdrop, GuidePreferenceChange, GuidePreferenceError, GuidePreferenceWrite,
+    GuidePreferences,
+};
 
 use config_store::{SourceConfigurationStore, StoredSourceConfiguration};
 use guide_preferences::GuidePreferenceStore;
@@ -125,8 +128,9 @@ impl InstalledCatalog {
     /// Once admitted, the operation owns the instance lease through completion.
     pub async fn update_guide_preferences(
         self: &Arc<Self>,
-        changes: Vec<GuidePreferenceChange>,
+        changes: impl Into<GuidePreferenceWrite>,
     ) -> Result<Arc<GuidePreferences>, GuidePreferenceError> {
+        let changes = changes.into();
         let mutation = Arc::clone(&self.guide_preferences.mutation)
             .lock_owned()
             .await;

@@ -1,5 +1,7 @@
 //! The Shield Guide, laid out in 1920-wide reference units.
 
+mod backdrop;
+pub(super) use backdrop::BackdropMotion;
 mod band;
 mod board;
 mod channel_icon;
@@ -61,6 +63,7 @@ const SAIRA_NUMBER: &str = "Sparrow Guide 110";
 
 #[derive(Clone, Copy)]
 struct Layout {
+    translucent: bool,
     scale: f32,
     height: f32,
 }
@@ -70,8 +73,36 @@ impl Layout {
         let scale = (f32::from(viewport.width) / CANVAS_WIDTH).max(f32::EPSILON);
         Self {
             scale,
+            translucent: false,
             height: f32::from(viewport.height) / scale,
         }
+    }
+
+    fn for_guide(viewport: Size<Pixels>, choice: sparrow_installed_catalog::GuideBackdrop) -> Self {
+        Self {
+            translucent: choice != sparrow_installed_catalog::GuideBackdrop::Flat,
+            ..Self::new(viewport)
+        }
+    }
+
+    fn guide_text(self) -> gpui::Rgba {
+        gpui::rgb(if self.translucent { 0xffffff } else { TEXT })
+    }
+
+    fn secondary(self, color: u32) -> gpui::Rgba {
+        let mut ink = gpui::rgba(color);
+        if self.translucent {
+            ink.a = (ink.a + 0.12).min(1.);
+        }
+        ink
+    }
+
+    fn surface(self, color: u32) -> gpui::Rgba {
+        let mut fill = gpui::rgb(color);
+        if self.translucent {
+            fill.a = 0.85;
+        }
+        fill
     }
 
     fn px(self, length: f32) -> Pixels {
@@ -109,6 +140,7 @@ pub(super) fn surface_height(viewport: Size<Pixels>) -> f32 {
 }
 
 pub(super) struct GuideBand<'a> {
+    pub(super) choice: sparrow_installed_catalog::GuideBackdrop,
     pub(super) now: DateTime<FixedOffset>,
     pub(super) preview: Option<&'a PreviewSelection>,
     pub(super) description: Option<&'a gpui::SharedString>,
@@ -123,16 +155,18 @@ pub(super) fn render(
     lanes: (&mut LaneViewport, &mut RailViewport),
     window: &mut Window,
     icons: &ChannelIcons,
+    backdrop: Div,
 ) -> Div {
-    let layout = Layout::new(window.viewport_size());
+    let layout = Layout::for_guide(window.viewport_size(), band.choice);
     let now = band.now;
     let guide = div()
         .size_full()
         .relative()
         .overflow_hidden()
         .bg(gpui::rgb(INK))
-        .text_color(gpui::rgb(TEXT))
+        .text_color(layout.guide_text())
         .font_family(SAIRA)
+        .child(backdrop)
         .child(band::render(layout, band, icons));
     match screen.mode() {
         GuideMode::Now => guide

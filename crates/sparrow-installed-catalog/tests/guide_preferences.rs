@@ -12,7 +12,8 @@ use std::{
 use serde_json::json;
 use sparrow_core::ChannelQuality;
 use sparrow_installed_catalog::{
-    CatalogStartupError, GuidePreferenceChange, GuidePreferenceError, InstalledCatalog,
+    CatalogStartupError, GuideBackdrop, GuidePreferenceChange, GuidePreferenceError,
+    InstalledCatalog,
 };
 use tempfile::tempdir;
 
@@ -27,6 +28,7 @@ async fn guide_preferences_round_trip_offline_with_webview_v1_fields() {
     assert!(initial.excluded_groups().is_empty());
     assert!(initial.variant_preferences().is_empty());
 
+    assert_eq!(initial.backdrop(), GuideBackdrop::NordicGradient);
     let groups = HashSet::from(["".to_owned(), "News \"East\"".to_owned()]);
     let saved = catalog
         .update_guide_preferences(vec![
@@ -62,6 +64,19 @@ async fn guide_preferences_round_trip_offline_with_webview_v1_fields() {
             },
         }),
     );
+    let original = fs::read(catalog.private_root().join("guide-preferences.json")).unwrap();
+    catalog
+        .update_guide_preferences(
+            sparrow_installed_catalog::GuidePreferenceWrite::SetBackdrop(
+                GuideBackdrop::ChannelTint,
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        fs::read(catalog.private_root().join("guide-preferences.json")).unwrap(),
+        original
+    );
     drop(catalog);
 
     let offline = open(directory.path()).await;
@@ -71,6 +86,7 @@ async fn guide_preferences_round_trip_offline_with_webview_v1_fields() {
     let recovered = offline.load_guide_preferences().await.unwrap();
     assert!(reloaded.has_changed().unwrap());
     assert!(Arc::ptr_eq(&recovered, &reloaded.borrow_and_update()));
+    assert_eq!(recovered.backdrop(), GuideBackdrop::ChannelTint);
     assert_eq!(recovered.excluded_groups(), &groups);
     assert_eq!(
         recovered.variant_preferences().get(FAMILY),
@@ -83,6 +99,38 @@ async fn guide_preferences_round_trip_offline_with_webview_v1_fields() {
             "evening report".to_owned(),
             ChannelQuality::Fhd
         )]
+    );
+}
+
+#[tokio::test]
+async fn future_backdrop_preserves_other_guide_preferences() {
+    let directory = tempdir().unwrap();
+    let catalog = open(directory.path()).await;
+    catalog
+        .update_guide_preferences(vec![prefer(ChannelQuality::Hd), visibility("Local", true)])
+        .await
+        .unwrap();
+    let path = catalog.private_root().join("appearance-v1.json");
+    catalog
+        .update_guide_preferences(
+            sparrow_installed_catalog::GuidePreferenceWrite::SetBackdrop(GuideBackdrop::Flat),
+        )
+        .await
+        .unwrap();
+    drop(catalog);
+    fs::write(
+        path,
+        br#"{"backdrop":"future-backdrop","future-setting":42}"#,
+    )
+    .unwrap();
+
+    let catalog = open(directory.path()).await;
+    let preferences = catalog.load_guide_preferences().await.unwrap();
+    assert_eq!(preferences.backdrop(), GuideBackdrop::NordicGradient);
+    assert!(preferences.excluded_groups().contains("Local"));
+    assert_eq!(
+        preferences.variant_preferences().get(FAMILY),
+        Some(&ChannelQuality::Hd)
     );
 }
 
