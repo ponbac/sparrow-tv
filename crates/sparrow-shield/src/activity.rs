@@ -18,6 +18,7 @@ static ACTIVITIES: LazyLock<Mutex<HashMap<u64, ActivityRef>>> = LazyLock::new(Mu
 
 pub(super) enum Event {
     Presented,
+    Ambient { epoch: u64, colors: [u32; 3] },
     Back,
     PictureBottom(i32),
     Key { code: i32, repeat: i32 },

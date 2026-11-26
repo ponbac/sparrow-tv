@@ -55,6 +55,10 @@ impl GuidePreferences {
         self.appearance.backdrop
     }
 
+    pub fn ambient_light(&self) -> bool {
+        !self.appearance.ambient_disabled
+    }
+
     pub fn excluded_groups(&self) -> &HashSet<String> {
         &self.excluded_groups
     }
@@ -164,6 +168,7 @@ impl From<ConfigurationStoreError> for GuidePreferenceError {
 pub enum GuidePreferenceWrite {
     Guide(Vec<GuidePreferenceChange>),
     SetBackdrop(GuideBackdrop),
+    SetAmbientLight { enabled: bool },
 }
 
 impl From<Vec<GuidePreferenceChange>> for GuidePreferenceWrite {
@@ -260,6 +265,10 @@ impl GuidePreferenceStore {
                 next.appearance.backdrop = value;
                 true
             }
+            GuidePreferenceWrite::SetAmbientLight { enabled } => {
+                next.appearance.ambient_disabled = !enabled;
+                true
+            }
         };
         let (next, synced) = if next == *previous {
             if !self.directory_sync_pending.load(Ordering::Relaxed) {
@@ -322,6 +331,7 @@ fn valid_family(family: &str) -> bool {
 #[serde(default)]
 struct AppearanceRecord {
     backdrop: GuideBackdrop,
+    ambient_disabled: bool,
 }
 
 // The v1 WebView keys and each value's field names are kept for a future importer.
@@ -446,6 +456,55 @@ impl Write for RecordBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ambient_survives_reopen_without_changing_the_legacy_record() {
+        let root = tempfile::tempdir().unwrap();
+        let store = GuidePreferenceStore::new();
+        store
+            .update(
+                root.path(),
+                vec![GuidePreferenceChange::SetGroupVisibility {
+                    name: "News".into(),
+                    hidden: true,
+                }]
+                .into(),
+            )
+            .unwrap();
+        let legacy = root.path().join(PREFERENCES_FILE);
+        let bytes = std::fs::read(&legacy).unwrap();
+        assert!(
+            GuidePreferenceStore::new()
+                .load(root.path())
+                .unwrap()
+                .ambient_light()
+        );
+        store
+            .update(
+                root.path(),
+                GuidePreferenceWrite::SetBackdrop(GuideBackdrop::Flat),
+            )
+            .unwrap();
+        // The backdrop layer predates the ambient field.
+        std::fs::write(root.path().join(APPEARANCE_FILE), br#"{"backdrop":"flat"}"#).unwrap();
+        let store = GuidePreferenceStore::new();
+        let appearance = store.load(root.path()).unwrap();
+        assert_eq!(appearance.backdrop(), GuideBackdrop::Flat);
+        assert!(appearance.ambient_light());
+        for _ in 0..2 {
+            store
+                .update(
+                    root.path(),
+                    GuidePreferenceWrite::SetAmbientLight { enabled: false },
+                )
+                .unwrap();
+        }
+        assert_eq!(std::fs::read(legacy).unwrap(), bytes);
+        let reopened = GuidePreferenceStore::new().load(root.path()).unwrap();
+        assert_eq!(reopened.backdrop(), GuideBackdrop::Flat);
+        assert!(!reopened.ambient_light());
+        assert!(reopened.excluded_groups().contains("News"));
+    }
 
     #[test]
     fn a_post_rename_sync_failure_publishes_the_active_record_and_can_retry() {

@@ -316,6 +316,7 @@ impl GuideSurface {
             SourcePanel {
                 backdrop: self.backdrop(),
                 status: status.as_deref(),
+                ambient: self.ambient_light(),
                 focus: source.focus,
                 editing: matches!(source.request, Some(FieldRequest::Edit(..))),
                 has_m3u: source.has_m3u,
@@ -400,6 +401,32 @@ impl GuideSurface {
         }
     }
 
+    fn step_ambient(&mut self, cx: &Context<Self>) {
+        let enabled = !self.ambient_light();
+        let Some(source) = self.source.as_mut() else {
+            return;
+        };
+        let Some(saved) = catalog::set_ambient_light(enabled) else {
+            source.feedback = Some("Couldn’t save ambient light.");
+            return;
+        };
+        source.feedback = None;
+        let session = source.session;
+        let task = cx.spawn(async move |view, cx| {
+            let success = saved.await.unwrap_or(false);
+            let _ = view.update(cx, |view, cx| {
+                view.pending_ambient = None;
+                if !success
+                    && let Some(source) = view.source.as_mut().filter(|s| s.session == session)
+                {
+                    source.feedback = Some("Couldn’t save ambient light.");
+                }
+                cx.notify();
+            });
+        });
+        self.pending_ambient = Some((enabled, task));
+    }
+
     fn step_backdrop(&mut self, previous: bool, cx: &Context<Self>) {
         use sparrow_installed_catalog::GuideBackdrop::*;
         let choice = match (self.backdrop(), previous) {
@@ -440,6 +467,12 @@ impl GuideSurface {
         let configured = status
             .as_ref()
             .is_some_and(|s| s.configuration().is_configured());
+        let key = match (source.focus, key) {
+            (SourceFocus::Ambient, ScreenKey::Arrow(Direction::Left | Direction::Right)) => {
+                ScreenKey::Activate
+            }
+            (_, key) => key,
+        };
         match key {
             ScreenKey::Arrow(direction @ (Direction::Left | Direction::Right))
                 if source.focus == SourceFocus::Backdrop =>
@@ -450,13 +483,15 @@ impl GuideSurface {
                 source.focus = match (source.focus, direction) {
                     (SourceFocus::Close, Direction::Down) => SourceFocus::Backdrop,
                     (SourceFocus::Backdrop, Direction::Up) => SourceFocus::Close,
-                    (SourceFocus::Backdrop, Direction::Down) if configured => SourceFocus::Refresh,
-                    (SourceFocus::Backdrop | SourceFocus::Refresh, Direction::Down)
+                    (SourceFocus::Backdrop, Direction::Down) => SourceFocus::Ambient,
+                    (SourceFocus::Ambient, Direction::Up) => SourceFocus::Backdrop,
+                    (SourceFocus::Ambient, Direction::Down) if configured => SourceFocus::Refresh,
+                    (SourceFocus::Ambient | SourceFocus::Refresh, Direction::Down)
                         if status.is_some() =>
                     {
                         SourceFocus::Diagnostics
                     }
-                    (SourceFocus::Backdrop | SourceFocus::Refresh, Direction::Down) => {
+                    (SourceFocus::Ambient | SourceFocus::Refresh, Direction::Down) => {
                         SourceFocus::M3u
                     }
                     (SourceFocus::Diagnostics, Direction::Down) if source.diagnostics.is_some() => {
@@ -484,13 +519,14 @@ impl GuideSurface {
                     (
                         SourceFocus::M3u | SourceFocus::Refresh | SourceFocus::Diagnostics,
                         Direction::Up,
-                    ) => SourceFocus::Backdrop,
+                    ) => SourceFocus::Ambient,
                     (focus, _) => focus,
                 };
             }
             ScreenKey::Activate => match source.focus {
                 SourceFocus::Backdrop => self.step_backdrop(false, cx),
                 SourceFocus::Close => self.close_sources(cx),
+                SourceFocus::Ambient => self.step_ambient(cx),
                 SourceFocus::Refresh if configured => self.request_source_refresh(cx),
 
                 SourceFocus::Diagnostics => {

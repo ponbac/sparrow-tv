@@ -180,6 +180,38 @@ class ShieldPlayback(
     }
   }
 
+  private var ambientEpoch = 0L
+  private var lastAmbientAt = 0L
+  private var resumed = false
+
+  fun setAmbientSampling(epoch: Long) {
+    main.post {
+      ambientEpoch = epoch
+      lastAmbientAt = 0L
+    }
+  }
+
+  fun setAmbientResumed(value: Boolean) { resumed = value }
+
+  private fun publishAmbient(pixels: IntArray, width: Int, height: Int, epoch: Long) {
+    val now = android.os.SystemClock.elapsedRealtime()
+    if (!ValueAnimator.areAnimatorsEnabled() && lastAmbientAt != 0L && now - lastAmbientAt < 3000L) return
+    lastAmbientAt = now
+    // Sample the centres of a 4 × 3 grid from the rolling still's pixels.
+    val colors = IntArray(12) { i ->
+      val x = (2 * (i % 4) + 1) * width / 8
+      val y = (2 * (i / 4) + 1) * height / 6
+      pixels[y * width + x]
+    }
+    fun average(vararg positions: Int): Int {
+      fun channel(shift: Int) = positions.sumOf { (colors[it] ushr shift) and 255 } / positions.size
+      return (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+    }
+    nativeAmbient(hostId, epoch, average(0, 1, 4), average(2, 3, 7), average(5, 6, 9, 10))
+  }
+
+  private external fun nativeAmbient(host: Long, epoch: Long, left: Int, right: Int, bottom: Int)
+
   fun capturePlaybackFrame(
     host: Long, generation: Long, request: Long, session: String, stream: String,
   ): Boolean {
@@ -197,6 +229,7 @@ class ShieldPlayback(
         complete(null)
         return@post
       }
+      val epoch = ambientEpoch
       val scale = minOf(1f, 640f / surface.width, 360f / surface.height)
       val bitmap = try {
         Bitmap.createBitmap(
@@ -214,6 +247,10 @@ class ShieldPlayback(
             if (result == PixelCopy.SUCCESS) {
               val colors = IntArray(bitmap.width * bitmap.height)
               bitmap.getPixels(colors, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+              if (epoch != 0L && epoch == ambientEpoch && resumed && !destroyed &&
+                  binding?.presentation == presentation && placement.visiblePicture() === surface) {
+                publishAmbient(colors, bitmap.width, bitmap.height, epoch)
+              }
               val bgra = ByteBuffer.allocate(colors.size * 4).order(ByteOrder.LITTLE_ENDIAN)
               bgra.asIntBuffer().put(colors)
               complete(bgra.array(), bitmap.width, bitmap.height)
@@ -465,6 +502,10 @@ private class ShieldPlaybackPlacement(
       fade?.cancel()
       waitingForFrame = true
     }
+  }
+
+  fun visiblePicture() = pictureSurface()?.takeIf {
+    placed && !waitingForFrame && it.isShown && it.holder.surface.isValid
   }
 
   fun pictureSurface() = mountedPlayer?.videoSurfaceView as? SurfaceView

@@ -2,6 +2,7 @@
 
 mod backdrop;
 pub(super) use backdrop::BackdropMotion;
+pub(crate) mod ambient;
 pub(super) mod arrival;
 mod band;
 mod board;
@@ -162,7 +163,6 @@ pub(super) fn render(
     lanes: (&mut LaneViewport, &mut RailViewport),
     window: &mut Window,
     icons: &ChannelIcons,
-    backdrop: Div,
 ) -> Div {
     let layout = Layout::for_guide(window.viewport_size(), band.choice);
     let minute = band.minute;
@@ -170,10 +170,8 @@ pub(super) fn render(
         .size_full()
         .relative()
         .overflow_hidden()
-        .bg(gpui::rgb(INK))
         .text_color(layout.guide_text())
         .font_family(SAIRA)
-        .child(backdrop)
         .child(band::render(layout, band, icons, wave));
     match screen.mode() {
         GuideMode::Now => guide

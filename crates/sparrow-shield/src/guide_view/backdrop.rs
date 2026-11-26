@@ -113,7 +113,7 @@ impl Wash {
     }
 }
 
-fn mix_hue(a: Hsla, b: Hsla, t: f32) -> Hsla {
+pub(super) fn mix_hue(a: Hsla, b: Hsla, t: f32) -> Hsla {
     let arc = (b.h - a.h + 0.5).rem_euclid(1.) - 0.5;
     hsla(
         (a.h + t * arc).rem_euclid(1.),

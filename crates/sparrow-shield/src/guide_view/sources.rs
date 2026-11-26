@@ -14,7 +14,8 @@ const CONTENT_WIDTH: f32 = WIDTH - 2. * PADDING;
 const CONTENT_Y: f32 = 116.;
 const BUTTON_HEIGHT: f32 = 48.;
 const BACKDROP_Y: f32 = 42.;
-const STATUS_Y: f32 = BACKDROP_Y + BUTTON_HEIGHT + 16.;
+const AMBIENT_Y: f32 = BACKDROP_Y + BUTTON_HEIGHT + 6.;
+const STATUS_Y: f32 = AMBIENT_Y + BUTTON_HEIGHT + 16.;
 const CARD_Y: f32 = STATUS_Y + BUTTON_HEIGHT + 12.;
 const CARD_HEIGHT: f32 = 112.;
 const GUIDE_CARD_Y: f32 = CARD_Y + CARD_HEIGHT + 4.;
@@ -43,6 +44,7 @@ pub(in super::super) enum SourceFocus {
     M3u,
     Epg,
     Save,
+    Ambient,
 }
 
 #[derive(Clone, Copy)]
@@ -87,6 +89,7 @@ impl SourcePositions {
             SourceFocus::CopyDiagnostics => (self.copy, BUTTON_HEIGHT),
             SourceFocus::M3u => (self.m3u, FIELD_HEIGHT),
             SourceFocus::Epg => (self.epg, FIELD_HEIGHT),
+            SourceFocus::Ambient => (AMBIENT_Y, BUTTON_HEIGHT),
             SourceFocus::Save => (self.save, BUTTON_HEIGHT),
         };
         // Keep the label and editor at the top of the content so the TV
@@ -100,6 +103,7 @@ impl SourcePositions {
 
 pub(in super::super) struct SourcePanel<'a> {
     pub(in super::super) backdrop: sparrow_installed_catalog::GuideBackdrop,
+    pub(in super::super) ambient: bool,
     pub(in super::super) status: Option<&'a CatalogStatus>,
     pub(in super::super) focus: SourceFocus,
     pub(in super::super) editing: bool,
@@ -178,6 +182,20 @@ pub(in super::super) fn sources_sheet(size: Size<Pixels>, panel: SourcePanel<'_>
                         }
                     }),
             ),
+        )
+        .child(
+            action_frame(
+                layout,
+                layout.rect(0., AMBIENT_Y, CONTENT_WIDTH, BUTTON_HEIGHT),
+                panel.focus == SourceFocus::Ambient,
+            )
+            .justify_between()
+            .child(layout.text(SAIRA, 22., 30., 600.).child("Ambient light"))
+            .child(layout.text(SAIRA, 21., 30., 500.).child(if panel.ambient {
+                "‹  On  ›"
+            } else {
+                "‹  Off  ›"
+            })),
         )
         .child(
             layout
@@ -329,11 +347,13 @@ pub(in super::super) fn sources_sheet(size: Size<Pixels>, panel: SourcePanel<'_>
     div()
         .absolute()
         .inset_0()
-        .bg(rgba(if panel.focus == SourceFocus::Backdrop {
-            0x05091040
-        } else {
-            0x050910b3
-        }))
+        .bg(rgba(
+            if matches!(panel.focus, SourceFocus::Backdrop | SourceFocus::Ambient) {
+                0x05091040
+            } else {
+                0x050910b3
+            },
+        ))
         .child(sheet)
 }
 

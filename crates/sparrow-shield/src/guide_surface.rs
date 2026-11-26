@@ -104,6 +104,7 @@ pub(super) struct GuideSurface {
     group_viewport: guide_view::GroupViewport,
     loaded_exclusions: bool,
     pending_exclusions: Option<u64>,
+    pending_ambient: Option<(bool, Task<()>)>,
     pending_backdrop: Option<(sparrow_installed_catalog::GuideBackdrop, Task<()>)>,
     tint_dwell: Option<Task<()>>,
     backdrop_motion: guide_view::BackdropMotion,
@@ -259,6 +260,7 @@ impl GuideSurface {
             group_viewport: guide_view::GroupViewport::default(),
             loaded_exclusions: false,
             pending_exclusions: None,
+            pending_ambient: None,
             pending_backdrop: None,
             tint_dwell: None,
             backdrop_motion: Default::default(),
@@ -505,6 +507,7 @@ impl GuideSurface {
                     self.press(key, repeat > 0, window, cx);
                 }
             }
+            activity::Event::Ambient { epoch, colors } => self.ambient_sample(epoch, colors, cx),
             activity::Event::PlaybackDiagnosticsCopied { attempt, copied } => {
                 self.playback_diagnostics_copied(attempt, copied, cx);
             }
@@ -1041,6 +1044,12 @@ fn publish_diagnostics(screen: &GuideScreen, focused_dock: Option<u32>) {
 }
 
 impl GuideSurface {
+    fn ambient_light(&self) -> bool {
+        self.pending_ambient
+            .as_ref()
+            .map_or_else(catalog::ambient_light, |(enabled, _)| *enabled)
+    }
+
     fn backdrop(&self) -> sparrow_installed_catalog::GuideBackdrop {
         self.pending_backdrop
             .as_ref()
@@ -1121,6 +1130,7 @@ impl Render for GuideSurface {
             .set_surface_height(guide_view::surface_height(window.viewport_size()));
         let (frame, picture) = self.playback.fullscreen_frame(window, cx.reduce_motion());
         self.update_playback_viewports(window, picture);
+        self.sync_ambient(cx.reduce_motion());
         self.schedule_preview_frame(window, cx);
         publish_diagnostics(&self.screen, self.playback.focused_dock_channel());
         *WORKFLOW_DIAGNOSTICS.lock().unwrap() = WorkflowDiagnostics {
@@ -1164,10 +1174,16 @@ impl Render for GuideSurface {
             .playback
             .render(window, minute, cx.reduce_motion(), frame);
         let root = root.relative().overflow_hidden().bg(rgb(guide_view::INK));
+        let glow = self
+            .playback
+            .ambient
+            .layer(window.viewport_size(), picture, cx.reduce_motion());
         if frame.fullscreen >= 1. {
             self.arrival.leave();
             self.icons.hide();
-            return root.children(player);
+            return root
+                .when(frame.band > 0., |root| root.child(glow))
+                .children(player);
         }
         let viewport = window.viewport_size();
         if let Some(loading) = self
@@ -1225,7 +1241,6 @@ impl Render for GuideSurface {
             (&mut self.now_lane, &mut self.timeline_rail),
             window,
             &self.icons,
-            backdrop.opacity(wave.backdrop_opacity()),
         );
         if let Some(tick) = &mut self.minute_tick
             && tick.needs_badge_timer()
@@ -1250,7 +1265,9 @@ impl Render for GuideSurface {
         }
         let drift = window.viewport_size().width * (36. / 1920. * frame.fullscreen);
         let opacity = (1. - frame.fullscreen * 1.45).max(0.);
-        root.child(guide.top(drift).opacity(opacity))
+        root.child(backdrop.opacity(opacity * wave.backdrop_opacity()))
+            .child(glow)
+            .child(guide.top(drift).opacity(opacity))
             .children(self.arrival.landing(viewport, wave))
             .children(player)
             .child(

@@ -87,6 +87,10 @@ enum PreferenceWrite {
         choice: sparrow_installed_catalog::GuideBackdrop,
         completed: oneshot::Sender<bool>,
     },
+    SetAmbientLight {
+        enabled: bool,
+        completed: oneshot::Sender<bool>,
+    },
     Group {
         sequence: u64,
         change: GuidePreferenceChange,
@@ -377,6 +381,25 @@ pub(super) fn variant_preferences() -> watch::Receiver<Arc<VariantPreferences>> 
     PROCESS.variant_preferences.subscribe()
 }
 
+pub(super) fn ambient_light() -> bool {
+    PROCESS
+        .catalog
+        .get()
+        .is_none_or(|catalog| catalog.guide_preferences().ambient_light())
+}
+
+pub(super) fn set_ambient_light(enabled: bool) -> Option<oneshot::Receiver<bool>> {
+    let (completed, result) = oneshot::channel();
+    PROCESS
+        .worker
+        .get()?
+        .as_ref()?
+        .preference_changes
+        .try_send(PreferenceWrite::SetAmbientLight { enabled, completed })
+        .ok()?;
+    Some(result)
+}
+
 pub(super) fn prefer_variant(
     group: String,
     normalized_title: String,
@@ -561,6 +584,17 @@ async fn write_preferences(
                 let saved = catalog
                     .update_guide_preferences(
                         sparrow_installed_catalog::GuidePreferenceWrite::SetBackdrop(choice),
+                    )
+                    .await
+                    .is_ok();
+                let _ = completed.send(saved);
+            }
+            PreferenceWrite::SetAmbientLight { enabled, completed } => {
+                let saved = catalog
+                    .update_guide_preferences(
+                        sparrow_installed_catalog::GuidePreferenceWrite::SetAmbientLight {
+                            enabled,
+                        },
                     )
                     .await
                     .is_ok();

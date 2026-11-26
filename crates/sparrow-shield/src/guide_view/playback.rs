@@ -160,7 +160,7 @@ pub(crate) fn picture_rect(
     ]
 }
 
-fn picture_reference(layout: Layout, placement: PlaybackLayout) -> [f32; 4] {
+pub(super) fn picture_reference(layout: Layout, placement: PlaybackLayout) -> [f32; 4] {
     match placement {
         PlaybackLayout::Docked => [GUTTER, DOCK_TOP, DOCK_WIDTH, DOCK_HEIGHT],
         PlaybackLayout::Fullscreen {
@@ -380,7 +380,7 @@ pub(crate) fn tuning_field(
     )
 }
 
-fn moving_picture(layout: Layout, frame: FullscreenFrame, dock: [f32; 4]) -> [f32; 4] {
+pub(super) fn moving_picture(layout: Layout, frame: FullscreenFrame, dock: [f32; 4]) -> [f32; 4] {
     let full = picture_reference(
         layout,
         PlaybackLayout::Fullscreen {

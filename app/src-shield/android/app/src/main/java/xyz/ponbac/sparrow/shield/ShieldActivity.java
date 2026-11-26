@@ -107,6 +107,7 @@ public final class ShieldActivity extends Activity implements SurfaceHolder.Call
     protected void onResume() {
         super.onResume();
         updateMotionPreference();
+        playback.setAmbientResumed(true);
         nativeResume(hostId);
     }
 
@@ -118,6 +119,7 @@ public final class ShieldActivity extends Activity implements SurfaceHolder.Call
 
     @Override
     protected void onPause() {
+        playback.setAmbientResumed(false);
         nativePause(hostId);
         super.onPause();
     }
