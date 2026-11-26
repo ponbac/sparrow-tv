@@ -1,5 +1,9 @@
 //! Shield picture placement and the controls that fit around the native surface.
 
+mod signal_mark;
+
+use std::time::Instant;
+
 use gpui::{Bounds, Div, Pixels, Size, div, point, prelude::*, rgb, rgba, size};
 
 use super::{
@@ -18,6 +22,7 @@ const FULLSCREEN_BAND_HEIGHT: f32 = 204.;
 const FULLSCREEN_GUTTER: f32 = 56.;
 const FULLSCREEN_CONTROL_HEIGHT: f32 = 76.;
 
+const AMBER: u32 = 0xffb45d;
 const TALLY: u32 = 0xff5d5d;
 const ERROR: u32 = 0xff8a75;
 const ERROR_FILL: u32 = 0xff8a7524;
@@ -82,6 +87,8 @@ pub(crate) struct PlaybackOverlay<'a> {
     pub(crate) programme: Option<PlaybackProgramme<'a>>,
     pub(crate) clock: &'a str,
     pub(crate) stage: PlaybackStage,
+    pub(crate) signal_landing: Option<(Instant, PlaybackStage)>,
+    pub(crate) reduce_motion: bool,
     pub(crate) audio_track: Option<&'a str>,
     pub(crate) quality: Option<&'a str>,
     pub(crate) copy_label: &'static str,
@@ -248,13 +255,7 @@ pub(crate) fn docked_playback(viewport: Size<Pixels>, playback: &PlaybackOverlay
         .items_center()
         .gap(layout.px(10.))
         .when(focused, |caption| caption.bg(rgb(ICE)))
-        .child(
-            div()
-                .size(layout.px(12.))
-                .flex_none()
-                .rounded_full()
-                .bg(rgb(TALLY)),
-        )
+        .child(signal_mark::render(layout, playback, focused))
         .child(
             layout
                 .text(SAIRA, 20., 20., 600.)
@@ -356,6 +357,7 @@ fn fullscreen_head(layout: Layout, playback: &PlaybackOverlay<'_>) -> Div {
                 .flex()
                 .items_center()
                 .gap(layout.px(12.))
+                .child(signal_mark::render(layout, playback, false))
                 .child(
                     layout
                         .text(SAIRA, 22., 26., 600.)
@@ -596,6 +598,7 @@ fn control(layout: Layout, action: PlaybackControl, playback: &PlaybackOverlay<'
 fn status_tag(layout: Layout, stage: PlaybackStage, fullscreen: bool) -> Div {
     let (fill, ink) = match stage {
         PlaybackStage::Playing => (0xff5d5dff, TEXT),
+        PlaybackStage::Reconnecting => (0x6b4817ff, 0xffe2bd),
         PlaybackStage::Failed => (ERROR_FILL, ERROR),
         _ => (0x243858ff, TEXT),
     };

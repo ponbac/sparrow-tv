@@ -31,8 +31,12 @@ use tokio::sync::mpsc;
 
 static INITIALIZE_LOGS: Once = Once::new();
 static START_RENDERER: OnceLock<mpsc::UnboundedSender<host::HostId>> = OnceLock::new();
-static ACTIVITY_EVENTS: OnceLock<mpsc::UnboundedSender<(host::HostId, activity::Event)>> =
-    OnceLock::new();
+enum ActivityUpdate {
+    ReduceMotion(bool),
+    Window(host::HostId, activity::Event),
+}
+
+static ACTIVITY_EVENTS: OnceLock<mpsc::UnboundedSender<ActivityUpdate>> = OnceLock::new();
 static DIAGNOSTICS: Mutex<RendererSnapshot> = Mutex::new(RendererSnapshot {
     renderer: None,
     graphics_failed: false,
@@ -138,19 +142,23 @@ fn start_renderer() {
             })
             .detach();
             cx.spawn(async move |cx| {
-                while let Some((id, event)) = activity_updates.recv().await {
-                    cx.update(|cx| {
-                        let window = cx
-                            .global::<ActivityWindows>()
-                            .0
-                            .get(&id)
-                            .and_then(AnyWindowHandle::downcast::<guide_surface::GuideSurface>);
-                        if let Some(window) = window {
-                            let _ = window.update(cx, |view, window, cx| {
-                                view.activity_event(event, window, cx);
-                            });
+                while let Some(update) = activity_updates.recv().await {
+                    match update {
+                        ActivityUpdate::ReduceMotion(reduce) => {
+                            cx.update(|cx| cx.set_reduce_motion(reduce))
                         }
-                    });
+                        ActivityUpdate::Window(id, event) => cx.update(|cx| {
+                            let window =
+                                cx.global::<ActivityWindows>().0.get(&id).and_then(
+                                    AnyWindowHandle::downcast::<guide_surface::GuideSurface>,
+                                );
+                            if let Some(window) = window {
+                                let _ = window.update(cx, |view, window, cx| {
+                                    view.activity_event(event, window, cx);
+                                });
+                            }
+                        }),
+                    }
                 }
             })
             .detach();
@@ -271,7 +279,22 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeDestr
 
 fn enqueue_activity(id: i64, event: activity::Event) {
     if let Some(events) = ACTIVITY_EVENTS.get() {
-        let _ = events.send((id as u64, event));
+        let _ = events.send(ActivityUpdate::Window(id as u64, event));
+    }
+}
+
+static PICTURE_REVEAL_MS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(240);
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeAnimatorScale(
+    _: EnvUnowned,
+    _: JObject,
+    scale: f32,
+    millis: i32,
+) {
+    PICTURE_REVEAL_MS.store(millis as u32, std::sync::atomic::Ordering::Relaxed);
+    if let Some(events) = ACTIVITY_EVENTS.get() {
+        let _ = events.send(ActivityUpdate::ReduceMotion(scale == 0.));
     }
 }
 
