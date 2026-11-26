@@ -1,5 +1,5 @@
 //! A single sample drives both the native viewport and the Guide chrome.
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gpui::Window;
 
@@ -22,6 +22,11 @@ impl Default for FullscreenFrame {
     }
 }
 
+/// Dock-to-fullscreen and back. Kept short: the native picture pauses on a
+/// still while it flies.
+const ENTER_SECONDS: f32 = 0.36;
+const EXIT_SECONDS: f32 = 0.30;
+
 struct Transition {
     start: Instant,
     from: FullscreenFrame,
@@ -34,6 +39,9 @@ pub(crate) struct FullscreenMotion {
     target: FullscreenFrame,
     flight: Option<Transition>,
     cut_from: Option<FullscreenFrame>,
+    /// When the latest dock-to-fullscreen leg ends. A band change during the
+    /// leg keeps this deadline.
+    leg_ends: Option<Instant>,
 }
 
 impl FullscreenMotion {
@@ -50,16 +58,24 @@ impl FullscreenMotion {
                 self.cut_from = Some(self.sample(Instant::now()));
             }
             self.flight = None;
+            self.leg_ends = None;
         } else if self.target != target {
             self.cut_from = None;
             let (seconds, power) = if target.fullscreen != self.target.fullscreen {
-                if fullscreen { (0.48, 3) } else { (0.39, 3) }
+                if fullscreen {
+                    (ENTER_SECONDS, 3)
+                } else {
+                    (EXIT_SECONDS, 3)
+                }
             } else if controls {
                 (0.28, 4)
             } else {
                 (0.48, 3)
             };
             let start = Instant::now();
+            if target.fullscreen != self.target.fullscreen {
+                self.leg_ends = Some(start + Duration::from_secs_f32(seconds));
+            }
             self.flight = Some(Transition {
                 start,
                 from: self.sample(start),
@@ -68,6 +84,14 @@ impl FullscreenMotion {
             });
         }
         self.target = target;
+    }
+
+    /// Whether the picture is on its way between the dock and fullscreen.
+    /// Moving the native surface every frame stalls the Shield's compositor, so
+    /// GPUI flies a still instead. Band motion outside that leg, including the
+    /// rest of a band change begun during it, still moves the native surface.
+    pub(crate) fn flying(&self) -> bool {
+        self.flight.is_some() && self.leg_ends.is_some_and(|ends| Instant::now() < ends)
     }
 
     fn sample(&self, now: Instant) -> FullscreenFrame {

@@ -234,45 +234,82 @@ class ShieldPlayback(
         return@post
       }
       val epoch = ambientEpoch
-      val scale = minOf(1f, 640f / surface.width, 360f / surface.height)
-      val bitmap = try {
-        Bitmap.createBitmap(
-          maxOf(1, (surface.width * scale).toInt()),
-          maxOf(1, (surface.height * scale).toInt()),
-          Bitmap.Config.ARGB_8888,
-        )
-      } catch (_: RuntimeException) {
-        complete(null)
-        return@post
-      }
       capturing = true
-      try {
-        PixelCopy.request(surface, bitmap, { result ->
-          try {
-            if (result == PixelCopy.SUCCESS) {
-              val colors = IntArray(bitmap.width * bitmap.height)
-              bitmap.getPixels(colors, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-              if (epoch != 0L && epoch == ambientEpoch && resumed && !destroyed &&
-                  binding?.presentation == presentation && placement.visiblePicture() === surface) {
-                publishAmbient(colors, bitmap.width, bitmap.height, epoch)
-              }
-              val bgra = ByteBuffer.allocate(colors.size * 4).order(ByteOrder.LITTLE_ENDIAN)
-              bgra.asIntBuffer().put(colors)
-              complete(bgra.array(), bitmap.width, bitmap.height)
-            } else complete(null)
-          } catch (_: RuntimeException) {
-            complete(null)
-          } finally {
-            capturing = false
-            bitmap.recycle()
-          }
-        }, main)
-      } catch (_: RuntimeException) {
+      copyPicture(surface, 640, 360) { colors, width, height ->
         capturing = false
-        bitmap.recycle()
-        complete(null)
+        if (colors == null) return@copyPicture complete(null)
+        try {
+          if (epoch != 0L && epoch == ambientEpoch && resumed && !destroyed &&
+              binding?.presentation == presentation && placement.visiblePicture() === surface) {
+            publishAmbient(colors, width, height, epoch)
+          }
+          complete(bgra(colors), width, height)
+        } catch (_: RuntimeException) {
+          complete(null)
+        }
       }
     }
+  }
+
+  /** Copies the visible picture for Rust to fly between the dock and fullscreen. */
+  fun captureFlightStill(request: Long, maxWidth: Int, maxHeight: Int) {
+    main.post {
+      if (destroyed) return@post
+      val surface = placement.visiblePicture()
+      if (surface == null) {
+        nativeFlightStill(hostId, request, 0, 0, null)
+        return@post
+      }
+      copyPicture(surface, maxWidth, maxHeight) { colors, width, height ->
+        if (!destroyed) nativeFlightStill(hostId, request, width, height, colors?.let(::bgra))
+      }
+    }
+  }
+
+  /** Scales the surface's current frame into at most [maxWidth] × [maxHeight] ARGB pixels. */
+  private fun copyPicture(
+    surface: SurfaceView,
+    maxWidth: Int,
+    maxHeight: Int,
+    done: (IntArray?, Int, Int) -> Unit,
+  ) {
+    val scale = minOf(1f, maxWidth.toFloat() / surface.width, maxHeight.toFloat() / surface.height)
+    val bitmap = try {
+      Bitmap.createBitmap(
+        maxOf(1, (surface.width * scale).toInt()),
+        maxOf(1, (surface.height * scale).toInt()),
+        Bitmap.Config.ARGB_8888,
+      )
+    } catch (_: RuntimeException) {
+      return done(null, 0, 0)
+    }
+    try {
+      PixelCopy.request(surface, bitmap, { result ->
+        val width = bitmap.width
+        val height = bitmap.height
+        val colors = try {
+          if (result == PixelCopy.SUCCESS) {
+            IntArray(width * height).also { bitmap.getPixels(it, 0, width, 0, 0, width, height) }
+          } else {
+            null
+          }
+        } catch (_: RuntimeException) {
+          null
+        } finally {
+          bitmap.recycle()
+        }
+        done(colors, width, height)
+      }, main)
+    } catch (_: RuntimeException) {
+      bitmap.recycle()
+      done(null, 0, 0)
+    }
+  }
+
+  private fun bgra(colors: IntArray): ByteArray {
+    val bytes = ByteBuffer.allocate(colors.size * 4).order(ByteOrder.LITTLE_ENDIAN)
+    bytes.asIntBuffer().put(colors)
+    return bytes.array()
   }
 
   fun samplePlayback(
@@ -462,6 +499,9 @@ class ShieldPlayback(
   )
 
   private external fun nativePictureBottom(host: Long, bottom: Int)
+  private external fun nativeFlightStill(
+    host: Long, request: Long, width: Int, height: Int, pixels: ByteArray?,
+  )
   private external fun nativePlaybackSignal(host: Long, generation: Long, signal: Int)
 
   private external fun readNativePlayback(

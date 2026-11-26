@@ -198,6 +198,49 @@ pub(super) fn set_ambient_sampling(host: u64, epoch: u64) {
     });
 }
 
+/// Asks for a still of the visible picture. It returns as `Event::FlightStill`
+/// with the request, or `None` when there was no picture to copy.
+pub(super) fn capture_flight_still(host: u64, request: u64, [width, height]: [u32; 2]) {
+    let called = activity::call(host, |env, activity| {
+        let player = playback_host(env, activity)?;
+        env.call_method(
+            &player,
+            jni_str!("captureFlightStill"),
+            jni_sig!("(JII)V"),
+            &[
+                JValue::Long(request as i64),
+                JValue::Int(width as i32),
+                JValue::Int(height as i32),
+            ],
+        )?;
+        Ok(())
+    });
+    if !called {
+        crate::enqueue_activity(host as i64, activity::Event::FlightStill(request, None));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldPlayback_nativeFlightStill<'local>(
+    mut env: EnvUnowned<'local>,
+    _: JObject<'local>,
+    host: i64,
+    request: i64,
+    width: i32,
+    height: i32,
+    pixels: JByteArray<'local>,
+) {
+    let frame = if width > 0 && height > 0 && !pixels.is_null() {
+        env.with_env_no_catch(|env| env.convert_byte_array(&pixels).map(Some))
+            .resolve::<LogErrorAndDefault>()
+            // GPUI images are BGRA, as Android copies them.
+            .and_then(|bgra| image::RgbaImage::from_raw(width as u32, height as u32, bgra))
+    } else {
+        None
+    };
+    crate::enqueue_activity(host, activity::Event::FlightStill(request as u64, frame));
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldPlayback_nativeAmbient(
     _: EnvUnowned,
