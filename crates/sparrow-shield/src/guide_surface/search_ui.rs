@@ -86,7 +86,7 @@ impl GuideSurface {
             }
             SearchEffect::GuideKey(key) => {
                 if let Some(window) = window {
-                    self.press(key, window, cx);
+                    self.press(key, false, window, cx);
                 }
             }
             SearchEffect::Tune(tune) => self.search_tune(tune, cx),

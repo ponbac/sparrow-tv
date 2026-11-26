@@ -2,6 +2,8 @@
 
 mod signal_mark;
 mod tune;
+mod zap;
+pub(crate) use zap::ZapRoll;
 
 use std::time::Instant;
 
@@ -89,6 +91,8 @@ impl PlaybackStage {
 }
 
 pub(crate) struct PlaybackOverlay<'a> {
+    pub(crate) reel: Option<&'a zap::Reel>,
+    pub(crate) roll: Option<&'a ZapRoll>,
     pub(crate) channel_number: u32,
     pub(crate) channel_name: &'a str,
     pub(crate) programme: Option<PlaybackProgramme<'a>>,
@@ -292,7 +296,7 @@ pub(crate) fn docked_playback(viewport: Size<Pixels>, playback: &PlaybackOverlay
                 .text(SAIRA, 20., 20., 600.)
                 .flex_none()
                 .text_color(rgb(primary))
-                .child(playback.channel_number.to_string()),
+                .child(zap::number(layout, playback, 22., 20., 11.5)),
         )
         .child(
             layout
@@ -417,41 +421,9 @@ pub(crate) fn fullscreen_playback(
 }
 
 fn fullscreen_head(layout: Layout, playback: &PlaybackOverlay<'_>) -> Div {
-    let identity = div()
-        .flex_1()
-        .min_w_0()
-        .child(
-            div()
-                .h(layout.px(26.))
-                .min_w_0()
-                .flex()
-                .items_center()
-                .gap(layout.px(12.))
-                .when(
-                    !playback.show_field() || playback.stage == PlaybackStage::Playing,
-                    |head| head.child(signal_mark::render(layout, playback, false)),
-                )
-                .child(
-                    layout
-                        .text(SAIRA, 22., 26., 600.)
-                        .min_w_0()
-                        .truncate()
-                        .child(playback.channel_name.to_owned()),
-                )
-                .child(status_tag(layout, playback.stage, true))
-                .when_some(playback.quality, |channel, quality| {
-                    channel.child(quality_tag(layout, quality))
-                }),
-        )
-        .child(
-            layout.text(SAIRA_TITLE, 36., 42., 700.).truncate().child(
-                playback
-                    .programme
-                    .as_ref()
-                    .map_or(playback.channel_name, |item| item.title)
-                    .to_owned(),
-            ),
-        );
+    let reel = playback
+        .reel
+        .filter(|entries| entries.iter().any(Option::is_some));
     layout
         .rect(
             FULLSCREEN_GUTTER,
@@ -472,11 +444,47 @@ fn fullscreen_head(layout: Layout, playback: &PlaybackOverlay<'_>) -> Div {
                 .justify_center()
                 .rounded(layout.px(10.))
                 .bg(rgb(TALLY))
-                .child(playback.channel_number.to_string()),
+                .child(zap::number(layout, playback, 68., 34., 21.)),
         )
-        .child(identity)
-        .when_some(playback.programme.as_ref(), |head, programme| {
-            head.child(progress(layout, programme, playback.stage))
+        .child(
+            div()
+                .flex_none()
+                .flex()
+                .flex_col()
+                .items_center()
+                .when(
+                    !playback.show_field() || playback.stage == PlaybackStage::Playing,
+                    |tags| tags.child(signal_mark::render(layout, playback, false)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap(layout.px(4.))
+                        .child(status_tag(layout, playback.stage, true))
+                        .when_some(playback.quality, |tags, q| {
+                            tags.child(quality_tag(layout, q))
+                        }),
+                ),
+        )
+        .child(zap::identity(layout, playback))
+        .when_some(reel, |head, entries| {
+            head.child(zap::channel_reel(layout, entries, playback.roll))
+        })
+        .when(reel.is_some() && playback.programme.is_some(), |head| {
+            head.child(
+                div()
+                    .flex_none()
+                    .w(layout.px(1.))
+                    .h(layout.px(44.))
+                    .bg(rgba(FAINT)),
+            )
+        })
+        .when_some(playback.programme.as_ref(), |head, p| {
+            head.child(div().w(layout.px(552.)).flex_none().child(progress(
+                layout,
+                p,
+                playback.stage,
+            )))
         })
         .child(
             layout
@@ -530,8 +538,6 @@ fn progress(layout: Layout, programme: &PlaybackProgramme<'_>, stage: PlaybackSt
         });
 
     div()
-        .w(layout.px(552.))
-        .flex_none()
         .child(
             div()
                 .h(layout.px(26.))

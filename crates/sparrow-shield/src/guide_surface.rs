@@ -411,7 +411,7 @@ impl GuideSurface {
             return;
         }
         if key != ScreenKey::Activate || !event.is_held {
-            self.press(key, window, cx);
+            self.press(key, event.is_held, window, cx);
         }
     }
 
@@ -436,7 +436,7 @@ impl GuideSurface {
             // Setup owns the remote: media, channel and held keys stop here.
             activity::Event::Key { code, repeat } if self.setup.is_some() => {
                 if let Some(key) = remote_key(code, repeat) {
-                    self.press(key, window, cx);
+                    self.press(key, repeat > 0, window, cx);
                 }
             }
             activity::Event::PlaybackDiagnosticsCopied { attempt, copied } => {
@@ -461,7 +461,7 @@ impl GuideSurface {
                     return;
                 }
                 if let Some(key) = remote_key(code, repeat) {
-                    self.press(key, window, cx);
+                    self.press(key, repeat > 0, window, cx);
                 } else if matches!(code, 23 | 66)
                     && self.source.is_none()
                     && self.screen.group_chooser().is_none()
@@ -505,7 +505,7 @@ impl GuideSurface {
         }
     }
 
-    fn press(&mut self, key: ScreenKey, window: &mut Window, cx: &mut Context<Self>) {
+    fn press(&mut self, key: ScreenKey, repeat: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.activation.is_none() || self.active_editor.is_some() || self.source_editor_open() {
             return;
         }
@@ -523,7 +523,7 @@ impl GuideSurface {
             self.search_effect(effect, Some(window), cx);
             return;
         }
-        if self.screen.group_chooser().is_none() && self.player_key(key, cx) {
+        if self.screen.group_chooser().is_none() && self.player_key(key, repeat, cx) {
             return;
         }
         if key == ScreenKey::Activate
@@ -618,6 +618,7 @@ impl GuideSurface {
         self.pending_exclusions = None;
         if let Some(exclusions) = catalog::group_exclusions() {
             self.screen.set_group_exclusions(exclusions);
+            self.refresh_playback_subject(cx);
         }
         self.sync_search_preferences(cx);
         self.sync_view(cx);
@@ -650,6 +651,7 @@ impl GuideSurface {
         }
         if let Some(exclusions) = catalog::group_exclusions() {
             self.screen.set_group_exclusions(exclusions);
+            self.refresh_playback_subject(cx);
         }
         Some("Couldn’t save channel groups.")
     }

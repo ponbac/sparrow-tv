@@ -271,6 +271,15 @@ async fn adjacent_families_follow_catalog_order_skip_exact_hidden_groups_and_sto
             .unwrap()
             .is_none()
     );
+    // Museum is the sole visible family.
+    let only_culture = HashSet::from(["News".into(), "Sports".into(), "".into(), "Kids".into()]);
+    for direction in [Previous, Next] {
+        assert!(
+            core.adjacent_channel_family(generation, 6, direction, &only_culture)
+                .unwrap()
+                .is_none()
+        );
+    }
     assert_eq!(source.open_count(), 1);
 }
 
@@ -290,6 +299,11 @@ async fn number_lookup_and_zap_return_complete_families_and_reject_stale_generat
             .map(ChannelSummary::name)
             .collect::<Vec<_>>(),
         ["SVT1 SD SE", "SVT1 HD SE", "svt1 [FHD] se"],
+    );
+    assert!(
+        core.adjacent_channel_family(generation, first.number(), Previous, &HashSet::new())
+            .unwrap()
+            .is_none()
     );
     let next = core
         .adjacent_channel_family(generation, 1, Next, &HashSet::new())

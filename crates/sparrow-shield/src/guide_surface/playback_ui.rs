@@ -31,7 +31,7 @@ use crate::{
         self,
         playback::{
             PlaybackControl as Control, PlaybackLayout, PlaybackNext, PlaybackOverlay,
-            PlaybackProgramme, PlaybackStage, docked_playback, fullscreen_actions,
+            PlaybackProgramme, PlaybackStage, ZapRoll, docked_playback, fullscreen_actions,
             fullscreen_playback, picker, picture_rect,
         },
     },
@@ -55,6 +55,8 @@ pub(super) struct PlaybackUi {
     zap_keys: VecDeque<ChannelDirection>,
     zap_target: Option<TvTuneTarget>,
     zap_running: bool,
+    last_zap: Option<Instant>,
+    roll: Option<ZapRoll>,
     dock_focus: bool,
     controls_visible: bool,
     control: Option<Control>,
@@ -90,6 +92,27 @@ struct PlaybackSubject {
     title: String,
     family: ChannelFamily,
     schedule: Option<Page<ProgrammeSummary>>,
+    reel: [Option<(u32, String)>; 2],
+}
+
+impl PlaybackSubject {
+    fn current(&self, now: DateTime<Utc>) -> Option<&ProgrammeSummary> {
+        self.schedule
+            .as_ref()?
+            .items()
+            .iter()
+            .find(|slot| slot.starts_at() <= now && now < slot.ends_at())
+    }
+
+    fn start_roll(&self, now: DateTime<Utc>, direction: ChannelDirection) -> ZapRoll {
+        ZapRoll::new(
+            self.family.number(),
+            &self.title,
+            self.current(now).map(ProgrammeSummary::title),
+            self.reel.clone(),
+            direction,
+        )
+    }
 }
 
 enum PlayerMenu {
@@ -160,12 +183,19 @@ impl PlaybackUi {
     }
 
     fn reset_zap(&mut self) {
+        self.roll = None;
+        self.last_zap = None;
         self.zap_keys.clear();
         self.zap_target = None;
         self.zap_running = false;
     }
 
     fn stage(&self) -> PlaybackStage {
+        if self.state.pending_zap.is_some()
+            || (self.state.phase == TvPlaybackPhase::Stopping && self.state.selected.is_some())
+        {
+            return PlaybackStage::Tuning;
+        }
         match self.state.phase {
             TvPlaybackPhase::Idle | TvPlaybackPhase::Starting | TvPlaybackPhase::ReplacingAudio => {
                 PlaybackStage::Tuning
@@ -231,14 +261,18 @@ impl PlaybackUi {
         render: impl FnOnce(&PlaybackOverlay<'_>) -> R,
     ) -> Option<R> {
         let selected = self.shown()?;
-        let subject = self.subject_for(selected);
+        // Keep the last resolved identity on screen while the zap's Guide query runs.
+        let subject =
+            if self.state.pending_zap.is_some() || self.zap_target.as_ref() == Some(selected) {
+                self.subject.as_ref()
+            } else {
+                self.subject_for(selected)
+            };
         let cursor = subject
             .and_then(|subject| subject.schedule.as_ref())
             .map(Page::items)
             .unwrap_or_default();
-        let current = cursor
-            .iter()
-            .find(|slot| slot.starts_at() <= now && now < slot.ends_at());
+        let current = subject.and_then(|s| s.current(now));
         let next = cursor
             .iter()
             .find(|slot| slot.starts_at() >= current.map_or(now, ProgrammeSummary::ends_at));
@@ -271,21 +305,29 @@ impl PlaybackUi {
         };
         Some(render(&PlaybackOverlay {
             channel_number: self.shown_number(selected),
+            reel: subject.map(|s| &s.reel),
+            roll: self
+                .roll
+                .as_ref()
+                .filter(|r| !reduce_motion && r.active(self.shown_number(selected))),
             channel_name: subject.map_or("", |subject| &subject.title),
             programme,
             clock: &clock,
             stage: self.stage(),
             signal_landing: self.signal_landing,
             // Paint beneath the outgoing surface while a retune or queued zap awaits selection.
-            first_picture: self.state.first_picture.filter(|_| {
-                self.state
-                    .selected
-                    .as_ref()
-                    .is_some_and(|target| target.channel == selected.channel)
-            }),
+            first_picture: self
+                .state
+                .first_picture
+                .filter(|_| self.state.pending_zap.is_none()),
             reduce_motion,
-            still: self.still.as_ref(),
-            hold_started: self.hold_started,
+            still: self
+                .still
+                .as_ref()
+                .filter(|_| self.state.pending_zap.is_none()),
+            hold_started: self
+                .hold_started
+                .filter(|_| self.state.pending_zap.is_none()),
             attempt: self.state.recovery_attempts,
             audio_track: self.selected_audio_track().map(AudioTrack::display_name),
             quality: selected.quality.map(quality_name),
@@ -301,7 +343,7 @@ impl PlaybackUi {
 
     pub(super) fn render(
         &self,
-        window: &Window,
+        window: &mut Window,
         now: DateTime<Utc>,
         reduce_motion: bool,
     ) -> Option<Div> {
@@ -312,6 +354,9 @@ impl PlaybackUi {
                 window.on_next_frame(move |_, _| handoff.painted());
             }
 
+            if overlay.roll.is_some() {
+                window.request_animation_frame();
+            }
             if self.fullscreen() {
                 let actions = if self.controls_visible {
                     self.fullscreen_actions()
@@ -478,15 +523,16 @@ impl GuideSurface {
             {
                 self.restore_guide_after_playback(true, cx);
             }
-        } else if self.playback.state.phase != TvPlaybackPhase::Playing
-            || self.playback.state.pending_zap.is_some()
-        {
+        } else if self.playback.stage() != PlaybackStage::Playing {
             self.playback.controls_visible = true;
             self.playback.idle = None;
         }
         let subject_changed =
             prior_subject.as_ref() != self.playback.shown().map(|target| &target.channel);
         if subject_changed {
+            if let Some(roll) = &mut self.playback.roll {
+                roll.show_number();
+            }
             self.refresh_playback_subject(cx);
         }
         if fullscreen && let TvPlaybackPhase::Failed { can_restart, .. } = self.playback.state.phase
@@ -519,6 +565,16 @@ impl GuideSurface {
                 .as_ref()
                 .map(|subject| &subject.family)
                 != subject.as_ref().map(|subject| &subject.family);
+        if let Some(incoming) = &subject
+            && self
+                .playback
+                .subject
+                .as_ref()
+                .is_some_and(|old| old.id != incoming.id)
+            && let Some(roll) = &mut self.playback.roll
+        {
+            roll.show_subject();
+        }
         self.playback.subject = subject;
         if self.playback.reconcile_fullscreen_controls(replaced_menu) {
             self.arm_controls(cx);
@@ -538,6 +594,7 @@ impl GuideSurface {
             return;
         };
         let from = self.now.to_utc();
+        let excluded = self.screen.exclusions().clone();
         let requested_channel = channel_id.clone();
         let Some(query) = catalog::playback_subject_query(move |core| {
             let number = core.channel_number(generation, &channel_id).ok()??;
@@ -556,7 +613,17 @@ impl GuideSurface {
                     .ok()
                 })
                 .find(|page| page.generation() == generation && !page.items().is_empty());
+            let reel = [ChannelDirection::Previous, ChannelDirection::Next].map(|direction| {
+                let neighbour = core
+                    .adjacent_channel_family(generation, family.number(), direction, &excluded)
+                    .ok()??;
+                Some((
+                    neighbour.number(),
+                    channel_title(neighbour.variants().first()?).to_owned(),
+                ))
+            });
             Some(PlaybackSubject {
+                reel,
                 id: channel_id,
                 title,
                 family,
@@ -611,12 +678,18 @@ impl GuideSurface {
             },
             true,
         );
-        let viewports = [docked, fullscreen];
+        // The native picture sits above GPUI. Reveal the tuning field as soon
+        // as a target is pending, including throughout the zap debounce.
+        let viewports = if self.playback.state.pending_zap.is_some() {
+            [None, None]
+        } else {
+            [docked, fullscreen]
+        };
         if self.playback.viewports != Some(viewports)
             && playback::send(Command::SetViewports {
                 host: self.host,
-                docked,
-                fullscreen,
+                docked: viewports[0],
+                fullscreen: viewports[1],
             })
         {
             self.playback.viewports = Some(viewports);
@@ -663,8 +736,8 @@ impl GuideSurface {
             return true;
         }
         match code {
-            103 | 166 => self.zap(ChannelDirection::Next, cx),
-            102 | 167 => self.zap(ChannelDirection::Previous, cx),
+            103 | 166 => self.zap(ChannelDirection::Next, repeat > 0, cx),
+            102 | 167 => self.zap(ChannelDirection::Previous, repeat > 0, cx),
             85 | 86 | 126 | 127 => {
                 if repeat == 0 {
                     let command = match code {
@@ -687,7 +760,12 @@ impl GuideSurface {
         true
     }
 
-    pub(super) fn player_key(&mut self, key: ScreenKey, cx: &mut Context<Self>) -> bool {
+    pub(super) fn player_key(
+        &mut self,
+        key: ScreenKey,
+        repeat: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if !self.playback.fullscreen() {
             if self.playback.dock_focus {
                 match key {
@@ -723,8 +801,8 @@ impl GuideSurface {
                 }
             }
             ScreenKey::Arrow(Direction::Down) if self.playback.control.is_some() => {}
-            ScreenKey::Arrow(Direction::Up) => self.zap(ChannelDirection::Previous, cx),
-            ScreenKey::Arrow(Direction::Down) => self.zap(ChannelDirection::Next, cx),
+            ScreenKey::Arrow(Direction::Up) => self.zap(ChannelDirection::Previous, repeat, cx),
+            ScreenKey::Arrow(Direction::Down) => self.zap(ChannelDirection::Next, repeat, cx),
             _ if !self.playback.controls_visible => {
                 self.playback.controls_visible = true;
                 self.playback.control = self.playback.fullscreen_actions().first().copied();
@@ -890,14 +968,12 @@ impl GuideSurface {
         self.playback.idle = None;
         if self.playback.controls_visible
             && self.playback.menu.is_none()
-            && self.playback.state.phase == TvPlaybackPhase::Playing
-            && self.playback.state.pending_zap.is_none()
+            && self.playback.stage() == PlaybackStage::Playing
         {
             self.playback.idle = Some(cx.spawn(async move |view, cx| {
                 cx.background_executor().timer(CONTROLS_IDLE).await;
                 let _ = view.update(cx, |view, cx| {
-                    if view.playback.fullscreen()
-                        && view.playback.state.phase == TvPlaybackPhase::Playing
+                    if view.playback.fullscreen() && view.playback.stage() == PlaybackStage::Playing
                     {
                         view.playback.controls_visible = false;
                         view.playback.control = None;
