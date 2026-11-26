@@ -61,7 +61,7 @@ impl GuideSurface {
     pub(super) fn search_effect(
         &mut self,
         effect: SearchEffect,
-        window: Option<&mut Window>,
+        input: Option<(&mut Window, bool)>,
         cx: &mut Context<Self>,
     ) {
         match effect {
@@ -71,7 +71,7 @@ impl GuideSurface {
             SearchEffect::Read(read) => self.query_search(read, cx),
             SearchEffect::ReconcileGeneration => catalog::reconcile_status(),
             SearchEffect::Edit => {
-                if let Some(window) = window {
+                if let Some((window, _)) = input {
                     let rect = guide_view::search_editor_rect(
                         window.viewport_size(),
                         window.scale_factor(),
@@ -85,8 +85,8 @@ impl GuideSurface {
                 }
             }
             SearchEffect::GuideKey(key) => {
-                if let Some(window) = window {
-                    self.press(key, false, window, cx);
+                if let Some((window, held)) = input {
+                    self.press(key, held, window, cx);
                 }
             }
             SearchEffect::Tune(tune) => self.search_tune(tune, cx),

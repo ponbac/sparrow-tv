@@ -22,6 +22,7 @@ use super::{
     clock_time, programme_title,
 };
 
+const SLIDE_TRAVEL: f32 = 80.;
 const COLUMN_WIDTH: f32 = (CANVAS_WIDTH - GUTTER * 2. - CARD_GAP * 2.) / NOW_COLUMNS as f32;
 const OVERSCAN_LINES: usize = 2;
 const CONTENT_X: f32 = 96.;
@@ -43,6 +44,7 @@ pub(super) fn render(
     screen: &GuideScreen,
     minute: super::MinuteFrame<'_>,
     icons: &ChannelIcons,
+    slide: super::SlideFrame,
 ) -> Div {
     let height = (layout.height - BOARD_TOP).max(0.);
     let focus = match screen.focus() {
@@ -51,28 +53,32 @@ pub(super) fn render(
     };
     let retry_focus = focus == Some(NowFocus::Retry);
     let mut board = layout
-        .rect(0., BOARD_TOP, CANVAS_WIDTH, height)
+        .rect(GUTTER, BOARD_TOP, CANVAS_WIDTH - 2. * GUTTER, height)
         .overflow_hidden();
     if let Some(notice) = screen.notice() {
         board = board.child(notice_panel(
             layout,
-            layout.rect(GUTTER, BOARD_PAD, CANVAS_WIDTH - GUTTER * 2., 285.),
+            layout.rect(0., BOARD_PAD, CANVAS_WIDTH - GUTTER * 2., 285.),
             notice,
             retry_focus,
         ));
     }
     let families = screen.families();
     let scroll = screen.scroll_offset();
-    for index in screen.visible_families(OVERSCAN_LINES) {
+    for (ordinal, index) in screen.visible_families(OVERSCAN_LINES).enumerate() {
+        let focus = focus.filter(|focus| focus.family() == Some(index));
+        let (offset, opacity) = slide.item(ordinal / NOW_COLUMNS, SLIDE_TRAVEL, focus.is_some());
         let [x, y, w, h] = card_bounds(index, scroll);
-        let rect = layout.rect(x, y - BOARD_TOP, w, h);
+        let rect = layout
+            .rect(x - GUTTER + offset, y - BOARD_TOP, w, h)
+            .opacity(opacity);
         let family = &families[index];
         board = board.child(card(
             layout,
             rect,
             screen,
             index,
-            focus.filter(|focus| focus.family() == Some(index)),
+            focus,
             minute,
             family_icon(family).and_then(|icon| icons.get(icon)),
         ));
@@ -91,7 +97,7 @@ pub(super) fn render(
         if screen.retry_available() {
             board = board.child(retained_footer(
                 layout,
-                layout.rect(GUTTER, footer_y, width, NOW_RETAINED_RETRY_HEIGHT),
+                layout.rect(0., footer_y, width, NOW_RETAINED_RETRY_HEIGHT),
                 retry_focus,
             ));
         } else if matches!(
@@ -100,7 +106,7 @@ pub(super) fn render(
         ) {
             board = board.child(more_footer(
                 layout,
-                layout.rect(GUTTER, footer_y, width, NOW_MORE_HEIGHT),
+                layout.rect(0., footer_y, width, NOW_MORE_HEIGHT),
                 screen.page_status() == Some(PageStatus::Loading),
             ));
         }

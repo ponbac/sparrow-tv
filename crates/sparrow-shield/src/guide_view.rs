@@ -5,6 +5,7 @@ pub(super) use backdrop::BackdropMotion;
 mod band;
 mod board;
 mod channel_icon;
+mod group_slide;
 mod groups;
 mod lane;
 mod minute;
@@ -18,6 +19,7 @@ mod timeline;
 use std::sync::Arc;
 
 pub(super) use channel_icon::family_icon;
+pub(crate) use group_slide::{GroupSlide, SlideFrame};
 pub(super) use groups::{GroupViewport, group_filter_rect, group_sheet};
 pub(crate) use lane::LaneViewport;
 pub(super) use search_panel::{SearchPanel, SearchViewport, search_editor_rect, search_panel};
@@ -44,6 +46,7 @@ const CARD_GAP: f32 = 11.;
 pub(super) const INK: u32 = 0x0a111e;
 const PANEL: u32 = 0x0f1828;
 const CELL: u32 = 0x131d30;
+const WASH: u32 = 0x243858;
 const CELL_ELAPSED: u32 = 0x1a2842;
 const PLATE: u32 = 0x22324f;
 const FOCUSED_PLATE: u32 = 0x39637a;
@@ -154,6 +157,7 @@ pub(super) struct GuideBand<'a> {
 pub(super) fn render(
     screen: &GuideScreen,
     band: GuideBand<'_>,
+    slide: SlideFrame,
     lanes: (&mut LaneViewport, &mut RailViewport),
     window: &mut Window,
     icons: &ChannelIcons,
@@ -172,11 +176,11 @@ pub(super) fn render(
         .child(band::render(layout, band, icons));
     match screen.mode() {
         GuideMode::Now => guide
-            .child(lane::render(layout, screen, lanes.0, window))
-            .child(board::render(layout, screen, minute, icons)),
+            .child(lane::render(layout, screen, lanes.0, window, slide))
+            .child(board::render(layout, screen, minute, icons, slide)),
         GuideMode::Timeline => guide
-            .child(timeline::rail(layout, screen, lanes.1))
-            .child(timeline::render(layout, screen, minute, icons)),
+            .child(timeline::rail(layout, screen, lanes.1, slide))
+            .child(timeline::render(layout, screen, minute, icons, slide)),
     }
 }
 

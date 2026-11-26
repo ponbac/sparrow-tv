@@ -23,6 +23,7 @@ use super::{
     clock_time,
 };
 
+const SLIDE_TRAVEL: f32 = 64.;
 const BOARD_X: f32 = GUTTER + rail::WIDTH + 16.;
 const BOARD_WIDTH: f32 = CANVAS_WIDTH - BOARD_X;
 const CHANNEL_WIDTH: f32 = 336.;
@@ -39,8 +40,13 @@ struct TimelineFrame {
     now: DateTime<Utc>,
 }
 
-pub(super) fn rail(layout: Layout, screen: &GuideScreen, viewport: &mut RailViewport) -> Div {
-    rail::render(layout, screen, viewport)
+pub(super) fn rail(
+    layout: Layout,
+    screen: &GuideScreen,
+    viewport: &mut RailViewport,
+    slide: super::SlideFrame,
+) -> Div {
+    rail::render(layout, screen, viewport, slide)
 }
 
 fn channel_bounds() -> [f32; 4] {
@@ -57,6 +63,7 @@ pub(super) fn render(
     screen: &GuideScreen,
     minute: super::MinuteFrame<'_>,
     icons: &ChannelIcons,
+    slide: super::SlideFrame,
 ) -> Div {
     let now = minute.now;
     let axis = screen
@@ -75,22 +82,38 @@ pub(super) fn render(
     let retry_focus = focus == Some(TimelineFocus::Retry);
     let families = screen.families();
     let scroll = screen.scroll_offset();
-    let rows = screen.visible_families(OVERSCAN_LINES).map(|index| {
-        let family = &families[index];
-        render_row(
-            layout,
-            frame,
-            family,
-            screen.variant_preferences(),
-            index as f32 * TIMELINE_ROW_PITCH - scroll,
-            focus.filter(|focus| focus.family() == Some(index)),
-            family_icon(family).and_then(|icon| icons.get(icon)),
-        )
-    });
+    let rows = screen
+        .visible_families(OVERSCAN_LINES)
+        .enumerate()
+        .map(|(ordinal, index)| {
+            let focus = focus.filter(|focus| focus.family() == Some(index));
+            let (offset, opacity) = slide.item(ordinal, SLIDE_TRAVEL, focus.is_some());
+            let family = &families[index];
+            let row = render_row(
+                layout,
+                frame,
+                family,
+                screen.variant_preferences(),
+                layout.rect(
+                    offset,
+                    TIMELINE_ROW_TOP + index as f32 * TIMELINE_ROW_PITCH - scroll - RULER_HEIGHT,
+                    CHANNEL_WIDTH + TRACK_WIDTH,
+                    TIMELINE_ROW_HEIGHT,
+                ),
+                focus,
+                family_icon(family).and_then(|icon| icons.get(icon)),
+            );
+            row.opacity(opacity)
+        });
     let rows_bottom = TIMELINE_ROW_TOP + families.len() as f32 * TIMELINE_ROW_PITCH - scroll;
     let rows_height = (rows_bottom.min(height) - RULER_HEIGHT).max(0.);
     let mut board = layout
-        .rect(BOARD_X, TIMELINE_BOARD_TOP, BOARD_WIDTH, height)
+        .rect(
+            BOARD_X,
+            TIMELINE_BOARD_TOP,
+            CHANNEL_WIDTH + TRACK_WIDTH,
+            height,
+        )
         .overflow_hidden()
         .child(
             layout
@@ -107,7 +130,12 @@ pub(super) fn render(
         board = board
             .when_some(
                 frame.axis.playhead_fraction(frame.meter_time),
-                |board, at| board.child(playhead(layout, at as f32 * TRACK_WIDTH, rows_height)),
+                |board, at| {
+                    board.child(
+                        playhead(layout, at as f32 * TRACK_WIDTH, rows_height)
+                            .opacity(slide.item(0, SLIDE_TRAVEL, false).1),
+                    )
+                },
             )
             .when(!layout.translucent, |board| {
                 board.child(
@@ -243,7 +271,7 @@ fn render_row(
     frame: TimelineFrame,
     family: &GuideFamily,
     preferences: &VariantPreferences,
-    y: f32,
+    rect: Div,
     focus: Option<TimelineFocus>,
     icon: Option<&IconImage>,
 ) -> Div {
@@ -277,32 +305,30 @@ fn render_row(
                 |track, programme| track.children(cell::render(layout, frame, programme, true)),
             )
     };
-    layout
-        .rect(0., y, BOARD_WIDTH - GUTTER, TIMELINE_ROW_HEIGHT)
-        .when(icon.is_some(), |row| {
-            row.child(
-                layout
-                    .rect(0., 0., 42., TIMELINE_ROW_HEIGHT)
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .child(
-                        layout
-                            .text(SAIRA, 24., 24., 400.)
-                            .text_color(rgba(DIM))
-                            .child(family.number().to_string()),
-                    ),
-            )
-        })
-        .child(channel(
-            layout,
-            family,
-            preferred.channel().id(),
-            channel_focus,
-            chip_focus,
-            icon,
-        ))
-        .child(track)
+    rect.when(icon.is_some(), |row| {
+        row.child(
+            layout
+                .rect(0., 0., 42., TIMELINE_ROW_HEIGHT)
+                .flex()
+                .items_center()
+                .justify_end()
+                .child(
+                    layout
+                        .text(SAIRA, 24., 24., 400.)
+                        .text_color(rgba(DIM))
+                        .child(family.number().to_string()),
+                ),
+        )
+    })
+    .child(channel(
+        layout,
+        family,
+        preferred.channel().id(),
+        channel_focus,
+        chip_focus,
+        icon,
+    ))
+    .child(track)
 }
 
 fn channel(

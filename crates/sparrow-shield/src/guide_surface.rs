@@ -97,6 +97,7 @@ pub(super) struct GuideSurface {
     host: u64,
     screen: GuideScreen,
     focus: FocusHandle,
+    group_slide: guide_view::GroupSlide,
     now_lane: guide_view::LaneViewport,
     timeline_rail: guide_view::RailViewport,
     group_viewport: guide_view::GroupViewport,
@@ -245,6 +246,7 @@ impl GuideSurface {
             host,
             screen,
             focus,
+            group_slide: Default::default(),
             now_lane: guide_view::LaneViewport::default(),
             timeline_rail: guide_view::RailViewport::default(),
             group_viewport: guide_view::GroupViewport::default(),
@@ -490,7 +492,7 @@ impl GuideSurface {
                     self.close_sources(cx);
                 } else if self.search.state().view() != SearchView::Closed {
                     let effect = self.search.back();
-                    self.search_effect(effect, Some(window), cx);
+                    self.search_effect(effect, Some((window, false)), cx);
                 } else if self.screen.group_chooser().is_some() {
                     self.screen.group_chooser_intent(GroupChooserIntent::Close);
                     self.retire_query_editor();
@@ -565,7 +567,7 @@ impl GuideSurface {
         }
         if self.search.state().view() != SearchView::Closed {
             let effect = self.search.key(key);
-            self.search_effect(effect, Some(window), cx);
+            self.search_effect(effect, Some((window, repeat)), cx);
             return;
         }
         if self.screen.group_chooser().is_none() && self.player_key(key, repeat, cx) {
@@ -577,7 +579,7 @@ impl GuideSurface {
         {
             let timer = self.search.open_inline();
             self.schedule_search(timer, cx);
-            self.search_effect(SearchEffect::Edit, Some(window), cx);
+            self.search_effect(SearchEffect::Edit, Some((window, repeat)), cx);
             return;
         }
         if key == ScreenKey::Activate
@@ -591,9 +593,21 @@ impl GuideSurface {
         if matches!(key, ScreenKey::Arrow(_)) && self.tint_dwell.is_some() {
             self.defer_tint(cx);
         }
-        let prior_mode = self.screen.mode();
+        let previous_group = self.screen.selected_group().cloned();
+        let previous = (self.screen.mode(), self.screen.selected_lane());
         let action = self.screen.press(key, now.to_utc(), *now.offset());
-        if self.screen.mode() != prior_mode {
+        let group_changed = previous_group.as_ref() != self.screen.selected_group();
+        if group_changed {
+            self.presented_preview = None;
+            self.preview_frame = PreviewFrame::Idle;
+        }
+        self.group_slide.press(
+            previous,
+            (self.screen.mode(), self.screen.selected_lane()),
+            group_changed,
+            repeat,
+        );
+        if self.screen.mode() != previous.0 {
             self.now_lane = guide_view::LaneViewport::default();
             self.timeline_rail = guide_view::RailViewport::default();
         }
@@ -1169,6 +1183,11 @@ impl Render for GuideSurface {
                     self.screen.focus()
                 },
             },
+            self.group_slide.frame(
+                window,
+                cx.reduce_motion(),
+                !self.screen.families().is_empty(),
+            ),
             (&mut self.now_lane, &mut self.timeline_rail),
             window,
             &self.icons,
