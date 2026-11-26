@@ -40,6 +40,7 @@ struct Engine {
     frame_count: Option<u64>,
     fail_release: bool,
     fail_capture: bool,
+    stall_capture: bool,
     controls_unavailable: bool,
     viewport_unavailable: bool,
 }
@@ -145,9 +146,16 @@ impl TvPresentation for Fixture {
     fn capture_frame(&self, _: TvPresentationKey) -> TvPresentationFuture<Arc<TvRecoveryFrame>> {
         let engine = self.0.clone();
         Box::pin(async move {
-            let mut engine = engine.lock().unwrap();
-            assert!(engine.picture_open);
-            engine.calls.push(Call::Capture);
+            let stall = {
+                let mut engine = engine.lock().unwrap();
+                assert!(engine.picture_open);
+                engine.calls.push(Call::Capture);
+                engine.stall_capture
+            };
+            if stall {
+                std::future::pending::<()>().await;
+            }
+            let engine = engine.lock().unwrap();
             if engine.fail_capture {
                 Err(AndroidPlaybackError)
             } else {
@@ -929,6 +937,21 @@ async fn decoder_deadlines_use_first_frame_progress_and_reset_recovery_after_six
     assert!(owner.snapshot.recovery_frame.is_some());
     owner.select(target(2), false);
     assert!(owner.snapshot.recovery_frame.is_none());
+}
+
+#[tokio::test]
+async fn a_stalled_capture_does_not_hold_up_the_next_command() {
+    let (fixture, mut owner) = setup();
+    visible(&mut owner, 1).await;
+    let key = tune(&mut owner, target(1)).await;
+    fixture.0.lock().unwrap().stall_capture = true;
+    tokio::time::timeout(Duration::from_millis(500), async {
+        assert!(owner.capture_frame(key).await.is_none());
+        owner.command(Command::Pause).await;
+    })
+    .await
+    .expect("pause waited for the abandoned capture");
+    assert_eq!(owner.snapshot.phase, Phase::Paused(TvPauseCause::User));
 }
 
 #[tokio::test]

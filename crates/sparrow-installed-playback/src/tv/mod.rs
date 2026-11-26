@@ -45,7 +45,8 @@ pub trait TvPresentation: Send + Sync + 'static {
         controls: AndroidPlaybackControls,
     ) -> TvPresentationFuture<()>;
     fn stop(&self, key: TvPresentationKey, stop: TvPresentationStop) -> TvPresentationFuture<()>;
-    /// Samples the currently bound visible surface.
+    /// Samples the currently bound visible surface. Callers may abandon the
+    /// result; the host can finish sampling afterwards and must then drop it.
     fn capture_frame(&self, key: TvPresentationKey) -> TvPresentationFuture<Arc<TvRecoveryFrame>>;
     fn status(&self, key: TvPresentationKey) -> TvPresentationFuture<AndroidPlaybackStatus>;
     fn set_controls(
