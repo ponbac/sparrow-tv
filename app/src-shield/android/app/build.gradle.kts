@@ -34,6 +34,7 @@ repositories {
     }
 }
 
+val shieldAbi = providers.environmentVariable("SPARROW_SHIELD_ABI").getOrElse("arm64-v8a")
 val nativeLibraries = providers.environmentVariable("SPARROW_SHIELD_JNI_LIBS")
 val launcherResources = layout.buildDirectory.dir("generated/sparrow-launcher-res")
 val stageLauncherResources = tasks.register<Sync>("stageLauncherResources") {
@@ -70,7 +71,7 @@ android {
         versionName = "0.1.0"
         manifestPlaceholders["fixtureCommandsEnabled"] =
             providers.environmentVariable("SPARROW_SHIELD_FIXTURE").orNull == "1"
-        ndk { abiFilters += "arm64-v8a" }
+        ndk { abiFilters += shieldAbi }
     }
 
     buildTypes {
@@ -108,8 +109,8 @@ tasks.named("preBuild") {
 val verifyNativeLibrary = tasks.register("verifyNativeLibrary") {
     doLast {
         val directory = nativeLibraries.orNull?.let(::file)
-        require(directory?.resolve("arm64-v8a/libsparrow_shield.so")?.isFile == true) {
-            "Set SPARROW_SHIELD_JNI_LIBS to the directory containing arm64-v8a/libsparrow_shield.so"
+        require(directory?.resolve("$shieldAbi/libsparrow_shield.so")?.isFile == true) {
+            "Set SPARROW_SHIELD_JNI_LIBS to the directory containing $shieldAbi/libsparrow_shield.so"
         }
     }
 }

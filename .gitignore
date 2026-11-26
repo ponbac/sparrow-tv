@@ -17,3 +17,5 @@ playlist_full.m3u
 /release/**/*.keystore
 /release/**/*.p12
 /release/**/*.pfx
+
+__pycache__/
