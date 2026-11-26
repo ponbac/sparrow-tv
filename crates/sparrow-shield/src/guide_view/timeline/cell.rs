@@ -49,7 +49,7 @@ pub(super) fn render(
         (false, false) => layout.surface(CELL),
     };
     let progress = live
-        .then(|| frame.axis.elapsed_fraction(programme, frame.now))
+        .then(|| frame.axis.elapsed_fraction(programme, frame.meter_time))
         .flatten()
         .map(|fraction| {
             (

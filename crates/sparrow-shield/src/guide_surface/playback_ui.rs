@@ -139,6 +139,10 @@ impl PlaybackUi {
         }
     }
 
+    pub(super) fn controls_visible(&self) -> bool {
+        self.controls_visible
+    }
+
     pub(super) fn fullscreen(&self) -> bool {
         self.state.controls.fullscreen && self.state.selected.is_some()
     }
@@ -266,10 +270,11 @@ impl PlaybackUi {
 
     fn overlay<R>(
         &self,
-        now: DateTime<Utc>,
+        minute: guide_view::MinuteFrame,
         reduce_motion: bool,
         render: impl FnOnce(&PlaybackOverlay<'_>) -> R,
     ) -> Option<R> {
+        let now = minute.now.to_utc();
         let selected = self.shown()?;
         // Keep the last resolved identity on screen while the zap's Guide query runs.
         let subject =
@@ -294,7 +299,7 @@ impl PlaybackUi {
             starts: starts.as_deref().unwrap_or_default(),
             ends: ends.as_deref().unwrap_or_default(),
             minutes_left: ((slot.ends_at() - now).num_seconds().max(0) + 59) / 60,
-            elapsed: ((now - slot.starts_at()).num_seconds() as f32
+            elapsed: ((minute.meter_time() - slot.starts_at()).as_seconds_f32()
                 / (slot.ends_at() - slot.starts_at()).num_seconds().max(1) as f32)
                 .clamp(0., 1.),
             next: next
@@ -304,7 +309,6 @@ impl PlaybackUi {
                     title: slot.title(),
                 }),
         });
-        let clock = guide_view::clock_time(now);
         let feedback = match self.state.phase {
             TvPlaybackPhase::Recovering { failure, .. }
             | TvPlaybackPhase::Failed { failure, .. } => Some(failure_label(failure)),
@@ -322,7 +326,6 @@ impl PlaybackUi {
                 .filter(|r| !reduce_motion && r.active(self.shown_number(selected))),
             channel_name: subject.map_or("", |subject| &subject.title),
             programme,
-            clock: &clock,
             stage: self.stage(),
             signal_landing: self.signal_landing,
             // Paint beneath the outgoing surface while a retune or queued zap awaits selection.
@@ -368,11 +371,11 @@ impl PlaybackUi {
     pub(super) fn render(
         &self,
         window: &mut Window,
-        now: DateTime<Utc>,
+        minute: guide_view::MinuteFrame,
         reduce_motion: bool,
         frame: FullscreenFrame,
     ) -> Option<Div> {
-        self.overlay(now, reduce_motion, |overlay| {
+        self.overlay(minute, reduce_motion, |overlay| {
             if overlay.still.is_some()
                 && let Some(handoff) = self.state.still_handoff.clone()
             {
@@ -410,6 +413,7 @@ impl PlaybackUi {
                         } else {
                             self.picture_bottom as f32 / window.scale_factor()
                         },
+                        minute,
                     ))
                 })
                 .children(self.menu_panel(window))

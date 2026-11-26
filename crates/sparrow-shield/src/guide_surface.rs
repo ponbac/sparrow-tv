@@ -129,6 +129,7 @@ pub(super) struct GuideSurface {
     preview_dwell: Option<Task<()>>,
     feedback_timeout: Option<Task<()>>,
     clock: Option<Task<()>>,
+    minute_tick: Option<guide_view::MinuteTick>,
     _catalog_updates: Task<()>,
     _group_writes: Task<()>,
     icons: ChannelIcons,
@@ -276,6 +277,7 @@ impl GuideSurface {
             preview_dwell: None,
             feedback_timeout: None,
             clock: None,
+            minute_tick: None,
             _catalog_updates: catalog_updates,
             _group_writes: group_writes,
             icons,
@@ -298,6 +300,7 @@ impl GuideSurface {
         if self.activation != activation {
             self.activation = activation;
             self.clock = None;
+            self.minute_tick = None;
             self.group_dwell = None;
             self.group_ticket = None;
             self.retire_preview_read();
@@ -330,7 +333,7 @@ impl GuideSurface {
                     if view
                         .update(cx, |view, cx| {
                             if view.activation == Some(activation) {
-                                view.set_clock(clock);
+                                view.minute_boundary(clock);
                                 view.refresh_playback_subject(cx);
                                 view.sync_view(cx);
                             }
@@ -363,7 +366,35 @@ impl GuideSurface {
         }
     }
 
-    fn set_clock(&mut self, clock: DateTime<FixedOffset>) {
+    fn minute_boundary(&mut self, clock: DateTime<FixedOffset>) {
+        let previous = self.now;
+        let rolled = self.set_clock(clock);
+        self.minute_tick = None;
+        if self.setup.is_some()
+            || self.source.is_some()
+            || self.screen.group_chooser().is_some()
+            || self.search.state().view() == SearchView::Desk
+            || (self.playback.fullscreen() && !self.playback.controls_visible())
+            || clock <= previous
+            || clock - previous > chrono::TimeDelta::seconds(90)
+            || previous.offset() != clock.offset()
+            || guide_view::clock_time(previous.to_utc()) == guide_view::clock_time(clock.to_utc())
+        {
+            return;
+        }
+        let decorate = !self.playback.fullscreen() && self.screen.mode() == GuideMode::Now;
+        // The pager retains these rows until the new half-hour query completes.
+        let prior_rows = if rolled && decorate {
+            self.screen.families()[self.screen.visible_families(0)].to_vec()
+        } else {
+            Vec::new()
+        };
+        self.minute_tick = Some(guide_view::MinuteTick::new(
+            previous, rolled, decorate, prior_rows,
+        ));
+    }
+
+    fn set_clock(&mut self, clock: DateTime<FixedOffset>) -> bool {
         if let Some(preview) = &self.presented_preview
             && self.description.is_some()
         {
@@ -376,7 +407,7 @@ impl GuideSurface {
             }
         }
         self.now = clock;
-        self.screen.set_clock(clock.to_utc(), *clock.offset());
+        self.screen.set_clock(clock.to_utc(), *clock.offset())
     }
 
     fn observe_playback(&mut self, cx: &mut Context<Self>) {
@@ -490,6 +521,7 @@ impl GuideSurface {
                 if current != generation {
                     return;
                 }
+                self.minute_tick = None;
                 self.icons.note_navigation();
                 if !matches!(edit, activity::Edit::Changed(_)) {
                     self.active_editor = None;
@@ -521,6 +553,7 @@ impl GuideSurface {
         if self.activation.is_none() || self.active_editor.is_some() || self.source_editor_open() {
             return;
         }
+        self.minute_tick = None;
         self.icons.note_navigation();
         if self.setup.is_some() {
             self.setup_key(key, window, cx);
@@ -1081,17 +1114,25 @@ impl Render for GuideSurface {
             self.icons.hide();
             return root.child(setup);
         }
+        let choice = self.backdrop();
+        let search = (!self.playback.fullscreen())
+            .then(|| self.render_search(window, choice))
+            .flatten();
+        let minute = guide_view::MinuteFrame::new(
+            self.now,
+            self.minute_tick.as_ref(),
+            !cx.reduce_motion(),
+            window,
+        );
         let player = self
             .playback
-            .render(window, self.now.to_utc(), cx.reduce_motion(), frame);
+            .render(window, minute, cx.reduce_motion(), frame);
         let root = root.relative().overflow_hidden().bg(rgb(guide_view::INK));
         if frame.fullscreen >= 1. {
             self.icons.hide();
             return root.children(player);
         }
         let selected = self.playback.docked() || self.playback.fullscreen();
-        let choice = self.backdrop();
-        let search = self.render_search(window, choice);
         let icon = if selected {
             self.playback.channel_icon()
         } else {
@@ -1117,7 +1158,7 @@ impl Render for GuideSurface {
             &self.screen,
             guide_view::GuideBand {
                 choice,
-                now: self.now,
+                minute,
                 preview: self.presented_preview.as_ref(),
                 description: self.description.as_ref(),
                 docked: selected,
@@ -1133,6 +1174,27 @@ impl Render for GuideSurface {
             &self.icons,
             backdrop,
         );
+        if let Some(tick) = &mut self.minute_tick
+            && tick.needs_badge_timer()
+        {
+            let fade = tick.badge_fade_at();
+            let end = tick.expires_at();
+            tick.badge_expiry = Some(cx.spawn(async move |view, cx| {
+                for deadline in [fade, end] {
+                    while let Some(delay) =
+                        deadline.checked_duration_since(std::time::Instant::now())
+                    {
+                        cx.background_executor().timer(delay).await;
+                    }
+                    let _ = view.update(cx, |view, cx| {
+                        if deadline == end {
+                            view.minute_tick = None;
+                        }
+                        cx.notify();
+                    });
+                }
+            }));
+        }
         let drift = window.viewport_size().width * (36. / 1920. * frame.fullscreen);
         let opacity = (1. - frame.fullscreen * 1.45).max(0.);
         root.child(guide.top(drift).opacity(opacity))
