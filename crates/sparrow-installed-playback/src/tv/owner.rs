@@ -36,6 +36,28 @@ const STALL_TIMEOUT: Duration = Duration::from_secs(10);
 const EARLY_STALL: Duration = Duration::from_secs(20);
 const STABLE_TIME: Duration = Duration::from_secs(60);
 
+#[derive(Default)]
+pub(super) struct PendingViewports {
+    slots: std::sync::Mutex<HashMap<TvHostId, Viewports>>,
+    ready: tokio::sync::Notify,
+}
+
+impl PendingViewports {
+    pub(super) fn set(
+        &self,
+        host: TvHostId,
+        docked: Option<AndroidPlaybackViewport>,
+        fullscreen: Option<AndroidPlaybackViewport>,
+    ) {
+        let mut slots = self.slots.lock().unwrap();
+        let wake = slots.is_empty();
+        slots.insert(host, Viewports { docked, fullscreen });
+        if wake {
+            self.ready.notify_one();
+        }
+    }
+}
+
 struct Viewports {
     docked: Option<AndroidPlaybackViewport>,
     fullscreen: Option<AndroidPlaybackViewport>,
@@ -106,6 +128,7 @@ pub(super) struct Owner {
     transport_revision: u64,
     reported_visible: bool,
     started_hosts: Vec<TvHostId>,
+    pub(super) pending_viewports: Arc<PendingViewports>,
     viewports: HashMap<TvHostId, Viewports>,
     last_host: Option<TvHostId>,
     zap_at: Option<Instant>,
@@ -136,6 +159,7 @@ impl Owner {
             transport_revision: 0,
             reported_visible: false,
             started_hosts: Vec::new(),
+            pending_viewports: Arc::default(),
             viewports: HashMap::new(),
             last_host: None,
             zap_at: None,
@@ -148,6 +172,7 @@ impl Owner {
     }
 
     pub(super) async fn run(mut self, mut commands: mpsc::Receiver<Command>) {
+        let pending = Arc::clone(&self.pending_viewports);
         loop {
             self.release_completed_source_change();
             // Drain actions queued during cleanup before starting a replacement.
@@ -175,6 +200,13 @@ impl Owner {
                     Some(command) => self.command(command).await,
                     None => break,
                 },
+                () = pending.ready.notified() => {
+                    let previous = self.current_viewport();
+                    self.viewports.extend(pending.slots.lock().unwrap().drain());
+                    if self.current_viewport() != previous {
+                        self.update_viewport().await;
+                    }
+                }
                 result = opened(opening) => self.complete_open(result).await,
                 () = deadline_elapsed(deadline) => self.on_deadline(Instant::now()).await,
                 () = released(self.source_change.as_mut()) => self.source_change = None,
@@ -698,6 +730,7 @@ impl Owner {
         self.started_hosts.retain(|id| *id != host);
         self.snapshot.visible_host = self.started_hosts.last().copied();
         if destroyed {
+            self.pending_viewports.slots.lock().unwrap().remove(&host);
             self.viewports.remove(&host);
         }
         if finishing && owns_session {

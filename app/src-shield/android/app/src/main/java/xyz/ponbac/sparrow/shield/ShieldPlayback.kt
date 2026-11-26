@@ -43,7 +43,7 @@ class ShieldPlayback(
 ) {
   private val main = Handler(Looper.getMainLooper())
   private val lifecycle = NativePlaybackLifecycleFence()
-  private val placement = ShieldPlaybackPlacement(root, guide)
+  private val placement = ShieldPlaybackPlacement(root, guide) { bottom -> nativePictureBottom(hostId, bottom) }
   private val controller = NativePlaybackController(
     activity, placement, forceSilent = false,
     lifecycleFence = lifecycle,
@@ -417,6 +417,7 @@ class ShieldPlayback(
     host: Long, generation: Long, request: Long, width: Int, height: Int, pixels: ByteArray?,
   )
 
+  private external fun nativePictureBottom(host: Long, bottom: Int)
   private external fun nativePlaybackSignal(host: Long, generation: Long, signal: Int)
 
   private external fun readNativePlayback(
@@ -435,11 +436,24 @@ class ShieldPlayback(
 private class ShieldPlaybackPlacement(
   private val root: FrameLayout,
   private val guide: SurfaceView,
+  private val pictureBottom: (Int) -> Unit,
 ) : NativePlaybackPlacement {
   private var mountedPlayer: PlayerView? = null
 
   private var waitingForFrame = false
   private var pendingReveal: (() -> Unit)? = null
+  private var lastBottom = 0
+
+  private fun reportBottom() {
+    val player = mountedPlayer
+    val bottom = if (player != null && player.visibility == View.VISIBLE &&
+        placed && !waitingForFrame && player.translationX == 0f) player.bottom - guide.top else 0
+    if (bottom != lastBottom) {
+      lastBottom = bottom
+      pictureBottom(bottom)
+    }
+  }
+
   private var placed = false
   private var fade: ValueAnimator? = null
 
@@ -485,6 +499,7 @@ private class ShieldPlaybackPlacement(
       }
     }
     player.translationX = 0f
+    reportBottom()
     report()
   }
 
@@ -495,6 +510,9 @@ private class ShieldPlaybackPlacement(
   override fun createPlayerView(activity: Activity): PlayerView = PlayerView(activity).apply {
     (videoSurfaceView as SurfaceView).setZOrderMediaOverlay(true)
     visibility = View.INVISIBLE
+    addOnLayoutChangeListener { view, _, _, _, bottom, _, _, _, oldBottom ->
+      if (view === mountedPlayer && bottom != oldBottom) reportBottom()
+    }
   }
 
   override fun mount(parent: ViewGroup, playerView: PlayerView) {
@@ -504,6 +522,7 @@ private class ShieldPlaybackPlacement(
 
   fun hideUntilPlaced() {
     placed = false
+    reportBottom()
     moveOffscreen()
   }
 
@@ -530,6 +549,7 @@ private class ShieldPlaybackPlacement(
     pendingReveal?.also { pendingReveal = null }?.invoke()
     if (waitingForFrame) moveOffscreen() else playerView.translationX = 0f
     playerView.visibility = View.VISIBLE
+    reportBottom()
   }
 
   override fun fillWindow(parent: ViewGroup, playerView: PlayerView) = Unit // TV has no PiP.
@@ -537,11 +557,15 @@ private class ShieldPlaybackPlacement(
   override fun unmount(parent: ViewGroup, playerView: PlayerView) {
     pendingReveal = null
     fade?.cancel()
-    if (mountedPlayer === playerView) mountedPlayer = null
+    if (mountedPlayer === playerView) {
+      mountedPlayer = null
+      reportBottom()
+    }
     parent.removeView(playerView)
   }
 
   override fun revealContent(parent: ViewGroup, playerView: PlayerView) {
     playerView.visibility = View.INVISIBLE
+    reportBottom()
   }
 }

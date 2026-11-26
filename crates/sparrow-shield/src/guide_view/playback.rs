@@ -1,13 +1,15 @@
 //! Shield picture placement and the controls that fit around the native surface.
 
+mod fullscreen;
 mod signal_mark;
+pub(crate) use fullscreen::{FullscreenFrame, FullscreenMotion};
 mod tune;
 mod zap;
 pub(crate) use zap::ZapRoll;
 
 use std::time::Instant;
 
-use gpui::{Bounds, Div, Pixels, Size, div, point, prelude::*, rgb, rgba, size};
+use gpui::{Div, Pixels, Size, div, prelude::*, rgb, rgba};
 
 use super::{
     CANVAS_WIDTH, CELL_ELAPSED, DIM, FAINT, GUTTER, ICE, INK, Layout, ON_ICE, ON_ICE_DIM, PANEL,
@@ -72,7 +74,7 @@ pub(crate) enum PlaybackStage {
 }
 
 impl PlaybackOverlay<'_> {
-    fn show_field(&self) -> bool {
+    pub(crate) fn show_field(&self) -> bool {
         self.tuning_field() || self.still.is_some() || self.stage == PlaybackStage::Reconnecting
     }
 }
@@ -127,7 +129,7 @@ pub(crate) struct PlaybackNext<'a> {
 }
 
 impl PlaybackOverlay<'_> {
-    fn tuning_field(&self) -> bool {
+    pub(crate) fn tuning_field(&self) -> bool {
         match self.first_picture {
             Some(first) => {
                 self.stage == PlaybackStage::Playing
@@ -141,32 +143,21 @@ impl PlaybackOverlay<'_> {
     }
 }
 
-/// Bounds in the logical coordinates used by GPUI. The Activity gets the
-/// corresponding physical rectangle via `picture_rect`.
-pub(crate) fn picture_bounds(viewport: Size<Pixels>, placement: PlaybackLayout) -> Bounds<Pixels> {
-    let layout = Layout::new(viewport);
-    let [left, top, width, height] = picture_reference(layout, placement);
-    Bounds::new(
-        point(layout.px(left), layout.px(top)),
-        size(layout.px(width), layout.px(height)),
-    )
-}
-
-/// Physical pixels in the Activity's `[left, top, width, height]` order.
+/// The tuning field, Guide and native surface share these sampled edges.
 pub(crate) fn picture_rect(
     viewport: Size<Pixels>,
     scale_factor: f32,
-    placement: PlaybackLayout,
+    frame: FullscreenFrame,
 ) -> [i32; 4] {
-    let bounds = picture_bounds(viewport, placement);
-    let physical = |value: Pixels| (f32::from(value) * scale_factor).round() as i32;
-    let left = physical(bounds.origin.x);
-    let top = physical(bounds.origin.y);
+    let layout = Layout::new(viewport);
+    let dock = picture_reference(layout, PlaybackLayout::Docked);
+    let [x, y, w, h] = moving_picture(layout, frame, dock);
+    let physical = |value| (f32::from(layout.px(value)) * scale_factor).round() as i32;
     [
-        left,
-        top,
-        physical(bounds.origin.x + bounds.size.width) - left,
-        physical(bounds.origin.y + bounds.size.height) - top,
+        physical(x),
+        physical(y),
+        physical(x + w) - physical(x),
+        physical(y + h) - physical(y),
     ]
 }
 
@@ -199,6 +190,8 @@ pub(crate) fn picker(
         .left(layout.px(42.))
         .right(layout.px(42.))
         .bottom(layout.px(8.))
+        .font_family(SAIRA)
+        .text_color(rgb(TEXT))
         .h(layout.px(72.))
         .px(layout.px(8.))
         .flex()
@@ -270,13 +263,32 @@ pub(crate) fn fullscreen_actions(
     controls
 }
 
-pub(crate) fn docked_playback(viewport: Size<Pixels>, playback: &PlaybackOverlay<'_>) -> Div {
+pub(crate) fn dock_lock(
+    viewport: Size<Pixels>,
+    playback: &PlaybackOverlay<'_>,
+    frame: FullscreenFrame,
+) -> Option<gpui::AnyElement> {
+    let since = playback.first_picture.filter(|since| {
+        frame.fullscreen == 0.
+            && playback.stage == PlaybackStage::Playing
+            && !playback.reduce_motion
+            && since.elapsed() < tune::LOCK
+    })?;
+    let layout = Layout::new(viewport);
+    let [x, y, w, h] = picture_reference(layout, PlaybackLayout::Docked);
+    Some(tune::lock(layout, [x, y, w, h], since))
+}
+
+pub(crate) fn docked_playback(
+    viewport: Size<Pixels>,
+    playback: &PlaybackOverlay<'_>,
+    frame: FullscreenFrame,
+) -> Div {
     let layout = Layout::new(viewport);
     let [left, top, width, height] = picture_reference(layout, PlaybackLayout::Docked);
     let focused = playback.focus == Some(PlaybackControl::EnterFullscreen);
     let primary = if focused { ON_ICE } else { TEXT };
     let secondary = if focused { ON_ICE_DIM } else { DIM };
-    let bounds = [left, top, width, height];
     let caption = layout
         .rect(left, top + height, width, DOCK_CAPTION)
         .rounded_b(layout.px(8.))
@@ -334,90 +346,110 @@ pub(crate) fn docked_playback(viewport: Size<Pixels>, playback: &PlaybackOverlay
     div()
         .absolute()
         .inset_0()
-        .when_some(
-            playback.first_picture.filter(|since| {
-                playback.stage == PlaybackStage::Playing
-                    && !playback.reduce_motion
-                    && since.elapsed() < tune::LOCK
-            }),
-            |root, since| root.child(tune::lock(layout, [left, top, width, height], since)),
-        )
-        .when(playback.show_field(), |root| {
-            root.child(tune::field(
-                layout,
-                bounds,
-                tune::FieldPlacement::Docked,
-                playback,
-            ))
-        })
         .child(
             layout
                 .rect(left, top - 5., width, 5.)
                 .bg(rgb(match playback.stage {
+                    PlaybackStage::Playing => TALLY,
                     PlaybackStage::Reconnecting => AMBER,
                     PlaybackStage::Failed => ERROR,
                     PlaybackStage::Paused => DIM >> 8,
-                    PlaybackStage::Playing => TALLY,
                     _ => ICE,
-                })),
+                }))
+                .opacity(frame.stripe),
         )
-        .child(caption)
+        .child(caption.opacity(frame.caption))
 }
 
-pub(crate) fn fullscreen_playback(
+pub(crate) fn tuning_field(
     viewport: Size<Pixels>,
     playback: &PlaybackOverlay<'_>,
-    actions: &[PlaybackControl],
+    frame: FullscreenFrame,
 ) -> Div {
     let layout = Layout::new(viewport);
-    let root = div()
-        .size_full()
-        .relative()
-        .overflow_hidden()
-        .font_family(SAIRA)
-        .text_color(rgb(TEXT))
-        .bg(rgb(INK))
-        .when(playback.show_field(), |root| {
-            root.child(tune::field(
-                layout,
-                picture_reference(
-                    layout,
-                    PlaybackLayout::Fullscreen {
-                        controls_visible: !actions.is_empty(),
-                    },
-                ),
-                tune::FieldPlacement::Fullscreen,
-                playback,
-            ))
-        });
-    if actions.is_empty() {
-        return root;
-    }
-    let [_, _, _, picture_height] = picture_reference(
+    let dock = picture_reference(layout, PlaybackLayout::Docked);
+    let bounds = moving_picture(layout, frame, dock);
+    tune::field(
+        layout,
+        bounds,
+        if frame.fullscreen >= 1. {
+            tune::FieldPlacement::Fullscreen
+        } else {
+            tune::FieldPlacement::Docked
+        },
+        playback,
+    )
+}
+
+fn moving_picture(layout: Layout, frame: FullscreenFrame, dock: [f32; 4]) -> [f32; 4] {
+    let full = picture_reference(
+        layout,
+        PlaybackLayout::Fullscreen {
+            controls_visible: false,
+        },
+    );
+    let band = picture_reference(
         layout,
         PlaybackLayout::Fullscreen {
             controls_visible: true,
         },
     );
-    root.child(
-        layout
-            .rect(
-                0.,
-                picture_height,
-                CANVAS_WIDTH,
-                layout.height - picture_height,
+    std::array::from_fn(|i| {
+        dock[i] * (1. - frame.fullscreen)
+            + full[i] * (frame.fullscreen - frame.band)
+            + band[i] * frame.band
+    })
+}
+
+pub(crate) fn fullscreen_band(
+    viewport: Size<Pixels>,
+    playback: &PlaybackOverlay<'_>,
+    actions: &[PlaybackControl],
+    visible: f32,
+    native_bottom: f32,
+) -> Div {
+    let layout = Layout::new(viewport);
+    let [left, _, width, picture_height] = picture_reference(
+        layout,
+        PlaybackLayout::Fullscreen {
+            controls_visible: true,
+        },
+    );
+    let planned_top = layout.height - (layout.height - picture_height) * visible;
+    let placed_bottom = (native_bottom / layout.scale).clamp(picture_height, layout.height);
+    let content_top = planned_top.max(placed_bottom);
+    layout
+        .rect(
+            0.,
+            content_top,
+            CANVAS_WIDTH,
+            layout.height - picture_height,
+        )
+        .font_family(SAIRA)
+        .text_color(rgb(TEXT))
+        .bg(rgb(PANEL))
+        .when(visible == 1. && content_top == planned_top, |band| {
+            band.border_t(layout.px(2.)).border_color(rgba(FAINT))
+        })
+        .when(content_top > picture_height, |band| {
+            // Paint through the complete range that the native edge can occupy.
+            // Keep the header below both its requested and laid-out positions.
+            let overlap = content_top - picture_height;
+            let top = planned_top.min(placed_bottom);
+            band.child(
+                layout
+                    .rect(0., top - content_top, CANVAS_WIDTH, content_top - top)
+                    .bg(rgb(PANEL)),
             )
-            .bg(rgb(PANEL))
-            .border_t(layout.px(2.))
-            .border_color(rgba(FAINT))
-            .child(fullscreen_head(layout, playback))
-            .child(fullscreen_controls(
-                layout,
-                layout.height - picture_height,
-                playback,
-                actions,
-            )),
-    )
+            .child(layout.rect(left, -overlap, width, overlap).bg(rgb(PANEL)))
+        })
+        .child(fullscreen_head(layout, playback))
+        .child(fullscreen_controls(
+            layout,
+            layout.height - picture_height,
+            playback,
+            actions,
+        ))
 }
 
 fn fullscreen_head(layout: Layout, playback: &PlaybackOverlay<'_>) -> Div {
