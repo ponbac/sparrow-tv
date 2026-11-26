@@ -42,6 +42,15 @@ pub(super) fn rail(layout: Layout, screen: &GuideScreen, viewport: &mut RailView
     rail::render(layout, screen, viewport)
 }
 
+fn channel_bounds() -> [f32; 4] {
+    [
+        CHANNEL_CONTROL_X,
+        (TIMELINE_ROW_HEIGHT - 70.) / 2.,
+        CHANNEL_WIDTH - CHANNEL_CONTROL_X - 16.,
+        70.,
+    ]
+}
+
 pub(super) fn render(
     layout: Layout,
     screen: &GuideScreen,
@@ -283,15 +292,10 @@ fn channel(
     focused_chip: Option<usize>,
     icon: Option<&IconImage>,
 ) -> Div {
-    let width = CHANNEL_WIDTH - CHANNEL_CONTROL_X - 16.;
+    let [x, y, width, height] = channel_bounds();
     let variants = family.quality_variants().next().is_some();
     layout
-        .rect(
-            CHANNEL_CONTROL_X,
-            (TIMELINE_ROW_HEIGHT - 70.) / 2.,
-            width,
-            70.,
-        )
+        .rect(x, y, width, height)
         .rounded(layout.px(8.))
         .when(focused, |channel| channel.bg(rgb(ICE)))
         .child(

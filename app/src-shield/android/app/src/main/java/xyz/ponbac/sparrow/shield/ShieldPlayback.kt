@@ -1,13 +1,17 @@
 package xyz.ponbac.sparrow.shield
 
+import android.animation.ValueAnimator
 import android.app.Activity
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.SurfaceControl
 import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import androidx.annotation.Keep
 import androidx.annotation.OptIn
@@ -229,6 +233,7 @@ class ShieldPlayback(
       }
     }
     loaderGeneration = generation
+    placement.beginBinding(retained?.presentation?.identity?.sessionId == identity.sessionId)
     if (!controller.start(identity, viewport, controls, reader) { signal(presentation, it) }) {
       loaderGeneration = 0L
       return false
@@ -269,7 +274,15 @@ class ShieldPlayback(
     main.post {
       val current = binding
       if (!destroyed && lifecycle.permits(ticket) && current?.presentation == presentation && !current.visibilityPaused) {
-        nativePlaybackSignal(hostId, presentation.generation, signal.wire)
+        if (signal == NativePlaybackSignal.FIRST_FRAME) {
+          placement.firstFrame {
+            if (!destroyed && lifecycle.permits(ticket) && binding?.presentation == presentation) {
+              nativePlaybackSignal(hostId, presentation.generation, signal.wire)
+            }
+          }
+        } else {
+          nativePlaybackSignal(hostId, presentation.generation, signal.wire)
+        }
       }
     }
   }
@@ -366,6 +379,54 @@ private class ShieldPlaybackPlacement(
 ) : NativePlaybackPlacement {
   private var mountedPlayer: PlayerView? = null
 
+  private var waitingForFrame = false
+  private var pendingReveal: (() -> Unit)? = null
+  private var placed = false
+  private var fade: ValueAnimator? = null
+
+  override val showBuffering = PlayerView.SHOW_BUFFERING_NEVER
+
+  fun beginBinding(retainPicture: Boolean) {
+    pendingReveal = null
+    if (!retainPicture) {
+      fade?.cancel()
+      waitingForFrame = true
+    }
+  }
+
+  fun firstFrame(report: () -> Unit) {
+    if (!waitingForFrame) return report()
+    if (!placed) {
+      pendingReveal = { firstFrame(report) }
+      return
+    }
+    val player = mountedPlayer ?: return
+    waitingForFrame = false
+    val surface = player.videoSurfaceView as SurfaceView
+    if (Build.VERSION.SDK_INT >= 29 && surface.surfaceControl.isValid) {
+      // SurfaceView owns this independently composited platform layer. PlayerView alpha
+      // does not reach it, and replacing the Surface invalidates this control.
+      val control = surface.surfaceControl
+      SurfaceControl.Transaction().use { tx ->
+        tx.setAlpha(control, if (ValueAnimator.areAnimatorsEnabled()) 0f else 1f).apply()
+      }
+      if (ValueAnimator.areAnimatorsEnabled()) {
+        fade = ValueAnimator.ofFloat(0f, 1f).apply {
+          duration = PICTURE_REVEAL_MS
+          interpolator = DecelerateInterpolator()
+          addUpdateListener {
+            if (control.isValid) SurfaceControl.Transaction().use { tx ->
+              tx.setAlpha(control, it.animatedValue as Float).apply()
+            }
+          }
+          start()
+        }
+      }
+    }
+    player.translationX = 0f
+    report()
+  }
+
   // Rust supplies the explicit bounds in both modes. Media3 retains its view.
   override val televisionFullscreen: Boolean? = null
   override fun container(): ViewGroup = root
@@ -381,6 +442,11 @@ private class ShieldPlaybackPlacement(
   }
 
   fun hideUntilPlaced() {
+    placed = false
+    moveOffscreen()
+  }
+
+  private fun moveOffscreen() {
     // Keep the SurfaceView attached so a retained frame can return after layout.
     val player = mountedPlayer ?: return
     val params = player.layoutParams as FrameLayout.LayoutParams
@@ -399,13 +465,17 @@ private class ShieldPlaybackPlacement(
         topMargin = y
       }
     }
-    playerView.translationX = 0f
+    placed = true
+    pendingReveal?.also { pendingReveal = null }?.invoke()
+    if (waitingForFrame) moveOffscreen() else playerView.translationX = 0f
     playerView.visibility = View.VISIBLE
   }
 
   override fun fillWindow(parent: ViewGroup, playerView: PlayerView) = Unit // TV has no PiP.
 
   override fun unmount(parent: ViewGroup, playerView: PlayerView) {
+    pendingReveal = null
+    fade?.cancel()
     if (mountedPlayer === playerView) mountedPlayer = null
     parent.removeView(playerView)
   }

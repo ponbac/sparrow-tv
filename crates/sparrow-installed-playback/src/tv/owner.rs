@@ -821,6 +821,7 @@ impl Owner {
                 .await;
             return;
         }
+        self.snapshot.first_picture.get_or_insert(now.into_std());
         self.snapshot.phase = Phase::Playing;
         self.snapshot.last_played = Some(session.target.clone());
     }
@@ -1059,6 +1060,7 @@ impl Owner {
     fn select(&mut self, target: TvTuneTarget, fullscreen: bool) {
         self.cancel_deadlines();
         self.audio_request = None;
+        self.snapshot.first_picture = None;
         self.snapshot.selected = Some(target);
         self.snapshot.controls.fullscreen = fullscreen;
         self.snapshot.recovery_attempts = 0;
