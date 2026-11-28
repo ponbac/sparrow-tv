@@ -4,6 +4,7 @@ use std::{collections::HashSet, fmt::Write};
 
 use chrono::{Duration, FixedOffset, TimeZone, Utc};
 use sparrow_core::{CatalogAccess, ChannelGroupFilter, CoreError};
+use sparrow_tv_guide::guide_screen::BoardMetrics;
 use sparrow_tv_guide::now_focus::{Direction, NowFocus, NowMove, NowNavigation};
 use sparrow_tv_guide::{ChannelGroupPages, GuidePages, GuideWindow, PageStatus, PageUpdate};
 
@@ -62,7 +63,12 @@ async fn clock_rollover_replaces_a_loaded_window_only_after_catching_up() {
     let replacement = pages.request_next().unwrap();
     assert_eq!(pages.status(), PageStatus::Loading);
     assert_eq!(
-        NowNavigation::default().press(NowFocus::Channel(38), Direction::Down, 0, pages.board()),
+        NowNavigation::default().press(
+            NowFocus::Channel(38),
+            Direction::Down,
+            0,
+            pages.board(BoardMetrics::TV_NOW.columns)
+        ),
         NowMove::Focus(NowFocus::Channel(40)),
     );
     let result = core.guide_window(replacement.query().clone());

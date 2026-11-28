@@ -17,6 +17,7 @@ use super::{
 };
 
 const DOCK_CAPTION: f32 = 44.;
+const DOCK_STRIPE: f32 = 5.;
 const VOLUME_STEPS: usize = 20;
 const VOLUME_WIDTH: f32 = 180.;
 
@@ -323,6 +324,21 @@ pub(crate) fn dock_lock(
     Some(tune::lock(layout, [x, y, w, h], since))
 }
 
+/// The docked picture with the stripe above it and the caption under it: what a
+/// press on the dock takes. Compact Pocket chrome takes its own presses.
+pub(crate) fn dock_bounds(layout: Layout) -> [f32; 4] {
+    let [x, y, width, height] = picture_reference(layout, PlaybackLayout::Docked);
+    if layout.compact_pocket() {
+        return [x, y, width, height];
+    }
+    [
+        x,
+        y - DOCK_STRIPE,
+        width,
+        DOCK_STRIPE + height + DOCK_CAPTION,
+    ]
+}
+
 pub(crate) fn docked_playback(
     layout: Layout,
     playback: &PlaybackOverlay<'_>,
@@ -391,7 +407,7 @@ pub(crate) fn docked_playback(
         .inset_0()
         .child(
             layout
-                .rect(left, top - 5., width, 5.)
+                .rect(left, top - DOCK_STRIPE, width, DOCK_STRIPE)
                 .bg(rgb(stripe_color(playback.stage)))
                 .opacity(frame.stripe),
         )

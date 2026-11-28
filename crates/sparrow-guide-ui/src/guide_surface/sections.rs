@@ -214,8 +214,9 @@ struct BandInputs {
 #[derive(PartialEq)]
 struct LaneInputs {
     area: [u32; 4],
-    /// Open, the hour shown, and the clock hour that sets the offered hours.
-    chips: Option<(bool, Option<i64>, i64)>,
+    /// Open, the hour shown, and the local clock hour and UTC offset, in
+    /// seconds, that set the offered hours.
+    chips: Option<(bool, Option<i64>, i64, i32)>,
     mode: GuideMode,
     selected: LaneFocus,
     focus: Option<LaneFocus>,
@@ -353,8 +354,15 @@ impl Sections {
             LaneInputs {
                 area: area(layout),
                 chips: frame.time_chips.then(|| {
-                    let hour = if frame.hours_open { now / 3600 } else { 0 };
-                    (frame.hours_open, viewing, hour)
+                    // Offered hours start at local full hours, which need not
+                    // fall on UTC hours.
+                    let offset = minute.now.offset().local_minus_utc();
+                    let hour = if frame.hours_open {
+                        (now + i64::from(offset)).div_euclid(3600)
+                    } else {
+                        0
+                    };
+                    (frame.hours_open, viewing, hour, offset)
                 }),
                 mode: screen.mode(),
                 selected: screen.selected_lane(),

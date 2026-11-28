@@ -13,19 +13,25 @@ The GPUI Guide proved on Shield ([ADR 0009](0009-prove-the-gpui-guide-on-shield-
 
 - The host names its form factor (`GuideHost::form_factor`). Television always uses the shipped 1920-unit canvas, so the Shield's pixels do not change.
 - Desktop keeps the television's type and control sizes in layout units and draws them at 0.65, 0.70 or 0.75 logical px per unit (Compact under 1280 px wide, Regular under 1800 px, Wide above). The canvas width, the dock, the band and the number of Now columns follow the window. A class changes only once the window crosses its edge by 24 px.
-- Handhelds, and Desktop windows smaller than 900 by 520 px, select a Pocket class. They use Compact geometry until the Pocket layout is built on GPUI.
+- Handhelds, and Desktop windows smaller than 900 by 520 px, select a Pocket class from the viewport alone, with no hysteresis: Portrait, Short landscape (wider than tall and under 520 px tall, or within 1050 by 600 px) or Tablet (both sides at least 600 px). Pocket honours the safe-area and keyboard insets.
+  - Portrait docks a 256 by 144 unit picture in a band above a toolbar, the lane and a one-column list. A portrait phone that tunes opens the Watch screen: masthead, a full-width stage, the lower third, controls, details and a Channel bar.
+  - Short landscape gives the picture and its details a column of 42% of the safe width beside the toolbar, lane and list.
+  - Tablets keep the Desktop band model, dock and Now columns inside the safe area, with sheets up to 45% of its width.
+- Setup keeps the shipped rows where the canvas fits them. A narrower column sets the headline smaller in up to two lines, and a shorter one lifts the rows so the action row stays on screen.
 - `sparrow-tv-guide` receives the board geometry (`BoardMetrics`) from the profile instead of reading television constants, so focus movement steps by the columns on screen.
 
 ## Pointer and keyboard
 
-- One listener on the Guide hit-tests the same geometry the views draw. A click focuses its target without drawing focus and then takes the Enter path, so pointer and remote share one set of rules. A click on the playing Channel goes fullscreen, as Enter does on Android TV.
+- One listener on the Guide hit-tests the same geometry the views draw, from shared bounds helpers. A click focuses its target without drawing focus and then takes the Enter path, so pointer and remote share one set of rules. A click on the playing Channel goes fullscreen, as Enter does on Android TV. A double click leaves fullscreen only when both presses land on the fullscreen picture.
+- The fullscreen control band and the Pocket player chrome (Watch screen, docked details and their controls) take presses on their own elements, and the Watch details scroll themselves. The root listener leaves those areas to them.
 - Desktop draws focus only after keyboard input. Hover gets its own quieter state. Scrolling the wheel moves the board and stops focus from pulling it back until the next arrow key.
 
 ## Amendments to ADR 0007 for Pocket on GPUI
 
 - Pocket gets the Guide's motion: the arrival wave, the group slide and picture flights. A native picture moves only as a captured still; the box under a live `SurfaceView` never animates.
 - The playing row uses the stage wash and stage edge, not amber.
-- Tablets in landscape at least 960 dp wide may switch to Timeline. Phones and portrait tablets keep the list.
+- Tablets in landscape at least 960 dp wide may switch to Timeline. Phones and portrait tablets keep the list, with a time chip in place of the board view switch. A layout without the chip returns the list to the clock, and one with it returns Timeline to Now.
+- Turning a playing Watch screen sideways enters fullscreen, and turning back leaves a fullscreen the turn entered. A landscape window under 320 dp tall is the picture-in-picture window and never turns.
 
 ## Owner decisions
 

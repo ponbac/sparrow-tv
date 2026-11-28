@@ -1307,6 +1307,7 @@ impl Render for GuideSurface {
             if let Some(turn) = self.pocket.turn(
                 self.host.form_factor(),
                 (previous, profile),
+                f32::from(viewport.height),
                 shown,
                 playing,
                 self.playback.fullscreen(),
@@ -1315,6 +1316,14 @@ impl Render for GuideSurface {
             }
         }
         let layout = self.layout(window);
+        if pocket_ui::fit_time_chips(
+            &mut self.screen,
+            &mut self.pocket,
+            layout.time_chips(),
+            self.now,
+        ) {
+            self.sync_view(cx);
+        }
         let pocket = layout.pocket().is_some();
         let watch = layout
             .pocket()

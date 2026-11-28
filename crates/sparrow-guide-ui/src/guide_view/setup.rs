@@ -12,8 +12,8 @@ use sparrow_tv_guide::setup::{
 };
 
 use super::{
-    CELL, DIM, FAINT, GUTTER, ICE, ICE_ELAPSED, INK, Layout, MUTE, ON_ICE, PLATE, SAIRA,
-    SAIRA_CLOCK, SAIRA_NUMBER, SAIRA_PREVIEW, SAIRA_TITLE, TEXT,
+    CELL, DIM, FAINT, GUTTER, ICE, ICE_ELAPSED, INK, Layout, MUTE, ON_ICE, PLATE, POCKET_GUTTER,
+    SAIRA, SAIRA_CLOCK, SAIRA_NUMBER, SAIRA_PREVIEW, SAIRA_TITLE, TEXT,
     band::{BAND_TOP, TOOLBAR_HEIGHT},
     clock_time,
 };
@@ -35,6 +35,19 @@ const SWEEP_WIDTH: f32 = 640.;
 const ERROR: u32 = 0xff8a75;
 /// Four names, their counts and "and K more" fit the content width.
 const GROUP_NAME_WIDTH: f32 = 280.;
+const MESSAGE_HEIGHT: f32 = 40.;
+const COPY_HEIGHT: f32 = 120.;
+const LOADING_HEADLINE_Y: f32 = 330.;
+const LOADING_COPY_Y: f32 = 520.;
+const FAILED_COPY_Y: f32 = 300.;
+const FAILED_ACTIONS_Y: f32 = 420.;
+const FAILED_MESSAGE_Y: f32 = 510.;
+const FOUND_COUNT_Y: f32 = 170.;
+const FOUND_ACTIONS_Y: f32 = 700.;
+/// Room the action row keeps above the bottom edge.
+const BOTTOM_MARGIN: f32 = 24.;
+/// The shipped 96-unit headline needs a column this wide to keep to one line.
+const HEADLINE_LINE_WIDTH: f32 = 1500.;
 
 pub(in super::super) struct SetupPanel<'a> {
     pub(in super::super) setup: &'a Setup,
@@ -46,9 +59,92 @@ pub(in super::super) struct SetupPanel<'a> {
     pub(in super::super) now: DateTime<FixedOffset>,
 }
 
-/// The centred column: 160 units in from each edge on television.
+/// The centred column: 160 units in from each edge on television, and the
+/// Pocket gutter on handheld widths.
 fn left(layout: Layout) -> f32 {
-    ((layout.width - CONTENT_MAX_WIDTH) / 2.).max(MIN_LEFT)
+    let min = if layout.pocket().is_some() {
+        POCKET_GUTTER
+    } else {
+        MIN_LEFT
+    };
+    ((layout.width - CONTENT_MAX_WIDTH) / 2.).max(min)
+}
+
+/// The Setup page on screen, which sets the rows it lays out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Page {
+    Question { message: bool },
+    Failed,
+    Loading,
+    Found { counted: bool },
+}
+
+impl Page {
+    fn of(setup: &Setup) -> Self {
+        match setup.step() {
+            SetupStep::Channels | SetupStep::Guide => Self::Question {
+                message: setup.message().is_some(),
+            },
+            SetupStep::Failed(_) => Self::Failed,
+            SetupStep::Loading => Self::Loading,
+            SetupStep::Found => match setup.summary() {
+                None => Self::Loading,
+                Some(summary) => Self::Found {
+                    counted: matches!(summary, FoundSummary::Counted { .. }),
+                },
+            },
+        }
+    }
+
+    fn copy_y(self) -> f32 {
+        match self {
+            Self::Question { message: true } => 470.,
+            Self::Question { message: false } => 430.,
+            Self::Failed => FAILED_COPY_Y,
+            Self::Loading | Self::Found { .. } => LOADING_COPY_Y,
+        }
+    }
+
+    /// Where the page's action row starts on the shipped canvas.
+    fn actions_y(self) -> Option<f32> {
+        match self {
+            Self::Question { .. } => Some(self.copy_y() + 130.),
+            Self::Failed => Some(FAILED_ACTIONS_Y),
+            Self::Found { .. } => Some(FOUND_ACTIONS_Y),
+            Self::Loading => None,
+        }
+    }
+
+    /// The top of the page's first row and the bottom of its last one.
+    fn extent(self) -> (f32, f32) {
+        match self {
+            Self::Question { .. } => (PROGRESS_Y - 12., self.copy_y() + 130. + BUTTON_HEIGHT),
+            Self::Failed => (HEADLINE_Y, FAILED_MESSAGE_Y + MESSAGE_HEIGHT),
+            Self::Loading => (LOADING_HEADLINE_Y, LOADING_COPY_Y + COPY_HEIGHT),
+            Self::Found { counted } => (
+                if counted {
+                    FOUND_COUNT_Y
+                } else {
+                    LOADING_HEADLINE_Y
+                },
+                FOUND_ACTIONS_Y + BUTTON_HEIGHT,
+            ),
+        }
+    }
+
+    /// How far the page's rows move up so its last row ends above the bottom
+    /// edge. They never rise into the clock's band.
+    fn lift(self, layout: Layout) -> f32 {
+        let (top, bottom) = self.extent();
+        (bottom + BOTTOM_MARGIN - layout.height).clamp(0., (top - BAND_TOP).max(0.))
+    }
+
+    /// The action row's top in the lifted rows. A layout too short for the
+    /// lifted page still keeps the row on screen.
+    fn actions_top(self, layout: Layout) -> Option<f32> {
+        let lowest = layout.height + self.lift(layout) - BOTTOM_MARGIN - BUTTON_HEIGHT;
+        Some(self.actions_y()?.min(lowest))
+    }
 }
 
 fn content_width(layout: Layout) -> f32 {
@@ -71,6 +167,8 @@ pub(in super::super) fn setup_hit(
     [x, y]: [f32; 2],
 ) -> Option<SetupControl> {
     let [field_row, actions] = panel.setup.rows(panel.draft);
+    let page = Page::of(panel.setup);
+    let y = y + page.lift(layout);
     let x = x - left(layout);
     let filled = field_row.contains(&SetupControl::Clear);
     let within = |top: f32, height: f32| (top..top + height).contains(&y);
@@ -83,7 +181,7 @@ pub(in super::super) fn setup_hit(
         return (filled && (clear..clear + CLEAR_WIDTH).contains(&x))
             .then_some(SetupControl::Clear);
     }
-    if !within(buttons_top(panel)?, BUTTON_HEIGHT) {
+    if !within(page.actions_top(layout)?, BUTTON_HEIGHT) {
         return None;
     }
     let mut left = if panel.setup.step() == SetupStep::Found {
@@ -114,28 +212,15 @@ pub(in super::super) fn setup_hit(
     None
 }
 
-fn buttons_top(panel: &SetupPanel<'_>) -> Option<f32> {
-    match panel.setup.step() {
-        SetupStep::Channels | SetupStep::Guide => Some(
-            if panel.setup.message().is_some() {
-                470.
-            } else {
-                430.
-            } + 130.,
-        ),
-        SetupStep::Failed(_) => Some(420.),
-        SetupStep::Found => panel.setup.summary().map(|_| 700.),
-        SetupStep::Loading => None,
-    }
-}
-
 /// Physical x, y, width and height of the text inside the Setup field.
 pub(in super::super) fn setup_editor_rect(
     layout: Layout,
     pixel_scale: f32,
+    setup: &Setup,
     filled: bool,
 ) -> Option<[i32; 4]> {
-    let height = FIELD_HEIGHT.min(layout.height - FIELD_Y);
+    let field_y = FIELD_Y - Page::of(setup).lift(layout);
+    let height = FIELD_HEIGHT.min(layout.height - field_y);
     if height <= 0. {
         return None;
     }
@@ -143,23 +228,19 @@ pub(in super::super) fn setup_editor_rect(
     let inset = FIELD_BORDER + FIELD_PADDING;
     Some([
         ((left(layout) + inset) * scale).round() as i32,
-        (FIELD_Y * scale).round() as i32,
+        (field_y * scale).round() as i32,
         ((field_width(layout, filled) - 2. * inset) * scale).round() as i32,
         (height * scale).round() as i32,
     ])
 }
 
 pub(in super::super) fn render(layout: Layout, panel: SetupPanel<'_>) -> Div {
-    let screen = div()
-        .size_full()
-        .relative()
-        .overflow_hidden()
-        .bg(rgb(INK))
-        .text_color(rgb(TEXT))
-        .font_family(SAIRA)
-        .child(clock(layout, panel.now));
-    match panel.setup.step() {
-        SetupStep::Channels => screen.children(question(
+    let page = Page::of(panel.setup);
+    let lift = page.lift(layout);
+    // The page's rows, in shipped positions, lifted to end above the bottom edge.
+    let rows = layout.rect(0., -lift, layout.width, layout.height + lift);
+    let rows = match panel.setup.step() {
+        SetupStep::Channels => rows.children(question(
             layout,
             &panel,
             Question {
@@ -171,7 +252,7 @@ pub(in super::super) fn render(layout: Layout, panel: SetupPanel<'_>) -> Div {
                 filled: panel.draft.has_m3u,
             },
         )),
-        SetupStep::Guide => screen.children(question(
+        SetupStep::Guide => rows.children(question(
             layout,
             &panel,
             Question {
@@ -183,22 +264,34 @@ pub(in super::super) fn render(layout: Layout, panel: SetupPanel<'_>) -> Div {
                 filled: panel.draft.has_epg,
             },
         )),
-        SetupStep::Loading => screen.children(loading(layout)),
-        SetupStep::Failed(reason) => screen
+        SetupStep::Loading => rows.children(loading(layout)),
+        SetupStep::Failed(reason) => rows
             .child(headline(layout, HEADLINE_Y, "Couldn’t load your channels"))
-            .child(copy(layout, 300., failure_copy(reason)))
-            .child(buttons(layout, 420., &panel))
+            .child(copy(layout, FAILED_COPY_Y, failure_copy(reason)))
+            .children(
+                page.actions_top(layout)
+                    .map(|top| buttons(layout, top, &panel)),
+            )
             .children(
                 panel
                     .setup
                     .message()
-                    .map(|message| message_line(layout, 510., message)),
+                    .map(|message| message_line(layout, FAILED_MESSAGE_Y, message)),
             ),
         SetupStep::Found => match panel.setup.summary() {
-            None => screen.children(loading(layout)),
-            Some(summary) => screen.children(found(layout, summary, &panel)),
+            None => rows.children(loading(layout)),
+            Some(summary) => rows.children(found(layout, summary, &panel)),
         },
-    }
+    };
+    div()
+        .size_full()
+        .relative()
+        .overflow_hidden()
+        .bg(rgb(INK))
+        .text_color(rgb(TEXT))
+        .font_family(SAIRA)
+        .child(clock(layout, panel.now))
+        .child(rows)
 }
 
 fn clock(layout: Layout, now: DateTime<FixedOffset>) -> Div {
@@ -225,7 +318,9 @@ struct Question {
 fn question(layout: Layout, panel: &SetupPanel<'_>, question: Question) -> Vec<Div> {
     let focus = panel.setup.focus();
     let message = panel.setup.message();
-    let copy_y = if message.is_some() { 470. } else { 430. };
+    let page = Page::Question {
+        message: message.is_some(),
+    };
     let width = field_width(layout, question.filled);
     let field_focus = focus == SetupControl::Field;
     let mut parts = vec![
@@ -280,8 +375,11 @@ fn question(layout: Layout, panel: &SetupPanel<'_>, question: Question) -> Vec<D
     if let Some(message) = message {
         parts.push(message_line(layout, 412., message));
     }
-    parts.push(copy(layout, copy_y, question.copy));
-    parts.push(buttons(layout, copy_y + 130., panel));
+    parts.push(copy(layout, page.copy_y(), question.copy));
+    parts.extend(
+        page.actions_top(layout)
+            .map(|top| buttons(layout, top, panel)),
+    );
     parts
 }
 
@@ -314,24 +412,43 @@ fn progress(layout: Layout, step: usize) -> Div {
         )
 }
 
+/// The headline's size and line height. A column too narrow for the shipped
+/// one-line headline sets it smaller, in up to two lines above the next row.
+fn headline_type(layout: Layout) -> (f32, f32) {
+    let width = content_width(layout);
+    if width >= HEADLINE_LINE_WIDTH {
+        (96., 104.)
+    } else {
+        let size = (width / 18.).clamp(48., 68.);
+        (size, size + 6.)
+    }
+}
+
 fn headline(layout: Layout, top: f32, text: &'static str) -> Div {
+    let (size, line) = headline_type(layout);
     layout
-        .rect(left(layout), top, content_width(layout), 104.)
-        .child(layout.text(SAIRA_PREVIEW, 96., 104., 700.).child(text))
+        .rect(left(layout), top, content_width(layout), 2. * line)
+        .child(layout.text(SAIRA_PREVIEW, size, line, 700.).child(text))
+}
+
+fn copy_width(layout: Layout) -> f32 {
+    COPY_WIDTH.min(content_width(layout))
 }
 
 fn copy(layout: Layout, top: f32, text: &'static str) -> Div {
-    layout.rect(left(layout), top, COPY_WIDTH, 120.).child(
-        layout
-            .text(SAIRA, 27., 40., 400.)
-            .text_color(rgba(DIM))
-            .child(text),
-    )
+    layout
+        .rect(left(layout), top, copy_width(layout), COPY_HEIGHT)
+        .child(
+            layout
+                .text(SAIRA, 27., 40., 400.)
+                .text_color(rgba(DIM))
+                .child(text),
+        )
 }
 
 fn message_line(layout: Layout, top: f32, message: SetupMessage) -> Div {
     layout
-        .rect(left(layout), top, content_width(layout), 40.)
+        .rect(left(layout), top, content_width(layout), MESSAGE_HEIGHT)
         .child(
             layout
                 .text(SAIRA, 24., 34., 600.)
@@ -421,11 +538,11 @@ fn sweep(layout: Layout) -> impl IntoElement {
 
 fn loading(layout: Layout) -> Vec<gpui::AnyElement> {
     vec![
-        headline(layout, 330., "Loading your channels").into_any_element(),
+        headline(layout, LOADING_HEADLINE_Y, "Loading your channels").into_any_element(),
         sweep(layout).into_any_element(),
         copy(
             layout,
-            520.,
+            LOADING_COPY_Y,
             "Sparrow is reading your channel source for the first time. \
              Large lists can take a minute.",
         )
@@ -434,7 +551,12 @@ fn loading(layout: Layout) -> Vec<gpui::AnyElement> {
 }
 
 fn found(layout: Layout, summary: &FoundSummary, panel: &SetupPanel<'_>) -> Vec<gpui::AnyElement> {
-    let action = buttons(layout, 700., panel).ml(layout.px(10.));
+    let page = Page::Found {
+        counted: matches!(summary, FoundSummary::Counted { .. }),
+    };
+    let action = page
+        .actions_top(layout)
+        .map(|top| buttons(layout, top, panel).ml(layout.px(10.)));
     let rule = layout
         .rect(0., SWEEP_Y, layout.width, 2.)
         .bg(linear_gradient(
@@ -450,9 +572,11 @@ fn found(layout: Layout, summary: &FoundSummary, panel: &SetupPanel<'_>) -> Vec<
     else {
         return vec![
             rule.into_any_element(),
-            headline(layout, 330., "Your channels are ready").into_any_element(),
-            action.into_any_element(),
-        ];
+            headline(layout, LOADING_HEADLINE_Y, "Your channels are ready").into_any_element(),
+        ]
+        .into_iter()
+        .chain(action.map(IntoElement::into_any_element))
+        .collect();
     };
     let total = *channels;
     // Rolls up once per counted generation. The id keeps the finished state
@@ -462,7 +586,7 @@ fn found(layout: Layout, summary: &FoundSummary, panel: &SetupPanel<'_>) -> Vec<
         .summary_generation()
         .map_or(0, |generation| generation.get());
     let count = layout
-        .rect(left(layout), 170., content_width(layout), 300.)
+        .rect(left(layout), FOUND_COUNT_Y, content_width(layout), 300.)
         .with_animation(
             ElementId::Name(format!("setup-found-count-{generation}").into()),
             Animation::new(Duration::from_millis(1200)).with_easing(ease_out_quint()),
@@ -476,8 +600,10 @@ fn found(layout: Layout, summary: &FoundSummary, panel: &SetupPanel<'_>) -> Vec<
             },
         );
     let more = groups.saturating_sub(first.len());
+    // A narrow column shows the names that fit on the one line.
     let names = layout
-        .rect(left(layout) + 10., 590., content_width(layout), 40.)
+        .rect(left(layout) + 10., 590., content_width(layout) - 10., 40.)
+        .overflow_hidden()
         .flex()
         .gap(layout.px(34.))
         .text_size(layout.px(26.))
@@ -523,8 +649,10 @@ fn found(layout: Layout, summary: &FoundSummary, panel: &SetupPanel<'_>) -> Vec<
             )
             .into_any_element(),
         names.into_any_element(),
-        action.into_any_element(),
     ]
+    .into_iter()
+    .chain(action.map(IntoElement::into_any_element))
+    .collect()
 }
 
 /// The line under the big count, which supplies the number of channels.
@@ -575,5 +703,106 @@ const fn message_copy(message: SetupMessage) -> &'static str {
         }
         SetupMessage::RetryUnavailable => "Couldn’t start loading. Try again.",
         SetupMessage::DraftUnavailable => "Couldn’t open the address editor.",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{px, size};
+
+    use super::*;
+    use crate::{
+        FormFactor, Insets,
+        guide_view::{PocketMode, Profile},
+    };
+
+    /// Setup's region on a phone with its status bar and gesture or cutout insets.
+    fn phone(width: f32, height: f32) -> Layout {
+        let insets = if width < height {
+            Insets {
+                top: 32.,
+                bottom: 24.,
+                ..Insets::default()
+            }
+        } else {
+            Insets {
+                top: 24.,
+                left: 32.,
+                ..Insets::default()
+            }
+        };
+        let profile = Profile::select(FormFactor::Handheld, (width, height), None);
+        let layout = Layout::placed(
+            profile,
+            size(px(width), px(height)),
+            insets,
+            PocketMode::Guide,
+        );
+        layout.region(layout.m.safe)
+    }
+
+    #[test]
+    fn setup_fits_a_phone_in_portrait_and_landscape() {
+        for (layout, name) in [
+            (phone(412., 915.), "portrait"),
+            (phone(915., 412.), "landscape"),
+        ] {
+            // The column and its copy keep inside the gutters.
+            let (left, width) = (left(layout), content_width(layout));
+            assert!(left >= POCKET_GUTTER, "{name}");
+            assert!(
+                left + width <= layout.width - POCKET_GUTTER + 0.01,
+                "{name}"
+            );
+            assert!(copy_width(layout) <= width, "{name}");
+            // A two-line headline ends above the field.
+            let (_, line) = headline_type(layout);
+            assert!(HEADLINE_Y + 2. * line <= FIELD_Y, "{name}");
+
+            for page in [
+                Page::Question { message: false },
+                Page::Question { message: true },
+                Page::Failed,
+                Page::Loading,
+                Page::Found { counted: true },
+                Page::Found { counted: false },
+            ] {
+                let lift = page.lift(layout);
+                let (top, bottom) = page.extent();
+                assert!(top - lift >= BAND_TOP, "{name} {page:?}");
+                assert!(bottom - lift <= layout.height, "{name} {page:?}");
+                // Continue and the other actions keep their place under the
+                // page's rows and stay on screen.
+                assert_eq!(
+                    page.actions_top(layout),
+                    page.actions_y(),
+                    "{name} {page:?}"
+                );
+                if let Some(actions) = page.actions_top(layout) {
+                    let on_screen = actions - lift;
+                    assert!(on_screen >= 0., "{name} {page:?}");
+                    assert!(
+                        on_screen + BUTTON_HEIGHT <= layout.height,
+                        "{name} {page:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn television_keeps_the_shipped_setup_rows() {
+        let tv = Layout::new(Profile::Tv, size(px(1920.), px(1080.)));
+        assert_eq!(left(tv), 160.);
+        assert_eq!(headline_type(tv), (96., 104.));
+        assert_eq!(copy_width(tv), COPY_WIDTH);
+        for page in [
+            Page::Question { message: true },
+            Page::Failed,
+            Page::Found { counted: true },
+        ] {
+            assert_eq!(page.lift(tv), 0.);
+            assert_eq!(page.actions_top(tv), page.actions_y());
+        }
     }
 }

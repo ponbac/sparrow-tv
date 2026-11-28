@@ -47,6 +47,8 @@ pub(super) struct SourceFlow {
     presentation: Presentation,
     seed: Seed,
     focus: SourceFocus,
+    /// Where the wheel or a drag scrolled the sheet; arrows follow focus again.
+    scroll: Option<f32>,
     draft_ready: bool,
     has_m3u: bool,
     has_epg: bool,
@@ -215,6 +217,7 @@ impl GuideSurface {
             presentation,
             seed,
             focus: SourceFocus::Close,
+            scroll: None,
             draft_ready: false,
             has_m3u: false,
             has_epg: false,
@@ -305,6 +308,7 @@ impl GuideSurface {
                 ambient: self.ambient_light(),
                 focus: source.focus,
                 editing: matches!(source.request, Some(FieldRequest::Edit(..))),
+                scroll: source.scroll,
                 has_m3u: source.has_m3u,
                 has_epg: source.has_epg,
                 saving: source.pending.is_some(),
@@ -330,10 +334,34 @@ impl GuideSurface {
         guide_view::source_sheet_hit(
             layout,
             source.diagnostics.as_deref(),
-            source.focus,
-            matches!(source.request, Some(FieldRequest::Edit(..))),
+            (
+                source.focus,
+                matches!(source.request, Some(FieldRequest::Edit(..))),
+            ),
+            source.scroll,
             point,
         )
+    }
+
+    /// Scrolls the Sources sheet by `travel` layout units. Returns whether it moved.
+    pub(super) fn scroll_sources(&mut self, layout: guide_view::Layout, travel: f32) -> bool {
+        let Some(source) = self
+            .source
+            .as_mut()
+            .filter(|source| source.presentation == Presentation::Sheet)
+        else {
+            return false;
+        };
+        let focus = (
+            source.focus,
+            matches!(source.request, Some(FieldRequest::Edit(..))),
+        );
+        let diagnostics = source.diagnostics.as_deref();
+        let shown = guide_view::scroll_source_sheet(layout, diagnostics, focus, source.scroll, 0.);
+        let scrolled =
+            guide_view::scroll_source_sheet(layout, diagnostics, focus, source.scroll, travel);
+        source.scroll = Some(scrolled);
+        scrolled != shown
     }
 
     pub(super) fn focus_source(&mut self, focus: SourceFocus) {
@@ -485,6 +513,7 @@ impl GuideSurface {
                 self.step_backdrop(direction == Direction::Left, cx)
             }
             ScreenKey::Arrow(direction) => {
+                source.scroll = None;
                 source.focus = match (source.focus, direction) {
                     (SourceFocus::Close, Direction::Down) => SourceFocus::Backdrop,
                     (SourceFocus::Backdrop, Direction::Up) => SourceFocus::Close,

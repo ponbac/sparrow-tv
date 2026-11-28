@@ -237,13 +237,13 @@ impl GuidePages {
             .map_or_else(|| self.status(), |window| window.status)
     }
 
-    /// The loaded rows laid out on the television Now grid.
-    pub fn board(&self) -> BoardView {
+    /// The loaded rows laid out in `columns` Now columns.
+    pub fn board(&self, columns: usize) -> BoardView {
         BoardView {
             selection: self.selection,
             families: self.families().len(),
             page: self.displayed_status(),
-            columns: crate::guide_screen::BoardMetrics::TV_NOW.columns,
+            columns,
         }
     }
 

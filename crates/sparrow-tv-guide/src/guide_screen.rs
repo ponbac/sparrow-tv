@@ -881,6 +881,16 @@ impl GuideScreen {
         }
     }
 
+    /// Returns the board to Now on a layout that offers no Timeline. Returns
+    /// whether the board was showing Timeline.
+    pub fn leave_timeline(&mut self, now: DateTime<Utc>, offset: FixedOffset) -> bool {
+        let timeline = self.mode() == GuideMode::Timeline;
+        if timeline {
+            self.toggle_mode(now, offset);
+        }
+        timeline
+    }
+
     fn toggle_mode(&mut self, now: DateTime<Utc>, offset: FixedOffset) {
         self.mode = match self.mode {
             BoardMode::Now { .. } => {
@@ -1156,8 +1166,7 @@ impl GuideScreen {
     }
 
     fn board(&self) -> Option<BoardView> {
-        let mut board = self.pages.as_ref()?.board();
-        board.columns = self.geometry().columns;
+        let mut board = self.pages.as_ref()?.board(self.geometry().columns);
         if board.page == PageStatus::Complete
             && self.group_pages.as_ref().is_some_and(|groups| {
                 matches!(

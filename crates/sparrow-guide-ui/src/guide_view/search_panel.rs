@@ -47,6 +47,11 @@ const DESK_ROW_HEIGHT: f32 = 78.;
 const DESK_PITCH: f32 = DESK_ROW_HEIGHT + 4.;
 const DESK_FOOTER_SPACE: f32 = 96.;
 const INCLUDE_WIDTH: f32 = 140.6;
+/// The Desk notice reserves two lines for its message above the retry button.
+const DESK_NOTICE_TOP: f32 = 12.;
+const DESK_NOTICE_HEIGHT: f32 = 48.;
+const DESK_BUTTON_HEIGHT: f32 = 44.;
+const DESK_RETRY_WIDTH: f32 = 170.;
 
 pub(in super::super) struct SearchPanel<'a> {
     pub(in super::super) marker: Option<&'a PlayingMarker>,
@@ -154,6 +159,10 @@ pub(in super::super) fn search_hit(
             if offset < 0. || !(0. ..desk_content_width(layout)).contains(&x) {
                 return None;
             }
+            if desk_retry_label(panel.state.status()).is_some() {
+                return super::contains(DESK_RETRY_BOUNDS, [x, offset])
+                    .then_some(SearchFocus::Retry);
+            }
             let rows = panel.state.channels();
             let offset = offset + viewport.desk_scroll.clipped(DESK_PITCH);
             let index = viewport.desk_scroll.first() + (offset / DESK_PITCH) as usize;
@@ -165,6 +174,23 @@ pub(in super::super) fn search_hit(
                 _ => None,
             }
         }
+    }
+}
+
+/// The Desk notice's retry button, relative to the result list.
+const DESK_RETRY_BOUNDS: [f32; 4] = [
+    0.,
+    DESK_NOTICE_TOP + DESK_NOTICE_HEIGHT + 10.,
+    DESK_RETRY_WIDTH,
+    DESK_BUTTON_HEIGHT,
+];
+
+/// A Desk that cannot list results offers to search again.
+fn desk_retry_label(status: SearchStatus) -> Option<&'static str> {
+    match status {
+        SearchStatus::Failed => Some("Try again"),
+        SearchStatus::ReconcileGeneration => Some("Search again"),
+        _ => None,
     }
 }
 
@@ -716,35 +742,37 @@ fn desk_list<'a>(
     let status = panel.state.status();
     if status != SearchStatus::Ready {
         *scroll = RowScroll::default();
-        let message = status_text(status, SearchView::Desk).unwrap_or_default();
-        let retry = match status {
-            SearchStatus::Failed => Some("Try again"),
-            SearchStatus::ReconcileGeneration => Some("Search again"),
-            _ => None,
-        };
-        let notice = list.child(
-            div()
-                .flex()
-                .flex_col()
-                .items_start()
-                .pt(layout.px(12.))
-                .gap(layout.px(10.))
-                .child(
+        let message = layout
+            .text(SAIRA, 17., 24., 500.)
+            .text_color(rgba(DIM))
+            .child(status_text(status, SearchView::Desk).unwrap_or_default());
+        let notice = match desk_retry_label(status) {
+            // The message keeps to its two lines so the button has one place.
+            Some(label) => {
+                let [x, y, width, _] = DESK_RETRY_BOUNDS;
+                list.child(
                     layout
-                        .text(SAIRA, 17., 24., 500.)
-                        .text_color(rgba(DIM))
+                        .rect(
+                            0.,
+                            DESK_NOTICE_TOP,
+                            desk_content_width(layout),
+                            DESK_NOTICE_HEIGHT,
+                        )
+                        .flex()
+                        .flex_col()
+                        .justify_end()
                         .child(message),
                 )
-                .when_some(retry, |notice, label| {
-                    notice.child(desk_button(
-                        layout,
-                        div(),
-                        label,
-                        panel.focus == SearchFocus::Retry,
-                        false,
-                    ))
-                }),
-        );
+                .child(desk_button(
+                    layout,
+                    layout.rect(x, y, width, DESK_BUTTON_HEIGHT),
+                    label,
+                    panel.focus == SearchFocus::Retry,
+                    false,
+                ))
+            }
+            None => list.child(div().pt(layout.px(DESK_NOTICE_TOP)).child(message)),
+        };
         return (notice, Vec::new());
     }
     let rows = panel.state.channels();
@@ -938,7 +966,7 @@ fn desk_button(
     focused: bool,
     pressed: bool,
 ) -> Div {
-    rect.h(layout.px(44.))
+    rect.h(layout.px(DESK_BUTTON_HEIGHT))
         .px(layout.px(20.))
         .rounded_full()
         .bg(rgb(if focused {

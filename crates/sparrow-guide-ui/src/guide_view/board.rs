@@ -27,7 +27,23 @@ const OVERSCAN_LINES: usize = 0;
 const CONTENT_X: f32 = 96.;
 const TITLE_HEIGHT: f32 = 35.65;
 const LINE_GAP: f32 = 4.;
-const QUALITY_CHIP_PITCH: f32 = 52.;
+const QUALITY_CHIP_WIDTH: f32 = 48.;
+const QUALITY_CHIP_HEIGHT: f32 = 28.;
+const QUALITY_CHIP_GAP: f32 = 4.;
+const QUALITY_CHIP_PITCH: f32 = QUALITY_CHIP_WIDTH + QUALITY_CHIP_GAP;
+/// Where a card's or row's Quality Variant chips sit, from its top right corner.
+const QUALITY_TAGS_TOP: f32 = 10.;
+const QUALITY_TAGS_RIGHT: f32 = 18.;
+const NOTICE_HEIGHT: f32 = 285.;
+const ACTION_HEIGHT: f32 = 54.;
+/// Try again keeps one width so painting and hit-testing share its rectangle.
+const RETRY_WIDTH: f32 = 168.;
+const NOTICE_COPY_HEIGHT: f32 = 47.2 + 12. + 31.5;
+const NOTICE_RETRY_GAP: f32 = 24.;
+/// The title, detail and Try again column sits centred in the notice panel.
+const NOTICE_RETRY_TOP: f32 =
+    (NOTICE_HEIGHT + NOTICE_COPY_HEIGHT + NOTICE_RETRY_GAP - ACTION_HEIGHT) / 2.;
+const FOOTER_PADDING: f32 = 18.;
 
 fn content_width(layout: Layout) -> f32 {
     layout.column_width() - CONTENT_X - 21.
@@ -46,17 +62,87 @@ pub(crate) fn card_bounds(layout: Layout, index: usize, scroll: f32) -> [f32; 4]
     ]
 }
 
-/// The Quality Variant chip under a point on a card. Chips sit right-aligned in
-/// the caption line; each takes about one chip pitch.
+/// Chip `chip` of a card's `count` Quality Variant chips, as `quality_tags`
+/// paints them at the card's top right.
+fn card_chip_bounds(card: [f32; 4], count: usize, chip: usize) -> [f32; 4] {
+    let tags = count as f32 * QUALITY_CHIP_PITCH - QUALITY_CHIP_GAP;
+    [
+        card[0] + card[2] - QUALITY_TAGS_RIGHT - tags + chip as f32 * QUALITY_CHIP_PITCH,
+        card[1] + QUALITY_TAGS_TOP,
+        QUALITY_CHIP_WIDTH,
+        QUALITY_CHIP_HEIGHT,
+    ]
+}
+
+/// The Quality Variant chip under a point on a card.
 pub(crate) fn card_chip(family: &GuideFamily, card: [f32; 4], point: [f32; 2]) -> Option<usize> {
     let count = family.quality_variants().count();
-    let from_right = card[0] + card[2] - 18. - point[0];
-    let y = point[1] - card[1];
-    if count < 2 || from_right < 0. || !(6. ..42.).contains(&y) {
+    if count < 2 {
         return None;
     }
-    let slot = (from_right / QUALITY_CHIP_PITCH) as usize;
-    (slot < count).then(|| count - 1 - slot)
+    (0..count).find(|&chip| super::contains(card_chip_bounds(card, count, chip), point))
+}
+
+/// A board's notice panel, relative to the board's top left.
+pub(super) fn notice_bounds(width: f32, top: f32) -> [f32; 4] {
+    [0., top, width, NOTICE_HEIGHT]
+}
+
+/// The footer row under the last loaded row while it is on the board,
+/// relative to the board's top left.
+pub(super) fn footer_bounds(
+    screen: &GuideScreen,
+    [width, height]: [f32; 2],
+    row_height: f32,
+) -> Option<[f32; 4]> {
+    let top = screen.footer_top();
+    (!screen.families().is_empty() && top < height).then_some([0., top, width, row_height])
+}
+
+/// The board's Try again button relative to the board, mirroring `render`: on
+/// the read-failed notice, or on the footer that keeps the last loaded rows.
+/// `size` is the board's width and height; the notice starts at `notice_top`.
+pub(super) fn retry_bounds(
+    screen: &GuideScreen,
+    size: [f32; 2],
+    notice_top: f32,
+) -> Option<[f32; 4]> {
+    if screen.notice() == Some(ScreenNotice::ReadFailed) {
+        return Some(notice_retry_bounds(notice_bounds(size[0], notice_top)));
+    }
+    let footer = footer_bounds(screen, size, NOW_RETAINED_RETRY_HEIGHT)?;
+    screen
+        .retry_available()
+        .then(|| footer_retry_bounds(footer))
+}
+
+/// Whether a Now board point, relative to the Guide region, is on Try again.
+pub(crate) fn retry_hit(layout: Layout, screen: &GuideScreen, [x, y]: [f32; 2]) -> bool {
+    let board = layout.m.board.now;
+    let size = [
+        layout.width - 2. * GUTTER,
+        (layout.height - board.top).max(0.),
+    ];
+    retry_bounds(screen, size, board.row_top)
+        .is_some_and(|button| super::contains(button, [x - GUTTER, y - board.top]))
+}
+
+fn notice_retry_bounds([x, y, width, _]: [f32; 4]) -> [f32; 4] {
+    [
+        x + (width - RETRY_WIDTH) / 2.,
+        y + NOTICE_RETRY_TOP,
+        RETRY_WIDTH,
+        ACTION_HEIGHT,
+    ]
+}
+
+fn footer_retry_bounds([x, y, width, height]: [f32; 4]) -> [f32; 4] {
+    [
+        x + width - FOOTER_PADDING - RETRY_WIDTH,
+        y + (height - ACTION_HEIGHT) / 2.,
+        RETRY_WIDTH,
+        ACTION_HEIGHT,
+    ]
 }
 
 pub(crate) fn render(
@@ -76,18 +162,12 @@ pub(crate) fn render(
         _ => None,
     };
     let retry_focus = focus == Some(NowFocus::Retry);
-    let mut board = layout
-        .rect(GUTTER, top, layout.width - 2. * GUTTER, height)
-        .overflow_hidden();
+    let width = layout.width - 2. * GUTTER;
+    let mut board = layout.rect(GUTTER, top, width, height).overflow_hidden();
     if let Some(notice) = screen.notice() {
         board = board.child(notice_panel(
             layout,
-            layout.rect(
-                0.,
-                layout.m.board.now.row_top,
-                layout.width - GUTTER * 2.,
-                285.,
-            ),
+            notice_bounds(width, layout.m.board.now.row_top),
             notice,
             retry_focus,
         ));
@@ -132,27 +212,30 @@ pub(crate) fn render(
             12.,
         )));
     }
-    let footer_y = screen.footer_top();
-    if !families.is_empty() && footer_y < height {
-        let width = layout.width - GUTTER * 2.;
-        if screen.retry_available() {
-            board = board.child(retained_footer(
-                layout,
-                layout.rect(0., footer_y, width, NOW_RETAINED_RETRY_HEIGHT),
-                retry_focus,
-            ));
-        } else if matches!(
-            screen.page_status(),
-            Some(PageStatus::Ready | PageStatus::Loading)
-        ) {
-            board = board.child(more_footer(
-                layout,
-                layout.rect(0., footer_y, width, NOW_MORE_HEIGHT),
-                screen.page_status() == Some(PageStatus::Loading),
-            ));
-        }
+    board.children(footer(layout, screen, [width, height], retry_focus))
+}
+
+/// The retained-rows footer or the More channels footer, whichever applies.
+pub(super) fn footer(
+    layout: Layout,
+    screen: &GuideScreen,
+    size: [f32; 2],
+    retry_focus: bool,
+) -> Option<Div> {
+    if screen.retry_available() {
+        let bounds = footer_bounds(screen, size, NOW_RETAINED_RETRY_HEIGHT)?;
+        return Some(retained_footer(layout, bounds, retry_focus));
     }
-    board
+    let status = screen.page_status()?;
+    if !matches!(status, PageStatus::Ready | PageStatus::Loading) {
+        return None;
+    }
+    let [x, y, width, height] = footer_bounds(screen, size, NOW_MORE_HEIGHT)?;
+    Some(more_footer(
+        layout,
+        layout.rect(x, y, width, height),
+        status == PageStatus::Loading,
+    ))
 }
 
 pub(super) fn bottom_fade(rect: Div) -> Div {
@@ -163,24 +246,38 @@ pub(super) fn bottom_fade(rect: Div) -> Div {
     ))
 }
 
-pub(super) fn retained_footer(layout: Layout, rect: Div, focused: bool) -> Div {
-    rect.rounded(layout.px(8.))
+fn retained_footer(layout: Layout, [x, y, width, height]: [f32; 4], focused: bool) -> Div {
+    let button = footer_retry_bounds([0., 0., width, height]);
+    layout
+        .rect(x, y, width, height)
+        .rounded(layout.px(8.))
         .bg(layout.surface(PANEL))
-        .px(layout.px(18.))
-        .flex()
-        .items_center()
-        .justify_between()
-        .gap(layout.px(18.))
         .child(
             layout
-                .text(SAIRA, 18., 26., 400.)
-                .text_color(rgba(DIM))
-                .child("The guide could not update. These are the last loaded channels."),
+                .rect(FOOTER_PADDING, 0., button[0] - 2. * FOOTER_PADDING, height)
+                .flex()
+                .items_center()
+                .child(
+                    layout
+                        .text(SAIRA, 18., 26., 400.)
+                        .text_color(rgba(DIM))
+                        .child("The guide could not update. These are the last loaded channels."),
+                ),
         )
-        .child(action(layout, "Try again", focused))
+        .child(retry_button(layout, button, focused))
 }
 
-pub(super) fn more_footer(layout: Layout, rect: Div, loading: bool) -> Div {
+fn retry_button(layout: Layout, [x, y, width, height]: [f32; 4], focused: bool) -> Div {
+    action(
+        layout,
+        layout.rect(x, y, width, height),
+        "Try again",
+        focused,
+    )
+    .justify_center()
+}
+
+fn more_footer(layout: Layout, rect: Div, loading: bool) -> Div {
     let label = if loading {
         "Loading more channels…"
     } else {
@@ -188,7 +285,7 @@ pub(super) fn more_footer(layout: Layout, rect: Div, loading: bool) -> Div {
     };
     rect.flex()
         .justify_center()
-        .child(action(layout, label, false))
+        .child(action(layout, div(), label, false))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -400,8 +497,8 @@ fn card(
                 focused_chip,
             )
             .absolute()
-            .top(layout.px(10.))
-            .right(layout.px(18.)),
+            .top(layout.px(QUALITY_TAGS_TOP))
+            .right(layout.px(QUALITY_TAGS_RIGHT)),
         )
     })
     .when(focused_chip.is_some(), |card| {
@@ -638,8 +735,8 @@ fn pocket_row(
                     focused_chip,
                 )
                 .absolute()
-                .top(layout.px(10.))
-                .right(layout.px(18.)),
+                .top(layout.px(QUALITY_TAGS_TOP))
+                .right(layout.px(QUALITY_TAGS_RIGHT)),
             )
         })
         .when(focused || focused_chip.is_some(), |row| {
@@ -662,22 +759,19 @@ pub(super) fn quality_tags(
     chip_focus: Option<usize>,
 ) -> Div {
     let lone = family.quality_variants().take(2).count() == 1;
-    div()
-        .flex()
-        .gap(layout.px(4.))
-        .children(
-            family
-                .quality_variants()
-                .enumerate()
-                .filter_map(|(index, row)| {
-                    let quality = row.channel().variant()?.quality();
-                    let selected = row.channel().id() == preferred;
-                    let focused = chip_focus == Some(index);
-                    Some(quality_chip(
-                        layout, quality, selected, card_focus, focused, lone,
-                    ))
-                }),
-        )
+    div().flex().gap(layout.px(QUALITY_CHIP_GAP)).children(
+        family
+            .quality_variants()
+            .enumerate()
+            .filter_map(|(index, row)| {
+                let quality = row.channel().variant()?.quality();
+                let selected = row.channel().id() == preferred;
+                let focused = chip_focus == Some(index);
+                Some(quality_chip(
+                    layout, quality, selected, card_focus, focused, lone,
+                ))
+            }),
+    )
 }
 
 pub(super) fn quality_chip(
@@ -703,8 +797,9 @@ pub(super) fn quality_chip(
     };
     layout
         .text(SAIRA, 16., 16., 700.)
-        .h(layout.px(28.))
-        .px(layout.px(8.))
+        .flex_none()
+        .w(layout.px(QUALITY_CHIP_WIDTH))
+        .h(layout.px(QUALITY_CHIP_HEIGHT))
         .pt(layout.px(2.))
         .rounded(layout.px(5.))
         .when(!lone, |chip| {
@@ -713,12 +808,13 @@ pub(super) fn quality_chip(
         .text_color(ink)
         .flex()
         .items_center()
+        .justify_center()
         .child(label)
 }
 
 pub(super) fn notice_panel(
     layout: Layout,
-    rect: Div,
+    [x, y, width, height]: [f32; 4],
     notice: ScreenNotice,
     retry_focus: bool,
 ) -> Div {
@@ -743,10 +839,18 @@ pub(super) fn notice_panel(
             "Sparrow could not reach the guide.",
         ),
     };
-    rect.flex()
+    let retry = notice == ReadFailed;
+    // Over Try again the copy keeps to the space above the button.
+    let copy_height = if retry {
+        NOTICE_RETRY_TOP - NOTICE_RETRY_GAP
+    } else {
+        height
+    };
+    let copy = layout
+        .rect(0., 0., width, copy_height)
+        .flex()
         .flex_col()
         .items_center()
-        .justify_center()
         .gap(layout.px(12.))
         .child(layout.text(SAIRA_NOTICE, 30., 47.2, 700.).child(title))
         .child(
@@ -754,16 +858,26 @@ pub(super) fn notice_panel(
                 .text(SAIRA, 21., 31.5, 400.)
                 .text_color(rgba(DIM))
                 .child(detail),
-        )
-        .when(notice == ReadFailed, |panel| {
-            panel.child(action(layout, "Try again", retry_focus).mt(layout.px(12.)))
+        );
+    layout
+        .rect(x, y, width, height)
+        .child(if retry {
+            copy.justify_end()
+        } else {
+            copy.justify_center()
+        })
+        .when(retry, |panel| {
+            let button = notice_retry_bounds([0., 0., width, height]);
+            panel.child(retry_button(layout, button, retry_focus))
         })
 }
 
-fn action(layout: Layout, label: &'static str, focused: bool) -> Div {
-    layout
-        .text(SAIRA, 20., 28., 600.)
-        .h(layout.px(54.))
+fn action(layout: Layout, rect: Div, label: &'static str, focused: bool) -> Div {
+    rect.text_size(layout.px(20.))
+        .line_height(layout.px(28.))
+        .font_family(SAIRA)
+        .font_weight(gpui::FontWeight(600.))
+        .h(layout.px(ACTION_HEIGHT))
         .px(layout.px(24.))
         .rounded_full()
         .bg(if focused {

@@ -96,6 +96,39 @@ impl SourcePositions {
         }
         (top + height + 12. - content_height).clamp(0., top)
     }
+
+    /// The content offset: where the viewer scrolled it, or where focus needs
+    /// it. Editing a field keeps the field at the top for the keyboard.
+    fn offset(
+        self,
+        content_height: f32,
+        focus: SourceFocus,
+        editing: bool,
+        pointer: Option<f32>,
+    ) -> f32 {
+        match pointer {
+            Some(offset) if !editing => offset.clamp(
+                0.,
+                (self.save + BUTTON_HEIGHT + 12. - content_height).max(0.),
+            ),
+            _ => self.scroll(content_height, focus, editing),
+        }
+    }
+}
+
+/// The Sources sheet's content offset after scrolling it by `travel` units
+/// from where it is shown.
+pub(in super::super) fn scroll_source_sheet(
+    layout: Layout,
+    diagnostics: Option<&str>,
+    (focus, editing): (SourceFocus, bool),
+    pointer: Option<f32>,
+    travel: f32,
+) -> f32 {
+    let positions = SourcePositions::new(diagnostics);
+    let content_height = layout.height - CONTENT_Y;
+    let shown = positions.offset(content_height, focus, editing, pointer);
+    positions.offset(content_height, focus, editing, Some(shown + travel))
 }
 
 pub(in super::super) struct SourcePanel<'a> {
@@ -104,6 +137,8 @@ pub(in super::super) struct SourcePanel<'a> {
     pub(in super::super) status: Option<&'a CatalogStatus>,
     pub(in super::super) focus: SourceFocus,
     pub(in super::super) editing: bool,
+    /// Where the viewer scrolled the content; `None` follows focus.
+    pub(in super::super) scroll: Option<f32>,
     pub(in super::super) has_m3u: bool,
     pub(in super::super) has_epg: bool,
     pub(in super::super) saving: bool,
@@ -148,8 +183,8 @@ fn content_width(layout: Layout) -> f32 {
 pub(in super::super) fn source_sheet_hit(
     layout: Layout,
     diagnostics: Option<&str>,
-    focus: SourceFocus,
-    editing: bool,
+    (focus, editing): (SourceFocus, bool),
+    pointer: Option<f32>,
     [x, y]: [f32; 2],
 ) -> Option<SourceFocus> {
     let x = x - left(layout);
@@ -160,7 +195,7 @@ pub(in super::super) fn source_sheet_hit(
         return Some(SourceFocus::Close);
     }
     let positions = SourcePositions::new(diagnostics);
-    let scroll = positions.scroll(layout.height - CONTENT_Y, focus, editing);
+    let scroll = positions.offset(layout.height - CONTENT_Y, focus, editing, pointer);
     let (x, y) = (x - PADDING, y - CONTENT_Y + scroll);
     if y < -scroll || !(0. ..content_width(layout)).contains(&x) {
         return None;
@@ -201,7 +236,7 @@ pub(in super::super) fn source_sheet_hit(
 pub(in super::super) fn sources_sheet(layout: Layout, panel: SourcePanel<'_>) -> Div {
     let content_height = layout.height - CONTENT_Y;
     let positions = SourcePositions::new(panel.diagnostics);
-    let scroll = positions.scroll(content_height, panel.focus, panel.editing);
+    let scroll = positions.offset(content_height, panel.focus, panel.editing, panel.scroll);
     let header_subtitle = panel
         .feedback
         .unwrap_or("Source locations stay on this device. Only their status is shown here.");

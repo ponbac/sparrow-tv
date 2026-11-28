@@ -386,13 +386,6 @@ impl Timeline {
         Some((now - self.starts_at).as_seconds_f64() / (end - self.starts_at).as_seconds_f64())
     }
 
-    /// Moves the visible span by whole half hours, clamped to the Guide window.
-    pub fn pan(&mut self, half_hours: i64) {
-        if let Some(delta) = TimeDelta::try_seconds(half_hours.saturating_mul(HALF_HOUR_SECONDS)) {
-            self.pan_by(delta);
-        }
-    }
-
     /// Moves the visible span by elapsed time inside the Guide window.
     pub fn pan_by(&mut self, delta: TimeDelta) {
         let wanted = self

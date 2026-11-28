@@ -6,10 +6,8 @@ pub(crate) use rail::{RailViewport, rail_hit, rail_scroll_hit};
 use chrono::{DateTime, FixedOffset, Local, TimeDelta, Utc};
 use gpui::{Div, div, linear_color_stop, linear_gradient, prelude::*, rgb, rgba};
 use sparrow_tv_guide::{
-    GuideFamily, PageStatus, VariantPreferences,
-    guide_screen::{
-        GuideScreen, LaneFocus, NOW_MORE_HEIGHT, NOW_RETAINED_RETRY_HEIGHT, ScreenFocus,
-    },
+    GuideFamily, VariantPreferences,
+    guide_screen::{GuideScreen, LaneFocus, ScreenFocus},
     time::{Timeline, timeline_day_label},
     timeline_focus::TimelineFocus,
 };
@@ -43,6 +41,14 @@ fn board_width(layout: Layout) -> f32 {
     layout.width - BOARD_X
 }
 
+/// The width the notice and footers span, and the board's height.
+fn board_size(layout: Layout) -> [f32; 2] {
+    [
+        board_width(layout) - GUTTER,
+        (layout.height - layout.m.board.timeline.top).max(0.),
+    ]
+}
+
 /// The track spans the Timeline's two hours.
 pub(crate) fn track_width(layout: Layout) -> f32 {
     board_width(layout) - CHANNEL_WIDTH - GUTTER
@@ -57,6 +63,11 @@ pub(crate) fn timeline_hit(
     let geometry = layout.m.board.timeline;
     let board_y = y - geometry.top;
     let x = x - BOARD_X;
+    if board::retry_bounds(screen, board_size(layout), geometry.row_top)
+        .is_some_and(|button| super::contains(button, [x, board_y]))
+    {
+        return Some(TimelineFocus::Retry);
+    }
     if board_y < geometry.row_top || !(0. ..CHANNEL_WIDTH + track_width(layout)).contains(&x) {
         return None;
     }
@@ -212,10 +223,11 @@ pub(crate) fn render(
                 )
             });
     }
+    let size = board_size(layout);
     if let Some(notice) = screen.notice() {
         board = board.child(board::notice_panel(
             layout,
-            layout.rect(0., ruler_height, board_width(layout) - GUTTER, 285.),
+            board::notice_bounds(size[0], ruler_height),
             notice,
             retry_focus,
         ));
@@ -228,31 +240,9 @@ pub(crate) fn render(
             12.,
         )));
     }
-    let footer_y = screen.footer_top();
-    if !families.is_empty() && footer_y < height {
-        if screen.retry_available() {
-            board = board.child(board::retained_footer(
-                layout,
-                layout.rect(
-                    0.,
-                    footer_y,
-                    board_width(layout) - GUTTER,
-                    NOW_RETAINED_RETRY_HEIGHT,
-                ),
-                retry_focus,
-            ));
-        } else if matches!(
-            screen.page_status(),
-            Some(PageStatus::Ready | PageStatus::Loading)
-        ) {
-            board = board.child(board::more_footer(
-                layout,
-                layout.rect(0., footer_y, board_width(layout) - GUTTER, NOW_MORE_HEIGHT),
-                screen.page_status() == Some(PageStatus::Loading),
-            ));
-        }
-    }
-    board.child(ruler(layout, frame, now))
+    board
+        .children(board::footer(layout, screen, size, retry_focus))
+        .child(ruler(layout, frame, now))
 }
 
 fn ruler(layout: Layout, frame: TimelineFrame, now: DateTime<FixedOffset>) -> Div {

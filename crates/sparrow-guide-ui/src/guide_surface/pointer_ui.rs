@@ -57,6 +57,19 @@ pub(super) struct PointerState {
     /// Wheel travel, in layout units, not yet spent on whole rows or half hours.
     rows: f32,
     pan: f32,
+    /// What the last press landed on, so a double press needs both on one target.
+    last_press: Option<HitTarget>,
+}
+
+impl PointerState {
+    /// Records a press and returns whether it completes a double press on the
+    /// same target. A double click on the dock lands its second press on the
+    /// fullscreen picture the first one opened, and must not close it again.
+    fn double_press(&mut self, target: Option<HitTarget>, click_count: usize) -> bool {
+        let double = click_count >= 2 && target.is_some() && self.last_press == target;
+        self.last_press = target;
+        double
+    }
 }
 
 /// Whether the window, rather than the Guide, went fullscreen with the picture.
@@ -153,13 +166,10 @@ impl GuideSurface {
         }
         let docked = self.playback.docked() || self.playback.fullscreen();
         let compact = layout.compact_pocket();
-        if self.playback.docked() {
-            let [x, y, w, h] = layout.m.dock;
-            // The TV caption hangs under the dock; Pocket chrome takes its own presses.
-            let (above, below) = if compact { (0., 0.) } else { (5., 44.) };
-            if (x..x + w).contains(&point[0]) && (y - above..y + h + below).contains(&point[1]) {
-                return Some(HitTarget::Dock);
-            }
+        if self.playback.docked()
+            && guide_view::contains(guide_view::playback::dock_bounds(layout), point)
+        {
+            return Some(HitTarget::Dock);
         }
         if layout
             .pocket()
@@ -177,7 +187,7 @@ impl GuideSurface {
             return Some(HitTarget::Screen(ScreenFocus::Toolbar(toolbar)));
         }
         let time_chips = self.time_chips_shown(window);
-        if time_chips && self.pocket.hours_open {
+        if self.hours_shown(window) {
             return guide_view::lane::hour_hit(guide, self.chip_hours().len(), point)
                 .map(HitTarget::Hour);
         }
@@ -206,6 +216,9 @@ impl GuideSurface {
     }
 
     fn now_hit(&self, layout: Layout, point: [f32; 2]) -> Option<NowFocus> {
+        if guide_view::board::retry_hit(layout, &self.screen, point) {
+            return Some(NowFocus::Retry);
+        }
         if point[1] < layout.m.board.now.top {
             return None;
         }
@@ -264,6 +277,7 @@ impl GuideSurface {
         }
         self.cancel_arrival(cx);
         let target = self.hit_test(window, event.position);
+        let double = self.pointer.double_press(target, event.click_count);
         let editing = match self.active_editor.map(|(_, target)| target) {
             Some(TextTarget::Search) => Some(HitTarget::Search(SearchFocus::Field)),
             Some(TextTarget::GroupFilter) => Some(HitTarget::Chooser(GroupChooserFocus::Filter)),
@@ -287,7 +301,6 @@ impl GuideSurface {
             cx.notify();
             return;
         };
-        let double = event.click_count >= 2;
         match target {
             HitTarget::Setup(control) => {
                 let draft = self.setup_draft();
@@ -416,6 +429,9 @@ impl GuideSurface {
                     self.set_volume_step(0.05 * lines.y.signum());
                 }
                 self.reveal_player_controls(cx);
+            }
+            Some(HitTarget::Source(_)) | None if self.sources_sheet_open() && in_sheet => {
+                moved = self.scroll_sources(sheet, dy);
             }
             Some(HitTarget::Chooser(_)) | None
                 if self.screen.group_chooser().is_some() && in_sheet =>
@@ -647,7 +663,7 @@ impl GuideSurface {
             self.screen.group_chooser_intent(GroupChooserIntent::Close);
             self.retire_query_editor();
             self.sync_view(cx);
-        } else if self.pocket.hours_open {
+        } else if self.hours_shown(window) {
             self.toggle_hours(cx);
         } else {
             return self.playback_back(cx);
@@ -685,5 +701,24 @@ impl GuideSurface {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_double_click_on_the_dock_keeps_the_picture_it_opened_fullscreen() {
+        let mut pointer = PointerState::default();
+        // The first press opens fullscreen; the second lands on the picture.
+        assert!(!pointer.double_press(Some(HitTarget::Dock), 1));
+        assert!(!pointer.double_press(Some(HitTarget::Picture), 2));
+        // Two presses on the fullscreen picture leave it.
+        assert!(!pointer.double_press(Some(HitTarget::Picture), 1));
+        assert!(pointer.double_press(Some(HitTarget::Picture), 2));
+        // A press on nothing breaks the pair.
+        assert!(!pointer.double_press(None, 1));
+        assert!(!pointer.double_press(Some(HitTarget::Picture), 2));
     }
 }

@@ -90,8 +90,10 @@ impl GuideSurface {
             SetupAction::Edit(field) => {
                 let filled = self.setup_draft().has(field);
                 let area = self.setup_layout(window);
-                let rect = guide_view::setup_editor_rect(area, window.scale_factor(), filled)
-                    .map(|rect| area.to_window(rect, window.scale_factor()));
+                let rect = self.setup.as_ref().and_then(|setup| {
+                    guide_view::setup_editor_rect(area, window.scale_factor(), setup, filled)
+                        .map(|rect| area.to_window(rect, window.scale_factor()))
+                });
                 (!self.edit_source_field(field, rect)).then_some(SetupMessage::KeyboardUnavailable)
             }
             SetupAction::Clear(field) => {

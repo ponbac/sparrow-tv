@@ -13,7 +13,7 @@ mod groups;
 mod layout;
 pub use layout::FormFactor;
 use layout::{BAND_TOP, CARD_GAP, GUTTER, POCKET_GUTTER, WatchGeometry};
-pub(crate) use layout::{Layout, PocketClass, PocketMode, Pointer, Profile};
+pub(crate) use layout::{Layout, PocketClass, PocketMode, Pointer, Profile, contains};
 pub(super) mod lane;
 mod minute;
 mod pocket;
@@ -39,7 +39,8 @@ pub(super) use search_panel::{
 };
 pub(super) use setup::{SetupPanel, render as setup_screen, setup_editor_rect, setup_hit};
 pub(super) use sources::{
-    SourceFocus, SourcePanel, source_editor_rect, source_sheet_hit, sources_sheet,
+    SourceFocus, SourcePanel, scroll_source_sheet, source_editor_rect, source_sheet_hit,
+    sources_sheet,
 };
 pub(crate) use timeline::RailViewport;
 

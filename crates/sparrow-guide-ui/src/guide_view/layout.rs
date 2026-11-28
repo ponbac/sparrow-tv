@@ -52,8 +52,9 @@ pub(crate) enum PocketMode {
 pub(crate) enum Profile {
     Tv,
     Desktop(DesktopClass),
-    /// Handhelds, and Desktop windows too small for the Desktop band. They use
-    /// Compact Desktop geometry until the Pocket layout lands.
+    /// Handhelds, and Desktop windows too small for the Desktop band. Portrait
+    /// and short landscape lay out the compact Pocket list; tablets keep the
+    /// band model inside the safe area.
     Pocket(PocketClass, Pointer),
 }
 
@@ -65,7 +66,8 @@ const DOCK_CAPTION: f32 = 44.;
 const DOCK_GAP: f32 = 13.;
 const LANE_HEIGHT: f32 = 78.;
 const DESKTOP_MIN: (f32, f32) = (900., 520.);
-/// A window has to cross a class edge by this much, in logical pixels, to change class.
+/// A Desktop window has to cross a class edge by this much, in logical pixels,
+/// to change class. Pocket classes follow the viewport directly.
 const HYSTERESIS: f32 = 24.;
 const MIN_CARD_WIDTH: f32 = 560.;
 const MAX_COLUMNS: usize = 6;
@@ -90,7 +92,7 @@ const SPLIT_SHARE: f32 = 0.42;
 /// Room the short-landscape column keeps under its picture for the
 /// information block and the control row.
 const SPLIT_BELOW_PICTURE: f32 = 270.;
-/// Tablets this wide, in logical pixels, can switch the board to Timeline.
+/// Landscape tablets this wide, in logical pixels, can switch the board to Timeline.
 const TIMELINE_TABLET_WIDTH: f32 = 960.;
 const WATCH_MASTHEAD: f32 = 80.;
 const WATCH_STRIPE: f32 = 5.;
@@ -306,7 +308,7 @@ impl Metrics {
 
     /// Handheld geometry inside the safe area. The Guide region, its board
     /// and the sheets stay put across Watch and Guide; only the picture moves.
-    fn pocket(class: PocketClass, mode: PocketMode, safe: [f32; 4], logical_width: f32) -> Self {
+    fn pocket(class: PocketClass, mode: PocketMode, safe: [f32; 4], timeline: bool) -> Self {
         let [left, top, width, height] = safe;
         let pocket = |info, watch: Option<WatchGeometry>, time_chips| Pocket {
             class,
@@ -326,7 +328,7 @@ impl Metrics {
                     sheet: safe,
                     sheet_width: (width * TABLET_SHEET_SHARE).min(SHEET_MAX_WIDTH),
                     safe,
-                    pocket: Some(pocket(None, None, logical_width < TIMELINE_TABLET_WIDTH)),
+                    pocket: Some(pocket(None, None, !timeline)),
                     ..metrics
                 }
             }
@@ -453,13 +455,18 @@ impl Layout {
         insets: Insets,
         mode: PocketMode,
     ) -> Self {
-        let logical_width = f32::from(viewport.width);
-        let (width, height) = (logical_width, f32::from(viewport.height));
+        let (logical_width, logical_height) =
+            (f32::from(viewport.width), f32::from(viewport.height));
         let unit = profile
             .unit()
-            .unwrap_or(width / CANVAS_WIDTH)
+            .unwrap_or(logical_width / CANVAS_WIDTH)
             .max(f32::EPSILON);
-        let (width, height) = (width / unit, height / unit);
+        // Television's canvas is exactly the shipped width at any viewport.
+        let width = match profile {
+            Profile::Tv => CANVAS_WIDTH,
+            Profile::Desktop(_) | Profile::Pocket(..) => logical_width / unit,
+        };
+        let height = logical_height / unit;
         let insets = match profile {
             Profile::Pocket(..) => insets,
             Profile::Tv | Profile::Desktop(_) => Insets::default(),
@@ -477,7 +484,9 @@ impl Layout {
                     (width - left - right).max(0.),
                     (height - top - bottom).max(0.),
                 ];
-                Metrics::pocket(class, mode, safe, logical_width)
+                let timeline =
+                    logical_width > logical_height && logical_width >= TIMELINE_TABLET_WIDTH;
+                Metrics::pocket(class, mode, safe, timeline)
             }
         };
         Self {
@@ -568,6 +577,12 @@ impl Layout {
         self.pocket().is_some_and(Pocket::compact)
     }
 
+    /// The lane starts with a time chip, so Timeline is unavailable and a
+    /// chosen hour can be shown.
+    pub(crate) fn time_chips(self) -> bool {
+        self.pocket().is_some_and(|pocket| pocket.time_chips)
+    }
+
     pub(super) fn rect(self, x: f32, y: f32, width: f32, height: f32) -> Div {
         div()
             .absolute()
@@ -635,6 +650,11 @@ impl Layout {
     }
 }
 
+/// Whether a point lies inside an x, y, width and height rectangle.
+pub(crate) fn contains([x, y, width, height]: [f32; 4], [px, py]: [f32; 2]) -> bool {
+    (x..x + width).contains(&px) && (y..y + height).contains(&py)
+}
+
 /// A virtualized row list's position, including a partially visible first row.
 #[derive(Clone, Copy, Default)]
 pub(super) struct RowScroll(f32);
@@ -646,7 +666,8 @@ impl RowScroll {
 
     pub(super) fn reveal(&mut self, count: usize, capacity: usize, target: Option<usize>) {
         self.0 = self.0.min(count.saturating_sub(capacity) as f32);
-        if let Some(row) = target {
+        // With no room for a row, no offset can show the target.
+        if let Some(row) = target.filter(|_| capacity > 0) {
             self.0 = self
                 .0
                 .clamp((row + 1).saturating_sub(capacity) as f32, row as f32);
@@ -919,6 +940,10 @@ mod tests {
 
         let portrait = handheld(800., 1280., insets, PocketMode::Guide);
         assert!(portrait.pocket().unwrap().time_chips);
+        // A portrait tablet keeps the list even when it is wide enough for Timeline.
+        let wide_portrait = handheld(1000., 1400., insets, PocketMode::Guide);
+        assert_eq!(wide_portrait.pocket().unwrap().class, PocketClass::Tablet);
+        assert!(wide_portrait.time_chips());
     }
 
     #[test]
@@ -931,6 +956,14 @@ mod tests {
         let rect = guide.to_window([4, 6, 100, 40], scale);
         let top = (guide.origin[1] * layout.unit * scale).round() as i32;
         assert_eq!(rect, [4, 6 + top, 100, 40]);
+    }
+
+    #[test]
+    fn a_row_list_with_no_room_keeps_its_offset() {
+        let mut scroll = RowScroll::default();
+        scroll.advance(3.);
+        scroll.reveal(10, 0, Some(5));
+        assert_eq!(scroll.first(), 3);
     }
 
     #[test]
