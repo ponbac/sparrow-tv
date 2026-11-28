@@ -35,7 +35,7 @@ pub(crate) use group_slide::{GroupSlide, SlideFrame};
 pub(super) use groups::{GroupViewport, group_filter_rect, group_sheet, group_sheet_hit};
 pub(crate) use lane::LaneViewport;
 pub(super) use search_panel::{
-    SearchHit, SearchPanel, SearchViewport, search_editor_rect, search_hit, search_panel,
+    SearchFrame, SearchHit, SearchPanel, SearchViewport, search_editor_rect, search_hit,
 };
 pub(super) use setup::{SetupPanel, render as setup_screen, setup_editor_rect, setup_hit};
 pub(super) use sources::{

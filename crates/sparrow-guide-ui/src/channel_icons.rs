@@ -5,11 +5,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use gpui::{App, BackgroundExecutor, RenderImage, Task};
+use gpui::{App, BackgroundExecutor, RenderImage, Task, Window};
 use image::{Frame, RgbaImage};
 use sparrow_channel_icons::{
     ChannelIconClient, DecodedChannelIcon,
-    cache::{IconCache, REQUEST_LIMIT, RequestId},
+    cache::{CacheLimits, IconCache, REQUEST_LIMIT, RequestId},
     disk::DiskCache,
 };
 use sparrow_core::{CatalogGeneration, ChannelIcon};
@@ -19,16 +19,20 @@ use tokio::{
     task::{AbortHandle, spawn_blocking},
 };
 
+use crate::guide_view::FormFactor;
+
 const NOTIFICATION_BATCH: Duration = Duration::from_millis(24);
 
 /// Owns decoded images and outstanding requests for one Guide window.
 pub(super) struct ChannelIcons {
     disk: Option<Arc<DiskCache>>,
+    disk_budget: (Duration, Duration),
     revision: u64,
     generation: Option<CatalogGeneration>,
     cache: IconCache<IconImage>,
     requests: HashMap<RequestId, AbortOnDrop>,
     completions: mpsc::Sender<Completion>,
+    disk_completions: mpsc::Sender<Completion>,
     wakeup: watch::Sender<Wakeup>,
 }
 
@@ -44,8 +48,6 @@ struct Wakeup {
     notification_quiet_until: Option<Instant>,
 }
 
-pub(super) struct IconBatch(Vec<Completion>);
-
 struct AbortOnDrop(AbortHandle);
 
 impl Drop for AbortOnDrop {
@@ -54,14 +56,15 @@ impl Drop for AbortOnDrop {
     }
 }
 
-struct Completion {
-    request: RequestId,
-    result: LoadResult,
-}
-
-enum LoadResult {
-    Stale(IconImage),
-    Finished(Option<IconImage>),
+pub(super) enum Completion {
+    Network {
+        request: RequestId,
+        image: Option<IconImage>,
+    },
+    Disk {
+        request: RequestId,
+        hit: Option<(IconImage, bool)>,
+    },
 }
 
 pub(super) struct IconImage {
@@ -98,6 +101,16 @@ impl IconImage {
             tint,
         })
     }
+
+    fn from_disk(disk: &DiskCache, location: &str) -> Option<(Self, bool)> {
+        let hit = disk.load(location)?;
+        Some((Self::new(hit.icon)?, hit.stale))
+    }
+
+    fn charged(self) -> (Self, usize) {
+        let bytes = self.charged_bytes;
+        (self, bytes)
+    }
 }
 
 /// Alpha and chroma weight the hue histogram so transparent padding and white
@@ -131,17 +144,55 @@ fn dominant_hue(bgra: &[u8]) -> Option<f32> {
 }
 
 impl ChannelIcons {
-    pub(super) fn new(disk: Option<Arc<DiskCache>>) -> (Self, IconUpdates) {
-        let (completions, receiver) = mpsc::channel(REQUEST_LIMIT * 2);
+    pub(super) fn new(
+        disk: Option<Arc<DiskCache>>,
+        form_factor: FormFactor,
+    ) -> (Self, IconUpdates, mpsc::Receiver<Completion>) {
+        let (limits, warm_ms, cold_ms) = match form_factor {
+            FormFactor::Desktop => (
+                CacheLimits {
+                    max_bytes: 128 << 20,
+                    max_entries: 512,
+                    max_desired: 128,
+                },
+                14,
+                30,
+            ),
+            FormFactor::Handheld => (
+                CacheLimits {
+                    max_bytes: 64 << 20,
+                    max_entries: 256,
+                    max_desired: 96,
+                },
+                6,
+                16,
+            ),
+            FormFactor::Television => (
+                CacheLimits {
+                    max_bytes: 32 << 20,
+                    max_entries: 160,
+                    max_desired: 64,
+                },
+                4,
+                12,
+            ),
+        };
+        let (completions, receiver) = mpsc::channel(REQUEST_LIMIT);
+        let (disk_completions, disk_receiver) = mpsc::channel(limits.max_desired);
         let (wakeup, wakeups) = watch::channel(Wakeup::default());
         (
             Self {
                 disk,
+                disk_budget: (
+                    Duration::from_millis(warm_ms),
+                    Duration::from_millis(cold_ms),
+                ),
                 revision: 0,
                 generation: None,
-                cache: IconCache::default(),
+                cache: IconCache::with_limits(limits),
                 requests: HashMap::new(),
                 completions,
+                disk_completions,
                 wakeup,
             },
             IconUpdates {
@@ -149,6 +200,7 @@ impl ChannelIcons {
                 wakeup: wakeups,
                 admission_timer: None,
             },
+            disk_receiver,
         )
     }
 
@@ -181,17 +233,66 @@ impl ChannelIcons {
 
     pub(super) fn reconcile<'a>(
         &mut self,
-        generation: Option<CatalogGeneration>,
-        icons: impl IntoIterator<Item = &'a ChannelIcon>,
+        locations: impl IntoIterator<Item = &'a str>,
+        current_window: Option<&mut Window>,
+        cx: &mut App,
     ) {
-        self.set_generation(generation);
-        if generation.is_some() {
-            let now = Instant::now();
-            let retired = self
-                .cache
-                .reconcile(icons.into_iter().map(ChannelIcon::as_str), now);
-            self.cancel(retired);
-            self.fill(now);
+        let now = Instant::now();
+        let retired = self.cache.reconcile(locations, now);
+        self.cancel(retired);
+        if let Some(disk) = self.disk.clone() {
+            self.hydrate_disk(&disk, now, current_window, cx);
+        }
+        self.fill(Instant::now());
+    }
+
+    fn hydrate_disk(
+        &mut self,
+        disk: &Arc<DiskCache>,
+        now: Instant,
+        mut current_window: Option<&mut Window>,
+        cx: &mut App,
+    ) {
+        let (warm, cold) = self.disk_budget;
+        let deadline = now + if self.cache.is_empty() { cold } else { warm };
+        let candidates: Vec<_> = self.cache.disk_candidates().collect();
+        let mut candidates = candidates.into_iter().peekable();
+        let mut changed = false;
+        while Instant::now() < deadline
+            && let Some(location) = candidates.next()
+        {
+            if let Some((image, stale)) = IconImage::from_disk(disk, &location) {
+                let (published, evicted) =
+                    self.cache
+                        .insert_cached(&location, image.charged(), stale, now);
+                changed |= published;
+                for image in evicted {
+                    cx.drop_image(image.render_image, current_window.as_deref_mut());
+                }
+            } else {
+                self.cache.note_disk_miss(location);
+            }
+        }
+        if changed {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        if candidates.peek().is_none() {
+            return;
+        }
+        if let Some(worker) = IconWorker::get() {
+            for location in candidates {
+                let request = self.cache.begin_disk_read(Arc::clone(&location));
+                let disk = Arc::clone(disk);
+                let sender = self.disk_completions.clone();
+                let task = worker.runtime.spawn(async move {
+                    let load = spawn_blocking(move || IconImage::from_disk(&disk, &location));
+                    let _cancel = AbortOnDrop(load.abort_handle());
+                    let hit = load.await.ok().flatten();
+                    let _ = sender.send(Completion::Disk { request, hit }).await;
+                });
+                self.requests
+                    .insert(request, AbortOnDrop(task.abort_handle()));
+            }
         }
     }
 
@@ -199,20 +300,28 @@ impl ChannelIcons {
         self.cache.get(icon.as_str())
     }
 
-    /// Apply a completion batch, or fill a slot when the navigation delay expires.
-    pub(super) fn apply(&mut self, batch: IconBatch, cx: &mut App) -> bool {
+    /// Apply completions, or fill a slot when the HTTP navigation delay expires.
+    pub(super) fn apply(
+        &mut self,
+        completions: impl IntoIterator<Item = Completion>,
+        cx: &mut App,
+    ) -> bool {
         let now = Instant::now();
         let mut changed = false;
-        for Completion { request, result } in batch.0 {
-            let charge = |image: IconImage| {
-                let bytes = image.charged_bytes;
-                (image, bytes)
-            };
-            let (published, evicted) = match result {
-                LoadResult::Stale(image) => self.cache.publish_stale(request, charge(image), now),
-                LoadResult::Finished(image) => {
+        for completion in completions {
+            let (published, evicted) = match completion {
+                Completion::Network { request, image } => {
                     self.requests.remove(&request);
-                    self.cache.complete(request, image.map(charge), now)
+                    self.cache
+                        .complete(request, image.map(IconImage::charged), now)
+                }
+                Completion::Disk { request, hit } => {
+                    self.requests.remove(&request);
+                    self.cache.complete_disk_read(
+                        request,
+                        hit.map(|(image, stale)| (image.charged(), stale)),
+                        now,
+                    )
                 }
             };
             changed |= published;
@@ -243,29 +352,9 @@ impl ChannelIcons {
             let sender = self.completions.clone();
             let disk = self.disk.clone();
             let task = worker.runtime.spawn(async move {
-                let location = request.location();
-                let image = match worker.cached(disk.clone(), location).await {
-                    Some((image, false)) => Some(image),
-                    cached => {
-                        if let Some((image, true)) = cached
-                            && sender
-                                .send(Completion {
-                                    request: id,
-                                    result: LoadResult::Stale(image),
-                                })
-                                .await
-                                .is_err()
-                        {
-                            return;
-                        }
-                        worker.load(disk, location).await
-                    }
-                };
+                let image = worker.load(disk, request.location()).await;
                 let _ = sender
-                    .send(Completion {
-                        request: id,
-                        result: LoadResult::Finished(image),
-                    })
+                    .send(Completion::Network { request: id, image })
                     .await;
             });
             self.requests.insert(id, AbortOnDrop(task.abort_handle()));
@@ -292,13 +381,13 @@ impl IconUpdates {
     pub(super) async fn next_batch(
         &mut self,
         background: &BackgroundExecutor,
-    ) -> Option<IconBatch> {
+    ) -> Option<Vec<Completion>> {
         let first = loop {
             let admission = self.wakeup.borrow_and_update().admission_at;
             if let Some(admission) = admission {
                 let remaining = admission.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
-                    return Some(IconBatch(Vec::new()));
+                    return Some(Vec::new());
                 }
                 // GPUI's dispatcher still runs a dropped timer. Keep one armed
                 // through deadline updates and re-check eligibility when it fires.
@@ -337,7 +426,7 @@ impl IconUpdates {
         while let Ok(result) = self.completions.try_recv() {
             completions.push(result);
         }
-        Some(IconBatch(completions))
+        Some(completions)
     }
 }
 
@@ -371,23 +460,6 @@ impl IconWorker {
             .as_ref()
     }
 
-    async fn cached(
-        &'static self,
-        disk: Option<Arc<DiskCache>>,
-        location: &str,
-    ) -> Option<(IconImage, bool)> {
-        let disk = disk?;
-        let decoder = self.decoder.acquire().await.ok()?;
-        let location = location.to_owned();
-        let task = spawn_blocking(move || {
-            let _permit = decoder;
-            let hit = disk.load(&location)?;
-            Some((IconImage::new(hit.icon)?, hit.stale))
-        });
-        let _cancel = AbortOnDrop(task.abort_handle());
-        task.await.ok().flatten()
-    }
-
     async fn load(
         &'static self,
         disk: Option<Arc<DiskCache>>,
@@ -416,5 +488,97 @@ impl IconWorker {
         });
         let _cancel = AbortOnDrop(decode.abort_handle());
         decode.await.ok().flatten()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::TestAppContext;
+    use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+
+    use super::*;
+
+    async fn seed_icons(root: &std::path::Path, locations: &[&str]) -> Arc<DiskCache> {
+        let mut png = Vec::new();
+        PngEncoder::new(&mut png)
+            .write_image(&[255; 8], 2, 1, ExtendedColorType::Rgba8)
+            .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let location = format!("http://{}/icon", listener.local_addr().unwrap());
+        let client = ChannelIconClient::new().unwrap();
+        let serve = async {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            assert_ne!(socket.read(&mut [0; 1024]).await.unwrap(), 0);
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", png.len());
+            socket.write_all(head.as_bytes()).await.unwrap();
+            socket.write_all(&png).await.unwrap();
+        };
+        let (_, encoded) = tokio::join!(serve, client.fetch(&location));
+        let image = encoded.unwrap().decode().unwrap();
+        let disk = Arc::new(DiskCache::new(root));
+        for location in locations {
+            disk.store(location, &image).unwrap();
+        }
+        disk
+    }
+
+    #[gpui::test]
+    fn reconcile_hydrates_disk_hits_before_paint_during_navigation(cx: &mut TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        let locations = ["a", "b", "c", "d", "e", "f", "g", "h"];
+        let disk = runtime.block_on(seed_icons(root.path(), &locations));
+
+        for form in [
+            FormFactor::Desktop,
+            FormFactor::Handheld,
+            FormFactor::Television,
+        ] {
+            let (mut icons, _, _) = ChannelIcons::new(Some(Arc::clone(&disk)), form);
+            icons.note_navigation();
+            cx.update(|cx| icons.reconcile(locations, None, cx));
+            for location in locations {
+                assert_eq!(
+                    icons.cache.get(location).map(IconImage::source_dimensions),
+                    Some((2, 1)),
+                );
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn disk_overflow_completes_while_http_is_quiet(cx: &mut TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        let locations = ["a", "b", "c", "d", "e", "f", "g", "h"];
+        let disk = runtime.block_on(seed_icons(root.path(), &locations));
+        let (mut icons, network, mut disk_updates) =
+            ChannelIcons::new(Some(disk), FormFactor::Desktop);
+        icons.disk_budget = (Duration::ZERO, Duration::ZERO);
+        icons.note_navigation();
+        cx.update(|cx| icons.reconcile(locations, None, cx));
+
+        let updates = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let mut updates = Vec::new();
+                for _ in locations {
+                    updates.push(disk_updates.recv().await.unwrap());
+                }
+                updates
+            })
+            .await
+            .unwrap()
+        });
+        assert!(cx.update(|cx| icons.apply(updates, cx)));
+        assert!(
+            locations
+                .iter()
+                .all(|location| icons.cache.get(location).is_some())
+        );
+        assert!(network.completions.is_empty());
     }
 }

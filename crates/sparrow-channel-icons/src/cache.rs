@@ -9,16 +9,37 @@ use std::{
 };
 
 pub const REQUEST_LIMIT: usize = 4;
-const MAX_DESIRED: usize = 24;
-const MAX_ENTRIES: usize = 96;
-const CACHE_BYTES: usize = 16 * 1024 * 1024;
-// Leave room for the largest decoded icon on both CPU and GPU per desired location.
-const MAX_LOCATION_BYTES: usize = CACHE_BYTES / MAX_DESIRED - (256 * 256 * 8);
+const MAX_LOCATION_BYTES: usize = 4096;
 const NEGATIVE_TTL: Duration = Duration::from_secs(30);
 const NAVIGATION_QUIET: Duration = Duration::from_millis(140);
 
+#[derive(Clone, Copy)]
+pub struct CacheLimits {
+    pub max_bytes: usize,
+    pub max_entries: usize,
+    pub max_desired: usize,
+}
+
+impl Default for CacheLimits {
+    fn default() -> Self {
+        Self {
+            max_bytes: 16 << 20,
+            max_entries: 96,
+            max_desired: 24,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct RequestId(u64);
+
+impl RequestId {
+    fn next(counter: &mut u64) -> Self {
+        let id = Self(*counter);
+        *counter = counter.wrapping_add(1);
+        id
+    }
+}
 
 #[derive(Debug)]
 pub struct IconRequest {
@@ -55,12 +76,21 @@ struct Cached<V> {
     value: V,
     used_at: Instant,
     bytes: usize,
+    stale: bool,
+}
+
+#[derive(PartialEq)]
+enum DiskRead {
+    Pending(RequestId),
+    Miss,
 }
 
 /// Keeps values and desired locations for one view. The host starts and aborts
 /// the tasks, and releases the renderer resources returned by eviction.
 pub struct IconCache<V> {
+    limits: CacheLimits,
     desired: Vec<IconKey>,
+    disk_reads: HashMap<IconKey, DiskRead>,
     pending: HashMap<IconKey, RequestId>,
     failed: HashMap<IconKey, Instant>,
     ready: HashMap<IconKey, Cached<V>>,
@@ -71,8 +101,16 @@ pub struct IconCache<V> {
 
 impl<V> Default for IconCache<V> {
     fn default() -> Self {
+        Self::with_limits(CacheLimits::default())
+    }
+}
+
+impl<V> IconCache<V> {
+    pub fn with_limits(limits: CacheLimits) -> Self {
         Self {
+            limits,
             desired: Vec::new(),
+            disk_reads: HashMap::new(),
             pending: HashMap::new(),
             failed: HashMap::new(),
             ready: HashMap::new(),
@@ -81,9 +119,7 @@ impl<V> Default for IconCache<V> {
             quiet_until: None,
         }
     }
-}
 
-impl<V> IconCache<V> {
     pub fn note_navigation(&mut self, now: Instant) {
         self.quiet_until = Some(now + NAVIGATION_QUIET);
     }
@@ -114,7 +150,14 @@ impl<V> IconCache<V> {
 
     fn forget_viewport(&mut self) -> Vec<RequestId> {
         self.desired.clear();
-        self.pending.drain().map(|(_, request)| request).collect()
+        self.pending
+            .drain()
+            .map(|(_, request)| request)
+            .chain(self.disk_reads.drain().filter_map(|(_, read)| match read {
+                DiskRead::Pending(id) => Some(id),
+                DiskRead::Miss => None,
+            }))
+            .collect()
     }
 
     /// Accepts viewport order, de-duplicates locations, and returns superseded requests.
@@ -125,6 +168,9 @@ impl<V> IconCache<V> {
     ) -> Vec<RequestId> {
         let mut desired = Vec::<IconKey>::new();
         for location in locations {
+            if desired.len() == self.limits.max_desired {
+                break;
+            }
             if location.len() > MAX_LOCATION_BYTES
                 || desired.iter().any(|key| key.0.as_ref() == location)
             {
@@ -140,11 +186,17 @@ impl<V> IconCache<V> {
                 entry.used_at = now;
             }
             desired.push(key);
-            if desired.len() == MAX_DESIRED {
-                break;
-            }
         }
         let mut retired = Vec::new();
+        self.disk_reads.retain(|key, read| {
+            if desired.contains(key) {
+                return true;
+            }
+            if let DiskRead::Pending(id) = read {
+                retired.push(*id);
+            }
+            false
+        });
         self.pending.retain(|key, request| {
             if desired.contains(key) {
                 true
@@ -162,6 +214,72 @@ impl<V> IconCache<V> {
         self.ready.get(location).map(|entry| &entry.value)
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.ready.is_empty()
+    }
+
+    /// Locations eligible for a disk check, in viewport priority order.
+    pub fn disk_candidates(&self) -> impl Iterator<Item = Arc<str>> + '_ {
+        self.desired
+            .iter()
+            .filter(|key| {
+                !self.ready.contains_key(*key)
+                    && !self.disk_reads.contains_key(*key)
+                    && !self.pending.contains_key(*key)
+            })
+            .map(|key| Arc::clone(&key.0))
+    }
+
+    pub fn note_disk_miss(&mut self, location: Arc<str>) {
+        self.disk_reads.insert(IconKey(location), DiskRead::Miss);
+    }
+
+    /// Reserve a disk check independently of the HTTP request slots.
+    pub fn begin_disk_read(&mut self, location: Arc<str>) -> RequestId {
+        let id = RequestId::next(&mut self.next_request);
+        self.disk_reads
+            .insert(IconKey(location), DiskRead::Pending(id));
+        id
+    }
+
+    pub fn complete_disk_read(
+        &mut self,
+        id: RequestId,
+        value: Option<((V, usize), bool)>,
+        now: Instant,
+    ) -> (bool, Vec<V>) {
+        let Some(key) = self
+            .disk_reads
+            .iter()
+            .find_map(|(key, read)| (*read == DiskRead::Pending(id)).then(|| key.clone()))
+        else {
+            return (false, Vec::new());
+        };
+        match value {
+            Some((value, stale)) => {
+                self.disk_reads.remove(&key);
+                self.insert(key, value, stale, now)
+            }
+            None => {
+                self.disk_reads.insert(key, DiskRead::Miss);
+                (false, Vec::new())
+            }
+        }
+    }
+
+    pub fn insert_cached(
+        &mut self,
+        location: &str,
+        value: (V, usize),
+        stale: bool,
+        now: Instant,
+    ) -> (bool, Vec<V>) {
+        let Some(key) = self.desired.iter().find(|key| key.0.as_ref() == location) else {
+            return (false, Vec::new());
+        };
+        self.insert(key.clone(), value, stale, now)
+    }
+
     pub fn admit(&mut self, now: Instant) -> Vec<IconRequest> {
         let mut requests = Vec::new();
         if self.quiet_until.is_some_and(|when| now < when) {
@@ -174,8 +292,7 @@ impl<V> IconCache<V> {
             if !self.needs_request(key, now) {
                 continue;
             }
-            let id = RequestId(self.next_request);
-            self.next_request = self.next_request.wrapping_add(1);
+            let id = RequestId::next(&mut self.next_request);
             self.pending.insert(key.clone(), id);
             requests.push(IconRequest {
                 id,
@@ -186,8 +303,9 @@ impl<V> IconCache<V> {
     }
 
     fn needs_request(&self, key: &IconKey, now: Instant) -> bool {
-        !self.ready.contains_key(key)
+        self.ready.get(key).is_none_or(|entry| entry.stale)
             && !self.pending.contains_key(key)
+            && !matches!(self.disk_reads.get(key), Some(DiskRead::Pending(_)))
             && self.failed.get(key).is_none_or(|&expires| expires <= now)
     }
 
@@ -199,27 +317,6 @@ impl<V> IconCache<V> {
         value: Option<(V, usize)>,
         now: Instant,
     ) -> (bool, Vec<V>) {
-        self.publish(id, value, now, true)
-    }
-
-    /// Display a stale frame while its refresh still owns the request slot.
-    /// Scrolling can cancel the refresh. The session keeps the stale icon and the next launch retries.
-    pub fn publish_stale(
-        &mut self,
-        id: RequestId,
-        value: (V, usize),
-        now: Instant,
-    ) -> (bool, Vec<V>) {
-        self.publish(id, Some(value), now, false)
-    }
-
-    fn publish(
-        &mut self,
-        id: RequestId,
-        value: Option<(V, usize)>,
-        now: Instant,
-        finished: bool,
-    ) -> (bool, Vec<V>) {
         let Some(key) = self
             .pending
             .iter()
@@ -227,31 +324,54 @@ impl<V> IconCache<V> {
         else {
             return (false, Vec::new());
         };
-        if finished {
-            self.pending.remove(&key);
+        self.pending.remove(&key);
+        if let Some(value) = value {
+            return self.insert(key, value, false, now);
         }
-        if let Some((value, bytes)) = value {
-            let bytes = bytes.saturating_add(key.0.len());
-            if bytes <= CACHE_BYTES {
-                self.bytes += bytes;
-                let old = self.ready.insert(
-                    key,
-                    Cached {
-                        value,
-                        used_at: now,
-                        bytes,
-                    },
-                );
-                let mut evicted = Vec::new();
-                if let Some(old) = old {
-                    self.bytes -= old.bytes;
-                    evicted.push(old.value);
-                }
-                evicted.extend(self.evict());
-                return (true, evicted);
-            }
+        self.note_failure(key, now);
+        (false, Vec::new())
+    }
+
+    fn insert(
+        &mut self,
+        key: IconKey,
+        (value, bytes): (V, usize),
+        stale: bool,
+        now: Instant,
+    ) -> (bool, Vec<V>) {
+        let bytes = bytes.saturating_add(key.0.len());
+        if bytes > self.limits.max_bytes || self.limits.max_entries == 0 {
+            self.note_failure(key, now);
+            return (false, vec![value]);
         }
-        if self.failed.len() >= MAX_ENTRIES
+        if !stale {
+            self.failed.remove(&key);
+        }
+        let old = self.ready.insert(
+            key.clone(),
+            Cached {
+                value,
+                used_at: now,
+                bytes,
+                stale,
+            },
+        );
+        let mut evicted = Vec::new();
+        if let Some(old) = old {
+            self.bytes -= old.bytes;
+            evicted.push(old.value);
+        }
+        self.bytes += bytes;
+        evicted.extend(self.evict());
+        let retained = self.ready.contains_key(&key);
+        if !retained {
+            self.note_failure(key, now);
+        }
+        (retained, evicted)
+    }
+
+    fn note_failure(&mut self, key: IconKey, now: Instant) {
+        if self.failed.len() >= self.limits.max_entries
             && let Some(oldest) = self
                 .failed
                 .iter()
@@ -261,16 +381,22 @@ impl<V> IconCache<V> {
             self.failed.remove(&oldest);
         }
         self.failed.insert(key, now + NEGATIVE_TTL);
-        (false, Vec::new())
     }
 
     fn evict(&mut self) -> Vec<V> {
         let mut values = Vec::new();
-        while self.bytes > CACHE_BYTES || self.ready.len() > MAX_ENTRIES {
+        while self.bytes > self.limits.max_bytes || self.ready.len() > self.limits.max_entries {
             let Some(key) = self
                 .ready
                 .iter()
-                .min_by_key(|(key, entry)| (self.desired.contains(key), entry.used_at))
+                .min_by_key(|(key, entry)| {
+                    let priority = self
+                        .desired
+                        .iter()
+                        .rev()
+                        .position(|desired| desired == *key);
+                    (priority, entry.used_at)
+                })
                 .map(|(key, _)| key.clone())
             else {
                 break;

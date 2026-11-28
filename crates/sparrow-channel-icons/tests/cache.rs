@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use sparrow_channel_icons::cache::{IconCache, REQUEST_LIMIT};
+use sparrow_channel_icons::cache::{CacheLimits, IconCache, REQUEST_LIMIT};
 
 #[test]
 fn duplicate_placements_use_one_slot_and_retire_only_forgotten_requests() {
@@ -147,12 +147,16 @@ fn failed_refresh_preserves_the_stale_image() {
     let now = Instant::now();
     let mut cache = IconCache::default();
     cache.reconcile(["a"], now);
-    let id = cache.admit(now)[0].id();
-    assert_eq!(cache.publish_stale(id, ("old", 100), now), (true, vec![]));
+    assert_eq!(
+        cache.insert_cached("a", ("old", 100), true, now),
+        (true, vec![])
+    );
     assert_eq!(cache.get("a"), Some(&"old"));
+    let id = cache.admit(now)[0].id();
     assert!(cache.admit(now).is_empty());
     assert_eq!(cache.complete(id, None, now), (false, vec![]));
     assert_eq!(cache.get("a"), Some(&"old"));
+    assert!(cache.admit(now + Duration::from_secs(29)).is_empty());
 }
 
 #[test]
@@ -160,13 +164,110 @@ fn successful_refresh_replaces_the_stale_image() {
     let now = Instant::now();
     let mut cache = IconCache::default();
     cache.reconcile(["a"], now);
+    assert_eq!(
+        cache.insert_cached("a", ("old", 100), true, now),
+        (true, vec![])
+    );
     let id = cache.admit(now)[0].id();
-    assert_eq!(cache.publish_stale(id, ("old", 100), now), (true, vec![]));
-    assert_eq!(cache.get("a"), Some(&"old"));
-    assert!(cache.admit(now).is_empty());
     assert_eq!(
         cache.complete(id, Some(("new", 100)), now),
         (true, vec!["old"])
     );
     assert_eq!(cache.get("a"), Some(&"new"));
+    assert!(cache.admit(now).is_empty());
+}
+
+#[test]
+fn desktop_limits_retain_a_full_viewport_of_fresh_disk_hits() {
+    let now = Instant::now();
+    let mut cache = IconCache::with_limits(CacheLimits {
+        max_bytes: 128 << 20,
+        max_entries: 512,
+        max_desired: 128,
+    });
+    let locations: Vec<_> = (0..128).map(|index| format!("icon-{index}")).collect();
+    cache.reconcile(locations.iter().map(String::as_str), now);
+    for (index, location) in locations.iter().enumerate() {
+        assert_eq!(
+            cache.insert_cached(location, (index, 512 << 10), false, now),
+            (true, vec![])
+        );
+    }
+    for (index, location) in locations.iter().enumerate() {
+        assert_eq!(cache.get(location), Some(&index));
+    }
+    assert!(cache.admit(now).is_empty());
+}
+
+#[test]
+fn disk_hydration_returns_offscreen_evictions_for_cleanup() {
+    let now = Instant::now();
+    let mut cache = IconCache::with_limits(CacheLimits {
+        max_bytes: 303,
+        max_entries: 4,
+        max_desired: 4,
+    });
+    for (index, location) in ["a", "b", "c"].into_iter().enumerate() {
+        let at = now + Duration::from_secs(index as u64);
+        cache.reconcile([location], at);
+        assert_eq!(
+            cache.insert_cached(location, (location, 100), false, at),
+            (true, vec![])
+        );
+    }
+    let at = now + Duration::from_secs(3);
+    cache.reconcile(["a", "d"], at);
+    assert_eq!(
+        cache.insert_cached("d", ("d", 100), false, at),
+        (true, vec!["b"])
+    );
+    assert_eq!(cache.get("a"), Some(&"a"));
+    assert_eq!(cache.get("c"), Some(&"c"));
+    assert_eq!(cache.get("d"), Some(&"d"));
+}
+
+#[test]
+fn stale_disk_hits_share_the_http_limit_and_disk_reads_do_not() {
+    let now = Instant::now();
+    let mut cache = IconCache::default();
+    let locations = ["a", "b", "c", "d", "e", "f", "g"];
+    cache.reconcile(locations, now);
+    for location in &locations[..5] {
+        cache.insert_cached(location, (1, 100), true, now);
+        assert_eq!(cache.get(location), Some(&1));
+    }
+    let disk = cache.begin_disk_read("f".into());
+    let requests = cache.admit(now);
+    assert_eq!(requests.len(), REQUEST_LIMIT);
+    assert_eq!(
+        cache.complete_disk_read(disk, Some(((2, 100), false)), now),
+        (true, vec![])
+    );
+    assert_eq!(cache.get("f"), Some(&2));
+    assert!(cache.admit(now).is_empty());
+    cache.complete(requests[0].id(), None, now);
+    assert_eq!(cache.admit(now)[0].location(), "e");
+}
+
+#[test]
+fn retired_disk_results_cannot_publish_when_a_location_returns() {
+    let now = Instant::now();
+    let mut cache = IconCache::default();
+    cache.reconcile(["a"], now);
+    let location = cache.disk_candidates().next().unwrap();
+    let original = cache.begin_disk_read(location);
+    assert_eq!(cache.reconcile(["b"], now), [original]);
+    cache.reconcile(["a"], now);
+    let location = cache.disk_candidates().next().unwrap();
+    let current = cache.begin_disk_read(location);
+    assert_eq!(
+        cache.complete_disk_read(original, Some(((1, 100), false)), now),
+        (false, vec![]),
+    );
+    assert_eq!(cache.get("a"), None);
+    assert_eq!(
+        cache.complete_disk_read(current, Some(((2, 100), false)), now),
+        (true, vec![]),
+    );
+    assert_eq!(cache.get("a"), Some(&2));
 }

@@ -5,7 +5,9 @@ use gpui::{
     Context, Div, FocusHandle, IntoElement, KeyDownEvent, Render, SharedString, Task, Window, div,
     prelude::*, px, rgb,
 };
-use sparrow_core::{CatalogStatus, ChannelGroupView, CoreError, GuideWindowChannel, Page};
+use sparrow_core::{
+    CatalogStatus, ChannelGroupView, ChannelIcon, CoreError, GuideWindowChannel, Page,
+};
 use sparrow_tv_guide::{
     GroupPageRequest, GuidePageRequest, PageStatus, PageUpdate,
     group_chooser::{GroupChooserFocus, GroupChooserIntent},
@@ -152,7 +154,7 @@ pub struct GuideSurface {
     _catalog_updates: Task<()>,
     _group_writes: Task<()>,
     icons: ChannelIcons,
-    _icon_updates: Task<()>,
+    _icon_updates: [Task<()>; 2],
     playback: PlaybackUi,
     pocket: pocket_ui::PocketState,
     pointer: PointerState,
@@ -267,12 +269,30 @@ impl GuideSurface {
                 }
             }
         });
-        let (icons, mut icon_updates) = ChannelIcons::new(catalog.icon_cache.get().cloned());
+        let (icons, mut icon_updates, mut disk_updates) =
+            ChannelIcons::new(catalog.icon_cache.get().cloned(), host.form_factor());
         let icon_updates = cx.spawn(async move |view, cx| {
             while let Some(batch) = icon_updates.next_batch(cx.background_executor()).await {
                 if view
                     .update(cx, |view, cx| {
                         if view.icons.apply(batch, cx) {
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let disk_updates = cx.spawn(async move |view, cx| {
+            // Publish disk hits independently of HTTP notification batching.
+            while let Some(first) = disk_updates.recv().await {
+                let completions = std::iter::once(first)
+                    .chain(std::iter::from_fn(|| disk_updates.try_recv().ok()));
+                if view
+                    .update(cx, |view, cx| {
+                        if view.icons.apply(completions, cx) {
                             cx.notify();
                         }
                     })
@@ -346,7 +366,7 @@ impl GuideSurface {
             _catalog_updates: catalog_updates,
             _group_writes: group_writes,
             icons,
-            _icon_updates: icon_updates,
+            _icon_updates: [icon_updates, disk_updates],
             playback,
             pocket: Default::default(),
             pointer: PointerState::default(),
@@ -1271,12 +1291,13 @@ impl GuideSurface {
 
     fn render_search(
         &mut self,
-        window: &Window,
+        window: &mut Window,
         choice: sparrow_installed_catalog::GuideBackdrop,
         marker: Option<&guide_view::playing_marker::PlayingMarker>,
+        cx: &mut Context<Self>,
     ) -> Option<Div> {
         let layout = self.sheet_layout(window);
-        let (surface, search_icons) = guide_view::search_panel(
+        let search = guide_view::SearchFrame::new(
             layout,
             Self::search_panel_inputs_from(
                 &self.search,
@@ -1287,10 +1308,14 @@ impl GuideSurface {
                 marker,
             ),
             &mut self.search_viewport,
-            &self.icons,
         );
         if self.activation.is_none() {
-            return surface;
+            return search.render(&self.icons);
+        }
+        let generation = self.screen.generation();
+        self.icons.set_generation(generation);
+        if generation.is_none() {
+            return search.render(&self.icons);
         }
         let guide_visible = self.search.state().view() != SearchView::Desk;
         let preview = self
@@ -1298,13 +1323,15 @@ impl GuideSurface {
             .as_ref()
             .filter(|_| guide_visible)
             .and_then(|preview| guide_view::family_icon(&preview.family));
-        let guide_families = self.screen.visible_families(0);
-        let guide_icons = self.screen.families()[guide_families]
-            .iter()
+        let visible = self.screen.visible_families(0);
+        let overscan = self.screen.visible_families(3);
+        let guide_icons = visible
+            .clone()
+            .chain(visible.end..overscan.end)
+            .chain(overscan.start..visible.start)
             .take_while(|_| guide_visible)
-            .filter_map(guide_view::family_icon);
+            .filter_map(|index| guide_view::family_icon(&self.screen.families()[index]));
         self.icons.reconcile(
-            self.screen.generation(),
             self.playback
                 .channel_icon()
                 .filter(|_| {
@@ -1312,10 +1339,13 @@ impl GuideSurface {
                 })
                 .into_iter()
                 .chain(preview)
-                .chain(search_icons)
-                .chain(guide_icons),
+                .chain(search.visible_icons())
+                .chain(guide_icons)
+                .map(ChannelIcon::as_str),
+            Some(window),
+            cx,
         );
-        surface
+        search.render(&self.icons)
     }
 }
 
@@ -1416,7 +1446,7 @@ impl Render for GuideSurface {
         let choice = self.backdrop();
         let marker = self.playback.playing_marker();
         let search = (!self.playback.fullscreen())
-            .then(|| self.render_search(window, choice, marker.as_ref()))
+            .then(|| self.render_search(window, choice, marker.as_ref(), cx))
             .flatten();
         let minute = guide_view::MinuteFrame::new(
             self.now,

@@ -105,7 +105,7 @@ pub(in super::super) enum SearchHit {
     Scrim,
 }
 
-/// Hit-tests Search in layout units using the geometry drawn by `search_panel`.
+/// Hit-tests Search in layout units using the geometry drawn by `SearchFrame`.
 pub(in super::super) fn search_hit(
     layout: Layout,
     panel: &SearchPanel<'_>,
@@ -222,29 +222,84 @@ fn desk_content_width(layout: Layout) -> f32 {
     layout.sheet_width() - DESK_PADDING * 2.
 }
 
-pub(in super::super) fn search_panel<'a>(
+pub(in super::super) struct SearchFrame<'a> {
     layout: Layout,
     panel: SearchPanel<'a>,
-    viewport: &mut SearchViewport,
-    icons: &ChannelIcons,
-) -> (Option<Div>, Vec<&'a ChannelIcon>) {
-    let (surface, visible_icons) = match panel.state.view() {
-        SearchView::Closed => {
-            *viewport = SearchViewport::default();
-            return (None, Vec::new());
+    rows: SearchRows<'a>,
+}
+
+enum SearchRows<'a> {
+    Closed,
+    Inline(Vec<InlineRow<'a>>, Option<SearchSlice>),
+    Desk(Option<SearchSlice>),
+}
+
+impl<'a> SearchFrame<'a> {
+    pub(in super::super) fn new(
+        layout: Layout,
+        panel: SearchPanel<'a>,
+        viewport: &mut SearchViewport,
+    ) -> Self {
+        let focus = viewport.follow_focus.then_some(panel.focus);
+        let rows = match panel.state.view() {
+            SearchView::Closed => {
+                *viewport = SearchViewport::default();
+                SearchRows::Closed
+            }
+            SearchView::Inline => {
+                viewport.desk_scroll = RowScroll::default();
+                let rows = inline_rows(panel.state, panel.display_term);
+                let slice = (!rows.is_empty())
+                    .then(|| inline_slice(layout, focus, &rows, viewport.inline_scroll));
+                viewport.inline_scroll =
+                    slice.as_ref().map_or_else(RowScroll::default, |s| s.scroll);
+                SearchRows::Inline(rows, slice)
+            }
+            SearchView::Desk => {
+                viewport.inline_scroll = RowScroll::default();
+                let slice = (panel.state.status() == SearchStatus::Ready).then(|| {
+                    desk_slice(
+                        layout,
+                        focus,
+                        panel.state.channels(),
+                        panel.state.has_more(),
+                        viewport.desk_scroll,
+                    )
+                });
+                viewport.desk_scroll = slice.as_ref().map_or_else(RowScroll::default, |s| s.scroll);
+                SearchRows::Desk(slice)
+            }
+        };
+        Self {
+            layout,
+            panel,
+            rows,
         }
-        SearchView::Inline => {
-            viewport.desk_scroll = RowScroll::default();
-            let follow = viewport.follow_focus;
-            inline(layout, &panel, &mut viewport.inline_scroll, follow, icons)
+    }
+
+    pub(in super::super) fn visible_icons(&self) -> Vec<&'a ChannelIcon> {
+        match &self.rows {
+            SearchRows::Inline(rows, Some(slice)) => rows[slice.visible.clone()]
+                .iter()
+                .filter_map(InlineRow::icon)
+                .collect(),
+            SearchRows::Desk(Some(slice)) => self.panel.state.channels()[slice.visible.clone()]
+                .iter()
+                .filter_map(|hit| hit.channel().icon())
+                .collect(),
+            _ => Vec::new(),
         }
-        SearchView::Desk => {
-            viewport.inline_scroll = RowScroll::default();
-            let follow = viewport.follow_focus;
-            desk(layout, &panel, &mut viewport.desk_scroll, follow, icons)
+    }
+
+    pub(in super::super) fn render(self, icons: &ChannelIcons) -> Option<Div> {
+        match self.rows {
+            SearchRows::Closed => None,
+            SearchRows::Inline(rows, slice) => {
+                Some(inline(self.layout, &self.panel, &rows, slice, icons))
+            }
+            SearchRows::Desk(slice) => Some(desk(self.layout, &self.panel, slice, icons)),
         }
-    };
-    (Some(surface), visible_icons)
+    }
 }
 
 struct InlineGeometry {
@@ -320,31 +375,20 @@ pub(in super::super) fn search_editor_rect(
     }
 }
 
-fn inline<'a>(
+fn inline(
     layout: Layout,
-    panel: &SearchPanel<'a>,
-    scroll: &mut RowScroll,
-    follow_focus: bool,
+    panel: &SearchPanel<'_>,
+    rows: &[InlineRow<'_>],
+    slice: Option<SearchSlice>,
     icons: &ChannelIcons,
-) -> (Div, Vec<&'a ChannelIcon>) {
+) -> Div {
     let mut overlay = div().absolute().inset_0();
     let geometry = InlineGeometry::new(layout, panel.docked);
-    let rows = inline_rows(panel.state, panel.display_term);
-    let visible_icons = if rows.is_empty() {
-        *scroll = RowScroll::default();
-        Vec::new()
-    } else {
-        let slice = inline_slice(layout, follow_focus.then_some(panel.focus), &rows, *scroll);
-        *scroll = slice.scroll;
-        let visible_icons = rows[slice.visible.clone()]
-            .iter()
-            .filter_map(InlineRow::icon)
-            .collect();
+    if let Some(slice) = slice {
         overlay = overlay
             .bg(rgba(0x060a12b8))
-            .child(inline_popup(layout, &geometry, panel, &rows, slice, icons));
-        visible_icons
-    };
+            .child(inline_popup(layout, &geometry, panel, rows, slice, icons));
+    }
     let field_focus = panel.focus == SearchFocus::Field || panel.editing;
     let rim = if field_focus { 3. } else { 0. };
     let field = field(
@@ -376,7 +420,7 @@ fn inline<'a>(
                 )),
         )
     });
-    (overlay.child(field), visible_icons)
+    overlay.child(field)
 }
 
 enum InlineRow<'a> {
@@ -602,13 +646,12 @@ fn inline_row(
         )
 }
 
-fn desk<'a>(
+fn desk(
     layout: Layout,
-    panel: &SearchPanel<'a>,
-    scroll: &mut RowScroll,
-    follow_focus: bool,
+    panel: &SearchPanel<'_>,
+    slice: Option<SearchSlice>,
     icons: &ChannelIcons,
-) -> (Div, Vec<&'a ChannelIcon>) {
+) -> Div {
     let close_focus = panel.focus == SearchFocus::Close;
     let filter_width = desk_field_width(layout, panel.state, panel.has_exclusions);
     let toolbar = layout
@@ -634,7 +677,7 @@ fn desk<'a>(
             ))
         });
 
-    let (list, visible_icons) = desk_list(layout, panel, scroll, follow_focus, icons);
+    let list = desk_list(layout, panel, slice, icons);
     let sheet = layout
         .rect(desk_x(layout), 0., layout.sheet_width(), layout.height)
         .bg(rgb(PANEL))
@@ -683,10 +726,7 @@ fn desk<'a>(
             true,
         ))
         .child(list);
-    (
-        div().absolute().inset_0().bg(rgba(0x050910b3)).child(sheet),
-        visible_icons,
-    )
+    div().absolute().inset_0().bg(rgba(0x050910b3)).child(sheet)
 }
 
 fn desk_field_width(layout: Layout, state: &SearchState, has_exclusions: bool) -> f32 {
@@ -760,13 +800,12 @@ fn desk_slice(
     }
 }
 
-fn desk_list<'a>(
+fn desk_list(
     layout: Layout,
-    panel: &SearchPanel<'a>,
-    scroll: &mut RowScroll,
-    follow_focus: bool,
+    panel: &SearchPanel<'_>,
+    slice: Option<SearchSlice>,
     icons: &ChannelIcons,
-) -> (Div, Vec<&'a ChannelIcon>) {
+) -> Div {
     let height = (layout.height - DESK_LIST_Y).max(0.);
     let list = layout
         .rect(
@@ -776,14 +815,13 @@ fn desk_list<'a>(
             height,
         )
         .overflow_hidden();
-    let status = panel.state.status();
-    if status != SearchStatus::Ready {
-        *scroll = RowScroll::default();
+    let Some(slice) = slice else {
+        let status = panel.state.status();
         let message = layout
             .text(SAIRA, 17., 24., 500.)
             .text_color(rgba(DIM))
             .child(status_text(status, SearchView::Desk).unwrap_or_default());
-        let notice = match desk_retry_label(status) {
+        return match desk_retry_label(status) {
             // The message keeps to its two lines so the button has one place.
             Some(label) => {
                 let [x, y, width, _] = DESK_RETRY_BOUNDS;
@@ -810,24 +848,11 @@ fn desk_list<'a>(
             }
             None => list.child(div().pt(layout.px(DESK_NOTICE_TOP)).child(message)),
         };
-        return (notice, Vec::new());
-    }
+    };
     let rows = panel.state.channels();
-    let slice = desk_slice(
-        layout,
-        follow_focus.then_some(panel.focus),
-        rows,
-        panel.state.has_more(),
-        *scroll,
-    );
-    *scroll = slice.scroll;
-    let clipped = scroll.clipped(DESK_PITCH);
-    let footer_y = (rows.len() - scroll.first()) as f32 * DESK_PITCH + 8. - clipped;
-    let visible_icons = rows[slice.visible]
-        .iter()
-        .filter_map(|hit| hit.channel().icon())
-        .collect();
-    let list = list.children(rows[slice.rendered].iter().enumerate().map(|(index, hit)| {
+    let clipped = slice.scroll.clipped(DESK_PITCH);
+    let footer_y = (rows.len() - slice.scroll.first()) as f32 * DESK_PITCH + 8. - clipped;
+    list.children(rows[slice.rendered].iter().enumerate().map(|(index, hit)| {
         desk_row(layout, panel, hit, index as f32 * DESK_PITCH - clipped, icons)
     }))
     .when(footer_y < height, |list| {
@@ -858,8 +883,7 @@ fn desk_list<'a>(
                 linear_color_stop(rgba(PANEL << 8), 0.),
                 linear_color_stop(rgb(PANEL), 0.7),
             )),
-    );
-    (list, visible_icons)
+    )
 }
 
 fn desk_row(

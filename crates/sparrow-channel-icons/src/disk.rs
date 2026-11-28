@@ -1,4 +1,4 @@
-//! Persistent downscaled BGRA frames. Call on a bounded blocking worker.
+//! Persistent downscaled BGRA frames.
 use std::{
     fs::{self, File},
     io::{self, Read, Write},
@@ -16,8 +16,8 @@ use crate::{
     raster::{MAX_OUTPUT_EDGE, check_dimensions},
 };
 
-const MAX_BYTES: u64 = 64 << 20;
-const MAX_AGE: Duration = Duration::from_secs(7 * 86400);
+const MAX_BYTES: u64 = 256 << 20;
+const MAX_AGE: Duration = Duration::from_secs(30 * 86400);
 
 pub struct DiskCache {
     directory: PathBuf,
