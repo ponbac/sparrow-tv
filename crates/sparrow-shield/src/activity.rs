@@ -7,7 +7,7 @@ use std::{
 
 use gpui::{App, Window};
 use sparrow_core::ChannelDirection;
-use sparrow_guide_ui::{ClipboardTarget, FormFactor, GuideHost, HostKey, TextEditorHost};
+use sparrow_guide_ui::{ClipboardTarget, FormFactor, GuideHost, HostKey, Insets, TextEditorHost};
 use sparrow_installed_catalog::SavedSourceLocations;
 use sparrow_tv_guide::{now_focus::Direction, setup::SetupField};
 
@@ -18,34 +18,87 @@ use jni::{
 
 static JVM: OnceLock<JavaVM> = OnceLock::new();
 type ActivityRef = Arc<Global<JObject<'static>>>;
-static ACTIVITIES: LazyLock<Mutex<HashMap<u64, ActivityRef>>> = LazyLock::new(Mutex::default);
+static ACTIVITIES: LazyLock<Mutex<HashMap<u64, RegisteredActivity>>> =
+    LazyLock::new(Mutex::default);
 
-pub(super) struct ShieldActivity(pub u64);
+struct RegisteredActivity {
+    activity: ActivityRef,
+    host: ShieldActivity,
+    insets: Insets,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ShieldActivity {
+    id: u64,
+    form: FormFactor,
+    picture_in_picture: bool,
+}
 
 impl GuideHost for ShieldActivity {
     fn id(&self) -> u64 {
-        self.0
+        self.id
     }
 
     fn form_factor(&self) -> FormFactor {
-        FormFactor::Television
+        self.form
+    }
+
+    fn initial_insets(&self) -> Insets {
+        ACTIVITIES
+            .lock()
+            .unwrap()
+            .get(&self.id)
+            .map_or(Insets::default(), |entry| entry.insets)
+    }
+
+    fn set_immersive(&self, immersive: bool) {
+        call(self.id, |env, activity| {
+            env.call_method(
+                activity,
+                jni_str!("setImmersive"),
+                jni_sig!("(JZ)V"),
+                &[JValue::Long(self.id as i64), JValue::Bool(immersive)],
+            )?;
+            Ok(())
+        });
+    }
+
+    fn supports_picture_in_picture(&self) -> bool {
+        self.picture_in_picture
+    }
+
+    fn enter_picture_in_picture(&self) -> bool {
+        let mut queued = false;
+        self.picture_in_picture
+            && call(self.id, |env, activity| {
+                queued = env
+                    .call_method(
+                        activity,
+                        jni_str!("enterPictureInPicture"),
+                        jni_sig!("(J)Z"),
+                        &[JValue::Long(self.id as i64)],
+                    )?
+                    .z()?;
+                Ok(())
+            })
+            && queued
     }
 
     fn guide_painted(&self) {
-        guide_presented(self.0);
+        guide_presented(self.id);
     }
 
     fn finish(&self, _: &mut Window) {
-        finish(self.0);
+        finish(self.id);
     }
 
     fn copy_diagnostics(&self, target: ClipboardTarget, text: &str, _: &mut App) -> bool {
         match target {
             ClipboardTarget::Source { session, attempt } => {
-                copy_source_diagnostics(self.0, session, attempt, text)
+                copy_source_diagnostics(self.id, session, attempt, text)
             }
             ClipboardTarget::Playback { attempt } => {
-                copy_playback_diagnostics(self.0, attempt, text)
+                copy_playback_diagnostics(self.id, attempt, text)
             }
         }
     }
@@ -53,35 +106,35 @@ impl GuideHost for ShieldActivity {
 
 impl TextEditorHost for ShieldActivity {
     fn open_query(&self, generation: u64, rect: [i32; 4], initial: &str) -> bool {
-        open_text_query(self.0, generation, rect, initial)
+        open_text_query(self.id, generation, rect, initial)
     }
 
     fn close_editor(&self, generation: u64) {
-        close_text_editor(self.0, generation);
+        close_text_editor(self.id, generation);
     }
 
     fn begin_draft(&self, session: u64, seed: Option<SavedSourceLocations>) -> bool {
-        begin_source_draft(self.0, session, seed)
+        begin_source_draft(self.id, session, seed)
     }
 
     fn close_draft(&self, session: u64) {
-        close_source_draft(self.0, session);
+        close_source_draft(self.id, session);
     }
 
     fn edit_field(&self, session: u64, generation: u64, field: SetupField, rect: [i32; 4]) -> bool {
-        edit_source(self.0, session, generation, field_index(field), rect)
+        edit_source(self.id, session, generation, field_index(field), rect)
     }
 
     fn clear_field(&self, session: u64, generation: u64, field: SetupField) -> bool {
-        clear_source_field(self.0, session, generation, field_index(field))
+        clear_source_field(self.id, session, generation, field_index(field))
     }
 
     fn submit_draft(&self, session: u64, attempt: u64) -> bool {
-        submit_sources(self.0, session, attempt)
+        submit_sources(self.id, session, attempt)
     }
 
     fn finish_save(&self, session: u64, attempt: u64, saved: bool) {
-        finish_source_save(self.0, session, attempt, saved);
+        finish_source_save(self.id, session, attempt, saved);
     }
 }
 
@@ -121,13 +174,46 @@ pub(super) fn register(
     env: &mut Env<'_>,
     id: u64,
     activity: &JObject<'_>,
+    television: bool,
+    picture_in_picture: bool,
 ) -> jni::errors::Result<()> {
     if JVM.get().is_none() {
         let _ = JVM.set(env.get_java_vm()?);
     }
     let activity = env.new_global_ref(activity)?;
-    ACTIVITIES.lock().unwrap().insert(id, Arc::new(activity));
+    ACTIVITIES.lock().unwrap().insert(
+        id,
+        RegisteredActivity {
+            activity: Arc::new(activity),
+            host: ShieldActivity {
+                id,
+                form: if television {
+                    FormFactor::Television
+                } else {
+                    FormFactor::Handheld
+                },
+                picture_in_picture,
+            },
+            insets: Insets::default(),
+        },
+    );
     Ok(())
+}
+
+pub(super) fn registered(id: u64) -> Option<ShieldActivity> {
+    ACTIVITIES.lock().unwrap().get(&id).map(|entry| entry.host)
+}
+
+pub(super) fn update_insets(id: u64, insets: Insets) -> bool {
+    let mut activities = ACTIVITIES.lock().unwrap();
+    let Some(entry) = activities.get_mut(&id) else {
+        return false;
+    };
+    if entry.insets == insets {
+        return false;
+    }
+    entry.insets = insets;
+    true
 }
 
 pub(super) fn unregister(id: u64) {
@@ -141,7 +227,12 @@ pub(super) fn call(
     let Some(vm) = JVM.get() else {
         return false;
     };
-    let Some(activity) = ACTIVITIES.lock().unwrap().get(&id).cloned() else {
+    let Some(activity) = ACTIVITIES
+        .lock()
+        .unwrap()
+        .get(&id)
+        .map(|entry| Arc::clone(&entry.activity))
+    else {
         return false;
     };
     vm.attach_current_thread(|env| {

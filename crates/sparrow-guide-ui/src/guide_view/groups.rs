@@ -9,6 +9,8 @@ use super::{
     CELL, DIM, FAINT, ICE, INK, Layout, MUTE, ON_ICE, PANEL, PLATE, SAIRA, SAIRA_TITLE, TEXT,
 };
 
+use super::layout::RowScroll;
+
 const PADDING: f32 = 30.;
 const FILTER_Y: f32 = 116.;
 const FILTER_HEIGHT: f32 = 56.;
@@ -20,7 +22,7 @@ const ROW_HEIGHT: f32 = 60.;
 const ROW_PITCH: f32 = ROW_HEIGHT + 4.;
 
 pub(in super::super) struct GroupViewport {
-    first: usize,
+    scroll: RowScroll,
     /// Cleared by the scroll wheel; the next key press reveals focus again.
     follow_focus: bool,
 }
@@ -28,15 +30,15 @@ pub(in super::super) struct GroupViewport {
 impl Default for GroupViewport {
     fn default() -> Self {
         Self {
-            first: 0,
+            scroll: RowScroll::default(),
             follow_focus: true,
         }
     }
 }
 
 impl GroupViewport {
-    pub(in super::super) fn scroll(&mut self, rows: isize) {
-        self.first = self.first.saturating_add_signed(rows);
+    pub(in super::super) fn scroll(&mut self, rows: f32) {
+        self.scroll.advance(rows);
         self.follow_focus = false;
     }
 
@@ -84,8 +86,9 @@ pub(in super::super) fn group_sheet_hit(
     if list_y < 0. || !(PADDING..PADDING + row_width).contains(&x) {
         return None;
     }
+    let list_y = list_y + viewport.scroll.clipped(ROW_PITCH);
     let slot = (list_y / ROW_PITCH) as usize;
-    let row = viewport.first + slot;
+    let row = viewport.scroll.first() + slot;
     if list_y - slot as f32 * ROW_PITCH > ROW_HEIGHT || row > chooser.matches().len() {
         return None;
     }
@@ -132,20 +135,20 @@ pub(in super::super) fn group_sheet(
     editing: bool,
 ) -> Option<Div> {
     let Some(chooser) = screen.group_chooser() else {
-        viewport.first = 0;
+        viewport.scroll = RowScroll::default();
         return None;
     };
     let focus = chooser.focus();
     let rows = chooser.matches().len() + 1;
     let capacity = capacity(layout);
-    viewport.first = viewport.first.min(rows.saturating_sub(capacity));
-    if let Some(row) = focus.row().filter(|_| viewport.follow_focus) {
-        viewport.first = viewport
-            .first
-            .min(row)
-            .max((row + 1).saturating_sub(capacity));
-    }
-    let end = (viewport.first + capacity + 1).min(rows);
+    viewport.scroll.reveal(
+        rows,
+        capacity,
+        focus.row().filter(|_| viewport.follow_focus),
+    );
+    let first = viewport.scroll.first();
+    let clipped = viewport.scroll.clipped(ROW_PITCH);
+    let end = (first + capacity + 1 + usize::from(clipped > 0.)).min(rows);
     let roster = screen.group_roster();
     let mut list = layout
         .rect(
@@ -155,7 +158,7 @@ pub(in super::super) fn group_sheet(
             layout.height - LIST_Y,
         )
         .overflow_hidden()
-        .children((viewport.first..end).map(|row| {
+        .children((first..end).map(|row| {
             let group = row
                 .checked_sub(1)
                 .and_then(|index| chooser.matches().get(index))
@@ -186,7 +189,7 @@ pub(in super::super) fn group_sheet(
             layout
                 .rect(
                     0.,
-                    (row - viewport.first) as f32 * ROW_PITCH,
+                    (row - first) as f32 * ROW_PITCH - clipped,
                     row_width,
                     ROW_HEIGHT,
                 )

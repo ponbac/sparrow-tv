@@ -22,7 +22,7 @@ use sparrow_tv_guide::{
 use tokio::task::AbortHandle;
 
 use crate::{
-    Catalog, Edit, GuideHost, HostEvent, HostKey, Phase, PlaybackHost,
+    Catalog, Edit, GuideHost, HostEvent, HostKey, Insets, Phase, PlaybackHost,
     channel_icons::ChannelIcons,
     guide_view::{self, FormFactor, Profile},
     search_flow::{SearchEffect, SearchFlow},
@@ -107,6 +107,7 @@ pub struct GuideSurface {
     host: Rc<dyn GuideHost>,
     /// The last selected profile, kept for class hysteresis.
     profile: Profile,
+    insets: Insets,
     catalog: Arc<Catalog>,
     sections: sections::Sections,
     screen: GuideScreen,
@@ -208,6 +209,7 @@ impl GuideSurface {
             .detach();
         }
         let host_id = host.id();
+        let insets = host.initial_insets();
         let now = Local::now().fixed_offset();
         let mut screen = GuideScreen::new(now.to_utc(), *now.offset(), HashSet::new());
         let viewport = window.viewport_size();
@@ -220,7 +222,7 @@ impl GuideSurface {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let mut playback = PlaybackUi::default();
-        playback.volume_slider = host.form_factor() != FormFactor::Television;
+        playback.volume_slider = host.form_factor() == FormFactor::Desktop;
 
         let mut updates = catalog.subscribe();
         let catalog_updates = cx.spawn(async move |view, cx| {
@@ -292,6 +294,7 @@ impl GuideSurface {
         Self {
             host,
             profile,
+            insets,
             catalog,
             sections: sections::Sections::new(cx),
             screen,
@@ -553,6 +556,15 @@ impl GuideSurface {
             self.cancel_arrival(cx);
         }
         match event {
+            HostEvent::Insets(insets) => {
+                if self.insets != insets {
+                    self.insets = insets;
+                    cx.notify();
+                }
+            }
+            HostEvent::PictureInPicture(active) => {
+                self.picture_in_picture_changed(active, window, cx)
+            }
             HostEvent::PictureBottom(bottom) => {
                 if self.playback.picture_bottom == 0 && bottom != 0 {
                     self.flight_picture_placed(cx);
@@ -1154,6 +1166,7 @@ impl GuideSurface {
     /// The window's layout. Guide sections add the backdrop's translucency.
     pub(super) fn layout(&self, window: &Window) -> guide_view::Layout {
         guide_view::Layout {
+            insets: self.insets,
             focus_visible: self.host.form_factor() == FormFactor::Television
                 || window.last_input_was_keyboard(),
             ..guide_view::Layout::new(self.profile, window.viewport_size())
@@ -1241,11 +1254,16 @@ impl GuideSurface {
 impl Render for GuideSurface {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let viewport = window.viewport_size();
-        self.profile = Profile::select(
+        let profile = Profile::select(
             self.host.form_factor(),
             (f32::from(viewport.width), f32::from(viewport.height)),
             Some(self.profile),
         );
+        if self.profile != profile {
+            self.retire_query_editor();
+            self.retire_source_editor();
+            self.profile = profile;
+        }
         let layout = self.layout(window);
         self.screen.set_board_metrics(layout.m.board);
         self.sync_window_fullscreen(window);

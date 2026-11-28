@@ -11,6 +11,7 @@ sparrow-core = { path = "../sparrow-core" }
 unicode-normalization = "0.1"
 
 [dev-dependencies]
+chrono-tz = "0.10"
 sparrow-installed-catalog = { path = "../sparrow-installed-catalog" }
 tempfile = "3"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "time"] }

@@ -191,8 +191,8 @@ pub(super) fn picture_reference(layout: Layout, placement: PlaybackLayout) -> [f
         PlaybackLayout::Fullscreen {
             controls_visible: true,
         } => {
-            let mut height =
-                (layout.height - FULLSCREEN_BAND_HEIGHT).clamp(0., layout.m.band_picture_height);
+            let mut height = (layout.height - FULLSCREEN_BAND_HEIGHT - layout.bottom_occlusion())
+                .clamp(0., layout.m.band_picture_height);
             let mut width = height * 16. / 9.;
             if width > layout.width {
                 width = layout.width;
@@ -508,7 +508,7 @@ pub(crate) fn fullscreen_band(
         .child(fullscreen_head(layout, playback, minute))
         .child(fullscreen_controls(
             layout,
-            layout.height - picture_height,
+            (layout.height - picture_height - layout.bottom_occlusion()).max(0.),
             playback,
             actions,
             pointer,

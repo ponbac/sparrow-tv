@@ -13,7 +13,7 @@ mod groups;
 mod layout;
 pub use layout::FormFactor;
 use layout::{BAND_TOP, CARD_GAP, GUTTER};
-pub(crate) use layout::{Layout, Profile};
+pub(crate) use layout::{Layout, Pointer, Profile};
 pub(super) mod lane;
 mod minute;
 pub(crate) use minute::{MinuteFrame, MinuteSample, MinuteTick};

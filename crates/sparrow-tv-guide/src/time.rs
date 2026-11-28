@@ -1,6 +1,8 @@
 //! Clock windows, Programme timing, and the Timeline's time-axis navigation.
 
-use chrono::{DateTime, Datelike, FixedOffset, TimeDelta, Utc, Weekday};
+use chrono::{
+    DateTime, Datelike, FixedOffset, MappedLocalTime, Offset, TimeDelta, TimeZone, Utc, Weekday,
+};
 use sparrow_core::GuideProgramme;
 
 const HALF_HOUR_SECONDS: i64 = 30 * 60;
@@ -13,6 +15,41 @@ const LEFT_EDGE_SLIVER: TimeDelta = TimeDelta::seconds(8 * 60 + 30);
 pub struct GuideWindow {
     starts_at: DateTime<Utc>,
     ends_at: DateTime<Utc>,
+}
+
+/// Up to six future full local hours in the extended Guide window, in UTC order.
+/// A repeated clock hour contributes both instants and a skipped hour contributes none.
+pub fn next_full_local_hours(now: DateTime<Utc>, zone: &impl TimeZone) -> Vec<DateTime<Utc>> {
+    const HOUR: i64 = 3600;
+    const MAX_OFFSET: i64 = 24 * HOUR;
+    let offset = zone.offset_from_utc_datetime(&now.naive_utc()).fix();
+    let end = GuideWindow::at(now, offset, true).ends_at();
+    // Search wall-clock hours on both sides of the UTC window, since the
+    // offset at a future hour can differ from the current offset.
+    let first = (now.timestamp() - MAX_OFFSET).div_euclid(HOUR) + 1;
+    let last = (end.timestamp() + MAX_OFFSET).div_euclid(HOUR);
+    let mut hours = Vec::new();
+    for hour in first..=last {
+        let Some(wall_clock) = DateTime::from_timestamp(hour * HOUR, 0) else {
+            continue;
+        };
+        let mut add = |instant: DateTime<Utc>| {
+            if now < instant && instant < end {
+                hours.push(instant);
+            }
+        };
+        match zone.from_local_datetime(&wall_clock.naive_utc()) {
+            MappedLocalTime::Single(instant) => add(instant.to_utc()),
+            MappedLocalTime::Ambiguous(first, second) => {
+                add(first.to_utc());
+                add(second.to_utc());
+            }
+            MappedLocalTime::None => {}
+        }
+    }
+    hours.sort_unstable();
+    hours.truncate(6);
+    hours
 }
 
 impl GuideWindow {
@@ -183,6 +220,20 @@ impl Timeline {
         self.starts_at
     }
 
+    /// First half-hour ruler mark inside the visible span.
+    pub fn first_tick(self) -> DateTime<Utc> {
+        let elapsed = self.starts_at - self.window.starts_at;
+        let step = TimeDelta::seconds(HALF_HOUR_SECONDS);
+        let previous =
+            TimeDelta::seconds(elapsed.num_seconds() / HALF_HOUR_SECONDS * HALF_HOUR_SECONDS);
+        self.window.starts_at
+            + if previous == elapsed {
+                previous
+            } else {
+                previous + step
+            }
+    }
+
     pub fn ends_at(self) -> DateTime<Utc> {
         self.starts_at
             .checked_add_signed(TIMELINE_SPAN)
@@ -337,11 +388,16 @@ impl Timeline {
 
     /// Moves the visible span by whole half hours, clamped to the Guide window.
     pub fn pan(&mut self, half_hours: i64) {
+        if let Some(delta) = TimeDelta::try_seconds(half_hours.saturating_mul(HALF_HOUR_SECONDS)) {
+            self.pan_by(delta);
+        }
+    }
+
+    /// Moves the visible span by elapsed time inside the Guide window.
+    pub fn pan_by(&mut self, delta: TimeDelta) {
         let wanted = self
             .starts_at
-            .checked_add_signed(TimeDelta::seconds(
-                half_hours.saturating_mul(HALF_HOUR_SECONDS),
-            ))
+            .checked_add_signed(delta)
             .unwrap_or(self.starts_at);
         self.set_start(wanted);
     }

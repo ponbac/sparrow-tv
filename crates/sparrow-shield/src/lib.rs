@@ -18,12 +18,12 @@ use gpui_mobile::android::{host, jni as mobile_jni};
 use jni::{
     EnvUnowned,
     errors::{Error, LogErrorAndDefault},
-    objects::{JObject, JString},
+    objects::{JFloatArray, JIntArray, JObject, JString},
     sys::{jboolean, jstring},
 };
 use ndk::native_window::NativeWindow;
 use sparrow_guide_ui::{
-    Catalog, DraftStatus, Edit, FieldEdit, GuideSurface, HostEvent, SourceEvent,
+    Catalog, DraftStatus, Edit, FieldEdit, GuideSurface, HostEvent, Insets, SourceEvent,
 };
 use tokio::sync::mpsc;
 
@@ -101,17 +101,11 @@ fn init_logging() {
 }
 
 fn open_guide(id: u64, cx: &mut App) -> Option<AnyWindowHandle> {
+    let activity = activity::registered(id)?;
     match cx.open_window(WindowOptions::default(), |window, cx| {
         DIAGNOSTICS.lock().unwrap().software =
             window.gpu_specs().map(|specs| specs.is_software_emulated);
-        cx.new(|cx| {
-            GuideSurface::new(
-                Rc::new(activity::ShieldActivity(id)),
-                Arc::clone(&CATALOG),
-                window,
-                cx,
-            )
-        })
+        cx.new(|cx| GuideSurface::new(Rc::new(activity), Arc::clone(&CATALOG), window, cx))
     }) {
         Ok(window) => Some(window.into()),
         Err(_) => {
@@ -238,9 +232,73 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeRegis
     mut env: EnvUnowned<'local>,
     owner: JObject<'local>,
     id: i64,
+    television: jboolean,
+    picture_in_picture: jboolean,
 ) {
-    env.with_env_no_catch(|env| activity::register(env, id as u64, &owner))
-        .resolve::<LogErrorAndDefault>();
+    env.with_env_no_catch(|env| {
+        activity::register(env, id as u64, &owner, television, picture_in_picture)
+    })
+    .resolve::<LogErrorAndDefault>();
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeInsets(
+    _: EnvUnowned,
+    _: JObject,
+    id: i64,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    left: i32,
+    ime: i32,
+    density: f32,
+) {
+    let logical = |px: i32| px as f32 / density;
+    let insets = Insets {
+        top: logical(top),
+        right: logical(right),
+        bottom: logical(bottom),
+        left: logical(left),
+        ime: logical(ime),
+    };
+    if activity::update_insets(id as u64, insets) {
+        enqueue_activity(id, HostEvent::Insets(insets));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeTouch<'local>(
+    mut env: EnvUnowned<'local>,
+    _: JObject<'local>,
+    action: i32,
+    index: i32,
+    ids: JIntArray<'local>,
+    positions: JFloatArray<'local>,
+) -> jboolean {
+    env.with_env_no_catch(|env| -> Result<_, Error> {
+        let count = ids.len(env)?;
+        let mut pointer_ids = vec![0; count];
+        let mut coordinates = vec![0.; count * 2];
+        ids.get_region(env, 0, &mut pointer_ids)?;
+        positions.get_region(env, 0, &mut coordinates)?;
+        let pointers: Vec<_> = pointer_ids
+            .into_iter()
+            .zip(coordinates.as_chunks::<2>().0)
+            .map(|(id, &[x, y])| host::Pointer { id, x, y })
+            .collect();
+        Ok(host::motion_event(action as u32, index as usize, &pointers))
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativePictureInPicture(
+    _: EnvUnowned,
+    _: JObject,
+    id: i64,
+    active: jboolean,
+) {
+    enqueue_activity(id, HostEvent::PictureInPicture(active));
 }
 
 #[unsafe(no_mangle)]

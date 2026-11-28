@@ -26,7 +26,7 @@ use sparrow_tv_guide::{
 
 use super::GuideSurface;
 use crate::{
-    ClipboardTarget, HostKey, PlaybackHost,
+    ClipboardTarget, FormFactor, HostKey, PlaybackHost,
     guide_view::{
         self,
         playback::{
@@ -76,13 +76,14 @@ pub(super) struct PlaybackUi {
     menu: Option<PlayerMenu>,
     idle: Option<gpui::Task<()>>,
     viewports: Option<[Option<[i32; 4]>; 2]>,
+    picture_in_picture: bool,
     live_picture: Option<Arc<RenderImage>>,
     flight: FlightStill,
     flight_request: u64,
     flight_landing: Option<gpui::Task<()>>,
     /// The Channel the flight still was copied from.
     flight_channel: Option<TvTuneTarget>,
-    /// Pointer hosts get a volume slider in the fullscreen band.
+    /// Desktop gets a draggable volume slider in the fullscreen band.
     pub(super) volume_slider: bool,
 }
 
@@ -1014,7 +1015,8 @@ impl GuideSurface {
             .catalog
             .playback()
             .is_some_and(PlaybackHost::embedded_picture);
-        let parked = !embedded && self.update_flight_still(window, cx);
+        let in_pip = self.playback.picture_in_picture;
+        let parked = !in_pip && !embedded && self.update_flight_still(window, cx);
         let Some(host) = self
             .catalog
             .playback()
@@ -1024,7 +1026,15 @@ impl GuideSurface {
             return;
         };
         let rect = |frame| picture_rect(self.layout(window), window.scale_factor(), frame);
-        let viewports = if self.playback.state.pending_zap.is_some()
+        let viewports = if in_pip {
+            // Android fills the PiP window. Keep a viewport available to the
+            // runner so Play can reopen the transport even with a hidden dock.
+            let viewport = rect(FullscreenFrame {
+                fullscreen: 1.,
+                ..Default::default()
+            });
+            [Some(viewport); 2]
+        } else if self.playback.state.pending_zap.is_some()
             || parked
             || (embedded && (self.setup.is_some() || !window.is_visible()))
         {
@@ -1048,6 +1058,20 @@ impl GuideSurface {
             host.set_picture_bounds(self.host.id(), viewports[0], viewports[1]);
             self.playback.viewports = Some(viewports);
         }
+    }
+
+    pub(super) fn picture_in_picture_changed(
+        &mut self,
+        active: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.playback.picture_in_picture = active;
+        self.playback.viewports = None;
+        if active {
+            self.update_playback_viewports(window, FullscreenFrame::default(), cx);
+        }
+        cx.notify();
     }
 
     pub(super) fn playback_back(&mut self, cx: &mut Context<Self>) -> bool {
@@ -1095,6 +1119,18 @@ impl GuideSurface {
                 if !held {
                     let command = match key {
                         HostKey::Stop => Command::Stop,
+                        HostKey::Resume
+                            if self.host.form_factor() == FormFactor::Handheld
+                                && matches!(
+                                    self.playback.state.phase,
+                                    TvPlaybackPhase::Failed {
+                                        can_restart: true,
+                                        ..
+                                    }
+                                ) =>
+                        {
+                            Command::Restart
+                        }
                         HostKey::Resume => Command::Resume,
                         HostKey::TogglePause
                             if matches!(self.playback.state.phase, TvPlaybackPhase::Paused(_)) =>

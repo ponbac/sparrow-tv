@@ -272,7 +272,7 @@ internal class NativePlaybackController(
    * picture back where the page last placed it, or shows the page when
    * nothing is playing.
    */
-  fun setPictureInPicture(active: Boolean) {
+  fun setPictureInPicture(active: Boolean, retainPicture: Boolean = false) {
     if (pictureInPicture == active) {
       return
     }
@@ -295,7 +295,7 @@ internal class NativePlaybackController(
       }
       host?.setPictureInPicture(true)
     } else {
-      host?.setPictureInPicture(false)
+      host?.setPictureInPicture(false, retainPicture)
       pictureInPictureCover?.let { cover -> runCatching { parent.removeView(cover) } }
       pictureInPictureCover = null
     }
@@ -556,7 +556,7 @@ internal class NativePlaybackController(
       }
     }
 
-    fun setPictureInPicture(active: Boolean) {
+    fun setPictureInPicture(active: Boolean, retainPicture: Boolean = false) {
       if (released || pictureInPicture == active) {
         return
       }
@@ -567,7 +567,7 @@ internal class NativePlaybackController(
       }
       // A placement made inside picture-in-picture was for the small window.
       val last = lastViewport
-      if (binding != null && last != null) {
+      if ((binding != null || retainPicture) && last != null) {
         placement.place(parent, playerView, last)
       } else {
         revealContent()

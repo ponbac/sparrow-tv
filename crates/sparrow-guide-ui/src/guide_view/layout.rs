@@ -9,6 +9,7 @@ use gpui::{Div, FontWeight, IntoElement, Pixels, Size, Styled, div, px, svg};
 use sparrow_tv_guide::guide_screen::{BoardGeometry, BoardMetrics, ScreenFocus};
 
 use super::TEXT;
+use crate::Insets;
 
 /// The kind of device a Guide window runs on.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -119,6 +120,14 @@ impl Profile {
         Self::Pocket(class, pointer)
     }
 
+    pub(crate) fn pointer(self) -> Option<Pointer> {
+        match self {
+            Self::Tv => None,
+            Self::Desktop(_) => Some(Pointer::Fine),
+            Self::Pocket(_, pointer) => Some(pointer),
+        }
+    }
+
     /// Logical pixels per layout unit; Television derives it from the viewport.
     fn unit(self) -> Option<f32> {
         match self {
@@ -182,6 +191,7 @@ impl Metrics {
 #[derive(Clone, Copy)]
 pub(crate) struct Layout {
     pub(crate) profile: Profile,
+    pub(crate) insets: Insets,
     pub(crate) translucent: bool,
     /// Whether keyboard and remote focus is drawn. Pointer input hides it
     /// without moving it.
@@ -207,6 +217,7 @@ impl Layout {
         };
         Self {
             profile,
+            insets: Insets::default(),
             translucent: false,
             focus_visible: true,
             unit,
@@ -238,6 +249,10 @@ impl Layout {
 
     pub(super) fn px(self, length: f32) -> Pixels {
         px(length * self.unit)
+    }
+
+    pub(super) fn bottom_occlusion(self) -> f32 {
+        self.insets.bottom.max(self.insets.ime) / self.unit
     }
 
     pub(super) fn rect(self, x: f32, y: f32, width: f32, height: f32) -> Div {
@@ -304,6 +319,33 @@ impl Layout {
     /// Width of the right-hand sheets: Search desk, Choose groups and Sources.
     pub(crate) fn sheet_width(self) -> f32 {
         (self.width * 0.36).min(SHEET_MAX_WIDTH)
+    }
+}
+
+/// A virtualized row list's position, including a partially visible first row.
+#[derive(Clone, Copy, Default)]
+pub(super) struct RowScroll(f32);
+
+impl RowScroll {
+    pub(super) fn advance(&mut self, rows: f32) {
+        self.0 = (self.0 + rows).max(0.);
+    }
+
+    pub(super) fn reveal(&mut self, count: usize, capacity: usize, target: Option<usize>) {
+        self.0 = self.0.min(count.saturating_sub(capacity) as f32);
+        if let Some(row) = target {
+            self.0 = self
+                .0
+                .clamp((row + 1).saturating_sub(capacity) as f32, row as f32);
+        }
+    }
+
+    pub(super) fn first(self) -> usize {
+        self.0 as usize
+    }
+
+    pub(super) fn clipped(self, pitch: f32) -> f32 {
+        self.0.fract() * pitch
     }
 }
 

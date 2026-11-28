@@ -36,10 +36,11 @@ internal const val PICTURE_REVEAL_MS = 240L
 /** Per-Activity Media3 adapter. JNI submits work and gets its completion as an event. */
 @Keep
 class ShieldPlayback(
-  private val activity: Activity,
+  private val activity: ShieldActivity,
   root: FrameLayout,
   guide: SurfaceView,
   private val hostId: Long,
+  isTelevision: Boolean,
 ) {
   private val main = Handler(Looper.getMainLooper())
   private val lifecycle = NativePlaybackLifecycleFence()
@@ -48,6 +49,7 @@ class ShieldPlayback(
     activity, placement, forceSilent = false,
     lifecycleFence = lifecycle,
   )
+  private val pictureInPicture = if (isTelevision) null else PictureInPicturePlayback(activity, controller)
 
   @Volatile private var destroyed = false
   private var latestGeneration = 0L
@@ -69,6 +71,7 @@ class ShieldPlayback(
       current.visibilityPaused = true
       current.focus.release()
     }
+    pictureInPicture?.setPlayback(PictureInPicturePlayback.Playback.NONE)
     activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
   }
 
@@ -76,10 +79,27 @@ class ShieldPlayback(
     destroyed = true
     main.removeCallbacksAndMessages(null)
     onActivityStopped()
+    pictureInPicture?.release()
     loaderGeneration = 0L
     binding = null
     retained = null
     controller.stopAll()
+  }
+
+  fun supportsPictureInPicture(): Boolean = pictureInPicture?.supported == true
+
+  fun canEnterPictureInPicture(): Boolean = pictureInPicture?.canEnter() == true
+
+  fun enterPictureInPicture(): Boolean = pictureInPicture?.enter() == true
+
+  fun enterPictureInPictureOnBack(): Boolean = pictureInPicture?.enterOnBack() == true
+
+  fun onUserLeaveHint() {
+    pictureInPicture?.onUserLeaveHint()
+  }
+
+  fun onPictureInPictureModeChanged(active: Boolean) {
+    controller.setPictureInPicture(active, retainPicture = retained != null)
   }
 
   fun startPlayback(
@@ -138,7 +158,7 @@ class ShieldPlayback(
         current.viewportRequest = request
         when {
           viewport == null -> {
-            placement.hideUntilPlaced()
+            if (!activity.isInPictureInPictureMode) placement.hideUntilPlaced()
             Result.ACCEPTED
           }
           live == null -> controller.setRetiredViewport(viewport).result()
@@ -173,7 +193,7 @@ class ShieldPlayback(
         }
         val applied = controller.setControls(current.presentation.identity, effective)
         if (applied) {
-          current.focus.setPlaying(!effective.paused)
+          setPlaying(current.focus, !effective.paused)
         }
         applied.result()
       }
@@ -376,7 +396,7 @@ class ShieldPlayback(
     }
     retained = null
     binding = Binding(presentation, focus)
-    focus.setPlaying(!controls.paused)
+    setPlaying(focus, !controls.paused)
     return true
   }
 
@@ -389,6 +409,9 @@ class ShieldPlayback(
       current.focus.release()
       binding = null
       retained = current.takeIf { retainPicture }
+      pictureInPicture?.setPlayback(
+        if (retainPicture) PictureInPicturePlayback.Playback.PAUSED else PictureInPicturePlayback.Playback.NONE,
+      )
     } else if (current == null && !retainPicture) {
       val previous = retained?.presentation
       // A replacement may have failed before it bound the player. Its clear
@@ -397,12 +420,20 @@ class ShieldPlayback(
           (previous.generation < presentation.generation && presentation.generation >= latestGeneration))) {
         controller.revealRetiredPicture()
         retained = null
+        pictureInPicture?.setPlayback(PictureInPicturePlayback.Playback.NONE)
       }
     }
     // Retire even an unbound generation. A timed-out start arriving after
     // cleanup cannot claim the player later.
     latestGeneration = maxOf(latestGeneration, presentation.generation)
     return true
+  }
+
+  private fun setPlaying(focus: PlaybackAudioFocus, playing: Boolean) {
+    focus.setPlaying(playing)
+    pictureInPicture?.setPlayback(
+      if (playing) PictureInPicturePlayback.Playback.PLAYING else PictureInPicturePlayback.Playback.PAUSED,
+    )
   }
 
   private fun signal(presentation: Presentation, signal: NativePlaybackSignal) {
@@ -643,7 +674,21 @@ private class ShieldPlaybackPlacement(
     reportBottom()
   }
 
-  override fun fillWindow(parent: ViewGroup, playerView: PlayerView) = Unit // TV has no PiP.
+  override fun fillWindow(parent: ViewGroup, playerView: PlayerView) {
+    val current = playerView.layoutParams as FrameLayout.LayoutParams
+    if (current.width != ViewGroup.LayoutParams.MATCH_PARENT ||
+        current.height != ViewGroup.LayoutParams.MATCH_PARENT ||
+        current.leftMargin != 0 || current.topMargin != 0) {
+      playerView.layoutParams = FrameLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+      )
+    }
+    playerView.translationX = 0f
+    playerView.visibility = View.VISIBLE
+    if (parent.getChildAt(parent.childCount - 1) !== playerView) playerView.bringToFront()
+    placed = true
+    pendingReveal?.also { pendingReveal = null }?.invoke()
+  }
 
   override fun unmount(parent: ViewGroup, playerView: PlayerView) {
     pendingReveal = null

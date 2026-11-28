@@ -1,7 +1,7 @@
 mod cell;
 mod rail;
 
-pub(crate) use rail::{RailViewport, rail_hit};
+pub(crate) use rail::{RailViewport, rail_hit, rail_scroll_hit};
 
 use chrono::{DateTime, FixedOffset, Local, TimeDelta, Utc};
 use gpui::{Div, div, linear_color_stop, linear_gradient, prelude::*, rgb, rgba};
@@ -18,7 +18,7 @@ use crate::channel_icons::{ChannelIcons, IconImage};
 
 use super::playing_marker::{PlayingMarker, Tint, mark_row};
 use super::{
-    DIM, FAINT, GUTTER, ICE, INK, Layout, MUTE, ON_ICE, SAIRA, TEXT, board,
+    DIM, FAINT, GUTTER, ICE, INK, Layout, MUTE, ON_ICE, Profile, SAIRA, TEXT, board,
     channel_icon::{Plate, family_icon, plate},
     clock_time,
 };
@@ -258,20 +258,33 @@ pub(crate) fn render(
 fn ruler(layout: Layout, frame: TimelineFrame, now: DateTime<FixedOffset>) -> Div {
     let ruler_height = layout.m.board.timeline.row_top;
     let start = frame.axis.starts_at();
+    let end = frame.axis.ends_at();
     let day = timeline_day_label(start.with_timezone(&Local).fixed_offset(), now);
-    let ticks = (0..4).map(|index| {
-        let instant = start + TimeDelta::minutes(index * 30);
-        layout
-            .rect(index as f32 * frame.track / 4., 12., frame.track / 4., 17.)
-            .border_l(layout.px(1.))
-            .border_color(rgba(FAINT))
-            .pl(layout.px(7.))
-            .child(
-                layout
-                    .text(SAIRA, 17., 17., 400.)
-                    .text_color(rgba(DIM))
-                    .child(clock_time(instant)),
-            )
+    let first_tick = if layout.profile == Profile::Tv {
+        start
+    } else {
+        frame.axis.first_tick()
+    };
+    let ticks = (0..4).filter_map(|index| {
+        let instant = first_tick.checked_add_signed(TimeDelta::minutes(index * 30))?;
+        if instant >= end {
+            return None;
+        }
+        let x = (instant - start).as_seconds_f64() / (end - start).as_seconds_f64()
+            * f64::from(frame.track);
+        Some(
+            layout
+                .rect(x as f32, 12., frame.track / 4., 17.)
+                .border_l(layout.px(1.))
+                .border_color(rgba(FAINT))
+                .pl(layout.px(7.))
+                .child(
+                    layout
+                        .text(SAIRA, 17., 17., 400.)
+                        .text_color(rgba(DIM))
+                        .child(clock_time(instant)),
+                ),
+        )
     });
     layout
         .rect(0., 0., board_width(layout), ruler_height)

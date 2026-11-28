@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use chrono::{DateTime, FixedOffset, Utc};
+use chrono::{DateTime, FixedOffset, TimeDelta, Utc};
 use sparrow_core::{
     CatalogGeneration, CatalogStatus, ChannelGroupFilter, ChannelGroupView, ChannelId, CoreError,
     GuideProgramme, GuideWindowChannel, Page,
@@ -258,6 +258,7 @@ pub struct GuideScreen {
     mode: BoardMode,
     zone: FocusZone,
     extended: bool,
+    viewing_instant: Option<DateTime<Utc>>,
     preview: Option<PreviewFocus>,
     focus_epoch: u64,
     viewport: VerticalViewport,
@@ -290,6 +291,7 @@ impl GuideScreen {
             },
             zone: FocusZone::None,
             extended: false,
+            viewing_instant: None,
             preview: None,
             focus_epoch: 0,
             viewport: VerticalViewport::default(),
@@ -665,8 +667,26 @@ impl GuideScreen {
         self.schedule_reads();
     }
 
+    /// Extends this Guide's reads to eight hours, retaining the visible rows
+    /// while the wider window loads. Returns whether the query window changed.
+    pub fn enable_extended_window(&mut self, now: DateTime<Utc>, offset: FixedOffset) -> bool {
+        self.extended = true;
+        self.set_clock(now, offset)
+    }
+
+    /// The selected time chip. `None` follows the Guide clock.
+    pub fn viewing_instant(&self) -> Option<DateTime<Utc>> {
+        self.viewing_instant
+    }
+
+    /// Selects a time chip without changing the query window.
+    pub fn set_viewing_instant(&mut self, instant: Option<DateTime<Utc>>, now: DateTime<Utc>) {
+        self.viewing_instant = instant.filter(|instant| *instant > now);
+    }
+
     /// Advances the Guide clock and reports whether it requested a new window.
     pub fn set_clock(&mut self, now: DateTime<Utc>, offset: FixedOffset) -> bool {
+        self.set_viewing_instant(self.viewing_instant, now);
         let window = GuideWindow::at(now, offset, self.extended);
         if self.window == window {
             return false;
@@ -1861,11 +1881,17 @@ impl GuideScreen {
 
     /// Pans the Timeline by whole half hours inside the loaded Guide window.
     pub fn pan_timeline(&mut self, half_hours: i64) -> bool {
+        TimeDelta::try_minutes(half_hours.saturating_mul(30))
+            .is_some_and(|delta| self.pan_timeline_by(delta))
+    }
+
+    /// Pans the Timeline by elapsed time, for continuous pointer input.
+    pub fn pan_timeline_by(&mut self, delta: TimeDelta) -> bool {
         let BoardMode::Timeline { axis, .. } = &mut self.mode else {
             return false;
         };
         let before = axis.starts_at();
-        axis.pan(half_hours);
+        axis.pan_by(delta);
         axis.starts_at() != before
     }
 

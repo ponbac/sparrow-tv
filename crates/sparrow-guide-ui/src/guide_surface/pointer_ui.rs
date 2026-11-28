@@ -19,7 +19,7 @@ use sparrow_tv_guide::{
 use super::{GuideSurface, TextTarget};
 use crate::{
     FormFactor,
-    guide_view::{self, Layout, SourceFocus},
+    guide_view::{self, Layout, Pointer, SourceFocus},
     search_flow::SearchFocus,
 };
 
@@ -193,6 +193,9 @@ impl GuideSurface {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.profile.pointer() != Some(Pointer::Fine) {
+            return;
+        }
         let moved = self.pointer.position.is_none_or(|last| {
             let delta = event.position - last;
             f32::from(delta.x).abs() + f32::from(delta.y).abs() > REVEAL_TRAVEL
@@ -324,7 +327,13 @@ impl GuideSurface {
             (dx, dy) = (dy, 0.);
         }
         let target = self.hit_test(window, event.position);
-        let point_y = f32::from(event.position.y) / layout.unit;
+        let point = [
+            f32::from(event.position.x) / layout.unit,
+            f32::from(event.position.y) / layout.unit,
+        ];
+        let sheet_left = layout.width - layout.sheet_width();
+        let pixels = matches!(event.delta, ScrollDelta::Pixels(_));
+        let timeline = self.screen.mode() == GuideMode::Timeline;
         let mut moved = false;
         match target {
             Some(HitTarget::Picture | HitTarget::Band) => {
@@ -336,59 +345,77 @@ impl GuideSurface {
                 }
                 self.reveal_player_controls(cx);
             }
-            Some(HitTarget::Chooser(_)) => {
-                if let Some(rows) = self.wheel_rows(dy, 64.) {
+            Some(HitTarget::Chooser(_)) | None
+                if self.screen.group_chooser().is_some() && point[0] >= sheet_left =>
+            {
+                if let Some(rows) = self.scroll_rows(dy, 64., pixels) {
                     self.group_viewport.scroll(rows);
                     moved = true;
                 }
             }
-            Some(HitTarget::Search(_)) => {
+            Some(HitTarget::Search(_)) | None
+                if matches!(target, Some(HitTarget::Search(_)))
+                    || (self.search.state().view() == SearchView::Desk
+                        && point[0] >= sheet_left) =>
+            {
                 let view = self.search.state().view();
                 let pitch = if view == SearchView::Desk { 82. } else { 58. };
-                if let Some(rows) = self.wheel_rows(dy, pitch) {
+                if let Some(rows) = self.scroll_rows(dy, pitch, pixels) {
                     self.search_viewport.scroll(view, rows);
                     moved = true;
                 }
             }
-            Some(HitTarget::Screen(ScreenFocus::GroupLane(_))) => match self.screen.mode() {
-                GuideMode::Now => {
-                    let travel = if dx != 0. { dx } else { dy };
-                    guide_view::lane::scroll_lane(
-                        layout,
-                        &self.screen,
-                        &mut self.now_lane,
-                        window,
-                        travel,
-                    );
+            Some(HitTarget::Screen(ScreenFocus::GroupLane(_))) | None
+                if timeline
+                    && (target.is_some()
+                        || (self.guide_shown()
+                            && guide_view::timeline::rail_scroll_hit(layout, point))) =>
+            {
+                if let Some(rows) = self.scroll_rows(dy, 48., pixels) {
+                    self.timeline_rail.scroll(rows);
                     moved = true;
                 }
-                GuideMode::Timeline => {
-                    if let Some(rows) = self.wheel_rows(dy, 48.) {
-                        self.timeline_rail.scroll(layout, &self.screen, rows);
-                        moved = true;
-                    }
-                }
-            },
+            }
+            Some(HitTarget::Screen(ScreenFocus::GroupLane(_))) => {
+                let travel = if dx != 0. { dx } else { dy };
+                guide_view::lane::scroll_lane(
+                    layout,
+                    &self.screen,
+                    &mut self.now_lane,
+                    window,
+                    travel,
+                );
+                moved = true;
+            }
             Some(HitTarget::Screen(ScreenFocus::Board(_) | ScreenFocus::TimelineBoard(_)))
             | None
                 if self.guide_shown()
-                    && point_y >= layout.m.board.board(self.screen.mode()).top =>
+                    && point[1] >= layout.m.board.board(self.screen.mode()).top =>
             {
                 moved = self.screen.scroll_by(dy);
-                if self.screen.mode() == GuideMode::Timeline && dx != 0. {
-                    self.pointer.pan += dx;
-                    let half_hour = guide_view::timeline::track_width(layout) / 4.;
-                    let steps = (self.pointer.pan / half_hour).trunc();
-                    if steps != 0. {
-                        self.pointer.pan -= steps * half_hour;
-                        moved |= self.screen.pan_timeline(steps as i64);
+                if timeline && dx != 0. {
+                    let half_hour = (guide_view::timeline::track_width(layout) / 4.).max(1.);
+                    if pixels {
+                        let millis = (f64::from(dx / half_hour) * 1_800_000.).round() as i64;
+                        moved |= self
+                            .screen
+                            .pan_timeline_by(chrono::TimeDelta::milliseconds(millis));
+                    } else {
+                        self.pointer.pan += dx;
+                        let steps = (self.pointer.pan / half_hour).trunc();
+                        if steps != 0. {
+                            self.pointer.pan -= steps * half_hour;
+                            moved |= self.screen.pan_timeline(steps as i64);
+                        }
                     }
                 }
             }
             _ => {}
         }
         if moved {
-            self.pointer.hover = self.hit_test(window, event.position);
+            if layout.profile.pointer() == Some(Pointer::Fine) {
+                self.pointer.hover = self.hit_test(window, event.position);
+            }
             self.sync_view(cx);
         }
     }
@@ -402,12 +429,14 @@ impl GuideSurface {
             && self.search.state().view() == SearchView::Closed
     }
 
-    /// Spends wheel travel on whole rows of `pitch` units.
-    fn wheel_rows(&mut self, travel: f32, pitch: f32) -> Option<isize> {
+    fn scroll_rows(&mut self, travel: f32, pitch: f32, pixels: bool) -> Option<f32> {
+        if pixels {
+            return (travel != 0.).then_some(travel / pitch);
+        }
         self.pointer.rows += travel;
         let rows = (self.pointer.rows / pitch).trunc();
         self.pointer.rows -= rows * pitch;
-        (rows != 0.).then_some(rows as isize)
+        (rows != 0.).then_some(rows)
     }
 
     /// Desktop keyboard shortcuts. Returns whether the key was taken.
@@ -552,7 +581,7 @@ impl GuideSurface {
         true
     }
 
-    /// Keeps the window's fullscreen in step with the picture's on Desktop.
+    /// Keeps the window or the system bars in step with the fullscreen picture.
     /// A compositor that leaves fullscreen on its own keeps the picture fullscreen.
     pub(super) fn sync_window_fullscreen(&mut self, window: &mut Window) {
         if !self.pointer_host() {
@@ -561,13 +590,20 @@ impl GuideSurface {
         let picture = self.playback.fullscreen();
         match (self.window_fullscreen, picture) {
             (WindowFullscreen::Guide, true) => {
-                let ours = !window.is_fullscreen();
+                let handheld = self.host.form_factor() == FormFactor::Handheld;
+                let ours = !handheld && !window.is_fullscreen();
+                if handheld {
+                    self.host.set_immersive(true);
+                }
                 if ours {
                     window.toggle_fullscreen();
                 }
                 self.window_fullscreen = WindowFullscreen::Picture { ours };
             }
             (WindowFullscreen::Picture { ours }, false) => {
+                if self.host.form_factor() == FormFactor::Handheld {
+                    self.host.set_immersive(false);
+                }
                 if ours && window.is_fullscreen() {
                     window.toggle_fullscreen();
                 }

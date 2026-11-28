@@ -19,7 +19,9 @@ use super::{
     band::{BAND_TOP, TOOLBAR_HEIGHT, panel_bounds},
     board::quality_chip,
     channel_icon::{Plate, plate},
-    clock_time, programme_title,
+    clock_time,
+    layout::RowScroll,
+    programme_title,
 };
 
 const SEARCH: &[u8] = include_bytes!("../../assets/icons/search.svg");
@@ -59,8 +61,8 @@ pub(in super::super) struct SearchPanel<'a> {
 }
 
 pub(in super::super) struct SearchViewport {
-    inline_first: usize,
-    desk_first: usize,
+    inline_scroll: RowScroll,
+    desk_scroll: RowScroll,
     /// Cleared by the scroll wheel; the next key press reveals focus again.
     follow_focus: bool,
 }
@@ -68,21 +70,21 @@ pub(in super::super) struct SearchViewport {
 impl Default for SearchViewport {
     fn default() -> Self {
         Self {
-            inline_first: 0,
-            desk_first: 0,
+            inline_scroll: RowScroll::default(),
+            desk_scroll: RowScroll::default(),
             follow_focus: true,
         }
     }
 }
 
 impl SearchViewport {
-    pub(in super::super) fn scroll(&mut self, view: SearchView, rows: isize) {
-        let first = match view {
-            SearchView::Inline => &mut self.inline_first,
-            SearchView::Desk => &mut self.desk_first,
+    pub(in super::super) fn scroll(&mut self, view: SearchView, rows: f32) {
+        let scroll = match view {
+            SearchView::Inline => &mut self.inline_scroll,
+            SearchView::Desk => &mut self.desk_scroll,
             SearchView::Closed => return,
         };
-        *first = first.saturating_add_signed(rows);
+        scroll.advance(rows);
         self.follow_focus = false;
     }
 
@@ -116,12 +118,17 @@ pub(in super::super) fn search_hit(
                 });
             }
             let rows = inline_rows(panel.state, panel.display_term);
-            let offset = y - INLINE_POPUP_Y - (INLINE_PADDING - 1.);
+            let list_y = y - INLINE_POPUP_Y;
+            if !(0. ..inline_height(layout, rows.len())).contains(&list_y) {
+                return Some(SearchFocus::Close);
+            }
+            let offset =
+                list_y - (INLINE_PADDING - 1.) + viewport.inline_scroll.clipped(INLINE_PITCH);
             let slot = (offset / INLINE_PITCH).floor();
             if rows.is_empty() || slot < 0. || offset - slot * INLINE_PITCH > INLINE_ROW_HEIGHT {
                 return Some(SearchFocus::Close);
             }
-            rows.get(viewport.inline_first + slot as usize)
+            rows.get(viewport.inline_scroll.first() + slot as usize)
                 .map_or(Some(SearchFocus::Close), InlineRow::focus)
         }
         SearchView::Desk => {
@@ -148,7 +155,8 @@ pub(in super::super) fn search_hit(
                 return None;
             }
             let rows = panel.state.channels();
-            let index = viewport.desk_first + (offset / DESK_PITCH) as usize;
+            let offset = offset + viewport.desk_scroll.clipped(DESK_PITCH);
+            let index = viewport.desk_scroll.first() + (offset / DESK_PITCH) as usize;
             match rows.get(index) {
                 Some(row) if offset % DESK_PITCH <= DESK_ROW_HEIGHT => {
                     Some(SearchFocus::Channel(row.channel().number()))
@@ -180,14 +188,14 @@ pub(in super::super) fn search_panel<'a>(
             return (None, Vec::new());
         }
         SearchView::Inline => {
-            viewport.desk_first = 0;
+            viewport.desk_scroll = RowScroll::default();
             let follow = viewport.follow_focus;
-            inline(layout, &panel, &mut viewport.inline_first, follow, icons)
+            inline(layout, &panel, &mut viewport.inline_scroll, follow, icons)
         }
         SearchView::Desk => {
-            viewport.inline_first = 0;
+            viewport.inline_scroll = RowScroll::default();
             let follow = viewport.follow_focus;
-            desk(layout, &panel, &mut viewport.desk_first, follow, icons)
+            desk(layout, &panel, &mut viewport.desk_scroll, follow, icons)
         }
     };
     (Some(surface), visible_icons)
@@ -247,7 +255,7 @@ pub(in super::super) fn search_editor_rect(
 fn inline<'a>(
     layout: Layout,
     panel: &SearchPanel<'a>,
-    first: &mut usize,
+    scroll: &mut RowScroll,
     follow_focus: bool,
     icons: &ChannelIcons,
 ) -> (Div, Vec<&'a ChannelIcon>) {
@@ -255,11 +263,11 @@ fn inline<'a>(
     let geometry = InlineGeometry::new(layout, panel.docked);
     let rows = inline_rows(panel.state, panel.display_term);
     let visible_icons = if rows.is_empty() {
-        *first = 0;
+        *scroll = RowScroll::default();
         Vec::new()
     } else {
-        let slice = inline_slice(layout, follow_focus.then_some(panel.focus), &rows, *first);
-        *first = slice.rendered.start;
+        let slice = inline_slice(layout, follow_focus.then_some(panel.focus), &rows, *scroll);
+        *scroll = slice.scroll;
         let visible_icons = rows[slice.visible.clone()]
             .iter()
             .filter_map(InlineRow::icon)
@@ -366,28 +374,36 @@ fn inline_rows<'a>(state: &'a SearchState, term: &str) -> Vec<InlineRow<'a>> {
 
 struct SearchSlice {
     height: f32,
+    scroll: RowScroll,
     visible: Range<usize>,
     rendered: Range<usize>,
+}
+
+fn inline_height(layout: Layout, row_count: usize) -> f32 {
+    let all_rows = row_count as f32 * INLINE_PITCH - 2.;
+    let available = (layout.height - INLINE_POPUP_Y).clamp(0., 720.);
+    (all_rows + INLINE_PADDING * 2.).min(available)
 }
 
 fn inline_slice(
     layout: Layout,
     focus: Option<SearchFocus>,
     rows: &[InlineRow<'_>],
-    mut first: usize,
+    mut scroll: RowScroll,
 ) -> SearchSlice {
-    let all_rows = rows.len() as f32 * INLINE_PITCH - 2.;
-    let available = (layout.height - INLINE_POPUP_Y).clamp(0., 720.);
-    let height = (all_rows + INLINE_PADDING * 2.).min(available);
+    let height = inline_height(layout, rows.len());
     let capacity = ((height - INLINE_PADDING * 2. + 2.) / INLINE_PITCH)
         .floor()
         .max(1.) as usize;
     let target = focus.and_then(|focus| rows.iter().position(|row| row.focus() == Some(focus)));
-    reveal(&mut first, rows.len(), capacity, target);
-    let visible_rows = ((height - (INLINE_PADDING - 1.)) / INLINE_PITCH).ceil() as usize;
-    let rendered_end = (first + capacity + 1).min(rows.len());
+    scroll.reveal(rows.len(), capacity, target);
+    let first = scroll.first();
+    let clipped = scroll.clipped(INLINE_PITCH);
+    let visible_rows = ((height - (INLINE_PADDING - 1.) + clipped) / INLINE_PITCH).ceil() as usize;
+    let rendered_end = (first + capacity + 1 + usize::from(clipped > 0.)).min(rows.len());
     SearchSlice {
         height,
+        scroll,
         visible: first..(first + visible_rows).min(rendered_end),
         rendered: first..rendered_end,
     }
@@ -413,7 +429,8 @@ fn inline_popup(
         .border_color(rgba(FAINT))
         .overflow_hidden()
         .children(rows[slice.rendered].iter().enumerate().map(|(row, item)| {
-            let y = INLINE_PADDING - 1. + row as f32 * INLINE_PITCH;
+            let y = INLINE_PADDING - 1. + row as f32 * INLINE_PITCH
+                - slice.scroll.clipped(INLINE_PITCH);
             let row_rect = layout.rect(
                 INLINE_PADDING - 1.,
                 y,
@@ -515,7 +532,7 @@ fn inline_row(
 fn desk<'a>(
     layout: Layout,
     panel: &SearchPanel<'a>,
-    first: &mut usize,
+    scroll: &mut RowScroll,
     follow_focus: bool,
     icons: &ChannelIcons,
 ) -> (Div, Vec<&'a ChannelIcon>) {
@@ -544,7 +561,7 @@ fn desk<'a>(
             ))
         });
 
-    let (list, visible_icons) = desk_list(layout, panel, first, follow_focus, icons);
+    let (list, visible_icons) = desk_list(layout, panel, scroll, follow_focus, icons);
     let sheet = layout
         .rect(desk_x(layout), 0., layout.sheet_width(), layout.height)
         .bg(rgb(PANEL))
@@ -646,7 +663,7 @@ fn desk_slice(
     focus: Option<SearchFocus>,
     rows: &[SearchChannelRow],
     has_more: bool,
-    mut first: usize,
+    mut scroll: RowScroll,
 ) -> SearchSlice {
     let height = (layout.height - DESK_LIST_Y).max(0.);
     let capacity = ((height - DESK_FOOTER_SPACE + 4.) / DESK_PITCH)
@@ -659,10 +676,12 @@ fn desk_slice(
         Some(SearchFocus::More) if has_more => Some(rows.len()),
         _ => None,
     };
-    reveal(&mut first, rows.len() + 1, capacity, target);
-    let visible_rows = (height / DESK_PITCH).ceil() as usize;
+    scroll.reveal(rows.len() + 1, capacity, target);
+    let first = scroll.first();
+    let visible_rows = ((height + scroll.clipped(DESK_PITCH)) / DESK_PITCH).ceil() as usize;
     SearchSlice {
         height,
+        scroll,
         visible: first..(first + visible_rows).min(rows.len()),
         rendered: first..(first + visible_rows + 1).min(rows.len()),
     }
@@ -671,7 +690,7 @@ fn desk_slice(
 fn desk_list<'a>(
     layout: Layout,
     panel: &SearchPanel<'a>,
-    first: &mut usize,
+    scroll: &mut RowScroll,
     follow_focus: bool,
     icons: &ChannelIcons,
 ) -> (Div, Vec<&'a ChannelIcon>) {
@@ -686,7 +705,7 @@ fn desk_list<'a>(
         .overflow_hidden();
     let status = panel.state.status();
     if status != SearchStatus::Ready {
-        *first = 0;
+        *scroll = RowScroll::default();
         let message = status_text(status, SearchView::Desk).unwrap_or_default();
         let retry = match status {
             SearchStatus::Failed => Some("Try again"),
@@ -724,16 +743,17 @@ fn desk_list<'a>(
         follow_focus.then_some(panel.focus),
         rows,
         panel.state.has_more(),
-        *first,
+        *scroll,
     );
-    *first = slice.rendered.start;
-    let footer_y = (rows.len() - *first) as f32 * DESK_PITCH + 8.;
+    *scroll = slice.scroll;
+    let clipped = scroll.clipped(DESK_PITCH);
+    let footer_y = (rows.len() - scroll.first()) as f32 * DESK_PITCH + 8. - clipped;
     let visible_icons = rows[slice.visible]
         .iter()
         .filter_map(|hit| hit.channel().icon())
         .collect();
     let list = list.children(rows[slice.rendered].iter().enumerate().map(|(index, hit)| {
-        desk_row(layout, panel, hit, index as f32 * DESK_PITCH, icons)
+        desk_row(layout, panel, hit, index as f32 * DESK_PITCH - clipped, icons)
     }))
     .when(footer_y < height, |list| {
         list.child(
@@ -987,13 +1007,6 @@ fn action_icon(layout: Layout, icon: &'static [u8], ink: gpui::Rgba) -> Div {
         .child(layout.icon(icon, 21., ink))
 }
 
-fn reveal(first: &mut usize, count: usize, capacity: usize, target: Option<usize>) {
-    *first = (*first).min(count.saturating_sub(capacity));
-    if let Some(target) = target {
-        *first = (*first).clamp((target + 1).saturating_sub(capacity), target);
-    }
-}
-
 fn group_name(source_name: &str) -> &str {
     if source_name.is_empty() {
         "Ungrouped"
@@ -1031,7 +1044,7 @@ mod tests {
     use crate::guide_view::playback::{FullscreenFrame, picture_rect};
 
     use super::{
-        INLINE_POPUP_Y, InlineGeometry, InlineRow, Layout, SearchFocus, inline_slice,
+        INLINE_POPUP_Y, InlineGeometry, InlineRow, Layout, RowScroll, SearchFocus, inline_slice,
         search_editor_rect,
     };
     use crate::guide_view::Profile;
@@ -1067,7 +1080,7 @@ mod tests {
             assert_eq!(idle.x + idle.width, docked.x + docked.width);
             assert!(docked.x * layout.unit * pixel_scale > (picture_x + picture_width) as f32);
             assert_eq!(
-                !inline_slice(layout, Some(SearchFocus::Desk), &rows, 0)
+                !inline_slice(layout, Some(SearchFocus::Desk), &rows, RowScroll::default())
                     .visible
                     .is_empty(),
                 has_results,
@@ -1096,7 +1109,7 @@ mod tests {
             height: INLINE_POPUP_Y + 124.,
             ..Layout::new(Profile::Tv, size(px(1920.), px(1080.)))
         };
-        let slice = inline_slice(short, Some(SearchFocus::Retry), &rows, 0);
+        let slice = inline_slice(short, Some(SearchFocus::Retry), &rows, RowScroll::default());
         assert_eq!(slice.visible, 1..3);
         assert_eq!(slice.rendered, 1..3);
 
@@ -1104,7 +1117,12 @@ mod tests {
             height: INLINE_POPUP_Y,
             ..short
         };
-        let slice = inline_slice(clipped, Some(SearchFocus::Retry), &rows, 0);
+        let slice = inline_slice(
+            clipped,
+            Some(SearchFocus::Retry),
+            &rows,
+            RowScroll::default(),
+        );
         assert!(slice.visible.is_empty());
         assert_eq!(slice.rendered, 1..3);
     }

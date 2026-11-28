@@ -110,6 +110,15 @@ impl GuideSurface {
             .is_some_and(|source| matches!(source.request, Some(FieldRequest::Edit(..))))
     }
 
+    pub(super) fn retire_source_editor(&mut self) {
+        if let Some(source) = &mut self.source
+            && let Some(FieldRequest::Edit(generation, _)) = source.request
+        {
+            source.request = None;
+            self.host.close_editor(generation);
+        }
+    }
+
     /// An edit or clear is in flight. Back may reach the host before the
     /// Activity mounts its editor, and must not close the draft then.
     pub(super) fn source_request_pending(&self) -> bool {

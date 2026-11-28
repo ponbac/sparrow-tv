@@ -3,9 +3,11 @@ package xyz.ponbac.sparrow.shield;
 import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
 import android.app.Activity;
+import android.app.UiModeManager;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.res.Configuration;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -33,6 +35,7 @@ public final class ShieldActivity extends Activity implements SurfaceHolder.Call
     private SourceDraft sourceDraft;
     private BackCallbacks backCallbacks;
     private ShieldPlayback playback;
+    private HandheldWindow handheld;
     private boolean started;
     private boolean hostKeyRouting;
     private OpeningGuideView openingGuide;
@@ -45,6 +48,9 @@ public final class ShieldActivity extends Activity implements SurfaceHolder.Call
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         hostId = NEXT_HOST_ID.getAndIncrement();
+        UiModeManager uiMode = getSystemService(UiModeManager.class);
+        boolean isTelevision = uiMode != null
+                && uiMode.getCurrentModeType() == Configuration.UI_MODE_TYPE_TELEVISION;
 
         FrameLayout root = new FrameLayout(this);
         root.setFocusableInTouchMode(true);
@@ -52,7 +58,7 @@ public final class ShieldActivity extends Activity implements SurfaceHolder.Call
         view.getHolder().addCallback(this);
         root.addView(view, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
-        playback = new ShieldPlayback(this, root, view, hostId);
+        playback = new ShieldPlayback(this, root, view, hostId, isTelevision);
         editor = new TvTextEditor(root, this::updateBackCallbacks);
         sourceDraft = new SourceDraft(editor, new SourceDraft.Listener() {
             @Override
@@ -74,9 +80,11 @@ public final class ShieldActivity extends Activity implements SurfaceHolder.Call
             backCallbacks = new BackCallbacks(getOnBackInvokedDispatcher(), this::routeBack, editor::cancel);
         }
         nativeStart(getApplicationContext(), getDataDir().getAbsolutePath());
-        nativeRegisterHost(hostId);
+        nativeRegisterHost(hostId, isTelevision, playback.supportsPictureInPicture());
         updateMotionPreference();
-        if (hostId == 1) {
+        if (!isTelevision) {
+            handheld = new HandheldWindow(this, root, view);
+        } else if (hostId == 1) {
             openingGuide = new OpeningGuideView(this);
             root.addView(openingGuide);
         }
@@ -122,6 +130,25 @@ public final class ShieldActivity extends Activity implements SurfaceHolder.Call
         playback.setAmbientResumed(false);
         nativePause(hostId);
         super.onPause();
+    }
+
+    @Override
+    protected void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        playback.onUserLeaveHint();
+    }
+
+    @Override
+    public void onPictureInPictureModeChanged(boolean active, Configuration configuration) {
+        super.onPictureInPictureModeChanged(active, configuration);
+        if (handheld != null) {
+            if (active) {
+                editor.retirePendingRequests();
+                editor.cancel();
+            }
+            playback.onPictureInPictureModeChanged(active);
+            nativePictureInPicture(hostId, active);
+        }
     }
 
     @Override
@@ -313,10 +340,40 @@ public final class ShieldActivity extends Activity implements SurfaceHolder.Call
 
     public void finishFromNative(long id) {
         postForHost(id, () -> {
-            if (!editor.isOpen()) {
+            if (!editor.isOpen() && !playback.enterPictureInPictureOnBack()) {
                 finish();
             }
         });
+    }
+
+    public void setImmersive(long id, boolean immersive) {
+        postForHost(id, () -> {
+            if (handheld != null) {
+                handheld.setImmersive(immersive);
+            }
+        });
+    }
+
+    public boolean enterPictureInPicture(long id) {
+        if (id != hostId || !playback.canEnterPictureInPicture()) {
+            return false;
+        }
+        postForHost(id, playback::enterPictureInPicture);
+        return true;
+    }
+
+    void sendPictureInPictureKey(int code) {
+        if (started && isInPictureInPictureMode()) {
+            nativeHostKey(hostId, code, KeyEvent.ACTION_DOWN, 0, 0);
+        }
+    }
+
+    void sendInsets(int top, int right, int bottom, int left, int ime) {
+        nativeInsets(hostId, top, right, bottom, left, ime, getResources().getDisplayMetrics().density);
+    }
+
+    boolean sendTouch(int action, int index, int[] ids, float[] positions) {
+        return nativeTouch(action, index, ids, positions);
     }
 
     private void postForHost(long id, Runnable operation) {
@@ -410,7 +467,10 @@ public final class ShieldActivity extends Activity implements SurfaceHolder.Call
     }
 
     private native void nativeStart(Context applicationContext, String dataDir);
-    private native void nativeRegisterHost(long id);
+    private native void nativeRegisterHost(long id, boolean television, boolean supportsPictureInPicture);
+    private native void nativeInsets(long id, int top, int right, int bottom, int left, int ime, float density);
+    private native boolean nativeTouch(int action, int index, int[] ids, float[] positions);
+    private native void nativePictureInPicture(long id, boolean active);
     private native void nativeCatalogActive(long id, boolean active);
     private native void nativeSurface(long id, Surface surface, float density);
     private native void nativeReleaseSurface(long id);

@@ -133,6 +133,7 @@ pub(super) struct Owner {
     started_hosts: Vec<TvHostId>,
     pub(super) pending_viewports: Arc<PendingViewports>,
     viewports: HashMap<TvHostId, Viewports>,
+    viewport_pending: bool,
     last_host: Option<TvHostId>,
     zap_at: Option<Instant>,
     retry_at: Option<Instant>,
@@ -164,6 +165,7 @@ impl Owner {
             started_hosts: Vec::new(),
             pending_viewports: Arc::default(),
             viewports: HashMap::new(),
+            viewport_pending: false,
             last_host: None,
             zap_at: None,
             retry_at: None,
@@ -372,6 +374,9 @@ impl Owner {
 
     /// Runs reconciliation work that can change the inputs of the next loop.
     async fn drive(&mut self) -> bool {
+        if self.viewport_pending {
+            self.update_viewport().await;
+        }
         if self.session.as_ref().is_some_and(|session| {
             self.snapshot.phase == Phase::Stopping
                 || self
@@ -1339,11 +1344,15 @@ impl Owner {
     }
 
     async fn update_viewport(&mut self) {
+        self.viewport_pending = false;
         let Some(session) = self.visible_picture_session() else {
             return;
         };
         let live = session.bound;
         if self.cleanup_is_blocked() || (live && self.snapshot.transport_token.is_none()) {
+            // The next reconciliation uses the latest bounds once the picture
+            // can move again. A new presentation starts at those bounds itself.
+            self.viewport_pending = true;
             return;
         }
         let Some(key) = session.picture.clone() else {

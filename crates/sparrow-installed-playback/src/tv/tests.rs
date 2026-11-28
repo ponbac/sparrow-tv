@@ -617,6 +617,30 @@ async fn a_fullscreen_pause_can_move_the_exact_retained_picture_back_to_the_dock
 }
 
 #[tokio::test]
+async fn a_viewport_deferred_until_the_transport_retires_moves_the_retained_picture() {
+    let (fixture, mut owner) = setup();
+    visible(&mut owner, 1).await;
+    let key = tune(&mut owner, target(1)).await;
+    owner.command(Command::Fullscreen).await;
+
+    owner.cancel_deadlines();
+    owner.command(Command::ExitFullscreen).await;
+    assert!(
+        fixture
+            .calls()
+            .ends_with(&[Call::Viewport(key.clone(), Some(true))])
+    );
+
+    owner.command(Command::Pause).await;
+    owner.drive().await;
+    assert_eq!(owner.snapshot.phase, Phase::Paused(TvPauseCause::User));
+    assert!(fixture.calls().ends_with(&[
+        Call::StopPicture(TvPresentationStop::RetainPicture),
+        Call::Viewport(key, Some(false)),
+    ]));
+}
+
+#[tokio::test]
 async fn finishing_an_activity_clears_the_retired_picture_and_stops_a_user_paused_session() {
     let (fixture, mut owner) = setup();
     visible(&mut owner, 1).await;

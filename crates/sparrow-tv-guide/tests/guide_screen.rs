@@ -15,6 +15,30 @@ use sparrow_tv_guide::{
     timeline_focus::TimelineFocus,
 };
 
+#[test]
+fn time_chip_selection_expires_without_opening_another_window() {
+    let now = clock();
+    let offset = local_offset();
+    let mut screen = GuideScreen::new(now, offset, HashSet::new());
+    let ordinary = screen.displayed_window();
+    assert!(screen.enable_extended_window(now, offset));
+    let extended = screen.displayed_window();
+    assert_eq!(extended.starts_at(), ordinary.starts_at());
+    assert_eq!(
+        extended.ends_at() - extended.starts_at(),
+        TimeDelta::hours(8)
+    );
+
+    let chosen = extended.starts_at() + TimeDelta::hours(1);
+    screen.set_viewing_instant(Some(chosen), now);
+    assert_eq!(screen.viewing_instant(), Some(chosen));
+    assert_eq!(screen.displayed_window(), extended);
+    screen.set_clock(chosen - TimeDelta::seconds(1), offset);
+    assert_eq!(screen.viewing_instant(), Some(chosen));
+    screen.set_clock(chosen, offset);
+    assert_eq!(screen.viewing_instant(), None);
+}
+
 #[tokio::test]
 async fn focus_reveals_only_the_pixels_needed_to_clear_the_bottom_margin() {
     let fixture = support::open(catalog(30), None).await;

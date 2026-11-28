@@ -127,6 +127,7 @@ dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib:2.2.10")
     implementation("androidx.annotation:annotation:1.10.0")
     implementation("androidx.annotation:annotation-experimental:1.4.1")
+    implementation("androidx.core:core:1.13.1")
     implementation("androidx.media3:media3-exoplayer:$media3Version")
     implementation("androidx.media3:media3-ui:$media3Version")
     // The bundled audio decoder tracks the Media3 version in both Android hosts.

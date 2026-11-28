@@ -4,9 +4,61 @@ use chrono::{DateTime, FixedOffset, Offset, TimeDelta, TimeZone, Utc};
 use sparrow_core::{ChannelQuery, GuideProgramme, GuideWindowQuery, PageLimit, PageRequest};
 use sparrow_tv_guide::time::{
     GuideWindow, ProgrammeCellAppearance, ProgrammeCellContent, ProgrammeFocus, ProgrammePlacement,
-    ProgrammeStep, Timeline, elapsed_fraction, minutes_left, next_after, programme_at,
-    timeline_day_label,
+    ProgrammeStep, Timeline, elapsed_fraction, minutes_left, next_after, next_full_local_hours,
+    programme_at, timeline_day_label,
 };
+
+#[test]
+fn time_chips_offer_six_strictly_future_local_hours() {
+    let now = Utc.with_ymd_and_hms(2026, 1, 9, 12, 15, 0).unwrap();
+    let hours = next_full_local_hours(now, &chrono_tz::Asia::Kathmandu);
+    assert_eq!(
+        hours,
+        (1..=6)
+            .map(|hour| now + TimeDelta::hours(hour))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn time_chips_skip_local_hours_lost_to_spring_forward() {
+    let now = Utc.with_ymd_and_hms(2026, 3, 8, 5, 15, 0).unwrap();
+    let labels: Vec<_> = next_full_local_hours(now, &chrono_tz::America::New_York)
+        .into_iter()
+        .map(|instant| {
+            instant
+                .with_timezone(&chrono_tz::America::New_York)
+                .format("%H:%M")
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        labels,
+        ["01:00", "03:00", "04:00", "05:00", "06:00", "07:00"]
+    );
+}
+
+#[test]
+fn time_chips_include_both_instants_of_a_repeated_local_hour() {
+    let zone = chrono_tz::America::New_York;
+    let now = Utc.with_ymd_and_hms(2026, 11, 1, 4, 15, 0).unwrap();
+    let hours = next_full_local_hours(now, &zone);
+    let label =
+        |instant: DateTime<Utc>| instant.with_timezone(&zone).format("%H:%M %z").to_string();
+    assert_eq!(label(hours[0]), "01:00 -0400");
+    assert_eq!(label(hours[1]), "01:00 -0500");
+    assert_eq!(hours[1] - hours[0], TimeDelta::hours(1));
+    assert_eq!(next_full_local_hours(hours[0], &zone)[0], hours[1]);
+}
+
+#[test]
+fn time_chips_realign_after_a_half_hour_clock_change() {
+    let zone = chrono_tz::Australia::Lord_Howe;
+    let now = Utc.with_ymd_and_hms(2026, 10, 3, 14, 0, 0).unwrap();
+    let hours = next_full_local_hours(now, &zone);
+    assert_eq!(hours[0], now + TimeDelta::minutes(30));
+    assert_eq!(hours[1], now + TimeDelta::hours(2));
+}
 
 #[test]
 fn windows_follow_local_half_hours_even_with_a_quarter_hour_offset() {

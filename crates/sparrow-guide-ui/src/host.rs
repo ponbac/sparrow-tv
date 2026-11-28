@@ -37,9 +37,31 @@ pub trait GuideHost: TextEditorHost {
     fn id(&self) -> u64;
     /// Selects the Guide's layout profile and input model.
     fn form_factor(&self) -> FormFactor;
+    fn initial_insets(&self) -> Insets {
+        Insets::default()
+    }
+    fn set_immersive(&self, _immersive: bool) {}
+    fn supports_picture_in_picture(&self) -> bool {
+        false
+    }
+    /// Returns whether the host accepted a request to enter picture-in-picture.
+    fn enter_picture_in_picture(&self) -> bool {
+        false
+    }
     fn guide_painted(&self) {}
     fn finish(&self, window: &mut Window);
     fn copy_diagnostics(&self, target: ClipboardTarget, text: &str, cx: &mut App) -> bool;
+}
+
+/// Safe-area edges and the IME's bottom occlusion, in logical pixels.
+/// The effective bottom occlusion is the greater of `bottom` and `ime`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Insets {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
+    pub ime: f32,
 }
 
 /// Playback integration shared by the catalog worker and guide windows.
@@ -71,6 +93,8 @@ pub trait PlaybackHost: Send + Sync {
 
 pub enum HostEvent {
     Presented,
+    Insets(Insets),
+    PictureInPicture(bool),
     Back,
     Key {
         key: HostKey,
