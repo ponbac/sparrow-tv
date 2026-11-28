@@ -141,6 +141,57 @@ fn desktop_metrics(columns: usize, surface_height: f32) -> BoardMetrics {
 }
 
 #[tokio::test]
+async fn wide_desktop_loads_pages_to_fill_the_viewport() {
+    let mut m3u = "#EXTM3U\n".to_owned();
+    for family in 1..=17 {
+        let variants = if family <= 6 {
+            &["SD", "HD", "FHD"][..]
+        } else {
+            &["SD", "HD"][..]
+        };
+        for quality in variants {
+            writeln!(
+                m3u,
+                "#EXTINF:-1 group-title=\"Local\",Family {family} {quality}\nhttps://fixture.invalid/{family}-{quality}.ts"
+            )
+            .unwrap();
+        }
+    }
+    m3u.push_str(catalog(160).strip_prefix("#EXTM3U\n").unwrap());
+    let fixture = support::open(m3u, None).await;
+    let core = fixture.core();
+    let wide = desktop_metrics(5, 1260.);
+
+    for initial_columns in [2, 5] {
+        let mut screen = GuideScreen::new(clock(), local_offset(), HashSet::new());
+        screen.set_board_metrics(desktop_metrics(initial_columns, wide.surface_height));
+        screen.catalog_status(&core.status());
+        for read in screen.take_reads() {
+            match read {
+                GuideRead::Groups(request) => {
+                    let result = core.list_groups(request.query().clone());
+                    screen.groups_completed(request, result);
+                }
+                GuideRead::Guide(request) => complete_guide(&mut screen, core, request),
+                GuideRead::Status => panic!("expected initial catalog pages"),
+            }
+        }
+        assert_eq!(screen.families().len(), 17);
+        assert_eq!(screen.focus(), channel(0));
+        if initial_columns == 2 {
+            assert!(screen.take_reads().is_empty());
+            screen.set_board_metrics(wide);
+        }
+        let continuation = guide_request(&mut screen);
+        assert!(continuation.query().channels().page().cursor().is_some());
+        complete_guide(&mut screen, core, continuation);
+        assert!(screen.visible_families(0).end < screen.families().len());
+        assert_eq!(screen.page_status(), Some(PageStatus::Ready));
+        assert!(screen.take_reads().is_empty());
+    }
+}
+
+#[tokio::test]
 async fn desktop_grids_step_focus_by_their_column_count() {
     let fixture = support::open(catalog(30), None).await;
     for columns in [2, 4] {

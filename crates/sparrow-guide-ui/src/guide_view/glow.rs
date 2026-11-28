@@ -1,13 +1,14 @@
 //! A bilinearly stretched sprite replaces a full-screen analytical shadow.
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
-use gpui::{Div, RenderImage, Rgba, canvas, prelude::*};
+use gpui::{Div, RenderImage, Rgba, bounds, canvas, point, prelude::*, size};
 use image::{Frame, RgbaImage};
 
 use super::Layout;
 
 const WIDTH: u32 = 96;
 const HEIGHT: u32 = 54;
+const PAD: u32 = 2;
 
 #[derive(Clone, Default)]
 pub(super) struct Glow(Rc<RefCell<Option<Sprite>>>);
@@ -69,6 +70,20 @@ fn erf(v: f32) -> f32 {
     v.signum() * (1. - 1. / q.powi(4))
 }
 
+fn sprite_pixels(mask: &[u8], tint: [u8; 3]) -> RgbaImage {
+    let mut pixels = RgbaImage::new(WIDTH + 2 * PAD, HEIGHT + 2 * PAD);
+    for y in 0..HEIGHT {
+        for x in 0..WIDTH {
+            pixels.put_pixel(
+                x + PAD,
+                y + PAD,
+                image::Rgba([tint[0], tint[1], tint[2], mask[(y * WIDTH + x) as usize]]),
+            );
+        }
+    }
+    pixels
+}
+
 impl Glow {
     pub(super) fn paint(
         &self,
@@ -86,11 +101,12 @@ impl Glow {
         let cache = self.clone();
         layout
             .rect(x - 3. * blur, y - 3. * blur, w + 6. * blur, h + 6. * blur)
+            .overflow_hidden()
             .opacity(color.a)
             .child(
                 canvas(
                     |_, _, _| (),
-                    move |bounds, (), window, _| {
+                    move |clip, (), window, _| {
                         let mut cache = cache.0.borrow_mut();
                         if cache
                             .as_ref()
@@ -107,14 +123,7 @@ impl Glow {
                                 }
                                 None => shape.mask(),
                             };
-                            let pixels = RgbaImage::from_fn(WIDTH, HEIGHT, |x, y| {
-                                image::Rgba([
-                                    tint[0],
-                                    tint[1],
-                                    tint[2],
-                                    mask[(y * WIDTH + x) as usize],
-                                ])
-                            });
+                            let pixels = sprite_pixels(&mask, tint);
                             let image = Arc::new(RenderImage::new([Frame::new(pixels)]));
                             *cache = Some(Sprite {
                                 shape,
@@ -124,9 +133,16 @@ impl Glow {
                             });
                         }
                         let image = &cache.as_ref().unwrap().image;
+                        // Linear sampling must stay inside GPUI's unpadded atlas tile.
+                        let pad_x = clip.size.width * (PAD as f32 / WIDTH as f32);
+                        let pad_y = clip.size.height * (PAD as f32 / HEIGHT as f32);
+                        let padded = bounds(
+                            clip.origin - point(pad_x, pad_y),
+                            clip.size + size(pad_x * 2., pad_y * 2.),
+                        );
                         let _ = window.paint_image(
-                            bounds,
-                            bounds,
+                            clip,
+                            padded,
                             Default::default(),
                             image.clone(),
                             0,
@@ -136,5 +152,24 @@ impl Glow {
                 )
                 .size_full(),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sprite_has_two_transparent_texels_on_every_edge() {
+        let pixels = sprite_pixels(&vec![180; (WIDTH * HEIGHT) as usize], [10, 20, 30]);
+        assert_eq!(pixels.dimensions(), (100, 58));
+        for (x, y, pixel) in pixels.enumerate_pixels() {
+            let expected = if (2..98).contains(&x) && (2..56).contains(&y) {
+                [10, 20, 30, 180]
+            } else {
+                [0; 4]
+            };
+            assert_eq!(pixel.0, expected, "texel ({x}, {y})");
+        }
     }
 }

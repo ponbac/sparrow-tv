@@ -533,6 +533,7 @@ impl GuideScreen {
             self.metrics = metrics;
             self.viewport.height = (metrics.surface_height - self.geometry().top).max(0.);
             self.reveal_focus();
+            self.schedule_reads();
         }
     }
 
@@ -1794,6 +1795,12 @@ impl GuideScreen {
         }
     }
 
+    fn needs_viewport_page(&self) -> bool {
+        self.viewport.height > 0.
+            && self.content_bottom()
+                < self.viewport.offset + self.viewport.height + self.geometry().pitch
+    }
+
     fn reveal_focus(&mut self) {
         let footer_top = self.rows_bottom() + NOW_FOOTER_GAP;
         let retained_retry = self.retained_retry();
@@ -1914,6 +1921,7 @@ impl GuideScreen {
         if !self.all_groups_hidden()
             && self.pages.as_ref().is_some_and(|pages| {
                 pages.needs_automatic_page()
+                    || self.needs_viewport_page()
                     || focus.is_some_and(|family| pages.should_prefetch(family))
             })
         {

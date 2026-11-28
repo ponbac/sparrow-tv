@@ -1335,6 +1335,9 @@ impl Render for GuideSurface {
             if pocket { area.place(content) } else { content }
         };
         self.screen.set_board_metrics(guide_area.m.board);
+        if self.activation.is_some() {
+            self.dispatch_reads(cx);
+        }
         self.sync_window_fullscreen(window);
         let (frame, picture) = self.playback.fullscreen_frame(window, cx.reduce_motion());
         self.update_playback_viewports(window, picture, cx);

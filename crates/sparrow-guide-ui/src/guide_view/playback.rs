@@ -9,7 +9,7 @@ pub(crate) use zap::ZapRoll;
 
 use std::{rc::Rc, time::Instant};
 
-use gpui::{App, Div, MouseButton, Window, div, prelude::*, rgb, rgba};
+use gpui::{App, Div, MouseButton, ObjectFit, Window, canvas, div, prelude::*, rgb, rgba};
 
 use super::{
     CELL_ELAPSED, DIM, FAINT, ICE, INK, Layout, ON_ICE, ON_ICE_DIM, PANEL, Profile, SAIRA,
@@ -437,8 +437,30 @@ pub(crate) fn video_picture(
     let [x, y, w, h] = moving_picture(layout, frame, dock);
     layout
         .rect(x, y, w, h)
+        .overflow_hidden()
         .when(live, |picture| picture.bg(rgb(0x000000)))
-        .child(gpui::img(image).absolute().size_full())
+        .child(
+            canvas(
+                |_, _, _| (),
+                move |bounds, (), window, _| {
+                    let image_size = image.size(0);
+                    let fitted = ObjectFit::Contain.get_bounds(bounds, image_size);
+                    // Crop one source texel at each edge to keep linear sampling
+                    // inside the atlas tile, even when the picture is upscaled.
+                    let texel = fitted.size.width / image_size.width.0 as f32;
+                    let _ = window.paint_image(
+                        fitted.inset(texel),
+                        fitted,
+                        Default::default(),
+                        image,
+                        0,
+                        false,
+                    );
+                },
+            )
+            .absolute()
+            .size_full(),
+        )
 }
 
 pub(crate) fn tuning_field(
