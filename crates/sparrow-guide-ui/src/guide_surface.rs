@@ -38,7 +38,7 @@ mod sections;
 mod setup_ui;
 mod source_flow;
 use playback_ui::PlaybackUi;
-use pointer_ui::{PointerState, WindowFullscreen};
+use pointer_ui::PointerState;
 use source_flow::SourceFlow;
 
 const PREVIEW_DWELL: Duration = Duration::from_millis(300);
@@ -158,7 +158,6 @@ pub struct GuideSurface {
     playback: PlaybackUi,
     pocket: pocket_ui::PocketState,
     pointer: PointerState,
-    window_fullscreen: WindowFullscreen,
     _playback_updates: Option<Task<()>>,
     _variant_updates: Task<()>,
 }
@@ -370,7 +369,6 @@ impl GuideSurface {
             playback,
             pocket: Default::default(),
             pointer: PointerState::default(),
-            window_fullscreen: WindowFullscreen::default(),
             _playback_updates: None,
             _variant_updates: variant_updates,
         }
@@ -1399,7 +1397,6 @@ impl Render for GuideSurface {
         if self.activation.is_some() {
             self.dispatch_reads(cx);
         }
-        self.sync_window_fullscreen(window);
         let (frame, picture) = self.playback.fullscreen_frame(window, cx.reduce_motion());
         self.update_playback_viewports(window, picture, cx);
         self.sync_ambient(cx.reduce_motion());

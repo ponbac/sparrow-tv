@@ -7,7 +7,7 @@ The GPUI Guide proved on Shield ([ADR 0009](0009-prove-the-gpui-guide-on-shield-
 - The picture is embedded in GPUI. An embedded libmpv player delivers decoded frames as `HostEvent::LivePicture`, and the Guide paints them in the picture's rectangle, letterboxed 16:9 on black. There is no external mpv window and no `pictureOverlay` capability.
 - The Guide has the Shield's docked picture with its caption. Fullscreen puts the control band under the picture, never over it. There is no separate watch mode.
 - Because GPUI paints the picture, it moves with every frame of a flight. The still-capture flight (`PlaybackHost::capture_flight_still`) stays for hosts whose picture is a native surface above GPUI.
-- Entering fullscreen also makes the window fullscreen, and leaving restores it, unless the window was fullscreen already. If the compositor ends window fullscreen, the picture stays fullscreen inside the window.
+- Entering fullscreen fills the app window without toggling desktop window fullscreen.
 
 ## Profiles
 
