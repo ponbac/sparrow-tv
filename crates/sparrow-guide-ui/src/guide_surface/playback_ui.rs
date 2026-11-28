@@ -833,6 +833,9 @@ impl GuideSurface {
         let fullscreen = self.playback.fullscreen();
         let entering = !was_fullscreen && fullscreen;
         let exiting = was_fullscreen && !fullscreen;
+        if (entering || exiting) && self.host.form_factor() == FormFactor::Handheld {
+            self.host.set_immersive(fullscreen);
+        }
         if entering || exiting || playback_changed {
             self.playback.copy = DiagnosticCopy::Ready;
         }

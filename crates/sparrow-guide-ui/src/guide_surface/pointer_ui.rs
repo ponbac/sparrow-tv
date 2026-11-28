@@ -76,16 +76,6 @@ impl PointerState {
     }
 }
 
-/// Whether the window, rather than the Guide, went fullscreen with the picture.
-#[derive(Clone, Copy, Default, PartialEq)]
-pub(super) enum WindowFullscreen {
-    #[default]
-    Guide,
-    Picture {
-        ours: bool,
-    },
-}
-
 impl GuideSurface {
     fn pointer_host(&self) -> bool {
         self.host.form_factor() != FormFactor::Television
@@ -686,38 +676,6 @@ impl GuideSurface {
             return self.playback_back(cx);
         }
         true
-    }
-
-    /// Keeps the window or the system bars in step with the fullscreen picture.
-    /// A compositor that leaves fullscreen on its own keeps the picture fullscreen.
-    pub(super) fn sync_window_fullscreen(&mut self, window: &mut Window) {
-        if !self.pointer_host() {
-            return;
-        }
-        let picture = self.playback.fullscreen();
-        match (self.window_fullscreen, picture) {
-            (WindowFullscreen::Guide, true) => {
-                let handheld = self.host.form_factor() == FormFactor::Handheld;
-                let ours = !handheld && !window.is_fullscreen();
-                if handheld {
-                    self.host.set_immersive(true);
-                }
-                if ours {
-                    window.toggle_fullscreen();
-                }
-                self.window_fullscreen = WindowFullscreen::Picture { ours };
-            }
-            (WindowFullscreen::Picture { ours }, false) => {
-                if self.host.form_factor() == FormFactor::Handheld {
-                    self.host.set_immersive(false);
-                }
-                if ours && window.is_fullscreen() {
-                    window.toggle_fullscreen();
-                }
-                self.window_fullscreen = WindowFullscreen::Guide;
-            }
-            _ => {}
-        }
     }
 }
 
