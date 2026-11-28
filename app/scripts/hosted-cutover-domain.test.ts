@@ -81,7 +81,7 @@ const MANIFEST: CandidateManifest = {
     applicationId: "xyz.ponbac.sparrow",
     versionName: "0.11.5",
     versionCode: 11_005,
-    minSdk: 24,
+    minSdk: 26,
     targetSdk: 36,
     abis: ["arm64-v8a", "armeabi-v7a", "x86", "x86_64"],
     certificateSha256: "9".repeat(64),

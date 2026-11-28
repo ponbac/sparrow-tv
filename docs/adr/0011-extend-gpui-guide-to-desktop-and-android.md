@@ -38,3 +38,16 @@ The GPUI Guide proved on Shield ([ADR 0009](0009-prove-the-gpui-guide-on-shield-
 - Guide preferences reset once when a device moves to a GPUI package. They are not migrated.
 - The GPUI Android packages ship without TalkBack support. GPUI has no Android accessibility tree, and the owner accepts that.
 - The Hosted Web client keeps its React layouts under ADRs 0006 and 0007.
+
+## Release cutover
+
+- The x86_64 AppImage packages `sparrow-desktop` and embedded libmpv. The
+  Android Gradle project in `app/src-shield/android` packages `sparrow-shield`
+  and Media3. The Tauri host and standalone system-mpv window adapter are retired.
+- Android requires API 26 for the GPUI backend's `libnativewindow`. NDK r29
+  builds the universal APK for `arm64-v8a`, `armeabi-v7a`, `x86`, and `x86_64`.
+- Both packages take their product version from `app/package.json`. Android
+  retains the production application ID `xyz.ponbac.sparrow`, release signing
+  identity, and existing app data directory. The development APK installs
+  alongside it as `xyz.ponbac.sparrow.shield`. Desktop retains
+  `${XDG_DATA_HOME:-$HOME/.local/share}/xyz.ponbac.sparrow`.

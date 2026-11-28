@@ -1,5 +1,9 @@
 # Android MPEG-TS playback performance acceptance
 
+> Historical WebView procedure. Run the recorded commands from a pre-cutover
+> checkout. Current GPUI release acceptance is covered in
+> [Personal release acceptance](../release/personal-acceptance.md).
+
 This runbook validates the installed Android native playback path on the same
 physical target owned by
 [`android-catalog-performance.md`](android-catalog-performance.md). It is a

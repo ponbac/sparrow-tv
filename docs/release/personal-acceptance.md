@@ -20,7 +20,7 @@ creates private files with mode `0600` and directories with mode `0700`.
   attestations read access; the reviewer running the approval command also needs Deployments write.
 - The pinned Android tools are installed and `ANDROID_HOME` points to them.
 - The AppImage acceptance host is the target Arch/Hyprland installation.
-- The Android target is the physical Realme GT8 Pro RMX5210 on API 36. An emulator is rejected.
+- The Android target is the physical Realme GT8 Pro RMX5210 on API 36 or 37. An emulator is rejected.
 
 ## 1. Download and prepare the exact candidate
 
@@ -57,50 +57,40 @@ catalog data.
 
 ## 2. Exercise the exact AppImage on Arch/Hyprland
 
-Restore the executable bit if the download removed it. That changes file mode, not candidate bytes.
-Run without a renderer override. The AppImage's X11 GTK backend selects WebKit's accelerated
-shared-memory transport before the webview starts:
+Restore the executable bit if the download removed it, then launch the AppImage
+in the target Hyprland session.
 
 ```bash
 chmod u+x "$candidate_dir"/Sparrow_*_x86_64.AppImage
 "$candidate_dir"/Sparrow_*_x86_64.AppImage
 ```
 
-`WEBKIT_DISABLE_DMABUF_RENDERER=1` remains an explicit compatibility fallback if the accelerated
-transport fails on another Linux graphics stack. Do not use that fallback for acceptance on the
-target host because it disables accelerated compositing and invalidates the scroll-performance
-check.
-
-Set the Linux target fields to `arch`, `wayland`, and `hyprland`, record the version displayed by
-the application, and mark a gate `passed` only after observing all behavior in that row.
+Extract the candidate with `--appimage-extract` in a temporary directory. Record
+the desktop entry's `X-Sparrow-Version` as `packageVersion` in the Linux evidence.
+Set the Linux target fields to `arch`, `wayland`, and `hyprland`. Mark each gate
+`passed` after observing its full behavior.
 
 | Gate ID                                     | Required observation                                                                                                |
 | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `startup-render-version`                    | The Wayland/Hyprland session launches the AppImage XWayland window with accelerated shared-memory WebKit transport and displays the candidate version/status. |
+| `startup-render-version`                    | The Wayland/Hyprland session opens the GPUI Guide from the AppImage and the desktop entry reports the candidate version. |
 | `browse-scroll-performance`                 | Repeated ordinary scrolling through source status, search, groups, and Channels stays visually smooth without recurring multi-frame stalls.                 |
 | `browse-search-guide`                       | Browse groups/channels, search channels/programmes, and inspect guide/schedule.                                                      |
 | `catalog-first-configuration`               | First source configuration loads the real on-device catalog without revealing source details.                                        |
 | `catalog-offline-restart`                   | Restart from saved snapshots with network unavailable and retain a usable catalog.                                                   |
 | `catalog-stale-manual-refresh`              | Stale status and a manual refresh are visible and behave correctly.                                                                  |
-| `primary-picture-audio`                     | Representative H.264/AAC produces visible picture and audible audio through the primary system-mpv engine.                           |
-| `primary-controls-channel-changes`          | Pause/live-edge resume, stop/restart, fullscreen enter/exit, volume/mute, and ordinary Channel changes work through system mpv.      |
+| `primary-picture-audio`                     | Representative H.264/AAC produces visible picture and audible audio through the embedded libmpv engine.                           |
+| `primary-controls-channel-changes`          | Pause/live-edge resume, stop/restart, fullscreen enter/exit, volume/mute, and ordinary Channel changes work in the GPUI Guide.      |
 | `bounded-recovery-resource-release`         | Failures are bounded/visible and stop, restart, and Channel change leave no overlapping request or unbounded retry.                  |
-| `primary-mpv-playback-cleanup`              | Primary mpv A/V, controls/fullscreen, Channel switching, and any applicable direct current-playback track choice work with one provider connection; old processes/sockets are reaped. |
+| `embedded-playback-cleanup`              | Embedded playback uses one provider connection and releases each superseded Playback Session and its resources. |
 
 One representative playback and a few ordinary Channel changes are sufficient. Do not repeat the
 waived 90-minute soak or the completed 30-switch prototype without a new measured defect.
 
-For the final Linux gate, observe aggregate provider connection count without recording source
-details. Starting playback must establish exactly one provider connection. Pause must retire that
-connection, reap the mpv child, and remove its private socket; resume may establish exactly one new
-connection at the live edge only after the old process and socket are gone. Fullscreen enter/exit
-must not affect connection count. Each Channel change must likewise retire the old connection
-before the next one becomes active. After stop, restart, Channel change, and application exit,
-confirm the superseded mpv child is gone and its private `mpv-v1/mpv-*.sock` IPC socket has been
-removed. If the representative stream exposes multiple audio tracks, confirm a direct mpv track
-choice works for the current playback. Linux acceptance does not require Sparrow to expose or
-persist that choice. Do not copy process arguments, provider locations, or socket paths into
-evidence.
+For the final Linux gate, observe the aggregate provider connection count.
+Starting playback establishes one connection. Pause releases it and resume
+opens a new one at the live edge. Fullscreen preserves the connection. Channel
+changes retire the old connection before opening the next one. Stop and exit
+release the active Playback Session. Keep source details out of the evidence.
 
 After exiting, confirm the AppImage SHA-256 still matches both `SHA256SUMS` and the candidate
 manifest before marking the final Linux gate passed.
@@ -111,6 +101,7 @@ Use an older non-debuggable universal APK signed by the restored release key. Be
 public release this may be the unpublished predecessor candidate; later it is the preceding
 accepted release. Its deterministic filename and adjacent `.sha256` sidecar must remain intact.
 
+The predecessor may use API 24 if it shipped before the GPUI cutover.
 The continuity command performs two fixed `adb install -r --no-streaming` operations—older APK,
 then accepted APK. It never uninstalls Sparrow or clears app data. It rejects an emulator, another
 phone, another API/ABI, a different package or certificate, an equal/decreasing version, changed
@@ -153,9 +144,9 @@ gate passed only after observing its full behavior on the physical phone.
 | `manual-lock-wake-state`                    | Manual lock releases request/wake state and unlock resumes only prior active playback.                                |
 | `bounded-recovery-resource-release`         | Failures stay bounded/visible and ordinary repeated use does not accumulate requests, descriptors, handles, or work.  |
 
-On the phone the controls are a row of icons under the picture
-([ADR 0007](../adr/0007-use-a-pocket-layout-where-the-picture-cannot-be-covered.md)). Restart is in
-its More menu. The row has Mute but no Volume slider; the slider is in the fullscreen controls.
+On the phone, exercise the Watch screen in portrait, turn to fullscreen, and
+return to the original layout. Check that picture-in-picture keeps the active
+Playback Session while its picture is visible. See [ADR 0011](../adr/0011-extend-gpui-guide-to-desktop-and-android.md).
 
 After stopping playback, confirm the staged APK SHA-256 is unchanged. Fill `recordedAt` only after
 all rows pass. Rejection, a device reset, an APK substitution, or a workflow rerun requires fresh

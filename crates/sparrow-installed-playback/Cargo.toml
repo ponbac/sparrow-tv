@@ -15,7 +15,7 @@ sparrow-core = { path = "../sparrow-core" }
 sparrow-installed-catalog = { path = "../sparrow-installed-catalog" }
 sparrow-source-http = { path = "../sparrow-source-http" }
 thiserror = "2"
-tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 
 [dev-dependencies]
 async-trait = "0.1"

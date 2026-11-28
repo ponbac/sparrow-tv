@@ -128,7 +128,7 @@ def run(warm):
     # visual milestones share one recording clock, independent of ADB delay.
     cmd = ('screenrecord --size 640x360 --bit-rate 4000000 --time-limit 8 '
            + shlex.quote(remote) + ' & rec=$!; sleep 1.5; '
-           + 'am start -W -n ' + PACKAGE + '/.MainActivity; wait "$rec"')
+           + 'am start -W -n ' + PACKAGE + '/xyz.ponbac.sparrow.shield.ShieldActivity; wait "$rec"')
     with tempfile.TemporaryDirectory(prefix='sparrow-startup-') as tmp:
         movie = Path(tmp) / 'private.mp4'
         try:

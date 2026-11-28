@@ -6,6 +6,7 @@ import {
   lstat,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   readdir,
   rename,
@@ -71,7 +72,8 @@ const COMMAND_OUTPUT_LIMIT = 4 * 1024 * 1024;
 const APPIMAGE_TOOL_SIZE_LIMIT = 64 * 1024 * 1024;
 const APPIMAGE_TOOL_DOWNLOAD_TIMEOUT_MS = 60_000;
 const APPIMAGE_SMOKE_MS = 8_000;
-const LINUX_EXECUTABLE_NAME = "sparrow-installed";
+const LINUX_EXECUTABLE_NAME = "sparrow-desktop";
+const ANDROID_PROJECT = join(REPOSITORY_ROOT, "app/src-shield/android");
 const SHA256 = /^[0-9a-f]{64}$/u;
 
 const packageSchema = z.object({ version: z.string() }).passthrough();
@@ -91,8 +93,8 @@ const toolchainSchema = z
         platformRevision: z.literal("2"),
         buildTools: z.literal("35.0.0"),
         ndk: z.literal("29.0.14206865"),
-        minSdk: z.literal(24),
-        targetSdk: z.literal(36),
+        minSdk: z.literal(ANDROID_MIN_SDK),
+        targetSdk: z.literal(ANDROID_TARGET_SDK),
         abis: z.tuple([
           z.literal("arm64-v8a"),
           z.literal("armeabi-v7a"),
@@ -153,8 +155,8 @@ async function main(): Promise<void> {
     case "static-check":
       await staticCheck();
       return;
-    case "prepare-appimage-tools":
-      await prepareAppImageTools();
+    case "package-appimage":
+      await packageAppImage(arguments_.values);
       return;
     case "stage":
       await stageCandidate(arguments_.values);
@@ -166,7 +168,10 @@ async function main(): Promise<void> {
       await smokeAppImage(arguments_.values);
       return;
     case "verify-apk":
-      await verifyApk(arguments_.values);
+      await verifyApk(arguments_.values, "candidate");
+      return;
+    case "verify-predecessor-apk":
+      await verifyApk(arguments_.values, "predecessor");
       return;
     case "verify-signing-identity":
       await readSigningDigest();
@@ -353,8 +358,8 @@ async function staticCheck(): Promise<void> {
     "--environment release-signing",
     "--environment release-publish",
     "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')",
-    "tauri build --bundles appimage",
-    "tauri android build --apk --ci",
+    "just build-appimage",
+    "just build-android-release",
     "actions/attest-build-provenance@",
     "release-verify-candidate",
     "verify-attestations",
@@ -386,7 +391,7 @@ async function staticCheck(): Promise<void> {
   const publishSection = publishOffset < 0 ? "" : release.slice(publishOffset);
   if (
     publishSection.length === 0 ||
-    /\b(?:just\s+build-|tauri(?:\s+android)?\s+build)\b/u.test(
+    /\bjust\s+build-/u.test(
       publishSection,
     ) ||
     (release.match(/^\s*contents:\s*write\s*$/gmu) ?? []).length !== 1 ||
@@ -440,9 +445,8 @@ async function staticCheck(): Promise<void> {
     "Cargo.lock",
     "app/bun.lockb",
     "mise.lock",
-    "app/src-tauri/gen/android/buildscript-gradle.lockfile",
-    "app/src-tauri/gen/android/app/gradle.lockfile",
-    "app/src-tauri/gen/android/buildSrc/gradle.lockfile",
+    "app/src-shield/android/buildscript-gradle.lockfile",
+    "app/src-shield/android/app/gradle.lockfile",
   ]) {
     const lock = await stat(join(REPOSITORY_ROOT, lockPath)).catch(
       () => undefined,
@@ -470,59 +474,11 @@ async function staticCheck(): Promise<void> {
     throw new ContractFailure("the Rust release toolchain is not fully pinned");
   }
 
-  const tauriConfig = z
-    .object({
-      version: z.literal("../package.json"),
-      bundle: z
-        .object({
-          active: z.literal(true),
-          icon: z.unknown(),
-          linux: z.object({
-            appimage: z.object({ bundleMediaFramework: z.literal(true) }),
-          }),
-        })
-        .passthrough(),
-    })
-    .passthrough()
-    .safeParse(
-      await readJson(join(REPOSITORY_ROOT, "app/src-tauri/tauri.conf.json")),
-    );
-  if (!tauriConfig.success) {
-    throw new ContractFailure(
-      "Tauri packaging is not bound to the product version and media contract",
-    );
-  }
   const appImageRelease = await readAppImageReleaseContract();
-  const iconPath = join(
-    REPOSITORY_ROOT,
-    "app/src-tauri",
-    appImageRelease.icon.path,
+  await verifyAppImageIcon(
+    join(REPOSITORY_ROOT, "release", appImageRelease.icon.path),
+    appImageRelease,
   );
-  const iconFile = await lstat(iconPath).catch(() => undefined);
-  const iconBytes =
-    iconFile?.isFile() === true
-      ? await readFile(iconPath).catch(() => undefined)
-      : undefined;
-  const iconDigest =
-    iconBytes === undefined ? undefined : await sha256(iconPath);
-  const icon = verifyAppImageBundleIcon(
-    tauriConfig.data.bundle.icon,
-    appImageRelease.icon,
-    iconBytes,
-    iconDigest,
-  );
-  if (!icon.ok) throw new ContractFailure(icon.reason);
-  const prepareOffset = justfile.indexOf(
-    "bun run release:contract prepare-appimage-tools",
-  );
-  const bundleOffset = justfile.indexOf(
-    "bun run tauri build --bundles appimage",
-  );
-  if (prepareOffset < 0 || bundleOffset < 0 || prepareOffset > bundleOffset) {
-    throw new ContractFailure(
-      "the AppImage helper cache is not verified before Tauri bundling",
-    );
-  }
   if (
     !release.includes(
       "XDG_CACHE_HOME: ${{ runner.temp }}/sparrow-appimage-cache",
@@ -534,66 +490,18 @@ async function staticCheck(): Promise<void> {
   }
   parseToolchain(await readJson(TOOLCHAIN_PATH));
   identitySchema.parse(await readJson(IDENTITY_PATH));
-  const androidBuild = await readFile(
-    join(REPOSITORY_ROOT, "app/src-tauri/gen/android/app/build.gradle.kts"),
-    "utf8",
-  );
-  const requiredAndroidFragments = [
-    "compileSdk = 36",
-    'buildToolsVersion = "35.0.0"',
-    'ndkVersion = "29.0.14206865"',
-    "minSdk = 24",
-    "targetSdk = 36",
-    "gradle.startParameter.taskNames",
-    "requestedTask.substringAfterLast(':')",
-  ];
-  if (
-    requiredAndroidFragments.some(
-      (fragment) => !androidBuild.includes(fragment),
-    )
-  ) {
-    throw new ContractFailure(
-      "the Android build does not match release/toolchain.json",
-    );
-  }
   const gradleLocking = verifyGradleDependencyLocking({
-    androidRootBuild: await readFile(
-      join(REPOSITORY_ROOT, "app/src-tauri/gen/android/build.gradle.kts"),
-      "utf8",
-    ),
-    appBuild: androidBuild,
-    buildSrcBuild: await readFile(
-      join(
-        REPOSITORY_ROOT,
-        "app/src-tauri/gen/android/buildSrc/build.gradle.kts",
-      ),
-      "utf8",
-    ),
+    androidRootBuild: await readFile(join(ANDROID_PROJECT, "build.gradle.kts"), "utf8"),
+    appBuild: await readFile(join(ANDROID_PROJECT, "app/build.gradle.kts"), "utf8"),
     androidBuildscriptLock: await readFile(
-      join(
-        REPOSITORY_ROOT,
-        "app/src-tauri/gen/android/buildscript-gradle.lockfile",
-      ),
+      join(ANDROID_PROJECT, "buildscript-gradle.lockfile"),
       "utf8",
     ),
-    appLock: await readFile(
-      join(REPOSITORY_ROOT, "app/src-tauri/gen/android/app/gradle.lockfile"),
-      "utf8",
-    ),
-    buildSrcLock: await readFile(
-      join(
-        REPOSITORY_ROOT,
-        "app/src-tauri/gen/android/buildSrc/gradle.lockfile",
-      ),
-      "utf8",
-    ),
+    appLock: await readFile(join(ANDROID_PROJECT, "app/gradle.lockfile"), "utf8"),
   });
   if (!gradleLocking.ok) throw new ContractFailure(gradleLocking.reason);
   const wrapper = await readFile(
-    join(
-      REPOSITORY_ROOT,
-      "app/src-tauri/gen/android/gradle/wrapper/gradle-wrapper.properties",
-    ),
+    join(ANDROID_PROJECT, "gradle/wrapper/gradle-wrapper.properties"),
     "utf8",
   );
   if (
@@ -610,12 +518,95 @@ async function staticCheck(): Promise<void> {
   if (!product.ok) throw new ContractFailure(product.reason);
 }
 
-async function prepareAppImageTools(): Promise<void> {
+async function verifyAppImageIcon(
+  path: string,
+  contract: AppImageReleaseContract,
+): Promise<void> {
+  const file = await stat(path).catch(() => undefined);
+  const bytes = file?.isFile() === true ? await readFile(path) : undefined;
+  const digest = bytes === undefined
+    ? undefined
+    : createHash("sha256").update(bytes).digest("hex");
+  const result = verifyAppImageBundleIcon(contract.icon, bytes, digest);
+  if (!result.ok) throw new ContractFailure(result.reason);
+}
+
+async function packageAppImage(values: ReadonlyMap<string, string>): Promise<void> {
+  const version = parseVersion(await readPackageVersion());
   const contract = await readAppImageReleaseContract();
+  const releaseDirectory = join(REPOSITORY_ROOT, "release");
+  const icon = join(releaseDirectory, contract.icon.path);
+  await verifyAppImageIcon(icon, contract);
+  const buildDirectory = join(resolve(required(values, "--target-dir")), "release");
+  const executable = join(buildDirectory, LINUX_EXECUTABLE_NAME);
+  await verifyLinuxExecutable(executable);
+
   const cacheDirectory = appImageToolCacheDirectory();
-  await mkdir(cacheDirectory, { recursive: true });
+  await mkdir(cacheDirectory, { recursive: true, mode: 0o700 });
   for (const tool of contract.tools) {
     await prepareAppImageTool(cacheDirectory, tool);
+  }
+
+  const bundleDirectory = join(buildDirectory, "bundle");
+  const outputDirectory = join(bundleDirectory, "appimage");
+  await mkdir(outputDirectory, { recursive: true });
+  const staging = await mkdtemp(join(bundleDirectory, ".sparrow-appimage-"));
+  try {
+    const appDir = join(staging, "Sparrow.AppDir");
+    const desktop = join(staging, "xyz.ponbac.sparrow.desktop");
+    const desktopEntry = await readFile(
+      join(releaseDirectory, "appimage", basename(desktop)),
+      "utf8",
+    );
+    await writeFile(desktop, `${desktopEntry}X-Sparrow-Version=${version.text}\n`, "utf8");
+    const sourceDateEpoch = run(
+      "git",
+      ["log", "-1", "--format=%ct"],
+      "read the build revision timestamp",
+      { cwd: REPOSITORY_ROOT },
+    ).stdout.trim();
+    const patchelf = run(
+      "sh",
+      ["-c", "command -v patchelf"],
+      "find the system patchelf",
+    ).stdout.trim();
+    const env = {
+      ...process.env,
+      APPIMAGE_EXTRACT_AND_RUN: "1",
+      ARCH: contract.architecture,
+      // The helper's built-in strip and patchelf predate ELF RELR.
+      NO_STRIP: "1",
+      PATCHELF: patchelf,
+      SOURCE_DATE_EPOCH: sourceDateEpoch,
+    };
+    run(
+      join(cacheDirectory, "linuxdeploy-x86_64.AppImage"),
+      [
+        "--verbosity=2",
+        "--appdir", appDir,
+        "--executable", executable,
+        "--desktop-file", desktop,
+        "--icon-file", icon,
+        "--custom-apprun", join(releaseDirectory, "appimage/AppRun"),
+      ],
+      "deploy sparrow-desktop and its native libraries",
+      { env, reportOutput: true },
+    );
+    run(
+      "find",
+      [appDir, "-exec", "touch", "-h", "-d", `@${sourceDateEpoch}`, "{}", "+"],
+      "normalize the AppDir timestamps",
+    );
+    const artifact = join(staging, version.appImageName);
+    run(
+      join(cacheDirectory, "appimagetool-x86_64.AppImage"),
+      ["--runtime-file", join(cacheDirectory, "runtime-x86_64"), appDir, artifact],
+      "package the desktop AppDir",
+      { env, reportOutput: true },
+    );
+    await rename(artifact, join(outputDirectory, version.appImageName));
+  } finally {
+    await rm(staging, { recursive: true, force: true });
   }
 }
 
@@ -694,7 +685,7 @@ function appImageToolCacheDirectory(): string {
       "XDG_CACHE_HOME must be absolute for AppImage packaging",
     );
   }
-  return join(cacheRoot, "tauri");
+  return join(cacheRoot, "sparrow-appimage");
 }
 
 function verifyProtectedEnvironment(values: ReadonlyMap<string, string>): void {
@@ -772,16 +763,8 @@ async function stageCandidate(
       "the build output filename does not contain the product version",
     );
   }
-  if (
-    kind === "apk" &&
-    (!sourceName.includes("universal") || !sourceName.includes("release"))
-  ) {
-    throw new ContractFailure(
-      "the Android build output is not a universal release APK",
-    );
-  }
-  if (kind === "apk" && sourceName.includes("unsigned")) {
-    throw new ContractFailure("the Android release APK is unsigned");
+  if (kind === "apk" && sourceName !== "app-release.apk") {
+    throw new ContractFailure("the Android build output is not the signed release APK");
   }
   await mkdir(output, { recursive: true });
   const destination = join(
@@ -814,21 +797,41 @@ async function verifyAppImage(
     { exact: false },
   );
   try {
-    await verifyAppImageFile(join(snapshot.boundDirectory, basename(artifact)));
+    await verifyAppImageFile(
+      join(snapshot.boundDirectory, basename(artifact)),
+      version,
+    );
   } finally {
     await snapshot.close();
   }
 }
 
-async function verifyAppImageFile(artifact: string): Promise<void> {
-  const file = run(
-    "file",
-    ["--brief", artifact],
-    "inspect AppImage architecture",
-  );
-  if (!/ELF 64-bit LSB.*x86-64/iu.test(file.stdout)) {
-    throw new ContractFailure("the AppImage is not an x86_64 ELF executable");
+async function verifyLinuxExecutable(path: string): Promise<void> {
+  const file = await open(path, "r");
+  try {
+    const header = Buffer.alloc(20);
+    const { bytesRead } = await file.read(header, 0, header.length, 0);
+    // ELF identification, followed by e_type and e_machine.
+    const elf64LittleEndian = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1]);
+    const type = header.readUInt16LE(16);
+    if (
+      bytesRead !== header.length ||
+      !header.subarray(0, elf64LittleEndian.length).equals(elf64LittleEndian) ||
+      (type !== 2 && type !== 3) ||
+      header.readUInt16LE(18) !== 0x3e
+    ) {
+      throw new ContractFailure("the Linux executable is not an x86_64 ELF file");
+    }
+  } finally {
+    await file.close();
   }
+}
+
+async function verifyAppImageFile(
+  artifact: string,
+  version: ProductVersion,
+): Promise<void> {
+  await verifyLinuxExecutable(artifact);
   await verifySidecar(artifact);
   await chmod(artifact, 0o755);
   const extraction = await mkdtemp(join(tmpdir(), "sparrow-appimage-"));
@@ -838,9 +841,11 @@ async function verifyAppImageFile(artifact: string): Promise<void> {
       timeout: 60_000,
     });
     const root = join(extraction, "squashfs-root");
-    const desktopFiles = (await walkFiles(root)).filter((path) =>
-      path.endsWith(".desktop"),
-    );
+    const files = await walkFiles(root);
+    const desktopFiles = files.filter((path) => path.endsWith(".desktop"));
+    if (!files.some((path) => /^libmpv\.so\.\d+$/u.test(basename(path)))) {
+      throw new ContractFailure("the AppImage is missing embedded playback's libmpv");
+    }
     if (desktopFiles.length !== 1) {
       throw new ContractFailure(
         "the AppImage must contain exactly one desktop entry",
@@ -849,6 +854,8 @@ async function verifyAppImageFile(artifact: string): Promise<void> {
     const desktop = await readFile(desktopFiles[0] ?? "", "utf8");
     if (
       !/^Name=Sparrow$/mu.test(desktop) ||
+      !desktop.split("\n").includes(`X-Sparrow-Version=${version.text}`) ||
+      !desktop.split("\n").includes(`Icon=${LINUX_EXECUTABLE_NAME}`) ||
       !new RegExp(`^Exec=${LINUX_EXECUTABLE_NAME}(?:\\s.*)?$`, "mu").test(
         desktop,
       )
@@ -857,6 +864,10 @@ async function verifyAppImageFile(artifact: string): Promise<void> {
         "the AppImage desktop identity does not match Sparrow",
       );
     }
+    const contract = await readAppImageReleaseContract();
+    await verifyAppImageIcon(join(root, basename(contract.icon.path)), contract);
+    const executable = join(root, "usr/bin", LINUX_EXECUTABLE_NAME);
+    await verifyLinuxExecutable(executable);
     const appRun = await stat(join(root, "AppRun"));
     if (!appRun.isFile() || (appRun.mode & 0o111) === 0) {
       throw new ContractFailure(
@@ -880,36 +891,47 @@ async function smokeAppImage(
   }
   await chmod(artifact, 0o755);
   const privateRoot = await mkdtemp(join(tmpdir(), "sparrow-appimage-smoke-"));
-  const launchEnvironment = { ...process.env };
-  delete launchEnvironment.WEBKIT_DISABLE_DMABUF_RENDERER;
-  delete launchEnvironment.WEBKIT_DMABUF_RENDERER_FORCE_SHM;
-  const child = spawn(artifact, [], {
-    env: {
-      ...launchEnvironment,
-      APPIMAGE_EXTRACT_AND_RUN: "1",
-      XDG_CACHE_HOME: join(privateRoot, "cache"),
-      XDG_CONFIG_HOME: join(privateRoot, "config"),
-      XDG_DATA_HOME: join(privateRoot, "data"),
-    },
-    stdio: "ignore",
-  });
   try {
-    await waitForLaunchWindow(child, APPIMAGE_SMOKE_MS);
-    if (child.exitCode !== null || child.signalCode !== null) {
-      throw new ContractFailure(
-        "the AppImage exited during the bounded launch smoke check",
-      );
+    run(artifact, ["--appimage-extract"], "extract AppImage for the launch check", {
+      cwd: privateRoot,
+      timeout: 60_000,
+    });
+    // AppRun execs Sparrow directly, so the smoke check can stop and reap it.
+    const child = spawn(join(privateRoot, "squashfs-root/AppRun"), [], {
+      env: {
+        ...process.env,
+        XDG_CACHE_HOME: join(privateRoot, "cache"),
+        XDG_CONFIG_HOME: join(privateRoot, "config"),
+        XDG_DATA_HOME: join(privateRoot, "data"),
+      },
+      stdio: "ignore",
+    });
+    try {
+      await waitForLaunchWindow(child, APPIMAGE_SMOKE_MS);
+      if (child.exitCode !== null || child.signalCode !== null) {
+        throw new ContractFailure(
+          "the AppImage exited during the bounded launch smoke check",
+        );
+      }
+    } finally {
+      if (child.pid !== undefined) {
+        child.kill("SIGTERM");
+        await waitForExitWindow(child, 2_000);
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGKILL");
+          await waitForExitWindow(child, 2_000);
+        }
+      }
     }
   } finally {
-    child.kill("SIGTERM");
-    await waitForExitWindow(child, 2_000);
-    if (child.exitCode === null && child.signalCode === null)
-      child.kill("SIGKILL");
     await rm(privateRoot, { recursive: true, force: true });
   }
 }
 
-async function verifyApk(values: ReadonlyMap<string, string>): Promise<void> {
+async function verifyApk(
+  values: ReadonlyMap<string, string>,
+  role: "candidate" | "predecessor",
+): Promise<void> {
   const version = parseVersion(required(values, "--version"));
   const artifact = resolve(required(values, "--artifact"));
   if (basename(artifact) !== version.apkName) {
@@ -926,6 +948,7 @@ async function verifyApk(values: ReadonlyMap<string, string>): Promise<void> {
     await verifyApkFile(
       join(snapshot.boundDirectory, basename(artifact)),
       version,
+      role,
     );
   } finally {
     await snapshot.close();
@@ -935,6 +958,7 @@ async function verifyApk(values: ReadonlyMap<string, string>): Promise<void> {
 async function verifyApkFile(
   artifact: string,
   version: ProductVersion,
+  role: "candidate" | "predecessor" = "candidate",
 ): Promise<void> {
   await verifySidecar(artifact);
   const digest = await readSigningDigest();
@@ -944,8 +968,21 @@ async function verifyApkFile(
     ["dump", "badging", artifact],
     "inspect APK package",
   );
-  const identity = parseApkBadging(badging.stdout, version);
+  const identity = parseApkBadging(badging.stdout, version, role);
   if (!identity.ok) throw new ContractFailure(identity.reason);
+  if (role === "candidate" || identity.value.minSdk === ANDROID_MIN_SDK) {
+    const entries = run(
+      "unzip",
+      ["-Z1", artifact],
+      "list APK native libraries",
+    ).stdout.split("\n");
+    for (const abi of ANDROID_ABIS) {
+      const library = `lib/${abi}/libsparrow_shield.so`;
+      if (entries.filter((entry) => entry === library).length !== 1) {
+        throw new ContractFailure(`the APK must contain one Sparrow native library for ${abi}`);
+      }
+    }
+  }
   const signature = run(
     tools.apksigner,
     [
@@ -953,7 +990,7 @@ async function verifyApkFile(
       "--verbose",
       "--print-certs",
       "--min-sdk-version",
-      "24",
+      String(identity.value.minSdk),
       artifact,
     ],
     "verify APK signature",
@@ -1665,6 +1702,7 @@ function run(
     readonly cwd?: string;
     readonly env?: NodeJS.ProcessEnv;
     readonly timeout?: number;
+    readonly reportOutput?: boolean;
   } = {},
 ): CommandResult {
   const result = spawnSync(command, arguments_, {
@@ -1674,6 +1712,10 @@ function run(
     maxBuffer: COMMAND_OUTPUT_LIMIT,
     timeout: options.timeout,
   });
+  if (options.reportOutput) {
+    process.stdout.write(result.stdout ?? "");
+    process.stderr.write(result.stderr ?? "");
+  }
   if (result.status !== 0) throw new ContractFailure(`failed to ${label}`);
   return { stdout: result.stdout, stderr: result.stderr };
 }

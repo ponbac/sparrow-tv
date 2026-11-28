@@ -23,9 +23,6 @@ use tokio::{
     task::JoinHandle,
 };
 
-#[path = "playback/mpv.rs"]
-mod mpv;
-
 #[cfg(test)]
 use crate::screen_wake::noop_screen_wake;
 use crate::{
@@ -36,11 +33,6 @@ use crate::{
         SelectionRequest, TransportReader, TransportStreamError,
     },
 };
-pub use mpv::MpvFailure;
-#[cfg(test)]
-use mpv::UnsupportedMpvPlayer;
-use mpv::{MpvExit, MpvLaunchFuture, MpvProcess, NativeMpvPlayer, system_mpv_player};
-pub use mpv::{MpvPlaybackControl, MpvVolume};
 const COMMAND_CAPACITY: usize = 16;
 const READ_CAPACITY: usize = 16;
 const MAX_STOP_TOMBSTONES: usize = 64;
@@ -65,7 +57,6 @@ type SelectedOpenFuture =
     Pin<Box<dyn Future<Output = Result<OpenedPlayback, PendingOpenError>> + Send + 'static>>;
 type DescriptorReply = oneshot::Sender<Result<StartedPlayback, PlaybackManagerError>>;
 type UnitReply = oneshot::Sender<Result<(), PlaybackManagerError>>;
-type MpvReply = oneshot::Sender<Result<MpvPlaybackSession, PlaybackManagerError>>;
 
 trait NativePlaybackAccess: Send + Sync + 'static {
     fn open(&self, source: Arc<ResolvedPlaybackSource>) -> AccessOpenFuture;
@@ -233,34 +224,6 @@ impl Debug for StartedPlayback {
     }
 }
 
-/// A safe acknowledgement that system mpv owns the selected Playback Session.
-#[derive(Clone, Eq, PartialEq)]
-pub struct MpvPlaybackSession {
-    session_id: PlaybackSessionId,
-}
-
-impl MpvPlaybackSession {
-    pub fn session_id(&self) -> &PlaybackSessionId {
-        &self.session_id
-    }
-}
-
-impl Debug for MpvPlaybackSession {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("MpvPlaybackSession")
-            .field("session_id", &self.session_id)
-            .finish()
-    }
-}
-
-/// Platform-selected Primary Playback Engine opened for an installed session.
-pub enum InstalledPlaybackStart {
-    NativeStream(StartedPlayback),
-    #[cfg(target_os = "linux")]
-    LinuxMpv(MpvPlaybackSession),
-}
-
 /// Safe failures from the native playback boundary. Provider locations and
 /// library errors never enter this value.
 #[derive(Debug, thiserror::Error)]
@@ -273,8 +236,6 @@ pub enum PlaybackManagerError {
     Read(PlaybackReadError),
     #[error("native transport stream inspection failed")]
     TransportStream(TransportStreamError),
-    #[error("system mpv playback failed")]
-    Mpv(#[source] MpvFailure),
     #[error("the playback operation was cancelled")]
     Cancelled,
     #[error("native playback is unavailable")]
@@ -287,7 +248,6 @@ impl PlaybackManagerError {
             Self::Access(error) => error.retryable(),
             Self::Read(_) => true,
             Self::TransportStream(error) => error.retryable(),
-            Self::Mpv(error) => error.retryable(),
             Self::Core(_) | Self::Cancelled | Self::Unavailable => false,
         }
     }
@@ -333,7 +293,6 @@ impl PlaybackManager {
             preferences,
             Arc::new(MpegTsPlaybackTransportSelector),
             screen_wake,
-            system_mpv_player(private_root),
         )
     }
 
@@ -387,23 +346,6 @@ impl PlaybackManager {
             preferences,
             selector,
             screen_wake,
-            Arc::new(UnsupportedMpvPlayer),
-        )
-    }
-
-    #[cfg(test)]
-    fn with_adapters(
-        core: Arc<SparrowCore>,
-        access: Arc<dyn NativePlaybackAccess>,
-        mpv: Arc<dyn NativeMpvPlayer>,
-    ) -> Self {
-        Self::with_all_adapters(
-            core.catalog().clone(),
-            access,
-            AudioPreferenceStore::disabled(),
-            Arc::new(PassthroughPlaybackTransportSelector),
-            noop_screen_wake(),
-            mpv,
         )
     }
 
@@ -413,7 +355,6 @@ impl PlaybackManager {
         preferences: AudioPreferenceStore,
         selector: Arc<dyn PlaybackTransportSelector>,
         screen_wake: Arc<dyn ScreenWake>,
-        mpv: Arc<dyn NativeMpvPlayer>,
     ) -> Self {
         let (controls, control_receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (reads, read_receiver) = mpsc::channel(READ_CAPACITY);
@@ -425,7 +366,6 @@ impl PlaybackManager {
                     preferences,
                     selector,
                     screen_wake,
-                    mpv,
                 },
                 control_receiver,
                 read_receiver,
@@ -695,61 +635,6 @@ impl PlaybackManager {
             .map_err(|_| PlaybackManagerError::Unavailable)?
     }
 
-    /// Resolves a Channel and starts system mpv as its Primary Playback Engine.
-    pub async fn start_mpv_primary(
-        &self,
-        session_id: PlaybackSessionId,
-        channel_id: ChannelId,
-    ) -> Result<MpvPlaybackSession, PlaybackManagerError> {
-        let (reply, response) = oneshot::channel();
-        self.controls
-            .send(ControlCommand::StartMpvPrimary {
-                session_id,
-                channel_id,
-                reply,
-            })
-            .await
-            .map_err(|_| PlaybackManagerError::Unavailable)?;
-        response
-            .await
-            .map_err(|_| PlaybackManagerError::Unavailable)?
-    }
-
-    /// Applies one control only when system mpv owns the correlated Playback Session.
-    pub async fn control_mpv(
-        &self,
-        session_id: PlaybackSessionId,
-        control: MpvPlaybackControl,
-    ) -> Result<(), PlaybackManagerError> {
-        let (reply, response) = oneshot::channel();
-        self.controls
-            .send(ControlCommand::ControlMpv {
-                session_id,
-                control,
-                reply,
-            })
-            .await
-            .map_err(|_| PlaybackManagerError::Unavailable)?;
-        response
-            .await
-            .map_err(|_| PlaybackManagerError::Unavailable)?
-    }
-
-    /// Reopens a suspended Linux mpv Primary Playback Engine at the live edge.
-    pub async fn reopen_mpv(
-        &self,
-        session_id: PlaybackSessionId,
-    ) -> Result<MpvPlaybackSession, PlaybackManagerError> {
-        let (reply, response) = oneshot::channel();
-        self.controls
-            .send(ControlCommand::ReopenMpv { session_id, reply })
-            .await
-            .map_err(|_| PlaybackManagerError::Unavailable)?;
-        response
-            .await
-            .map_err(|_| PlaybackManagerError::Unavailable)?
-    }
-
     pub async fn shutdown(&self) -> Result<(), PlaybackManagerError> {
         let (reply, response) = oneshot::channel();
         self.controls
@@ -812,20 +697,6 @@ enum ControlCommand {
         lifecycle: PlaybackLifecycle,
         reply: UnitReply,
     },
-    StartMpvPrimary {
-        session_id: PlaybackSessionId,
-        channel_id: ChannelId,
-        reply: MpvReply,
-    },
-    ControlMpv {
-        session_id: PlaybackSessionId,
-        control: MpvPlaybackControl,
-        reply: UnitReply,
-    },
-    ReopenMpv {
-        session_id: PlaybackSessionId,
-        reply: MpvReply,
-    },
     Shutdown {
         reply: UnitReply,
     },
@@ -851,7 +722,6 @@ struct PlaybackActorDependencies {
     preferences: AudioPreferenceStore,
     selector: Arc<dyn PlaybackTransportSelector>,
     screen_wake: Arc<dyn ScreenWake>,
-    mpv: Arc<dyn NativeMpvPlayer>,
 }
 
 struct PlaybackActor {
@@ -968,45 +838,6 @@ impl PlaybackActor {
                     }
                     None => return,
                 },
-                ActorState::OpeningMpv(mut opening) => {
-                    tokio::select! {
-                        biased;
-                        command = self.controls.recv() => match command {
-                            Some(command) => self.control_opening_mpv(opening, command).await,
-                            None => return,
-                        },
-                        () = opening.reply.as_mut().expect("mpv opening reply exists").closed() => {
-                            self.drop_abandoned_mpv_open(opening)
-                        }
-                        result = &mut opening.pending => self.finish_mpv_open(opening, result).await,
-                        read = self.reads.recv() => match read {
-                            Some(read) => {
-                                let _ = read.reply.send(Err(PlaybackManagerError::Cancelled));
-                                ActorState::OpeningMpv(opening)
-                            }
-                            None => return,
-                        },
-                    }
-                }
-                ActorState::MpvPlaying(mut playing) => {
-                    tokio::select! {
-                        biased;
-                        command = self.controls.recv() => match command {
-                            Some(command) => self.control_mpv_playing(playing, command).await,
-                            None => return,
-                        },
-                        exit = &mut playing.process.exited => {
-                            self.finish_mpv_exit(playing, exit)
-                        }
-                        read = self.reads.recv() => match read {
-                            Some(read) => {
-                                let _ = read.reply.send(Err(PlaybackManagerError::Cancelled));
-                                ActorState::MpvPlaying(playing)
-                            }
-                            None => return,
-                        },
-                    }
-                }
                 ActorState::Exited => return,
             };
         }
@@ -1068,26 +899,6 @@ impl PlaybackActor {
             ControlCommand::Lifecycle { lifecycle, reply } => {
                 let result = self.update_lifecycle(None, lifecycle, false);
                 let _ = reply.send(result);
-                ActorState::Idle
-            }
-            ControlCommand::StartMpvPrimary { reply, .. } if reply.is_closed() => ActorState::Idle,
-            ControlCommand::StartMpvPrimary {
-                session_id, reply, ..
-            } if self.tombstones.contains(&session_id) => {
-                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
-                ActorState::Idle
-            }
-            ControlCommand::StartMpvPrimary {
-                session_id,
-                channel_id,
-                reply,
-            } => self.begin_mpv_primary(session_id, channel_id, reply),
-            ControlCommand::ControlMpv { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::StaleSession)));
-                ActorState::Idle
-            }
-            ControlCommand::ReopenMpv { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::StaleSession)));
                 ActorState::Idle
             }
             ControlCommand::Shutdown { reply } => {
@@ -1226,39 +1037,6 @@ impl PlaybackActor {
             } if session_id != opening.session.id => {
                 self.retire(session_id);
                 let _ = reply.send(Ok(()));
-                ActorState::Opening(opening)
-            }
-            ControlCommand::StartMpvPrimary { reply, .. } if reply.is_closed() => {
-                ActorState::Opening(opening)
-            }
-            ControlCommand::StartMpvPrimary {
-                session_id, reply, ..
-            } if self.tombstones.contains(&session_id) || session_id == opening.session.id => {
-                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
-                ActorState::Opening(opening)
-            }
-            ControlCommand::StartMpvPrimary {
-                session_id,
-                channel_id,
-                reply,
-            } => {
-                let old_id = opening.session.id.clone();
-                drop(opening.pending);
-                let _ = opening
-                    .reply
-                    .take()
-                    .expect("opening reply exists")
-                    .send(Err(PlaybackManagerError::Cancelled));
-                drop(opening.session);
-                self.retire(old_id);
-                self.begin_mpv_primary(session_id, channel_id, reply)
-            }
-            ControlCommand::ControlMpv { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::PrimaryActive)));
-                ActorState::Opening(opening)
-            }
-            ControlCommand::ReopenMpv { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::PrimaryActive)));
                 ActorState::Opening(opening)
             }
             ControlCommand::Shutdown { reply } => {
@@ -1431,34 +1209,6 @@ impl PlaybackActor {
                 let _ = reply.send(Ok(()));
                 ActorState::Streaming(streaming)
             }
-            ControlCommand::StartMpvPrimary { reply, .. } if reply.is_closed() => {
-                ActorState::Streaming(streaming)
-            }
-            ControlCommand::StartMpvPrimary {
-                session_id, reply, ..
-            } if self.tombstones.contains(&session_id) || session_id == streaming.session.id => {
-                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
-                ActorState::Streaming(streaming)
-            }
-            ControlCommand::StartMpvPrimary {
-                session_id,
-                channel_id,
-                reply,
-            } => {
-                let old_id = streaming.session.id.clone();
-                drop(streaming.stream);
-                drop(streaming.session);
-                self.retire(old_id);
-                self.begin_mpv_primary(session_id, channel_id, reply)
-            }
-            ControlCommand::ControlMpv { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::PrimaryActive)));
-                ActorState::Streaming(streaming)
-            }
-            ControlCommand::ReopenMpv { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::PrimaryActive)));
-                ActorState::Streaming(streaming)
-            }
             ControlCommand::Shutdown { reply } => {
                 drop(streaming.stream);
                 drop(streaming.session);
@@ -1625,35 +1375,6 @@ impl PlaybackActor {
                 let _ = reply.send(Ok(()));
                 ActorState::Reading(reading)
             }
-            ControlCommand::StartMpvPrimary { reply, .. } if reply.is_closed() => {
-                ActorState::Reading(reading)
-            }
-            ControlCommand::StartMpvPrimary {
-                session_id, reply, ..
-            } if self.tombstones.contains(&session_id) || session_id == reading.session.id => {
-                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
-                ActorState::Reading(reading)
-            }
-            ControlCommand::StartMpvPrimary {
-                session_id,
-                channel_id,
-                reply,
-            } => {
-                let old_id = reading.session.id.clone();
-                drop(reading.pending);
-                let _ = reading.reply.send(Err(PlaybackManagerError::Cancelled));
-                drop(reading.session);
-                self.retire(old_id);
-                self.begin_mpv_primary(session_id, channel_id, reply)
-            }
-            ControlCommand::ControlMpv { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::PrimaryActive)));
-                ActorState::Reading(reading)
-            }
-            ControlCommand::ReopenMpv { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::PrimaryActive)));
-                ActorState::Reading(reading)
-            }
             ControlCommand::Shutdown { reply } => {
                 drop(reading.pending);
                 let _ = reading.reply.send(Err(PlaybackManagerError::Cancelled));
@@ -1796,64 +1517,6 @@ impl PlaybackActor {
                 let _ = reply.send(Err(PlaybackManagerError::Cancelled));
                 ActorState::Dormant(session)
             }
-            ControlCommand::StartMpvPrimary { reply, .. } if reply.is_closed() => {
-                ActorState::Dormant(session)
-            }
-            ControlCommand::StartMpvPrimary {
-                session_id, reply, ..
-            } if self.tombstones.contains(&session_id) || session_id == session.id => {
-                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
-                ActorState::Dormant(session)
-            }
-            ControlCommand::StartMpvPrimary {
-                session_id,
-                channel_id,
-                reply,
-            } => {
-                let old_id = session.id.clone();
-                drop(session);
-                self.retire(old_id);
-                self.begin_mpv_primary(session_id, channel_id, reply)
-            }
-            ControlCommand::ControlMpv {
-                session_id, reply, ..
-            } if session_id == session.id
-                && matches!(
-                    session.dormant_reason,
-                    Some(DormantReason::Failed | DormantReason::EndOfInput)
-                ) =>
-            {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::Terminated)));
-                ActorState::Dormant(session)
-            }
-            ControlCommand::ControlMpv { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::StaleSession)));
-                ActorState::Dormant(session)
-            }
-            ControlCommand::ReopenMpv { reply, .. } if reply.is_closed() => {
-                ActorState::Dormant(session)
-            }
-            ControlCommand::ReopenMpv { session_id, reply }
-                if session_id == session.id
-                    && matches!(
-                        session.dormant_reason,
-                        Some(
-                            DormantReason::Failed
-                                | DormantReason::EndOfInput
-                                | DormantReason::Suspended
-                        )
-                    ) =>
-            {
-                self.begin_mpv_open(session, reply)
-            }
-            ControlCommand::ReopenMpv { session_id, reply } if session_id == session.id => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::PrimaryActive)));
-                ActorState::Dormant(session)
-            }
-            ControlCommand::ReopenMpv { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::StaleSession)));
-                ActorState::Dormant(session)
-            }
             ControlCommand::Shutdown { reply } => {
                 drop(session);
                 let _ = reply.send(Ok(()));
@@ -1872,412 +1535,6 @@ impl PlaybackActor {
                 let result = self.update_lifecycle(Some(&mut session), lifecycle, true);
                 let _ = reply.send(result);
                 ActorState::Dormant(session)
-            }
-        }
-    }
-
-    fn begin_mpv_primary(
-        &mut self,
-        session_id: PlaybackSessionId,
-        channel_id: ChannelId,
-        reply: MpvReply,
-    ) -> ActorState {
-        if self.tombstones.contains(&session_id) {
-            let _ = reply.send(Err(PlaybackManagerError::Cancelled));
-            return ActorState::Idle;
-        }
-
-        let source = match self.dependencies.core.resolve_playback(&channel_id) {
-            Ok(source) => Arc::new(source),
-            Err(error) => {
-                let _ = reply.send(Err(PlaybackManagerError::Core(error)));
-                return ActorState::Idle;
-            }
-        };
-        let session = Session {
-            id: session_id,
-            channel_id,
-            source,
-            current_track: None,
-            last_stream_handle: None,
-            resume_activity: None,
-            dormant_reason: None,
-        };
-        if !self.foreground || self.take_suspend(&session.id) {
-            return self.reply_with_dormant(
-                reply,
-                Err(PlaybackManagerError::Cancelled),
-                session,
-                DormantReason::Suspended,
-            );
-        }
-        self.begin_mpv_open(session, reply)
-    }
-
-    fn begin_mpv_open(&mut self, session: Session, reply: MpvReply) -> ActorState {
-        let pending = self.dependencies.mpv.launch(Arc::clone(&session.source));
-        ActorState::OpeningMpv(MpvOpeningState {
-            pending,
-            session,
-            reply: Some(reply),
-        })
-    }
-
-    async fn finish_mpv_open(
-        &mut self,
-        mut opening: MpvOpeningState,
-        result: Result<MpvProcess, MpvFailure>,
-    ) -> ActorState {
-        let reply = opening.reply.take().expect("mpv opening reply exists");
-        match result {
-            Ok(process) => {
-                let started = MpvPlaybackSession {
-                    session_id: opening.session.id.clone(),
-                };
-                match reply.send(Ok(started)) {
-                    Ok(()) => ActorState::MpvPlaying(MpvPlayingState {
-                        process,
-                        session: opening.session,
-                    }),
-                    Err(_) => {
-                        let _ = process.stop().await;
-                        self.drop_session(opening.session)
-                    }
-                }
-            }
-            Err(error) => self.reply_with_dormant(
-                reply,
-                Err(PlaybackManagerError::Mpv(error)),
-                opening.session,
-                DormantReason::Failed,
-            ),
-        }
-    }
-
-    fn drop_abandoned_mpv_open(&mut self, mut opening: MpvOpeningState) -> ActorState {
-        drop(opening.pending);
-        drop(opening.reply.take());
-        ActorState::Dormant(opening.session)
-    }
-
-    async fn control_opening_mpv(
-        &mut self,
-        mut opening: MpvOpeningState,
-        command: ControlCommand,
-    ) -> ActorState {
-        match command {
-            ControlCommand::Start { reply, .. } if reply.is_closed() => {
-                ActorState::OpeningMpv(opening)
-            }
-            ControlCommand::Start {
-                session_id, reply, ..
-            } if session_id == opening.session.id || self.tombstones.contains(&session_id) => {
-                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
-                ActorState::OpeningMpv(opening)
-            }
-            ControlCommand::Start {
-                session_id,
-                channel_id,
-                reply,
-            } => {
-                let old_id = opening.session.id.clone();
-                drop(opening.pending);
-                let _ = opening
-                    .reply
-                    .take()
-                    .expect("mpv opening reply exists")
-                    .send(Err(PlaybackManagerError::Cancelled));
-                drop(opening.session);
-                self.retire(old_id);
-                self.begin_start(session_id, channel_id, reply)
-            }
-            ControlCommand::Suspend { session_id, reply } if session_id == opening.session.id => {
-                drop(opening.pending);
-                let _ = opening
-                    .reply
-                    .take()
-                    .expect("mpv opening reply exists")
-                    .send(Err(PlaybackManagerError::Cancelled));
-                self.reply_with_dormant(reply, Ok(()), opening.session, DormantReason::Suspended)
-            }
-            ControlCommand::Suspend { session_id, reply } => {
-                self.remember_suspend(session_id);
-                let _ = reply.send(Ok(()));
-                ActorState::OpeningMpv(opening)
-            }
-            ControlCommand::SuspendGeneration { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
-                ActorState::OpeningMpv(opening)
-            }
-            ControlCommand::ValidateActiveGeneration { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
-                ActorState::OpeningMpv(opening)
-            }
-            ControlCommand::Reopen { reply, .. } | ControlCommand::Restart { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::PrimaryActive)));
-                ActorState::OpeningMpv(opening)
-            }
-            ControlCommand::Stop {
-                session_id,
-                stream_handle,
-                reply,
-            } if session_id == opening.session.id
-                && opening.session.last_stream_handle.as_ref() == stream_handle.as_ref() =>
-            {
-                drop(opening.pending);
-                let _ = opening
-                    .reply
-                    .take()
-                    .expect("mpv opening reply exists")
-                    .send(Err(PlaybackManagerError::Cancelled));
-                drop(opening.session);
-                self.retire(session_id);
-                let _ = reply.send(Ok(()));
-                ActorState::Idle
-            }
-            ControlCommand::Stop {
-                session_id, reply, ..
-            } if session_id != opening.session.id => {
-                self.retire(session_id);
-                let _ = reply.send(Ok(()));
-                ActorState::OpeningMpv(opening)
-            }
-            ControlCommand::Stop { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
-                ActorState::OpeningMpv(opening)
-            }
-            ControlCommand::StartMpvPrimary { reply, .. } if reply.is_closed() => {
-                ActorState::OpeningMpv(opening)
-            }
-            ControlCommand::StartMpvPrimary {
-                session_id, reply, ..
-            } if self.tombstones.contains(&session_id) || session_id == opening.session.id => {
-                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
-                ActorState::OpeningMpv(opening)
-            }
-            ControlCommand::StartMpvPrimary {
-                session_id,
-                channel_id,
-                reply,
-            } => {
-                let old_id = opening.session.id.clone();
-                drop(opening.pending);
-                let _ = opening
-                    .reply
-                    .take()
-                    .expect("mpv opening reply exists")
-                    .send(Err(PlaybackManagerError::Cancelled));
-                drop(opening.session);
-                self.retire(old_id);
-                self.begin_mpv_primary(session_id, channel_id, reply)
-            }
-            ControlCommand::ControlMpv { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(
-                    MpvFailure::ControlUnavailable,
-                )));
-                ActorState::OpeningMpv(opening)
-            }
-            ControlCommand::ReopenMpv { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::PrimaryActive)));
-                ActorState::OpeningMpv(opening)
-            }
-            ControlCommand::Shutdown { reply } => {
-                drop(opening.pending);
-                let _ = opening
-                    .reply
-                    .take()
-                    .expect("mpv opening reply exists")
-                    .send(Err(PlaybackManagerError::Cancelled));
-                drop(opening.session);
-                let _ = reply.send(Ok(()));
-                ActorState::Exited
-            }
-            ControlCommand::SetActivity {
-                session_id,
-                active,
-                reply,
-            } => {
-                let result = self.update_activity(&mut opening.session, session_id, active, true);
-                let _ = reply.send(result);
-                ActorState::OpeningMpv(opening)
-            }
-            ControlCommand::Lifecycle { lifecycle, reply } => {
-                let result = self.update_lifecycle(Some(&mut opening.session), lifecycle, true);
-                let _ = reply.send(result);
-                ActorState::OpeningMpv(opening)
-            }
-        }
-    }
-
-    async fn control_mpv_playing(
-        &mut self,
-        mut playing: MpvPlayingState,
-        command: ControlCommand,
-    ) -> ActorState {
-        match command {
-            ControlCommand::Start { reply, .. } if reply.is_closed() => {
-                ActorState::MpvPlaying(playing)
-            }
-            ControlCommand::Start {
-                session_id, reply, ..
-            } if session_id == playing.session.id || self.tombstones.contains(&session_id) => {
-                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
-                ActorState::MpvPlaying(playing)
-            }
-            ControlCommand::Start {
-                session_id,
-                channel_id,
-                reply,
-            } => {
-                let old_id = playing.session.id.clone();
-                let result = playing.process.stop().await;
-                drop(playing.session);
-                self.retire(old_id);
-                match result {
-                    Ok(()) => self.begin_start(session_id, channel_id, reply),
-                    Err(error) => {
-                        let _ = reply.send(Err(PlaybackManagerError::Mpv(error)));
-                        ActorState::Idle
-                    }
-                }
-            }
-            ControlCommand::Suspend { session_id, reply } if session_id == playing.session.id => {
-                let result = playing.process.stop().await;
-                match result {
-                    Ok(()) => self.reply_with_dormant(
-                        reply,
-                        Ok(()),
-                        playing.session,
-                        DormantReason::Suspended,
-                    ),
-                    Err(error) => {
-                        drop(playing.session);
-                        self.retire(session_id);
-                        let _ = reply.send(Err(PlaybackManagerError::Mpv(error)));
-                        ActorState::Idle
-                    }
-                }
-            }
-            ControlCommand::Suspend { session_id, reply } => {
-                self.remember_suspend(session_id);
-                let _ = reply.send(Ok(()));
-                ActorState::MpvPlaying(playing)
-            }
-            ControlCommand::SuspendGeneration { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
-                ActorState::MpvPlaying(playing)
-            }
-            ControlCommand::ValidateActiveGeneration { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
-                ActorState::MpvPlaying(playing)
-            }
-            ControlCommand::Reopen { reply, .. } | ControlCommand::Restart { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::PrimaryActive)));
-                ActorState::MpvPlaying(playing)
-            }
-            ControlCommand::Stop {
-                session_id,
-                stream_handle,
-                reply,
-            } if session_id == playing.session.id
-                && playing.session.last_stream_handle.as_ref() == stream_handle.as_ref() =>
-            {
-                let result = playing.process.stop().await;
-                drop(playing.session);
-                self.retire(session_id);
-                let _ = reply.send(result.map_err(PlaybackManagerError::Mpv));
-                ActorState::Idle
-            }
-            ControlCommand::Stop {
-                session_id, reply, ..
-            } if session_id != playing.session.id => {
-                self.retire(session_id);
-                let _ = reply.send(Ok(()));
-                ActorState::MpvPlaying(playing)
-            }
-            ControlCommand::Stop { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
-                ActorState::MpvPlaying(playing)
-            }
-            ControlCommand::StartMpvPrimary { reply, .. } if reply.is_closed() => {
-                ActorState::MpvPlaying(playing)
-            }
-            ControlCommand::StartMpvPrimary {
-                session_id, reply, ..
-            } if self.tombstones.contains(&session_id) || session_id == playing.session.id => {
-                let _ = reply.send(Err(PlaybackManagerError::Cancelled));
-                ActorState::MpvPlaying(playing)
-            }
-            ControlCommand::StartMpvPrimary {
-                session_id,
-                channel_id,
-                reply,
-            } => {
-                let old_id = playing.session.id.clone();
-                let result = playing.process.stop().await;
-                drop(playing.session);
-                self.retire(old_id);
-                match result {
-                    Ok(()) => self.begin_mpv_primary(session_id, channel_id, reply),
-                    Err(error) => {
-                        let _ = reply.send(Err(PlaybackManagerError::Mpv(error)));
-                        ActorState::Idle
-                    }
-                }
-            }
-            ControlCommand::ControlMpv {
-                session_id,
-                control,
-                reply,
-            } if session_id == playing.session.id => {
-                let result = playing
-                    .process
-                    .control(control)
-                    .await
-                    .map_err(PlaybackManagerError::Mpv);
-                let _ = reply.send(result);
-                ActorState::MpvPlaying(playing)
-            }
-            ControlCommand::ControlMpv { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::StaleSession)));
-                ActorState::MpvPlaying(playing)
-            }
-            ControlCommand::ReopenMpv { session_id, reply } if session_id == playing.session.id => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::PrimaryActive)));
-                ActorState::MpvPlaying(playing)
-            }
-            ControlCommand::ReopenMpv { reply, .. } => {
-                let _ = reply.send(Err(PlaybackManagerError::Mpv(MpvFailure::StaleSession)));
-                ActorState::MpvPlaying(playing)
-            }
-            ControlCommand::Shutdown { reply } => {
-                let result = playing.process.stop().await;
-                drop(playing.session);
-                let _ = reply.send(result.map_err(PlaybackManagerError::Mpv));
-                ActorState::Exited
-            }
-            ControlCommand::SetActivity {
-                session_id,
-                active,
-                reply,
-            } => {
-                let result = self.update_activity(&mut playing.session, session_id, active, true);
-                let _ = reply.send(result);
-                ActorState::MpvPlaying(playing)
-            }
-            ControlCommand::Lifecycle { lifecycle, reply } => {
-                let result = self.update_lifecycle(Some(&mut playing.session), lifecycle, true);
-                let _ = reply.send(result);
-                ActorState::MpvPlaying(playing)
-            }
-        }
-    }
-
-    fn finish_mpv_exit(&mut self, playing: MpvPlayingState, exit: MpvExit) -> ActorState {
-        match exit {
-            MpvExit::Terminated => {
-                drop(playing.process);
-                self.failed_dormant(playing.session)
             }
         }
     }
@@ -2581,13 +1838,6 @@ impl PlaybackActor {
         ActorState::Idle
     }
 
-    fn failed_dormant(&mut self, mut session: Session) -> ActorState {
-        session.resume_activity = None;
-        self.clear_activity_for(&session.id);
-        session.dormant_reason = Some(DormantReason::Failed);
-        ActorState::Dormant(session)
-    }
-
     fn dormant(mut session: Session, reason: DormantReason) -> ActorState {
         session.dormant_reason = Some(reason);
         ActorState::Dormant(session)
@@ -2755,8 +2005,6 @@ enum ActorState {
     Streaming(StreamingState),
     Reading(ReadingState),
     Dormant(Session),
-    OpeningMpv(MpvOpeningState),
-    MpvPlaying(MpvPlayingState),
     Exited,
 }
 
@@ -2779,17 +2027,6 @@ struct ReadingState {
     pending: Pin<Box<PendingRead>>,
     session: Session,
     reply: oneshot::Sender<Result<Vec<u8>, PlaybackManagerError>>,
-}
-
-struct MpvOpeningState {
-    pending: MpvLaunchFuture,
-    session: Session,
-    reply: Option<MpvReply>,
-}
-
-struct MpvPlayingState {
-    process: MpvProcess,
-    session: Session,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

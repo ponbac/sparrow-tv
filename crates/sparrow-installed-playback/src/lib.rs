@@ -13,7 +13,6 @@ mod selected_transport_stream;
 
 pub use lifecycle::LifecycleOrder;
 pub use playback::{
-    InstalledPlaybackStart, MpvFailure, MpvPlaybackControl, MpvPlaybackSession, MpvVolume,
     NativeStreamHandle, PlaybackManager, PlaybackManagerError, PlaybackRestartIntent,
     PlaybackSessionId, StartedPlayback,
 };

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Sparrow
+Exec=sparrow-desktop
+Icon=sparrow-desktop
+Categories=AudioVideo;Video;
+Terminal=false

@@ -10,12 +10,23 @@ just build-shield-host
 SPARROW_SHIELD_FIXTURE=1 just build-shield-host
 ```
 
-The default build omits fixture commands. The fixture-enabled build takes the same development application ID, `xyz.ponbac.sparrow.shield`. The APK for `SPARROW_SHIELD_ABI` (default `arm64-v8a`) is non-debuggable and development-signed at `app/src-shield/android/app/build/outputs/apk/release/app-release.apk`. The shared Gradle wrapper supplies the pinned build and Kotlin dependencies. The GPUI backend requires Android API 26 for `libnativewindow`. Cargo resolves the pinned `gpui-mobile` Git revision from the shared workspace lock, including when building the hosted server and Tauri.
+The debug APK uses the development application ID `xyz.ponbac.sparrow.shield`,
+the Gradle debug key, and an optimized Rust library. It uses `SPARROW_SHIELD_ABI`
+(default `arm64-v8a`) and writes
+`app/src-shield/android/app/build/outputs/apk/debug/app-debug.apk`.
+`SPARROW_SHIELD_FIXTURE=1` enables the private fixture commands in development builds.
+
+`just build-android-release` builds one universal APK for `xyz.ponbac.sparrow`
+in `app/build/outputs/apk/release/app-release.apk` relative to this Gradle project.
+It requires the four `SPARROW_ANDROID_*` signing values documented in the Gradle
+build. The project reads its SDK and release ABIs from `release/toolchain.json`,
+its product version from `app/package.json`, and its Rust dependencies from the
+workspace lockfile. The GPUI backend requires Android API 26 for `libnativewindow`.
 
 Set `ANDROID_SERIAL` on the ADB host to the intended Shield. The following commands address only the development APK. Serve a synthetic `catalog.m3u` and `guide.xml` on the ADB host's loopback port 18108 before seeding. The HTTPS command separately tests platform certificate verification at a fixed public endpoint.
 
 ```sh
-adb install -r app/src-shield/android/app/build/outputs/apk/release/app-release.apk
+adb install -r app/src-shield/android/app/build/outputs/apk/debug/app-debug.apk
 adb reverse --no-rebind tcp:18108 tcp:18108
 adb shell am start -S -W -n xyz.ponbac.sparrow.shield/.ShieldActivity
 adb shell am broadcast -n xyz.ponbac.sparrow.shield/.FixtureReceiver \
@@ -86,5 +97,5 @@ emu stop
 Update the Gradle locks after an intentional dependency change.
 
 ```sh
-app/src-tauri/gen/android/gradlew -p app/src-shield/android --write-locks :buildEnvironment :app:resolveAndLockBuildClasspaths
+app/src-shield/android/gradlew -p app/src-shield/android --write-locks :buildEnvironment :app:resolveAndLockBuildClasspaths
 ```

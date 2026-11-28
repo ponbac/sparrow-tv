@@ -1,5 +1,9 @@
 # NVIDIA Shield TV performance
 
+> Historical WebView procedure. Run the recorded commands from a pre-cutover
+> checkout. Current GPUI release acceptance is covered in
+> [Personal release acceptance](../release/personal-acceptance.md).
+
 Measured 2026-11-22 on a physical arm64 SHIELD Android TV, Android 11 (API 30), WebView 157.0.8103.52, 1080p app surface, 59.94 Hz display. Baseline was the installed Sparrow 0.11.4 release, equivalent to repository commit `a9e1d39`. The same saved Channel Catalog exposed 155 Channel Group controls including All. Both builds used the installed signing certificate and in-place updates.
 
 The [final installed results](#final-installed-results) cover startup, Down from the bottom visible entry, held-key response and the complete remote tour. The [second pass](#second-pass-on-the-shield) describes the experiments behind those measurements.

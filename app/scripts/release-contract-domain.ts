@@ -5,29 +5,25 @@ const STABLE_SEMVER =
 const SHA256 = /^[0-9a-f]{64}$/u;
 const ACTION_PIN = /^\s*(?:-\s*)?uses:\s+([^\s@]+)@([0-9a-f]{40})(?:\s+#.*)?$/u;
 const STRICT_GRADLE_LOCK_MODE = "lockMode.set(LockMode.STRICT)";
-const APP_GRADLE_CLASSPATHS = listGradleClasspaths(
-  ["arm64", "arm", "x86", "x86_64", "universal"],
-  ["Debug", "Release"],
-);
-const BUILD_SRC_GRADLE_CLASSPATHS = [
-  "compileClasspath",
-  "runtimeClasspath",
-  "testCompileClasspath",
-  "testRuntimeClasspath",
+const APP_GRADLE_CLASSPATHS = [
+  "debugCompileClasspath",
+  "debugRuntimeClasspath",
+  "releaseCompileClasspath",
+  "releaseRuntimeClasspath",
 ] as const;
 const APPIMAGE_TOOL_CACHE_NAMES = [
-  "AppRun-x86_64",
   "linuxdeploy-x86_64.AppImage",
-  "linuxdeploy-plugin-gtk.sh",
-  "linuxdeploy-plugin-gstreamer.sh",
-  "linuxdeploy-plugin-appimage.AppImage",
+  "appimagetool-x86_64.AppImage",
+  "runtime-x86_64",
 ] as const;
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10] as const;
 
-/** The application identity shared by Tauri and Android packaging. */
+/** The production Android package identity. */
 export const ANDROID_APPLICATION_ID = "xyz.ponbac.sparrow";
 /** The minimum Android API accepted by the release contract. */
-export const ANDROID_MIN_SDK = 24;
+export const ANDROID_MIN_SDK = 26;
+/** The API floor of signed Android releases before the GPUI cutover. */
+export const PRE_CUTOVER_ANDROID_MIN_SDK = 24;
 /** The Android API targeted by the release contract. */
 export const ANDROID_TARGET_SDK = 36;
 /** The complete ABI set required in Sparrow's one universal APK. */
@@ -92,7 +88,7 @@ export interface ApkPackageIdentity {
   readonly applicationId: typeof ANDROID_APPLICATION_ID;
   readonly versionName: string;
   readonly versionCode: number;
-  readonly minSdk: typeof ANDROID_MIN_SDK;
+  readonly minSdk: typeof ANDROID_MIN_SDK | typeof PRE_CUTOVER_ANDROID_MIN_SDK;
   readonly targetSdk: typeof ANDROID_TARGET_SDK;
   readonly abis: typeof ANDROID_ABIS;
   readonly debuggable: false;
@@ -130,10 +126,8 @@ export interface CandidateManifest {
 export interface GradleDependencyLockContractInput {
   readonly androidRootBuild: unknown;
   readonly appBuild: unknown;
-  readonly buildSrcBuild: unknown;
   readonly androidBuildscriptLock: unknown;
   readonly appLock: unknown;
-  readonly buildSrcLock: unknown;
 }
 
 const appImageReleaseContractSchema = z
@@ -294,16 +288,12 @@ export function parseAppImageReleaseContract(
   return accept(parsed.data);
 }
 
-/** Verifies Tauri's configured bundle icon against the pinned square PNG bytes. */
+/** Verifies the AppImage bundle icon against the pinned square PNG bytes. */
 export function verifyAppImageBundleIcon(
-  configuredIcons: unknown,
   icon: AppImageReleaseContract["icon"],
   bytes: unknown,
   digest: unknown,
 ): ParseResult<true> {
-  if (!z.tuple([z.literal(icon.path)]).safeParse(configuredIcons).success) {
-    return reject("Tauri must configure the one pinned AppImage bundle icon");
-  }
   if (!(bytes instanceof Uint8Array) || bytes.byteLength < 24) {
     return reject("the pinned AppImage bundle icon is not a PNG");
   }
@@ -436,16 +426,17 @@ export function parseCertificateSha256(input: unknown): ParseResult<string> {
   return accept(normalized);
 }
 
-/** Parses Android package metadata and requires one non-debuggable universal APK. */
+/** Requires a non-debuggable universal APK, allowing the old API floor only for continuity. */
 export function parseApkBadging(
   output: unknown,
   productVersion: ProductVersion,
+  role: "candidate" | "predecessor" = "candidate",
 ): ParseResult<ApkPackageIdentity> {
   if (typeof output !== "string" || output.length > 4 * 1024 * 1024) {
     return reject("aapt2 returned invalid APK metadata");
   }
   const packageLine = lineStartingWith(output, "package:");
-  const minSdkLine = lineStartingWith(output, "sdkVersion:");
+  const minSdkLine = lineStartingWith(output, "minSdkVersion:");
   const targetSdkLine = lineStartingWith(output, "targetSdkVersion:");
   const nativeCodeLine = lineStartingWith(output, "native-code:");
   if (
@@ -459,7 +450,7 @@ export function parseApkBadging(
   const applicationId = quotedAttribute(packageLine, "name");
   const versionCodeText = quotedAttribute(packageLine, "versionCode");
   const versionName = quotedAttribute(packageLine, "versionName");
-  const minSdk = quotedScalar(minSdkLine);
+  const minSdk = Number(quotedScalar(minSdkLine));
   const targetSdk = quotedScalar(targetSdkLine);
   const versionCode = Number(versionCodeText);
   const abis = Array.from(
@@ -472,7 +463,8 @@ export function parseApkBadging(
     applicationId !== ANDROID_APPLICATION_ID ||
     versionName !== productVersion.text ||
     versionCode !== productVersion.androidVersionCode ||
-    minSdk !== String(ANDROID_MIN_SDK) ||
+    (minSdk !== ANDROID_MIN_SDK &&
+      !(role === "predecessor" && minSdk === PRE_CUTOVER_ANDROID_MIN_SDK)) ||
     targetSdk !== String(ANDROID_TARGET_SDK) ||
     sortedAbis.length !== expectedAbis.length ||
     !sortedAbis.every((abi, index) => abi === expectedAbis[index]) ||
@@ -486,7 +478,7 @@ export function parseApkBadging(
     applicationId: ANDROID_APPLICATION_ID,
     versionName: productVersion.text,
     versionCode: productVersion.androidVersionCode,
-    minSdk: ANDROID_MIN_SDK,
+    minSdk,
     targetSdk: ANDROID_TARGET_SDK,
     abis: ANDROID_ABIS,
     debuggable: false,
@@ -658,32 +650,22 @@ export function verifyJustBoundaryRecipes(input: unknown): ParseResult<true> {
 export function verifyGradleDependencyLocking(
   input: GradleDependencyLockContractInput,
 ): ParseResult<true> {
-  const scripts = [input.androidRootBuild, input.appBuild, input.buildSrcBuild];
+  const { androidRootBuild, appBuild } = input;
   if (
-    scripts.some(
-      (script) => typeof script !== "string" || script.length > 1024 * 1024,
-    )
+    typeof androidRootBuild !== "string" ||
+    typeof appBuild !== "string" ||
+    androidRootBuild.length > 1024 * 1024 ||
+    appBuild.length > 1024 * 1024
   ) {
     return reject("the Gradle dependency-locking build scripts are invalid");
   }
-  const [androidRootBuild, appBuild, buildSrcBuild] = scripts as [
-    string,
-    string,
-    string,
-  ];
   if (
-    occurrences(androidRootBuild, STRICT_GRADLE_LOCK_MODE) !== 2 ||
-    occurrences(appBuild, STRICT_GRADLE_LOCK_MODE) !== 1 ||
-    occurrences(buildSrcBuild, STRICT_GRADLE_LOCK_MODE) !== 1 ||
-    !androidRootBuild.includes(
-      "resolutionStrategy.activateDependencyLocking()",
-    ) ||
-    !appBuild.includes("resolutionStrategy.activateDependencyLocking()") ||
-    !buildSrcBuild.includes("resolutionStrategy.activateDependencyLocking()") ||
-    scripts.some(
+    [androidRootBuild, appBuild].some(
       (script) =>
-        (script as string).includes("lockAllConfigurations()") ||
-        (script as string).includes("ignoredDependencies"),
+        occurrences(script, STRICT_GRADLE_LOCK_MODE) !== 1 ||
+        !script.includes("resolutionStrategy.activateDependencyLocking()") ||
+        script.includes("lockAllConfigurations()") ||
+        script.includes("ignoredDependencies"),
     )
   ) {
     return reject(
@@ -694,7 +676,6 @@ export function verifyGradleDependencyLocking(
   const expectedLocks: ReadonlyArray<readonly [unknown, readonly string[]]> = [
     [input.androidBuildscriptLock, ["classpath"]],
     [input.appLock, APP_GRADLE_CLASSPATHS],
-    [input.buildSrcLock, BUILD_SRC_GRADLE_CLASSPATHS],
   ];
   for (const [contents, expectedClasspaths] of expectedLocks) {
     const parsed = parseGradleLockClasspaths(contents);
@@ -961,19 +942,6 @@ function parseSha256(input: unknown): ParseResult<string> {
 function safeArtifactName(name: string, suffix: string): boolean {
   return (
     /^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/u.test(name) && name.endsWith(suffix)
-  );
-}
-
-function listGradleClasspaths(
-  flavors: readonly string[],
-  buildTypes: readonly string[],
-): readonly string[] {
-  return flavors.flatMap((flavor) =>
-    buildTypes.flatMap((buildType) =>
-      ["Compile", "Runtime"].map(
-        (usage) => `${flavor}${buildType}${usage}Classpath`,
-      ),
-    ),
   );
 }
 

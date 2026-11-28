@@ -27,11 +27,9 @@ const APK_DIGEST = "c".repeat(64);
 const ICON_DIGEST = "d".repeat(64);
 
 const APPIMAGE_TOOL_NAMES = [
-  "AppRun-x86_64",
   "linuxdeploy-x86_64.AppImage",
-  "linuxdeploy-plugin-gtk.sh",
-  "linuxdeploy-plugin-gstreamer.sh",
-  "linuxdeploy-plugin-appimage.AppImage",
+  "appimagetool-x86_64.AppImage",
+  "runtime-x86_64",
 ] as const;
 
 describe("release contract", () => {
@@ -181,7 +179,7 @@ describe("release contract", () => {
     const version = successfulVersion("0.11.4");
     const badging = [
       "package: name='xyz.ponbac.sparrow' versionCode='11004' versionName='0.11.4'",
-      "sdkVersion:'24'",
+      "minSdkVersion:'26'",
       "targetSdkVersion:'36'",
       "native-code: 'arm64-v8a' 'armeabi-v7a' 'x86' 'x86_64'",
     ].join("\n");
@@ -195,6 +193,22 @@ describe("release contract", () => {
     expect(parseApkBadging(badging.replace(" 'x86'", ""), version).ok).toBe(
       false,
     );
+  });
+
+  it("accepts the old API floor only for a signed continuity predecessor", () => {
+    const version = successfulVersion("0.11.4");
+    const badging = [
+      "package: name='xyz.ponbac.sparrow' versionCode='11004' versionName='0.11.4'",
+      "minSdkVersion:'24'",
+      "targetSdkVersion:'36'",
+      "native-code: 'arm64-v8a' 'armeabi-v7a' 'x86' 'x86_64'",
+    ].join("\n");
+    expect(parseApkBadging(badging, version).ok).toBe(false);
+    expect(parseApkBadging(badging, version, "predecessor")).toMatchObject({
+      ok: true,
+      value: { minSdk: 24 },
+    });
+    expect(parseApkBadging(`${badging}\napplication-debuggable`, version, "predecessor").ok).toBe(false);
   });
 
   it("normalizes one configured signing certificate without accepting a sentinel", () => {
@@ -323,7 +337,6 @@ describe("release contract", () => {
     const contract = successfulAppImageContract();
     expect(
       verifyAppImageBundleIcon(
-        ["icons/icon.png"],
         contract.icon,
         pngHeader(512, 512),
         ICON_DIGEST,
@@ -331,15 +344,13 @@ describe("release contract", () => {
     ).toEqual({ ok: true, value: true });
     expect(
       verifyAppImageBundleIcon(
-        [],
         contract.icon,
         pngHeader(512, 512),
-        ICON_DIGEST,
+        APPIMAGE_DIGEST,
       ).ok,
     ).toBe(false);
     expect(
       verifyAppImageBundleIcon(
-        ["icons/icon.png"],
         contract.icon,
         undefined,
         undefined,
@@ -347,7 +358,6 @@ describe("release contract", () => {
     ).toBe(false);
     expect(
       verifyAppImageBundleIcon(
-        ["icons/icon.png"],
         contract.icon,
         pngHeader(512, 256),
         ICON_DIGEST,
@@ -355,7 +365,7 @@ describe("release contract", () => {
     ).toBe(false);
   });
 
-  it("requires the exact five digest-pinned AppImage helper cache entries", () => {
+  it("requires the exact three digest-pinned AppImage helper cache entries", () => {
     const raw = appImageContractFixture();
     expect(parseAppImageReleaseContract(raw)).toMatchObject({ ok: true });
     expect(
@@ -383,34 +393,19 @@ describe("release contract", () => {
     const strict = "lockMode.set(LockMode.STRICT)";
     const activation = "resolutionStrategy.activateDependencyLocking()";
     const appClasspaths = [
-      "arm64",
-      "arm",
-      "x86",
-      "x86_64",
-      "universal",
-    ].flatMap((abi) =>
-      ["Debug", "Release"].flatMap((buildType) =>
-        ["Compile", "Runtime"].map(
-          (usage) => `${abi}${buildType}${usage}Classpath`,
-        ),
-      ),
-    );
-    const buildSrcClasspaths = [
-      "compileClasspath",
-      "runtimeClasspath",
-      "testCompileClasspath",
-      "testRuntimeClasspath",
+      "debugCompileClasspath",
+      "debugRuntimeClasspath",
+      "releaseCompileClasspath",
+      "releaseRuntimeClasspath",
     ];
     const lock = (classpaths: readonly string[]) =>
       `# This is a Gradle generated file for dependency locking.\n` +
       `example:dependency:1.0=${classpaths.join(",")}\nempty=\n`;
     const valid = {
-      androidRootBuild: `${strict}\n${strict}\n${activation}`,
+      androidRootBuild: `${strict}\n${activation}`,
       appBuild: `${strict}\n${activation}`,
-      buildSrcBuild: `${strict}\n${activation}`,
       androidBuildscriptLock: lock(["classpath"]),
       appLock: lock(appClasspaths),
-      buildSrcLock: lock(buildSrcClasspaths),
     };
     expect(verifyGradleDependencyLocking(valid)).toEqual({
       ok: true,
@@ -425,7 +420,7 @@ describe("release contract", () => {
     expect(
       verifyGradleDependencyLocking({
         ...valid,
-        buildSrcBuild: `${activation}\nlockAllConfigurations()`,
+        appBuild: `${activation}\nlockAllConfigurations()`,
       }).ok,
     ).toBe(false);
   });
@@ -590,7 +585,7 @@ describe("release contract", () => {
         applicationId: "xyz.ponbac.sparrow",
         versionName: version.text,
         versionCode: version.androidVersionCode,
-        minSdk: 24,
+        minSdk: 26,
         targetSdk: 36,
         abis: ["arm64-v8a", "armeabi-v7a", "x86", "x86_64"],
         certificateSha256: "d".repeat(64),
@@ -645,7 +640,7 @@ function appImageContractFixture() {
     schemaVersion: 1,
     architecture: "x86_64",
     icon: {
-      path: "icons/icon.png",
+      path: "icons/sparrow-desktop.png",
       width: 512,
       height: 512,
       sha256: ICON_DIGEST,

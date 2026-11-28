@@ -37,24 +37,17 @@ build-hosted:
     cd app && bun install --frozen-lockfile
     cd app && bun run build
 
-build-appimage:
-    command -v patchelf >/dev/null || { echo "patchelf is required to bundle GStreamer (Arch: sudo pacman -S --needed patchelf)" >&2; exit 1; }
+build-appimage: build-desktop
     cd app && bun install --frozen-lockfile
-    cd app && bun run release:contract prepare-appimage-tools
-    cd app && NO_STRIP=1 bun run tauri build --bundles appimage
+    target_dir="$(realpath -m -- "${CARGO_TARGET_DIR:-target}")" && cd app && bun run release:contract package-appimage --target-dir "$target_dir"
 
-build-android-debug:
-    cd app && bun install --frozen-lockfile
-    cd app && CARGO_PROFILE_DEV_OPT_LEVEL=3 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_DEV_STRIP=symbols bun run tauri android build --apk --debug --ci
+build-android-debug: build-shield-host
 
 build-android-release:
-    cd app && bun install --frozen-lockfile
-    cd app && bun run tauri android build --apk --ci
+    bash scripts/debug/build-shield-host.sh release
 
 write-android-dependency-locks:
-    android_ndk_toolchain="${NDK_HOME:?NDK_HOME must point to the pinned Android NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin" && test -x "$android_ndk_toolchain/aarch64-linux-android24-clang" && TAURI_CONFIG='{}' TAURI_ANDROID_PROJECT_PATH="$PWD/app/src-tauri/gen/android" ANDROID_NDK_HOME="$NDK_HOME" CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$android_ndk_toolchain/aarch64-linux-android24-clang" CC_aarch64_linux_android="$android_ndk_toolchain/aarch64-linux-android24-clang" CXX_aarch64_linux_android="$android_ndk_toolchain/aarch64-linux-android24-clang++" AR_aarch64_linux_android="$android_ndk_toolchain/llvm-ar" CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" cargo check --package sparrow-installed --target aarch64-linux-android --locked
-    cd app/src-tauri/gen/android && ./gradlew :app:resolveAndLockBuildClasspaths --write-locks --max-workers=2
-    cd app/src-tauri/gen/android && ./gradlew -p buildSrc resolveAndLockBuildClasspaths --write-locks --max-workers=2
+    cd app/src-shield/android && ./gradlew --no-daemon --max-workers=2 --write-locks :buildEnvironment :app:resolveAndLockBuildClasspaths
 
 release-preflight:
     existing_release_tags="$(git tag --list 'v*')" && cd app && bun run release:contract preflight --mode "${RELEASE_MODE:?RELEASE_MODE is required}" --commit "${RELEASE_COMMIT:?RELEASE_COMMIT is required}" --output "${RELEASE_OUTPUT:?RELEASE_OUTPUT is required}" --ref-name "${RELEASE_REF_NAME:-}" --master-commit "${RELEASE_MASTER_COMMIT:-}" --requested-version "${RELEASE_REQUESTED_VERSION:-}" --existing-tags "$existing_release_tags" --github-output "${RELEASE_GITHUB_OUTPUT:-}"
@@ -118,12 +111,6 @@ hosted-cutover-observe-start:
 
 hosted-cutover-observe-finish:
     cd app && bun run hosted:cutover finish-production-observation --start "${HOSTED_OBSERVATION_START:?HOSTED_OBSERVATION_START is required}" --route-binding "${HOSTED_ROUTE_BINDING:-}" --result "${HOSTED_RESULT:?HOSTED_RESULT is required}" --failure "${HOSTED_FAILURE:-}" --incident-reference "${HOSTED_INCIDENT_REFERENCE:-}" --evidence-key "${HOSTED_EVIDENCE_KEY:?HOSTED_EVIDENCE_KEY is required}" --output "${HOSTED_OUTPUT:?HOSTED_OUTPUT is required}"
-
-android-catalog-accept:
-    cd app && test -n "${ANDROID_SERIAL:?ANDROID_SERIAL is required}" && bun run accept:android:catalog -- --apk "${ANDROID_ACCEPTANCE_APK:?ANDROID_ACCEPTANCE_APK is required}" --output "${ANDROID_ACCEPTANCE_OUTPUT:?ANDROID_ACCEPTANCE_OUTPUT is required}"
-
-android-playback-accept:
-    cd app && test -n "${ANDROID_SERIAL:?ANDROID_SERIAL is required}" && bun run accept:android:playback -- --apk "${ANDROID_PLAYBACK_ACCEPTANCE_APK:?ANDROID_PLAYBACK_ACCEPTANCE_APK is required}" --output "${ANDROID_PLAYBACK_ACCEPTANCE_OUTPUT:?ANDROID_PLAYBACK_ACCEPTANCE_OUTPUT is required}"
 
 # Build the separate ARM64 Shield development package.
 build-shield-host:

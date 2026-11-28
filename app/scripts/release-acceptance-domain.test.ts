@@ -9,6 +9,7 @@ import {
   projectAcceptanceCandidate,
   verifyAcceptanceApprovalHistory,
   verifyKeyContinuityEvidence,
+  verifyDeviceIdentity,
   verifyReleaseAcceptance,
 } from "./release-acceptance-domain.ts";
 import type { CandidateManifest } from "./release-contract-domain.ts";
@@ -34,7 +35,7 @@ const MANIFEST: CandidateManifest = {
     applicationId: "xyz.ponbac.sparrow",
     versionName: "0.11.5",
     versionCode: 11_005,
-    minSdk: 24,
+    minSdk: 26,
     targetSdk: 36,
     abis: ["arm64-v8a", "armeabi-v7a", "x86", "x86_64"],
     certificateSha256: "d".repeat(64),
@@ -50,6 +51,7 @@ describe("personal release acceptance", () => {
     expect(templates.linux.gates.map((gate) => gate.id)).toEqual(
       [
         "startup-render-version",
+        "browse-scroll-performance",
         "browse-search-guide",
         "catalog-first-configuration",
         "catalog-offline-restart",
@@ -57,7 +59,7 @@ describe("personal release acceptance", () => {
         "primary-picture-audio",
         "primary-controls-channel-changes",
         "bounded-recovery-resource-release",
-        "primary-mpv-playback-cleanup",
+        "embedded-playback-cleanup",
       ],
     );
     expect(templates.android.gates.map((gate) => gate.id)).toEqual(
@@ -334,10 +336,27 @@ describe("personal release acceptance", () => {
     });
   });
 
+  it("accepts the physical Realme on API 37 and rejects emulators", () => {
+    const target = {
+      manufacturer: "realme",
+      model: "RMX5210",
+      apiLevel: "37",
+      primaryAbi: "arm64-v8a",
+      androidRelease: "17",
+      kernelQemu: "0",
+      hardware: "qcom",
+      productName: "RMX5210",
+    };
+    expect(verifyDeviceIdentity(target)).toMatchObject({ ok: true, value: { apiLevel: 37 } });
+    expect(verifyDeviceIdentity({ ...target, apiLevel: "36" }).ok).toBe(true);
+    expect(verifyDeviceIdentity({ ...target, kernelQemu: "1" }).ok).toBe(false);
+    expect(verifyDeviceIdentity({ ...target, model: "RMX0000" }).ok).toBe(false);
+  });
+
   it("parses exactly one installed release package identity", () => {
     const dump = `
       Package [xyz.ponbac.sparrow] (abc123):
-        versionCode=11005 minSdk=24 targetSdk=36
+        versionCode=11005 minSdk=26 targetSdk=36
         versionName=0.11.5
         userId=10234
         firstInstallTime=2026-08-30 11:55:00
@@ -353,11 +372,18 @@ describe("personal release acceptance", () => {
         applicationId: "xyz.ponbac.sparrow",
         versionName: "0.11.5",
         versionCode: 11_005,
-        minSdk: 24,
+        minSdk: 26,
         targetSdk: 36,
         uid: 10_234,
         firstInstallTime: "2026-08-30 11:55:00",
       },
+    });
+    const predecessor = dump.replace("minSdk=26", "minSdk=24").replace("userId=", "appId=");
+    const version = { versionName: "0.11.5", versionCode: 11_005 };
+    expect(parseInstalledReleasePackage(predecessor, version).ok).toBe(false);
+    expect(parseInstalledReleasePackage(predecessor, { ...version, role: "predecessor" })).toMatchObject({
+      ok: true,
+      value: { minSdk: 24, uid: 10_234 },
     });
     expect(
       parseInstalledReleasePackage(`${dump}${dump}`, {
@@ -458,7 +484,7 @@ function completeEvidence(manifest: CandidateManifest) {
         sessionType: "wayland",
         compositor: "hyprland",
       },
-      displayedVersion: manifest.version,
+      packageVersion: manifest.version,
       gates: LINUX_ACCEPTANCE_GATES.map((id) => ({ id, result: "passed" })),
     },
     android: {

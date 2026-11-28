@@ -14,7 +14,7 @@ from pathlib import Path
 AVD = "sparrow-tv-api36"
 PACKAGE = "xyz.ponbac.sparrow.shield"
 ACTIVITY = f"{PACKAGE}/.ShieldActivity"
-APK = Path(__file__).resolve().parents[2] / "app/src-shield/android/app/build/outputs/apk/release/app-release.apk"
+APK = Path(__file__).resolve().parents[2] / "app/src-shield/android/app/build/outputs/apk/debug/app-debug.apk"
 
 
 def dump(adb):

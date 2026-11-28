@@ -5,11 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const deviceScripts = [
-  "android-catalog-acceptance.ts",
-  "android-playback-acceptance.ts",
   "release-acceptance.ts",
-  "../../scripts/debug/shield-benchmark.mjs",
-  "../../scripts/debug/shield-startup.mjs",
   "../../scripts/debug/shield-startup.py",
 ] as const;
 
@@ -33,8 +29,6 @@ describe("Android device selector privacy", () => {
     );
     for (const recipe of [
       "release-acceptance-prove-continuity",
-      "android-catalog-accept",
-      "android-playback-accept",
     ]) {
       const body = recipeBody(justfile, recipe);
       expect(body).toContain("ANDROID_SERIAL");

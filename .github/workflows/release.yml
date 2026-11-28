@@ -55,7 +55,6 @@ jobs:
             clang \
             libmpv-dev \
             libssl-dev \
-            libwebkit2gtk-4.1-dev \
             libxkbcommon-dev \
             libxkbcommon-x11-dev \
             lld \
@@ -125,20 +124,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
             clang \
-            file \
-            gstreamer1.0-libav \
-            gstreamer1.0-plugins-bad \
-            gstreamer1.0-plugins-base \
-            gstreamer1.0-plugins-good \
-            libayatana-appindicator3-dev \
             libmpv-dev \
-            librsvg2-dev \
             libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            libxdo-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
             lld \
+            mesa-vulkan-drivers \
             patchelf \
             pkg-config \
+            xauth \
             xvfb
 
       - name: Build one x86_64 AppImage
@@ -225,7 +219,6 @@ jobs:
             "build-tools;35.0.0" \
             "ndk;29.0.14206865"
           echo "$ANDROID_HOME/cmdline-tools/19.0/bin" >> "$GITHUB_PATH"
-          echo "NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
           just release-verify-android-toolchain
 
       - name: Restore protected key and build one signed universal APK
@@ -255,7 +248,7 @@ jobs:
         env:
           RELEASE_KIND: apk
           RELEASE_VERSION: ${{ needs.check.outputs.version }}
-          RELEASE_INPUT: ${{ github.workspace }}/app/src-tauri/gen/android/app/build/outputs
+          RELEASE_INPUT: ${{ github.workspace }}/app/src-shield/android/app/build/outputs/apk/release
           RELEASE_OUTPUT: ${{ runner.temp }}/apk
           RELEASE_ARTIFACT: ${{ runner.temp }}/apk/${{ needs.check.outputs.apk-name }}
         run: |

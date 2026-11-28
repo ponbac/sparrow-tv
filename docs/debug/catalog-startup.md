@@ -37,12 +37,10 @@ fallback. The cache is disposable and never bundled into the app or exported.
 - `catalog-cache-v1` lives beside private snapshots. It is bounded to 256 MiB,
   created with mode 0600, checksummed and atomically replaced. Missing, damaged,
   incompatible, or unwritable caches do not prevent snapshot recovery.
-- Installed queries and mutations run over local IPC even when Android reports
-  no network. Hosted HTTP queries retain their normal network policy.
+- Installed queries and mutations run locally even when Android reports no network. Hosted HTTP queries retain their normal network policy.
 
-Use `just build-android-debug` for an optimized, debug-signed test APK. The debug
-signature supports installing over earlier test builds; Rust optimization is
-explicitly enabled. A first launch after an incompatible cache update may show
+Use `just build-android-debug` for an optimized, debug-signed test APK. The APK uses the separate `xyz.ponbac.sparrow.shield`
+application ID and an optimized Rust library. A first launch after an incompatible cache update may show
 Channels before Programmes while rebuilding the processed catalog.
 
 ## Reproducible validation
@@ -75,22 +73,11 @@ isolated measure of caching versus compiler optimization.
 
 ## App icon
 
-The orange sparrow asset is `app/src-tauri/icons/sparrow-foreground.png`.
-Generate launcher assets from the committed manifest:
+The Linux AppImage icon lives at `release/icons/sparrow-desktop.png`. Update
+its SHA-256 and dimensions in `release/appimage.json` when replacing it.
 
-```sh
-cd app
-bun run tauri icon src-tauri/icons/sparrow-icon.json --output /tmp/sparrow-icons
-for density in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
-  cp /tmp/sparrow-icons/android/mipmap-$density/*.png src-tauri/gen/android/app/src/main/res/mipmap-$density/
-done
-cp /tmp/sparrow-icons/icon.png src-tauri/icons/icon.png
-```
-
-Keep the hand-maintained adaptive XML files: the pinned Tauri icon generator
-applies `android_fg_scale` only to legacy images. The XML insets both adaptive
-foreground and monochrome by 17% to fit the safe circle.
-
-Android uses separate dark background, foreground and monochrome layers, with
-legacy and round assets for older launchers. Verify circle and rounded-square
-masks and themed mode at launcher size.
+The Android launcher resources live in `app/src-shield/android/app/src/main/res`.
+Keep the dark background, foreground and monochrome layers with the legacy and
+round assets. The adaptive XML insets the foreground and monochrome layers by
+17% to fit the safe circle. Verify circle and rounded-square masks and themed
+mode at launcher size.

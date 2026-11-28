@@ -1449,9 +1449,9 @@ fn classify(error: PlaybackManagerError) -> (Failure, bool, bool) {
             (Failure::StreamInterrupted, true, false)
         }
         PlaybackManagerError::TransportStream(_) => (Failure::UnsupportedMedia, false, false),
-        PlaybackManagerError::Mpv(_)
-        | PlaybackManagerError::Cancelled
-        | PlaybackManagerError::Unavailable => (Failure::PlayerUnavailable, false, false),
+        PlaybackManagerError::Cancelled | PlaybackManagerError::Unavailable => {
+            (Failure::PlayerUnavailable, false, false)
+        }
     }
 }
 

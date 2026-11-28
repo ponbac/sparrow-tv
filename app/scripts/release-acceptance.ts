@@ -5,7 +5,6 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { verifyDeviceIdentity } from "./android-catalog-acceptance-domain.ts";
 import {
   prepareReleaseOutput,
   readReleaseRegularFile,
@@ -18,6 +17,7 @@ import {
   createAcceptanceTemplates,
   formatAcceptanceApprovalReceipt,
   parseInstalledReleasePackage,
+  verifyDeviceIdentity,
   parseSealedReleaseAcceptanceVerdict,
   projectAcceptanceCandidate,
   verifyAcceptanceApprovalHistory,
@@ -227,7 +227,7 @@ async function proveContinuity(
           previousVersion.apkName,
         );
         runReleaseContract([
-          "verify-apk",
+          "verify-predecessor-apk",
           "--version",
           previousVersion.text,
           "--artifact",
@@ -251,7 +251,7 @@ async function proveContinuity(
           previousApk,
           "install continuity predecessor",
         );
-        const previous = readInstalledPackage(previousVersion);
+        const previous = readInstalledPackage(previousVersion, "predecessor");
         installReleaseApk(
           acceptedApk,
           "install accepted candidate as an update",
@@ -775,14 +775,14 @@ function installReleaseApk(apk: string, label: string): void {
   }
 }
 
-function readInstalledPackage(version: ProductVersion) {
+function readInstalledPackage(version: ProductVersion, role?: "predecessor") {
   const parsed = parseInstalledReleasePackage(
     run(
       "adb",
       ["shell", "dumpsys", "package", PACKAGE_NAME],
       "read installed Sparrow identity",
     ).stdout,
-    { versionName: version.text, versionCode: version.androidVersionCode },
+    { versionName: version.text, versionCode: version.androidVersionCode, ...(role && { role }) },
   );
   if (!parsed.ok) throw new AcceptanceFailure(parsed.reason);
   return parsed.value;

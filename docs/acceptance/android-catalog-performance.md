@@ -1,5 +1,9 @@
 # Android catalog performance acceptance
 
+> Historical WebView procedure. Run the recorded commands from a pre-cutover
+> checkout. Current GPUI release acceptance is covered in
+> [Personal release acceptance](../release/personal-acceptance.md).
+
 This runbook measures issue #26 on the required physical Realme GT8 Pro
 (RMX5210), Android 16 / API 36. The repository-owned harness rejects emulators,
 other models, other API levels, non-arm64 candidates, online devices, and source

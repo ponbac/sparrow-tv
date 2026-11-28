@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   ANDROID_APPLICATION_ID,
   ANDROID_MIN_SDK,
+  PRE_CUTOVER_ANDROID_MIN_SDK,
   ANDROID_TARGET_SDK,
   parseProductVersion,
   type CandidateManifest,
@@ -13,6 +14,7 @@ const SHA256 = /^[0-9a-f]{64}$/u;
 /** The complete manual Arch/Wayland gate for one exact AppImage candidate. */
 export const LINUX_ACCEPTANCE_GATES = [
   "startup-render-version",
+  "browse-scroll-performance",
   "browse-search-guide",
   "catalog-first-configuration",
   "catalog-offline-restart",
@@ -20,7 +22,7 @@ export const LINUX_ACCEPTANCE_GATES = [
   "primary-picture-audio",
   "primary-controls-channel-changes",
   "bounded-recovery-resource-release",
-  "primary-mpv-playback-cleanup",
+  "embedded-playback-cleanup",
 ] as const;
 
 /** The complete manual physical-Realme gate for one exact signed APK candidate. */
@@ -79,7 +81,7 @@ export interface ReleaseAcceptanceTemplates {
       readonly sessionType: null;
       readonly compositor: null;
     };
-    readonly displayedVersion: null;
+    readonly packageVersion: null;
     readonly gates: readonly PendingGate<
       (typeof LINUX_ACCEPTANCE_GATES)[number]
     >[];
@@ -114,10 +116,19 @@ export interface InstalledReleasePackage {
   readonly applicationId: typeof ANDROID_APPLICATION_ID;
   readonly versionName: string;
   readonly versionCode: number;
-  readonly minSdk: typeof ANDROID_MIN_SDK;
+  readonly minSdk: typeof ANDROID_MIN_SDK | typeof PRE_CUTOVER_ANDROID_MIN_SDK;
   readonly targetSdk: typeof ANDROID_TARGET_SDK;
   readonly uid: number;
   readonly firstInstallTime: string;
+}
+
+/** Identity of the physical phone used for the release continuity gate. */
+export interface ReleaseDeviceIdentity {
+  readonly manufacturer: "realme";
+  readonly model: "RMX5210";
+  readonly apiLevel: 36 | 37;
+  readonly primaryAbi: "arm64-v8a";
+  readonly androidRelease: string;
 }
 
 /** Machine-recorded proof that Android accepted an in-place release-key update. */
@@ -125,13 +136,7 @@ export interface KeyContinuityEvidence {
   readonly schemaVersion: 1;
   readonly candidate: AcceptanceCandidateBinding;
   readonly recordedAt: string;
-  readonly device: {
-    readonly manufacturer: "realme";
-    readonly model: "RMX5210";
-    readonly apiLevel: 36;
-    readonly primaryAbi: "arm64-v8a";
-    readonly androidRelease: string;
-  };
+  readonly device: ReleaseDeviceIdentity;
   readonly previous: {
     readonly applicationId: typeof ANDROID_APPLICATION_ID;
     readonly versionName: string;
@@ -249,8 +254,21 @@ const linuxEvidenceSchema = z
         compositor: z.literal("hyprland"),
       })
       .strict(),
-    displayedVersion: z.string(),
+    packageVersion: z.string(),
     gates: z.array(passedGateSchema).max(LINUX_ACCEPTANCE_GATES.length),
+  })
+  .strict();
+
+const devicePropertiesSchema = z
+  .object({
+    manufacturer: z.string(),
+    model: z.string(),
+    apiLevel: z.string(),
+    primaryAbi: z.string(),
+    androidRelease: z.string().min(1).max(32),
+    kernelQemu: z.string(),
+    hardware: z.string(),
+    productName: z.string(),
   })
   .strict();
 
@@ -263,7 +281,7 @@ const androidEvidenceSchema = z
       .object({
         manufacturer: z.literal("realme"),
         model: z.literal("RMX5210"),
-        apiLevel: z.literal(36),
+        apiLevel: z.union([z.literal(36), z.literal(37)]),
         primaryAbi: z.literal("arm64-v8a"),
       })
       .strict(),
@@ -291,7 +309,7 @@ const continuityEvidenceSchema = z
       .object({
         manufacturer: z.literal("realme"),
         model: z.literal("RMX5210"),
-        apiLevel: z.literal(36),
+        apiLevel: z.union([z.literal(36), z.literal(37)]),
         primaryAbi: z.literal("arm64-v8a"),
         androidRelease: z.string().min(1).max(32),
       })
@@ -411,7 +429,7 @@ export function createAcceptanceTemplates(
       candidate,
       recordedAt: null,
       target: { distribution: null, sessionType: null, compositor: null },
-      displayedVersion: null,
+      packageVersion: null,
       gates: LINUX_ACCEPTANCE_GATES.map(pendingGate),
     },
     android: {
@@ -448,12 +466,46 @@ export function parseSealedReleaseAcceptanceVerdict(
     : reject("the sealed release acceptance verdict is invalid");
 }
 
+/** Accepts only a physical Realme GT8 Pro (RMX5210), API 36 or 37, arm64 device. */
+export function verifyDeviceIdentity(input: unknown): ParseResult<ReleaseDeviceIdentity> {
+  const parsed = devicePropertiesSchema.safeParse(input);
+  if (!parsed.success) {
+    return reject("device properties were unavailable");
+  }
+  const device = parsed.data;
+  const emulator =
+    device.kernelQemu === "1" ||
+    /goldfish|ranchu|emulator|qemu/iu.test(device.hardware) ||
+    /sdk_gphone|generic|emulator/iu.test(device.productName);
+  if (emulator) {
+    return reject("emulators are not accepted for the physical-device gate");
+  }
+  if (device.manufacturer.toLowerCase() !== "realme" || device.model !== "RMX5210") {
+    return reject("the connected device is not the required Realme GT8 Pro RMX5210");
+  }
+  const apiLevel = Number(device.apiLevel);
+  if (apiLevel !== 36 && apiLevel !== 37) {
+    return reject("the connected device is not running Android API 36 or 37");
+  }
+  if (device.primaryAbi !== "arm64-v8a") {
+    return reject("the connected device does not use the required arm64 ABI");
+  }
+  return accept({
+    manufacturer: "realme",
+    model: "RMX5210",
+    apiLevel,
+    primaryAbi: "arm64-v8a",
+    androidRelease: device.androidRelease,
+  });
+}
+
 /** Parses the installed non-debug release package and requires its exact expected identity. */
 export function parseInstalledReleasePackage(
   input: unknown,
   expected: {
     readonly versionName: string;
     readonly versionCode: number;
+    readonly role?: "predecessor";
   },
 ): ParseResult<InstalledReleasePackage> {
   if (typeof input !== "string" || input.length > 4 * 1024 * 1024) {
@@ -470,7 +522,7 @@ export function parseInstalledReleasePackage(
   const versionNames = Array.from(
     input.matchAll(/^\s*versionName=([^\s]+)\s*$/gmu),
   );
-  const userIds = Array.from(input.matchAll(/^\s*userId=(\d+)\s*$/gmu));
+  const userIds = Array.from(input.matchAll(/^\s*(?:userId|appId)=(\d+)\s*$/gmu));
   const installTimes = Array.from(
     input.matchAll(/^\s*firstInstallTime=(.+?)\s*$/gmu),
   );
@@ -492,7 +544,8 @@ export function parseInstalledReleasePackage(
   if (
     versionName !== expected.versionName ||
     versionCode !== expected.versionCode ||
-    minSdk !== ANDROID_MIN_SDK ||
+    (minSdk !== ANDROID_MIN_SDK &&
+      !(expected.role === "predecessor" && minSdk === PRE_CUTOVER_ANDROID_MIN_SDK)) ||
     targetSdk !== ANDROID_TARGET_SDK ||
     !Number.isSafeInteger(uid) ||
     uid <= 0 ||
@@ -507,7 +560,7 @@ export function parseInstalledReleasePackage(
     applicationId: ANDROID_APPLICATION_ID,
     versionName,
     versionCode,
-    minSdk: ANDROID_MIN_SDK,
+    minSdk,
     targetSdk: ANDROID_TARGET_SDK,
     uid,
     firstInstallTime,
@@ -684,9 +737,9 @@ export function verifyReleaseAcceptance(
       "the Linux acceptance evidence is invalid or belongs to another attempt",
     );
   }
-  if (linux.data.displayedVersion !== manifest.version) {
+  if (linux.data.packageVersion !== manifest.version) {
     return reject(
-      "the Linux candidate did not display the accepted product version",
+      "the AppImage metadata does not match the accepted product version",
     );
   }
   if (!allGatesPassed(linux.data.gates, LINUX_ACCEPTANCE_GATES)) {
