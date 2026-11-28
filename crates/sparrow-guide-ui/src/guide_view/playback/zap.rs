@@ -193,18 +193,26 @@ pub(super) fn channel_reel(layout: Layout, entries: &Reel, roll: Option<&ZapRoll
     )
 }
 
-pub(super) fn identity(layout: Layout, playback: &PlaybackOverlay<'_>) -> Div {
+/// The Channel name over the live Programme title, inked explicitly so
+/// neither line falls back to GPUI's default black.
+pub(super) fn identity(
+    layout: Layout,
+    playback: &PlaybackOverlay<'_>,
+    [name_ink, title_ink]: [gpui::Rgba; 2],
+) -> Div {
     let label = |name: &str, title: &str| {
         div()
             .child(
                 layout
                     .text(SAIRA, 22., 26., 600.)
+                    .text_color(name_ink)
                     .truncate()
                     .child(name.to_owned()),
             )
             .child(
                 layout
                     .text(SAIRA_TITLE, 36., 42., 700.)
+                    .text_color(title_ink)
                     .truncate()
                     .child(title.to_owned()),
             )

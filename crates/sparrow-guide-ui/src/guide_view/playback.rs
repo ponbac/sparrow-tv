@@ -624,7 +624,7 @@ fn fullscreen_head(
                         }),
                 ),
         )
-        .child(zap::identity(layout, playback))
+        .child(zap::identity(layout, playback, [rgb(TEXT), rgb(TEXT)]))
         .when_some(reel, |head, entries| {
             head.child(zap::channel_reel(layout, entries, playback.roll))
         })

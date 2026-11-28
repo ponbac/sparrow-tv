@@ -110,10 +110,10 @@ pub(in super::super) fn search_hit(
         SearchView::Closed => None,
         SearchView::Inline => {
             let geometry = InlineGeometry::new(layout, panel.docked);
-            if !(geometry.x..geometry.x + geometry.width).contains(&x) {
-                return Some(SearchFocus::Close);
-            }
             if (BAND_TOP..BAND_TOP + geometry.field_height).contains(&y) {
+                if !(geometry.x..geometry.x + geometry.width).contains(&x) {
+                    return Some(SearchFocus::Close);
+                }
                 let clear = !panel.display_term.is_empty()
                     && x >= geometry.x + geometry.width - INLINE_CLEAR_INSET;
                 return Some(if clear {
@@ -121,6 +121,9 @@ pub(in super::super) fn search_hit(
                 } else {
                     SearchFocus::Field
                 });
+            }
+            if !(geometry.popup_x..geometry.popup_x + geometry.popup_width).contains(&x) {
+                return Some(SearchFocus::Close);
             }
             let rows = inline_rows(panel.state, panel.display_term);
             let list_y = y - INLINE_POPUP_Y;
@@ -231,12 +234,17 @@ struct InlineGeometry {
     x: f32,
     width: f32,
     field_height: f32,
+    /// The result popup. On compact Pocket it spans the content width, wider
+    /// than the field the toolbar buttons squeeze.
+    popup_x: f32,
+    popup_width: f32,
 }
 
 impl InlineGeometry {
     fn new(layout: Layout, docked: bool) -> Self {
         // The compact Pocket toolbar keeps its buttons right of the field.
-        let (x, toolbar_width, trailing) = if layout.compact_pocket() {
+        let compact = layout.compact_pocket();
+        let (x, toolbar_width, trailing) = if compact {
             (
                 super::POCKET_GUTTER,
                 layout.width - 2. * super::POCKET_GUTTER,
@@ -246,10 +254,17 @@ impl InlineGeometry {
             let (x, width) = panel_bounds(layout, docked);
             (x, width, INLINE_TRAILING_WIDTH)
         };
+        let width = (toolbar_width - trailing).max(0.);
         Self {
             x,
-            width: (toolbar_width - trailing).max(0.),
+            width,
             field_height: (layout.height - BAND_TOP).clamp(0., TOOLBAR_HEIGHT),
+            popup_x: x,
+            popup_width: if compact {
+                toolbar_width.max(0.)
+            } else {
+                width
+            },
         }
     }
 
@@ -454,7 +469,12 @@ fn inline_popup(
     icons: &ChannelIcons,
 ) -> Div {
     layout
-        .rect(geometry.x, INLINE_POPUP_Y, geometry.width, slice.height)
+        .rect(
+            geometry.popup_x,
+            INLINE_POPUP_Y,
+            geometry.popup_width,
+            slice.height,
+        )
         .rounded(layout.px(12.))
         .bg(rgb(PANEL))
         .shadow(vec![
@@ -470,7 +490,7 @@ fn inline_popup(
             let row_rect = layout.rect(
                 INLINE_PADDING - 1.,
                 y,
-                geometry.width - INLINE_PADDING * 2.,
+                geometry.popup_width - INLINE_PADDING * 2.,
                 INLINE_ROW_HEIGHT,
             );
             inline_row(
@@ -1082,10 +1102,10 @@ mod tests {
     use crate::guide_view::playback::{FullscreenFrame, picture_rect};
 
     use super::{
-        INLINE_POPUP_Y, InlineGeometry, InlineRow, Layout, RowScroll, SearchFocus, inline_slice,
-        search_editor_rect,
+        BAND_TOP, INLINE_POPUP_Y, InlineGeometry, InlineRow, Layout, RowScroll, SearchFocus,
+        SearchPanel, SearchViewport, inline_slice, search_editor_rect, search_hit,
     };
-    use crate::guide_view::Profile;
+    use crate::guide_view::{POCKET_GUTTER, PocketClass, Pointer, Profile};
 
     #[test]
     fn inline_search_keeps_the_docked_picture_clear_even_on_a_short_viewport() {
@@ -1132,6 +1152,45 @@ mod tests {
                 docked_editor
             );
         }
+    }
+
+    #[test]
+    fn pocket_inline_results_take_the_full_content_width() {
+        let layout = Layout::new(
+            Profile::Pocket(PocketClass::Portrait, Pointer::Coarse),
+            size(px(412.), px(915.)),
+        );
+        assert!(layout.compact_pocket());
+        // Without a catalog the popup holds one notice row, which takes the
+        // press but focuses nothing; outside the popup the press closes Search.
+        let mut state = SearchState::new(None);
+        let _ = state.set_view(SearchView::Inline);
+        let _ = state.set_term("amber");
+        let panel = SearchPanel {
+            marker: None,
+            state: &state,
+            display_term: "amber",
+            focus: SearchFocus::Field,
+            editing: true,
+            has_exclusions: false,
+            docked: false,
+            families: &[],
+            now: chrono::DateTime::UNIX_EPOCH,
+        };
+        let viewport = SearchViewport::default();
+        let hit = |x| search_hit(layout, &panel, &viewport, [x, INLINE_POPUP_Y + 20.]);
+        let field = InlineGeometry::new(layout, false);
+        let right = layout.width - POCKET_GUTTER;
+        // The toolbar buttons squeeze the field, not the results under it.
+        assert!(field.x + field.width < right - 100.);
+        assert_eq!(hit(POCKET_GUTTER + 10.), None);
+        assert_eq!(hit(right - 10.), None);
+        assert_eq!(hit(right + 2.), Some(SearchFocus::Close));
+        // Beside the field, the toolbar row still closes Search.
+        assert_eq!(
+            search_hit(layout, &panel, &viewport, [right - 10., BAND_TOP + 10.]),
+            Some(SearchFocus::Close)
+        );
     }
 
     #[test]

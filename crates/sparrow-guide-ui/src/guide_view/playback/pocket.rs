@@ -55,7 +55,12 @@ pub(crate) fn chrome(
             .bg(rgb(stripe_color(playback.stage)))
             .opacity(frame.stripe),
     );
-    let chrome = div().absolute().inset_0().opacity(frame.caption);
+    // Pocket chrome sits on dark ink: nothing may inherit GPUI's black.
+    let chrome = div()
+        .absolute()
+        .inset_0()
+        .text_color(layout.guide_text())
+        .opacity(frame.caption);
     let chrome = match (pocket.mode, pocket.watch, pocket.info) {
         (PocketMode::Watch, Some(watch), _) => {
             watch_screen(layout, playback, details, watch, minute, pointer, chrome)
@@ -155,7 +160,12 @@ fn masthead(
                 rgb(TEXT),
             )),
         )
-        .child(minute.clock(layout, 28.).ml(layout.px(8.)))
+        .child(
+            minute
+                .clock(layout, 28.)
+                .text_color(layout.guide_text())
+                .ml(layout.px(8.)),
+        )
 }
 
 fn round_button(layout: Layout, size: f32) -> Div {
@@ -188,9 +198,11 @@ fn lower_third(
         .flex()
         .items_center()
         .gap(layout.px(16.))
+        .text_color(layout.guide_text())
         .child(
             layout
                 .text(SAIRA_CLOCK, 30., 30., 700.)
+                .text_color(rgb(TEXT))
                 .size(layout.px(60.))
                 .flex_none()
                 .flex()
@@ -200,7 +212,11 @@ fn lower_third(
                 .bg(rgb(TALLY))
                 .child(zap::number(layout, playback, 60., 30., 18.)),
         )
-        .child(zap::identity(layout, playback))
+        .child(zap::identity(
+            layout,
+            playback,
+            [layout.secondary(DIM), layout.guide_text()],
+        ))
         .when(
             !playback.show_field() || playback.stage == PlaybackStage::Playing,
             |head| head.child(signal_mark::render(layout, playback, false)),
@@ -250,6 +266,7 @@ fn lower_third(
                 div()
                     .min_w_0()
                     .truncate()
+                    .text_color(layout.secondary(DIM))
                     .child(format!("Next {} {}", next.starts, next.title)),
             )
         });
@@ -413,6 +430,7 @@ fn details_block(
             .flex_none()
             .border_t(layout.px(1.))
             .border_color(rgba(FAINT))
+            .text_color(layout.guide_text())
             .flex()
             .items_center()
             .gap(layout.px(14.))
@@ -430,6 +448,7 @@ fn details_block(
                     .min_w_0()
                     .truncate()
                     .font_weight(gpui::FontWeight(600.))
+                    .text_color(layout.guide_text())
                     .child(next.title.to_owned()),
             )
             .child(
@@ -494,23 +513,30 @@ fn channel_bar(
     let reel = playback.reel.cloned().unwrap_or_default();
     let neighbour = |entry: Option<(u32, String)>, direction: ChannelDirection| {
         let previous = direction == ChannelDirection::Previous;
+        // With no neighbour the single label line centres on the arrow.
+        let number = entry.as_ref().map(|e| e.0.to_string());
         let label = div()
             .flex_1()
             .min_w_0()
+            .h_full()
             .flex()
             .flex_col()
+            .justify_center()
             .when(!previous, |label| label.items_end())
-            .child(
-                layout
-                    .text(SAIRA_CLOCK, 20., 24., 600.)
-                    .text_color(rgba(DIM))
-                    .child(entry.as_ref().map_or_else(String::new, |e| e.0.to_string())),
-            )
+            .when_some(number, |label, number| {
+                label.child(
+                    layout
+                        .text(SAIRA_CLOCK, 20., 24., 600.)
+                        .text_color(layout.secondary(DIM))
+                        .child(number),
+                )
+            })
             .child(
                 layout
                     .text(SAIRA, 22., 28., 600.)
                     .max_w_full()
                     .truncate()
+                    .text_color(layout.guide_text())
                     .child(entry.map_or_else(
                         || {
                             if previous {

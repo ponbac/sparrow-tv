@@ -134,6 +134,7 @@ pub(crate) fn toolbar(
     };
     layout
         .rect(left, top, width, height)
+        .text_color(layout.guide_text())
         .flex()
         .items_center()
         .gap(layout.px(GAP))
@@ -145,7 +146,7 @@ pub(crate) fn toolbar(
                 .flex_none()
                 .flex()
                 .justify_end()
-                .child(minute.clock(layout, 26.)),
+                .child(minute.clock(layout, 26.).text_color(layout.guide_text())),
         )
 }
 
