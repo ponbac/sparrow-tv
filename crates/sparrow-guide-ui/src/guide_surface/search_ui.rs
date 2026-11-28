@@ -72,12 +72,16 @@ impl GuideSurface {
             SearchEffect::ReconcileGeneration => self.catalog.reconcile_status(),
             SearchEffect::Edit => {
                 if let Some((window, _)) = input {
-                    let rect = guide_view::search_editor_rect(
-                        self.layout(window),
+                    let sheet = self.sheet_layout(window);
+                    let rect = sheet.to_window(
+                        guide_view::search_editor_rect(
+                            sheet,
+                            window.scale_factor(),
+                            self.search.state(),
+                            self.search.has_exclusions(),
+                            self.playback.docked(),
+                        ),
                         window.scale_factor(),
-                        self.search.state(),
-                        self.search.has_exclusions(),
-                        self.playback.docked(),
                     );
                     if !self.open_query_editor(TextTarget::Search, rect) {
                         self.show_feedback(Some("Couldn’t open the keyboard."), cx);

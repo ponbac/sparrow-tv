@@ -104,11 +104,38 @@ impl Ambient {
             picture_reference(layout, PlaybackLayout::Docked),
         );
         let t = frame.fullscreen;
-        let dock = [
-            [x - 200., y - 180., 620., 400.],
-            [x + w - 160., y - 120., 600., 500.],
-            [x - 80., y + h - 80., 760., 340.],
-        ];
+        let (dock, dock_alpha) = match layout.pocket() {
+            // The Watch stage spans the phone, so its light pools below the
+            // picture, onto the lower third.
+            Some(pocket) if pocket.mode == super::PocketMode::Watch => (
+                [
+                    [x - 0.15 * w, y + h - 40., 0.65 * w, 220.],
+                    [x + 0.5 * w, y + h - 40., 0.65 * w, 220.],
+                    [x + 0.1 * w, y + h, 0.8 * w, 180.],
+                ],
+                0.75,
+            ),
+            // A small docked picture gets the TV sprites scaled to its box.
+            Some(_) => {
+                let s = w / 640.;
+                (
+                    [
+                        [x - 200. * s, y - 180. * s, 620. * s, 400. * s],
+                        [x + w - 160. * s, y - 120. * s, 600. * s, 500. * s],
+                        [x - 80. * s, y + h - 80. * s, 760. * s, 340. * s],
+                    ],
+                    0.6,
+                )
+            }
+            None => (
+                [
+                    [x - 200., y - 180., 620., 400.],
+                    [x + w - 160., y - 120., 600., 500.],
+                    [x - 80., y + h - 80., 760., 340.],
+                ],
+                1.,
+            ),
+        };
         let full = [
             [x - 40., y - 130., 300., layout.height + 260.],
             [x + w - 260., y - 130., 300., layout.height + 260.],
@@ -125,7 +152,7 @@ impl Ambient {
                         dock[i],
                         210.,
                         Rgba {
-                            a: alpha * (1. - t),
+                            a: alpha * dock_alpha * (1. - t),
                             ..color
                         },
                     ));

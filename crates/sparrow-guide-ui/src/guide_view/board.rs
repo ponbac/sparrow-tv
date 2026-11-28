@@ -107,7 +107,12 @@ pub(crate) fn render(
             .opacity(opacity);
         let family = &families[index];
         let diagonal = (index / columns).saturating_sub(first_row) + index % columns;
-        board = board.child(card(
+        let row = if layout.compact_pocket() {
+            pocket_row
+        } else {
+            card
+        };
+        board = board.child(row(
             layout,
             wave.card(layout, rect, diagonal, last_diagonal, focus.is_some()),
             marker,
@@ -213,12 +218,14 @@ fn card(
     };
     let (preferred, source) = family.preferred_with_schedule(screen.variant_preferences());
     let programmes = source.programmes();
-    let instant = minute.now.to_utc();
+    // A chosen time chip shows each row at that hour, without live progress.
+    let viewing = screen.viewing_instant();
+    let instant = viewing.unwrap_or(minute.now.to_utc());
     let live = programme_at(programmes, instant);
     let supporting = rgba(if focused { ON_ICE_DIM } else { DIM });
     let rollover = minute.rollover(
         source,
-        live,
+        live.filter(|_| viewing.is_none()),
         index.saturating_sub(screen.visible_families(0).start),
     );
     let caption_height = if live.is_some() || icon.is_some() {
@@ -248,7 +255,7 @@ fn card(
         } else {
             layout.surface(fill.0)
         });
-    if let Some(live) = live {
+    if let Some(live) = live.filter(|_| viewing.is_none()) {
         let width = layout.column_width() * elapsed_fraction(live, minute.meter_time()) as f32;
         if width > 0. {
             card = card.child(
@@ -362,7 +369,7 @@ fn card(
     .child({
         let height = TITLE_HEIGHT + LINE_GAP + last_height;
         let block = |programmes: &[GuideProgramme], at, dy| {
-            programme_lines(layout, family, programmes, at, focused)
+            programme_lines(layout, family, programmes, at, focused, viewing.is_some())
                 .absolute()
                 .top(layout.px(dy))
         };
@@ -416,6 +423,7 @@ fn programme_lines(
     programmes: &[GuideProgramme],
     instant: DateTime<Utc>,
     focused: bool,
+    viewing: bool,
 ) -> Div {
     let live = programme_at(programmes, instant);
     let subtitle = next_after(programmes, instant)
@@ -465,9 +473,183 @@ fn programme_lines(
                             div()
                                 .ml_auto()
                                 .flex_none()
-                                .child(format!("{} min left", minutes_left(live, instant))),
+                                .child(remaining(live, instant, viewing)),
                         )
                     }),
+            )
+        })
+}
+
+/// Minutes left in a live Programme, or a chosen hour's Programme times.
+fn remaining(programme: &GuideProgramme, instant: DateTime<Utc>, viewing: bool) -> String {
+    if viewing {
+        format!(
+            "{}–{}",
+            clock_time(programme.starts_at()),
+            clock_time(programme.ends_at())
+        )
+    } else {
+        format!("{} min left", minutes_left(programme, instant))
+    }
+}
+
+/// A one-column Pocket list row. Touch has no focus to show, so the playing
+/// row always carries the stage edge.
+#[allow(clippy::too_many_arguments)]
+fn pocket_row(
+    layout: Layout,
+    rect: Div,
+    marker: Option<&PlayingMarker>,
+    screen: &GuideScreen,
+    index: usize,
+    focus: Option<NowFocus>,
+    minute: super::MinuteFrame<'_>,
+    icon: Option<&IconImage>,
+    hovered: bool,
+) -> Div {
+    let family = &screen.families()[index];
+    let height = layout.m.board.now.row_height;
+    let width = layout.column_width();
+    let focused = matches!(focus, Some(NowFocus::Channel(_)));
+    let focused_chip = match focus {
+        Some(NowFocus::Variant { chip, .. }) => Some(chip),
+        _ => None,
+    };
+    let tint = marker.and_then(|marker| marker.family_tint(family));
+    let (preferred, source) = family.preferred_with_schedule(screen.variant_preferences());
+    let programmes = source.programmes();
+    let viewing = screen.viewing_instant();
+    let instant = viewing.unwrap_or(minute.now.to_utc());
+    let shown = programme_at(programmes, instant);
+    let elapsed = shown
+        .filter(|_| viewing.is_none())
+        .map(|programme| elapsed_fraction(programme, minute.meter_time()) as f32);
+    let quality_count = family.quality_variants().count();
+    let text_width = width - CONTENT_X - 18.;
+    let (title, title_ink) = match shown {
+        Some(programme) => (programme_title(programme), layout.guide_text()),
+        None if programmes.is_empty() => (
+            "No guide data. The channel still plays.".into(),
+            layout.secondary(DIM),
+        ),
+        None => (
+            format!("Nothing listed at {}", clock_time(instant)).into(),
+            layout.secondary(DIM),
+        ),
+    };
+    let next = next_after(programmes, instant)
+        .map(|next| format!("{} {}", clock_time(next.starts_at()), programme_title(next)));
+    let mut row = rect.rounded(layout.px(8.)).overflow_hidden();
+    row = match tint {
+        Some(tint) => row.bg(layout.surface(tint.base)),
+        None if hovered => row.bg(super::layout_hover_fill()),
+        None => row,
+    };
+    if let (Some(tint), Some(elapsed)) = (tint, elapsed) {
+        row = row.child(
+            layout
+                .rect(0., 0., width * elapsed, height)
+                .bg(layout.surface(tint.elapsed)),
+        );
+    }
+    let meter = layout
+        .rect(CONTENT_X, height - 5., text_width, 3.)
+        .rounded_full();
+    let meter = match elapsed {
+        Some(elapsed) => meter.bg(rgba(super::FAINT)).child(
+            layout
+                .rect(0., 0., text_width * elapsed, 3.)
+                .rounded_full()
+                .bg(rgb(tint.map_or(ICE_ELAPSED, |tint| tint.edge_color()))),
+        ),
+        None => meter.bg(rgba(super::FAINT)),
+    };
+    row.children(tint.map(|tint| tint.edge(layout, height)))
+        .child(
+            plate(layout, Plate::Now, family.number(), focused, icon)
+                .absolute()
+                .left(layout.px(14.))
+                .top(layout.px((height - 54.) / 2.)),
+        )
+        .child(
+            layout
+                .rect(
+                    CONTENT_X,
+                    12.,
+                    text_width - quality_count as f32 * QUALITY_CHIP_PITCH,
+                    28.,
+                )
+                .flex()
+                .items_center()
+                .gap(layout.px(10.))
+                .child(
+                    layout
+                        .text(SAIRA, 20., 28., 600.)
+                        .flex_none()
+                        .text_color(layout.secondary(DIM))
+                        .child(family.number().to_string()),
+                )
+                .child(
+                    layout
+                        .text(SAIRA, 22., 28., 600.)
+                        .min_w_0()
+                        .truncate()
+                        .text_color(layout.guide_text())
+                        .child(family.title().to_owned()),
+                ),
+        )
+        .child(
+            layout.rect(CONTENT_X, 42., text_width, 36.).child(
+                layout
+                    .text(SAIRA_TITLE, 29., 36., 650.)
+                    .text_color(title_ink)
+                    .truncate()
+                    .child(title),
+            ),
+        )
+        .child(
+            layout
+                .rect(CONTENT_X, 80., text_width, 26.)
+                .font_family(SAIRA)
+                .text_size(layout.px(19.))
+                .line_height(layout.px(26.))
+                .text_color(layout.secondary(DIM))
+                .flex()
+                .gap(layout.px(12.))
+                .when_some(next, |line, next| {
+                    line.child(div().min_w_0().truncate().child(format!("Next {next}")))
+                })
+                .when_some(shown, |line, programme| {
+                    line.child(div().ml_auto().flex_none().child(remaining(
+                        programme,
+                        instant,
+                        viewing.is_some(),
+                    )))
+                }),
+        )
+        .child(meter)
+        .when(quality_count > 0, |row| {
+            row.child(
+                quality_tags(
+                    layout,
+                    family,
+                    preferred.channel().id(),
+                    false,
+                    focused_chip,
+                )
+                .absolute()
+                .top(layout.px(10.))
+                .right(layout.px(18.)),
+            )
+        })
+        .when(focused || focused_chip.is_some(), |row| {
+            row.child(
+                div()
+                    .absolute()
+                    .size_full()
+                    .rounded(layout.px(8.))
+                    .border(layout.px(3.))
+                    .border_color(rgb(ICE)),
             )
         })
 }

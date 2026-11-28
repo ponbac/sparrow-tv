@@ -89,11 +89,9 @@ impl GuideSurface {
             SetupAction::None => None,
             SetupAction::Edit(field) => {
                 let filled = self.setup_draft().has(field);
-                let rect = guide_view::setup_editor_rect(
-                    self.layout(window),
-                    window.scale_factor(),
-                    filled,
-                );
+                let area = self.setup_layout(window);
+                let rect = guide_view::setup_editor_rect(area, window.scale_factor(), filled)
+                    .map(|rect| area.to_window(rect, window.scale_factor()));
                 (!self.edit_source_field(field, rect)).then_some(SetupMessage::KeyboardUnavailable)
             }
             SetupAction::Clear(field) => {
@@ -156,7 +154,7 @@ impl GuideSurface {
     pub(super) fn render_setup(&self, window: &Window) -> Option<Div> {
         let setup = self.setup.as_ref()?;
         Some(guide_view::setup_screen(
-            self.layout(window),
+            self.setup_layout(window),
             guide_view::SetupPanel {
                 setup,
                 draft: self.setup_draft(),

@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use gpui::{Div, FontWeight, Rgba, SharedString, TextRun, Window, font, prelude::*, rgb, rgba};
 use sparrow_core::{CatalogGeneration, ChannelGroupView};
 use sparrow_tv_guide::guide_screen::{GuideMode, GuideScreen, LaneFocus, ScreenFocus};
@@ -7,6 +8,18 @@ use super::{CELL_ELAPSED, DIM, FAINT, GUTTER, ICE, Layout, MUTE, ON_ICE, ON_ICE_
 const CONTROL_HEIGHT: f32 = 50.;
 const GROUP_GAP: f32 = 4.;
 const REVEAL_MARGIN: f32 = 48.;
+const TIME_CHIP_WIDTH: f32 = 150.;
+const HOUR_GAP: f32 = 6.;
+
+/// The time chip in place of the board view switch. Open, its hours replace the lane.
+#[derive(Clone, Copy)]
+pub(crate) struct TimeChips<'a> {
+    pub(crate) label: &'a str,
+    pub(crate) hours: &'a [DateTime<Utc>],
+    pub(crate) open: bool,
+    /// The hour every row shows; `None` follows the clock.
+    pub(crate) viewing: Option<DateTime<Utc>>,
+}
 
 #[derive(Default)]
 pub(super) struct GroupReveal {
@@ -156,11 +169,22 @@ struct LaneBounds {
 }
 
 impl LaneBounds {
-    fn new(layout: Layout, window: &Window) -> Self {
-        let switch_width = 118.
-            + measure(layout, window, &"Now".into(), 18., 600.)
-            + measure(layout, window, &"Timeline".into(), 18., 600.);
-        let roster_width = 62. + measure(layout, window, &"Choose groups".into(), 20., 600.);
+    /// Compact Pocket layouts carry Choose groups in the toolbar instead.
+    fn new(layout: Layout, window: &Window, time_chip: bool) -> Self {
+        let switch_width = if time_chip {
+            TIME_CHIP_WIDTH
+        } else {
+            118. + measure(layout, window, &"Now".into(), 18., 600.)
+                + measure(layout, window, &"Timeline".into(), 18., 600.)
+        };
+        let (roster_width, roster_gap) = if layout.compact_pocket() {
+            (0., 0.)
+        } else {
+            (
+                62. + measure(layout, window, &"Choose groups".into(), 20., 600.),
+                25.5,
+            )
+        };
         let roster_x = layout.width - GUTTER - roster_width;
         let groups_x = GUTTER + switch_width + 25.5;
         Self {
@@ -168,9 +192,92 @@ impl LaneBounds {
             roster_x,
             roster_width,
             groups_x,
-            available: (roster_x - 25.5 - groups_x).max(0.),
+            available: (roster_x - roster_gap - groups_x).max(0.),
         }
     }
+}
+
+/// The open time chip's slot under a point: 0 is Now, then each hour.
+pub(crate) fn hour_hit(layout: Layout, hours: usize, [x, y]: [f32; 2]) -> Option<usize> {
+    let y = y - layout.band_bottom() - control_y(layout);
+    let slots = hours + 1;
+    let pitch = (layout.width - 2. * GUTTER + HOUR_GAP) / slots as f32;
+    let x = x - GUTTER;
+    if !(0. ..CONTROL_HEIGHT).contains(&y) || x < 0. {
+        return None;
+    }
+    let slot = (x / pitch) as usize;
+    (slot < slots && x - slot as f32 * pitch < pitch - HOUR_GAP).then_some(slot)
+}
+
+fn hours_row(layout: Layout, chips: TimeChips<'_>) -> Div {
+    let selected = chips
+        .viewing
+        .and_then(|viewing| chips.hours.iter().position(|hour| *hour == viewing))
+        .map_or(0, |index| index + 1);
+    let labels = std::iter::once("Now".to_owned())
+        .chain(chips.hours.iter().map(|hour| super::clock_time(*hour)));
+    layout
+        .rect(
+            GUTTER,
+            control_y(layout),
+            (layout.width - 2. * GUTTER).max(0.),
+            CONTROL_HEIGHT,
+        )
+        .flex()
+        .gap(layout.px(HOUR_GAP))
+        .children(labels.enumerate().map(|(index, label)| {
+            let active = index == selected;
+            layout
+                .text(SAIRA, 20., 28., 600.)
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(active, |chip| chip.bg(rgb(ICE)).text_color(rgb(ON_ICE)))
+                .when(!active, |chip| {
+                    chip.border(layout.px(1.5))
+                        .border_color(rgba(FAINT))
+                        .text_color(layout.secondary(DIM))
+                })
+                .child(label)
+        }))
+}
+
+fn time_chip(layout: Layout, rect: Div, label: &str, active: bool, focused: bool) -> Div {
+    let ink = if focused {
+        rgb(ON_ICE)
+    } else if active {
+        rgb(TEXT)
+    } else {
+        layout.secondary(DIM)
+    };
+    rect.font_family(SAIRA)
+        .font_weight(FontWeight(600.))
+        .text_size(layout.px(20.))
+        .line_height(layout.px(28.))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .gap(layout.px(8.))
+        .when(focused, |chip| chip.bg(rgb(ICE)))
+        .when(!focused && active, |chip| {
+            chip.bg(layout.surface(CELL_ELAPSED))
+        })
+        .when(!focused && !active, |chip| {
+            chip.border(layout.px(1.5)).border_color(rgba(FAINT))
+        })
+        .text_color(ink)
+        .child(label.to_owned())
+        .child(layout.icon(
+            include_bytes!("../../assets/icons/chevron-down.svg"),
+            16.,
+            ink,
+        ))
 }
 
 fn control_y(layout: Layout) -> f32 {
@@ -183,17 +290,20 @@ pub(crate) fn lane_hit(
     screen: &GuideScreen,
     viewport: &mut LaneViewport,
     window: &Window,
+    time_chip: bool,
     [x, y]: [f32; 2],
 ) -> Option<LaneFocus> {
     let y = y - layout.band_bottom() - control_y(layout);
     if !(0. ..CONTROL_HEIGHT).contains(&y) {
         return None;
     }
-    let bounds = LaneBounds::new(layout, window);
+    let bounds = LaneBounds::new(layout, window, time_chip);
     if (GUTTER..GUTTER + bounds.switch_width).contains(&x) {
         return Some(LaneFocus::Phase);
     }
-    if (bounds.roster_x..bounds.roster_x + bounds.roster_width).contains(&x) {
+    if bounds.roster_width > 0.
+        && (bounds.roster_x..bounds.roster_x + bounds.roster_width).contains(&x)
+    {
         return Some(LaneFocus::ChooseGroups);
     }
     let x = x - bounds.groups_x;
@@ -215,9 +325,10 @@ pub(crate) fn scroll_lane(
     screen: &GuideScreen,
     viewport: &mut LaneViewport,
     window: &Window,
+    time_chip: bool,
     delta: f32,
 ) {
-    let available = LaneBounds::new(layout, window).available;
+    let available = LaneBounds::new(layout, window, time_chip).available;
     let groups = screen.groups();
     sync_measurements(layout, screen, viewport);
     let LaneViewport { widths, scroll, .. } = viewport;
@@ -295,49 +406,57 @@ pub(crate) fn render(
     window: &Window,
     (slide, wave): (super::SlideFrame, super::arrival::Wave),
     hover: Option<LaneFocus>,
+    chips: Option<TimeChips<'_>>,
 ) -> Div {
     let lane_focus = match layout.shown_focus(screen.focus()) {
         ScreenFocus::GroupLane(focus) => Some(focus),
         _ => None,
     };
+    let lane = layout.rect(0., layout.band_bottom(), layout.width, layout.lane_height());
+    if let Some(chips) = chips.filter(|chips| chips.open) {
+        return lane.child(hours_row(layout, chips));
+    }
     let LaneBounds {
         switch_width,
         roster_x,
         roster_width,
         groups_x,
         available,
-    } = LaneBounds::new(layout, window);
+    } = LaneBounds::new(layout, window, chips.is_some());
     let control_y = control_y(layout);
-
-    layout
-        .rect(0., layout.band_bottom(), layout.width, layout.lane_height())
-        .child(
-            view_switch(
-                layout,
-                wave.enter(
-                    layout,
-                    layout.rect(GUTTER, control_y, switch_width, CONTROL_HEIGHT),
-                    102.,
-                    0.,
-                    16.,
-                ),
-                GuideMode::Now,
-                lane_focus == Some(LaneFocus::Phase),
-            )
-            .when(hover == Some(LaneFocus::Phase), |switch| {
-                switch.child(super::hover_rim(layout, CONTROL_HEIGHT / 2.))
-            }),
-        )
-        .child(groups(
+    let switch_rect = wave.enter(
+        layout,
+        layout.rect(GUTTER, control_y, switch_width, CONTROL_HEIGHT),
+        102.,
+        0.,
+        16.,
+    );
+    let focused = lane_focus == Some(LaneFocus::Phase);
+    let switch = match chips {
+        Some(chips) => time_chip(
             layout,
-            screen,
-            viewport,
-            window,
-            (groups_x, available),
-            (lane_focus, hover),
-            (slide, wave),
-        ))
-        .child(
+            switch_rect,
+            chips.label,
+            chips.viewing.is_some(),
+            focused,
+        ),
+        None => view_switch(layout, switch_rect, GuideMode::Now, focused),
+    };
+
+    lane.child(switch.when(hover == Some(LaneFocus::Phase), |switch| {
+        switch.child(super::hover_rim(layout, CONTROL_HEIGHT / 2.))
+    }))
+    .child(groups(
+        layout,
+        screen,
+        viewport,
+        window,
+        (groups_x, available),
+        (lane_focus, hover),
+        (slide, wave),
+    ))
+    .when(roster_width > 0., |lane| {
+        lane.child(
             choose_groups(
                 layout,
                 wave.enter(
@@ -353,6 +472,7 @@ pub(crate) fn render(
                 roster.bg(super::layout_hover_fill())
             }),
         )
+    })
 }
 
 pub(super) fn view_switch(layout: Layout, rect: Div, mode: GuideMode, focused: bool) -> Div {
@@ -611,6 +731,35 @@ pub(super) fn measure_in(
 #[cfg(test)]
 mod tests {
     use super::{GROUP_GAP, LaneScroll};
+
+    #[test]
+    fn open_time_chips_split_the_lane_into_now_and_each_hour() {
+        use super::{CONTROL_HEIGHT, GUTTER, HOUR_GAP, control_y, hour_hit};
+        let mut layout = crate::guide_view::Layout::new(
+            crate::guide_view::Profile::Tv,
+            gpui::size(gpui::px(1920.), gpui::px(1080.)),
+        );
+        layout.width = 700.;
+        let y = layout.band_bottom() + control_y(layout) + CONTROL_HEIGHT / 2.;
+        let pitch = (700. - 2. * GUTTER + HOUR_GAP) / 7.;
+        assert_eq!(hour_hit(layout, 6, [GUTTER + 2., y]), Some(0));
+        assert_eq!(hour_hit(layout, 6, [GUTTER + pitch + 2., y]), Some(1));
+        assert_eq!(hour_hit(layout, 6, [GUTTER + 6. * pitch + 2., y]), Some(6));
+        // Gaps, the edges and the rows above and below take no press.
+        assert_eq!(hour_hit(layout, 6, [GUTTER + pitch - 1., y]), None);
+        assert_eq!(hour_hit(layout, 6, [GUTTER - 2., y]), None);
+        assert_eq!(hour_hit(layout, 6, [700. - GUTTER + 2., y]), None);
+        assert_eq!(hour_hit(layout, 6, [GUTTER + 2., y + CONTROL_HEIGHT]), None);
+        // Late in the evening fewer hours fit the window.
+        assert_eq!(
+            hour_hit(
+                layout,
+                2,
+                [GUTTER + 2. * (700. - 2. * GUTTER + HOUR_GAP) / 3. + 2., y]
+            ),
+            Some(2)
+        );
+    }
 
     #[test]
     fn horizontal_lane_reveals_the_selected_group_then_keeps_the_focused_group_visible() {

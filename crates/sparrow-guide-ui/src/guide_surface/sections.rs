@@ -36,6 +36,16 @@ impl Render for SectionView {
                     .as_ref()
                     .and_then(|key| key.marker.as_ref());
                 let section = match self.section {
+                    Section::Band if layout.compact_pocket() => guide_view::pocket_toolbar(
+                        layout,
+                        frame.band_focus,
+                        match frame.hover {
+                            ScreenFocus::Toolbar(toolbar) => Some(toolbar),
+                            _ => None,
+                        },
+                        minute,
+                        frame.inline_search,
+                    ),
                     Section::Band => guide_view::band::render(
                         layout,
                         guide_view::GuideBand {
@@ -59,14 +69,29 @@ impl Render for SectionView {
                         wave,
                     ),
                     Section::Lane => match owner.screen.mode() {
-                        GuideMode::Now => guide_view::lane::render(
-                            layout,
-                            &owner.screen,
-                            &mut owner.now_lane,
-                            window,
-                            (slide, wave),
-                            frame.lane_hover(),
-                        ),
+                        GuideMode::Now => {
+                            let viewing = owner.screen.viewing_instant();
+                            let label = super::pocket_ui::time_chip_label(viewing);
+                            let hours = if frame.hours_open {
+                                owner.chip_hours()
+                            } else {
+                                Vec::new()
+                            };
+                            guide_view::lane::render(
+                                layout,
+                                &owner.screen,
+                                &mut owner.now_lane,
+                                window,
+                                (slide, wave),
+                                frame.lane_hover(),
+                                frame.time_chips.then_some(guide_view::lane::TimeChips {
+                                    label: &label,
+                                    hours: &hours,
+                                    open: frame.hours_open,
+                                    viewing,
+                                }),
+                            )
+                        }
                         GuideMode::Timeline => guide_view::timeline::rail(
                             layout,
                             &owner.screen,
@@ -161,8 +186,20 @@ impl<K: PartialEq> Cached<K> {
     }
 }
 
+/// A region's placement, so inset or class changes redraw cached sections.
+fn area(layout: Layout) -> [u32; 4] {
+    [
+        layout.origin[0],
+        layout.origin[1],
+        layout.width,
+        layout.height,
+    ]
+    .map(f32::to_bits)
+}
+
 #[derive(PartialEq)]
 struct BandInputs {
+    area: [u32; 4],
     toolbar: Option<ToolbarFocus>,
     hover: ScreenFocus,
     docked: bool,
@@ -176,6 +213,9 @@ struct BandInputs {
 
 #[derive(PartialEq)]
 struct LaneInputs {
+    area: [u32; 4],
+    /// Open, the hour shown, and the clock hour that sets the offered hours.
+    chips: Option<(bool, Option<i64>, i64)>,
     mode: GuideMode,
     selected: LaneFocus,
     focus: Option<LaneFocus>,
@@ -186,6 +226,8 @@ struct LaneInputs {
 
 #[derive(PartialEq)]
 struct BoardInputs {
+    area: [u32; 4],
+    viewing: Option<i64>,
     marker: Option<guide_view::playing_marker::PlayingMarker>,
     mode: GuideMode,
     focus: ScreenFocus,
@@ -213,6 +255,9 @@ pub(super) struct GuideFrame {
     pub band_focus: ScreenFocus,
     /// The Guide control under the pointer.
     pub hover: ScreenFocus,
+    /// The lane starts with the time chip, and whether its hours are open.
+    pub time_chips: bool,
+    pub hours_open: bool,
 }
 
 impl GuideFrame {
@@ -287,8 +332,10 @@ impl Sections {
                 .unwrap_or(ScreenFocus::None)
         };
         let now = minute.now.timestamp();
+        let viewing = screen.viewing_instant().map(|instant| instant.timestamp());
         let band = self.band.element(
             BandInputs {
+                area: area(layout),
                 toolbar,
                 hover: hover(|focus| matches!(focus, ScreenFocus::Toolbar(_))),
                 docked,
@@ -304,6 +351,11 @@ impl Sections {
         );
         let lane = self.lane.element(
             LaneInputs {
+                area: area(layout),
+                chips: frame.time_chips.then(|| {
+                    let hour = if frame.hours_open { now / 3600 } else { 0 };
+                    (frame.hours_open, viewing, hour)
+                }),
                 mode: screen.mode(),
                 selected: screen.selected_lane(),
                 focus: lane,
@@ -316,6 +368,8 @@ impl Sections {
         );
         let board = self.board.element(
             BoardInputs {
+                area: area(layout),
+                viewing,
                 marker,
                 mode: screen.mode(),
                 focus: active,

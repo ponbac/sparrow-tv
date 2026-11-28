@@ -298,7 +298,7 @@ impl GuideSurface {
             .filter(|source| source.presentation == Presentation::Sheet)?;
         let status = self.catalog.status();
         Some(guide_view::sources_sheet(
-            self.layout(window),
+            self.sheet_layout(window),
             SourcePanel {
                 backdrop: self.backdrop(),
                 status: status.as_deref(),
@@ -576,8 +576,9 @@ impl GuideSurface {
                     } else {
                         SetupField::M3u
                     };
-                    let rect =
-                        guide_view::source_editor_rect(self.layout(window), window.scale_factor());
+                    let sheet = self.sheet_layout(window);
+                    let rect = guide_view::source_editor_rect(sheet, window.scale_factor())
+                        .map(|rect| sheet.to_window(rect, window.scale_factor()));
                     let opened = self.edit_source_field(field, rect);
                     if let Some(source) = self.source.as_mut() {
                         source.feedback = (!opened).then_some("Couldn’t open the keyboard.");

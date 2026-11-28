@@ -19,7 +19,7 @@ use sparrow_tv_guide::{
 use super::{GuideSurface, TextTarget};
 use crate::{
     FormFactor,
-    guide_view::{self, Layout, Pointer, SourceFocus},
+    guide_view::{self, Layout, PocketMode, PocketTool, Pointer, SourceFocus},
     search_flow::SearchFocus,
 };
 
@@ -44,6 +44,10 @@ pub(super) enum HitTarget {
     Search(SearchFocus),
     /// Outside an open sheet; a press closes the sheet.
     Scrim,
+    /// A compact Pocket toolbar control.
+    Tool(PocketTool),
+    /// An open time chip's slot: 0 is Now, then each offered hour.
+    Hour(usize),
 }
 
 #[derive(Default)]
@@ -104,7 +108,9 @@ impl GuideSurface {
                 saving: self.setup_saving(),
                 now: self.now,
             };
-            return guide_view::setup_hit(layout, window, &panel, point).map(HitTarget::Setup);
+            let area = layout.region(layout.m.safe);
+            return guide_view::setup_hit(area, window, &panel, area.local(point))
+                .map(HitTarget::Setup);
         }
         self.activation?;
         if self.playback.fullscreen() {
@@ -116,50 +122,84 @@ impl GuideSurface {
                 HitTarget::Picture
             });
         }
-        let sheet_left = layout.width - layout.sheet_width();
+        let sheet = layout.region(layout.m.sheet);
+        let sheet_point = sheet.local(point);
+        // Pocket sheets fill their region; a press outside it closes them too.
+        let scrim = |target: &HitTarget| {
+            let [x, y] = sheet_point;
+            *target != HitTarget::Scrim
+                || x < sheet.width - sheet.sheet_width()
+                || y < 0.
+                || y >= sheet.height
+        };
         if self.sources_sheet_open() {
             return Some(
-                self.source_sheet_target(layout, point)
+                self.source_sheet_target(sheet, sheet_point)
                     .map_or(HitTarget::Scrim, HitTarget::Source),
             )
-            .filter(|target| *target != HitTarget::Scrim || point[0] < sheet_left);
+            .filter(scrim);
         }
         if self.screen.group_chooser().is_some() {
             return Some(
-                guide_view::group_sheet_hit(layout, &self.screen, &self.group_viewport, point)
+                guide_view::group_sheet_hit(sheet, &self.screen, &self.group_viewport, sheet_point)
                     .map_or(HitTarget::Scrim, HitTarget::Chooser),
             )
-            .filter(|target| *target != HitTarget::Scrim || point[0] < sheet_left);
+            .filter(scrim);
         }
         if self.search.state().view() != SearchView::Closed {
             let panel = self.search_panel_inputs(None);
-            return guide_view::search_hit(layout, &panel, &self.search_viewport, point)
+            return guide_view::search_hit(sheet, &panel, &self.search_viewport, sheet_point)
                 .map(HitTarget::Search);
         }
         let docked = self.playback.docked() || self.playback.fullscreen();
+        let compact = layout.compact_pocket();
         if self.playback.docked() {
             let [x, y, w, h] = layout.m.dock;
-            if (x..x + w).contains(&point[0]) && (y - 5. ..y + h + 44.).contains(&point[1]) {
+            // The TV caption hangs under the dock; Pocket chrome takes its own presses.
+            let (above, below) = if compact { (0., 0.) } else { (5., 44.) };
+            if (x..x + w).contains(&point[0]) && (y - above..y + h + below).contains(&point[1]) {
                 return Some(HitTarget::Dock);
             }
         }
-        if let Some(toolbar) = guide_view::band::toolbar_hit(layout, window, docked, point) {
+        if layout
+            .pocket()
+            .is_some_and(|pocket| pocket.mode == PocketMode::Watch)
+        {
+            return None;
+        }
+        let guide = layout.region(layout.m.guide);
+        let point = guide.local(point);
+        if compact {
+            if let Some(tool) = guide_view::pocket_toolbar_hit(guide, point) {
+                return Some(HitTarget::Tool(tool));
+            }
+        } else if let Some(toolbar) = guide_view::band::toolbar_hit(guide, window, docked, point) {
             return Some(HitTarget::Screen(ScreenFocus::Toolbar(toolbar)));
         }
+        let time_chips = self.time_chips_shown(window);
+        if time_chips && self.pocket.hours_open {
+            return guide_view::lane::hour_hit(guide, self.chip_hours().len(), point)
+                .map(HitTarget::Hour);
+        }
         let lane = match self.screen.mode() {
-            GuideMode::Now => {
-                guide_view::lane::lane_hit(layout, &self.screen, &mut self.now_lane, window, point)
-            }
+            GuideMode::Now => guide_view::lane::lane_hit(
+                guide,
+                &self.screen,
+                &mut self.now_lane,
+                window,
+                time_chips,
+                point,
+            ),
             GuideMode::Timeline => {
-                guide_view::timeline::rail_hit(layout, &self.screen, &self.timeline_rail, point)
+                guide_view::timeline::rail_hit(guide, &self.screen, &self.timeline_rail, point)
             }
         };
         if let Some(lane) = lane {
             return Some(HitTarget::Screen(ScreenFocus::GroupLane(lane)));
         }
         let board = match self.screen.mode() {
-            GuideMode::Now => self.now_hit(layout, point).map(ScreenFocus::Board),
-            GuideMode::Timeline => guide_view::timeline::timeline_hit(layout, &self.screen, point)
+            GuideMode::Now => self.now_hit(guide, point).map(ScreenFocus::Board),
+            GuideMode::Timeline => guide_view::timeline::timeline_hit(guide, &self.screen, point)
                 .map(ScreenFocus::TimelineBoard),
         };
         board.map(HitTarget::Screen)
@@ -280,10 +320,29 @@ impl GuideSurface {
                 self.close_top_layer(window, cx);
             }
             HitTarget::Dock => {
-                self.playback_set_fullscreen(true);
+                // A portrait phone's docked picture returns to Watch; the
+                // Watch stage, like every other dock, fills the screen.
+                if super::pocket_ui::watch_profile(self.host.form_factor(), self.profile)
+                    && self.pocket_mode() == PocketMode::Guide
+                {
+                    self.pocket.show_watch();
+                } else {
+                    self.playback_set_fullscreen(true);
+                }
+            }
+            HitTarget::Tool(tool) => self.pocket_tool(tool, window, cx),
+            HitTarget::Hour(slot) => {
+                let hour = slot
+                    .checked_sub(1)
+                    .and_then(|index| self.chip_hours().get(index).copied());
+                self.choose_hour(hour, cx);
             }
             HitTarget::Picture if double => {
                 self.playback_set_fullscreen(false);
+            }
+            // A tap on a handheld's picture shows or hides the band.
+            HitTarget::Picture if self.profile.pointer() == Some(Pointer::Coarse) => {
+                self.toggle_player_controls(cx);
             }
             HitTarget::Picture | HitTarget::Band => self.reveal_player_controls(cx),
             HitTarget::Screen(focus) => {
@@ -326,12 +385,26 @@ impl GuideSurface {
         if event.modifiers.shift && dx == 0. {
             (dx, dy) = (dy, 0.);
         }
+        // The Watch screen's details block scrolls itself.
+        if layout
+            .pocket()
+            .is_some_and(|pocket| pocket.mode == PocketMode::Watch)
+            && !self.playback.fullscreen()
+        {
+            return;
+        }
         let target = self.hit_test(window, event.position);
         let point = [
             f32::from(event.position.x) / layout.unit,
             f32::from(event.position.y) / layout.unit,
         ];
-        let sheet_left = layout.width - layout.sheet_width();
+        let sheet = layout.region(layout.m.sheet);
+        let sheet_point = sheet.local(point);
+        let in_sheet = sheet_point[0] >= sheet.width - sheet.sheet_width()
+            && (0. ..sheet.height).contains(&sheet_point[1]);
+        let guide = layout.region(layout.m.guide);
+        let point = guide.local(point);
+        let time_chips = self.time_chips_shown(window);
         let pixels = matches!(event.delta, ScrollDelta::Pixels(_));
         let timeline = self.screen.mode() == GuideMode::Timeline;
         let mut moved = false;
@@ -346,7 +419,7 @@ impl GuideSurface {
                 self.reveal_player_controls(cx);
             }
             Some(HitTarget::Chooser(_)) | None
-                if self.screen.group_chooser().is_some() && point[0] >= sheet_left =>
+                if self.screen.group_chooser().is_some() && in_sheet =>
             {
                 if let Some(rows) = self.scroll_rows(dy, 64., pixels) {
                     self.group_viewport.scroll(rows);
@@ -355,8 +428,7 @@ impl GuideSurface {
             }
             Some(HitTarget::Search(_)) | None
                 if matches!(target, Some(HitTarget::Search(_)))
-                    || (self.search.state().view() == SearchView::Desk
-                        && point[0] >= sheet_left) =>
+                    || (self.search.state().view() == SearchView::Desk && in_sheet) =>
             {
                 let view = self.search.state().view();
                 let pitch = if view == SearchView::Desk { 82. } else { 58. };
@@ -369,7 +441,7 @@ impl GuideSurface {
                 if timeline
                     && (target.is_some()
                         || (self.guide_shown()
-                            && guide_view::timeline::rail_scroll_hit(layout, point))) =>
+                            && guide_view::timeline::rail_scroll_hit(guide, point))) =>
             {
                 if let Some(rows) = self.scroll_rows(dy, 48., pixels) {
                     self.timeline_rail.scroll(rows);
@@ -379,10 +451,11 @@ impl GuideSurface {
             Some(HitTarget::Screen(ScreenFocus::GroupLane(_))) => {
                 let travel = if dx != 0. { dx } else { dy };
                 guide_view::lane::scroll_lane(
-                    layout,
+                    guide,
                     &self.screen,
                     &mut self.now_lane,
                     window,
+                    time_chips,
                     travel,
                 );
                 moved = true;
@@ -390,11 +463,11 @@ impl GuideSurface {
             Some(HitTarget::Screen(ScreenFocus::Board(_) | ScreenFocus::TimelineBoard(_)))
             | None
                 if self.guide_shown()
-                    && point[1] >= layout.m.board.board(self.screen.mode()).top =>
+                    && point[1] >= guide.m.board.board(self.screen.mode()).top =>
             {
                 moved = self.screen.scroll_by(dy);
                 if timeline && dx != 0. {
-                    let half_hour = (guide_view::timeline::track_width(layout) / 4.).max(1.);
+                    let half_hour = (guide_view::timeline::track_width(guide) / 4.).max(1.);
                     if pixels {
                         let millis = (f64::from(dx / half_hour) * 1_800_000.).round() as i64;
                         moved |= self
@@ -575,6 +648,8 @@ impl GuideSurface {
             self.screen.group_chooser_intent(GroupChooserIntent::Close);
             self.retire_query_editor();
             self.sync_view(cx);
+        } else if self.pocket.hours_open {
+            self.toggle_hours(cx);
         } else {
             return self.playback_back(cx);
         }

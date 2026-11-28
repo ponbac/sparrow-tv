@@ -12,11 +12,15 @@ mod group_slide;
 mod groups;
 mod layout;
 pub use layout::FormFactor;
-use layout::{BAND_TOP, CARD_GAP, GUTTER};
-pub(crate) use layout::{Layout, Pointer, Profile};
+use layout::{BAND_TOP, CARD_GAP, GUTTER, POCKET_GUTTER, WatchGeometry};
+pub(crate) use layout::{Layout, PocketClass, PocketMode, Pointer, Profile};
 pub(super) mod lane;
 mod minute;
+mod pocket;
 pub(crate) use minute::{MinuteFrame, MinuteSample, MinuteTick};
+pub(crate) use pocket::{
+    PocketTool, idle_band, toolbar as pocket_toolbar, toolbar_hit as pocket_toolbar_hit,
+};
 pub(super) mod playback;
 pub(super) mod playing_marker;
 mod search_panel;

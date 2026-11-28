@@ -20,7 +20,6 @@ const DOCK_CAPTION: f32 = 44.;
 const VOLUME_STEPS: usize = 20;
 const VOLUME_WIDTH: f32 = 180.;
 
-const FULLSCREEN_BAND_HEIGHT: f32 = 204.;
 const FULLSCREEN_GUTTER: f32 = 56.;
 const FULLSCREEN_CONTROL_HEIGHT: f32 = 76.;
 
@@ -49,6 +48,10 @@ pub(crate) enum PlaybackControl {
     CopyDiagnostics,
     AudioTrack,
     Quality,
+    /// Hands the picture to the system's picture-in-picture window.
+    PictureInPicture,
+    /// Opens the less used session controls.
+    More,
     Stop,
 }
 
@@ -78,6 +81,14 @@ pub(crate) enum PlayerClick {
     Control(PlaybackControl),
     Pick(usize),
     Volume(f32),
+    /// Tunes one of the playing family's Quality Variants.
+    Variant(usize),
+    Zap(sparrow_core::ChannelDirection),
+    /// Leaves the Pocket Watch screen for the Guide.
+    Guide,
+    /// Returns from the Pocket Guide to the Watch screen.
+    Watch,
+    Search,
 }
 
 /// Pointer handlers for band controls. Only pointer hosts install them.
@@ -191,7 +202,7 @@ pub(super) fn picture_reference(layout: Layout, placement: PlaybackLayout) -> [f
         PlaybackLayout::Fullscreen {
             controls_visible: true,
         } => {
-            let mut height = (layout.height - FULLSCREEN_BAND_HEIGHT - layout.bottom_occlusion())
+            let mut height = (layout.height - layout.m.fullscreen_band - layout.bottom_occlusion())
                 .clamp(0., layout.m.band_picture_height);
             let mut width = height * 16. / 9.;
             if width > layout.width {
@@ -254,6 +265,7 @@ pub(crate) fn fullscreen_actions(
     can_change_quality: bool,
     can_restart: bool,
     volume_slider: bool,
+    picture_in_picture: bool,
 ) -> Vec<PlaybackControl> {
     use PlaybackControl as Control;
     let mut controls = match stage {
@@ -273,6 +285,9 @@ pub(crate) fn fullscreen_actions(
             }
             if can_change_quality {
                 controls.push(Control::Quality);
+            }
+            if picture_in_picture {
+                controls.push(Control::PictureInPicture);
             }
             controls
         }
@@ -377,16 +392,21 @@ pub(crate) fn docked_playback(
         .child(
             layout
                 .rect(left, top - 5., width, 5.)
-                .bg(rgb(match playback.stage {
-                    PlaybackStage::Playing => TALLY,
-                    PlaybackStage::Reconnecting => AMBER,
-                    PlaybackStage::Failed => ERROR,
-                    PlaybackStage::Paused => DIM >> 8,
-                    _ => ICE,
-                }))
+                .bg(rgb(stripe_color(playback.stage)))
                 .opacity(frame.stripe),
         )
         .child(caption.opacity(frame.caption))
+}
+
+/// The tally stripe over a docked picture.
+fn stripe_color(stage: PlaybackStage) -> u32 {
+    match stage {
+        PlaybackStage::Playing => TALLY,
+        PlaybackStage::Reconnecting => AMBER,
+        PlaybackStage::Failed => ERROR,
+        PlaybackStage::Paused => DIM >> 8,
+        _ => ICE,
+    }
 }
 
 /// A picture moving between the dock and fullscreen, letterboxed like the native
@@ -515,21 +535,44 @@ pub(crate) fn fullscreen_band(
         ))
 }
 
+/// The band's content columns: the TV gutter, or the Pocket safe area.
+fn band_span(layout: Layout) -> (f32, f32) {
+    match layout.pocket() {
+        Some(_) => {
+            let [x, _, width, _] = layout.m.safe;
+            (
+                x + super::POCKET_GUTTER,
+                (width - 2. * super::POCKET_GUTTER).max(0.),
+            )
+        }
+        None => (FULLSCREEN_GUTTER, layout.width - 2. * FULLSCREEN_GUTTER),
+    }
+}
+
+/// A Pocket band narrower than this keeps only the Channel and the clock in its head.
+const POCKET_FULL_HEAD: f32 = 1000.;
+
 fn fullscreen_head(
     layout: Layout,
     playback: &PlaybackOverlay<'_>,
     minute: super::MinuteFrame,
 ) -> Div {
+    let pocket = layout.pocket().is_some();
+    let (left, width) = band_span(layout);
     let reel = playback
         .reel
-        .filter(|entries| entries.iter().any(Option::is_some));
+        .filter(|entries| !pocket && entries.iter().any(Option::is_some));
+    let programme = playback
+        .programme
+        .as_ref()
+        .filter(|_| !pocket || width >= POCKET_FULL_HEAD);
+    let progress_width = if pocket {
+        (width * 0.3).min(552.)
+    } else {
+        552.
+    };
     layout
-        .rect(
-            FULLSCREEN_GUTTER,
-            16.,
-            layout.width - 2. * FULLSCREEN_GUTTER,
-            68.,
-        )
+        .rect(left, 16., width, 68.)
         .flex()
         .items_center()
         .gap(layout.px(24.))
@@ -569,7 +612,7 @@ fn fullscreen_head(
         .when_some(reel, |head, entries| {
             head.child(zap::channel_reel(layout, entries, playback.roll))
         })
-        .when(reel.is_some() && playback.programme.is_some(), |head| {
+        .when(reel.is_some() && programme.is_some(), |head| {
             head.child(
                 div()
                     .flex_none()
@@ -578,12 +621,13 @@ fn fullscreen_head(
                     .bg(rgba(FAINT)),
             )
         })
-        .when_some(playback.programme.as_ref(), |head, p| {
-            head.child(div().w(layout.px(552.)).flex_none().child(progress(
-                layout,
-                p,
-                playback.stage,
-            )))
+        .when_some(programme, |head, p| {
+            head.child(
+                div()
+                    .w(layout.px(progress_width))
+                    .flex_none()
+                    .child(progress(layout, p, playback.stage)),
+            )
         })
         .child(minute.clock(layout, 40.).pl(layout.px(8.)))
 }
@@ -693,11 +737,12 @@ fn fullscreen_controls(
         PlaybackStage::Playing | PlaybackStage::Paused | PlaybackStage::Tuning => None,
         stage => Some(stage.label()),
     });
+    let (x, width) = band_span(layout);
     layout
         .rect(
-            FULLSCREEN_GUTTER,
+            x,
             (height - FULLSCREEN_CONTROL_HEIGHT - 20.).max(86.),
-            layout.width - 2. * FULLSCREEN_GUTTER,
+            width,
             FULLSCREEN_CONTROL_HEIGHT,
         )
         .flex()
@@ -734,6 +779,10 @@ fn control(
     if action == Control::Volume {
         return volume_slider(layout, playback, pointer);
     }
+    let focused = playback.focus.is_some_and(|focus| focus.same_slot(action));
+    if layout.pocket().is_some() {
+        return pocket::icon_control(layout, action, FULLSCREEN_CONTROL_HEIGHT, focused, pointer);
+    }
     let (label, icon, detail) = match action {
         Control::EnterFullscreen => ("Full screen", EXPAND, None),
         Control::ExitFullscreen
@@ -750,10 +799,11 @@ fn control(
         Control::CopyDiagnostics => (playback.copy_label, CLIPBOARD, None),
         Control::AudioTrack => ("Audio", AUDIO, playback.audio_track),
         Control::Quality => ("Quality", QUALITY, playback.quality),
+        Control::PictureInPicture => ("Picture in picture", pocket::PICTURE_IN_PICTURE, None),
+        Control::More => ("More", pocket::MORE, None),
         Control::Stop => ("Stop", STOP, None),
         Control::Volume => unreachable!("drawn by volume_slider"),
     };
-    let focused = playback.focus.is_some_and(|focus| focus.same_slot(action));
     let ink = if focused { ON_ICE } else { TEXT };
     clickable(
         layout.text(SAIRA, 27., 28., 650.),
@@ -931,3 +981,5 @@ const CLIPBOARD: &[u8] = icon!(
 );
 const STOP: &[u8] = icon!(r#"<rect x="6" y="6" width="12" height="12" rx="2"/>"#);
 const CHEVRON: &[u8] = include_bytes!("../../assets/icons/chevron-down.svg");
+
+pub(crate) mod pocket;

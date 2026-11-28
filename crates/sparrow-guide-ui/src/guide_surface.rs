@@ -29,6 +29,7 @@ use crate::{
 };
 
 mod playback_ui;
+mod pocket_ui;
 mod pointer_ui;
 mod search_ui;
 mod sections;
@@ -153,6 +154,7 @@ pub struct GuideSurface {
     icons: ChannelIcons,
     _icon_updates: Task<()>,
     playback: PlaybackUi,
+    pocket: pocket_ui::PocketState,
     pointer: PointerState,
     window_fullscreen: WindowFullscreen,
     _playback_updates: Option<Task<()>>,
@@ -218,11 +220,17 @@ impl GuideSurface {
             (f32::from(viewport.width), f32::from(viewport.height)),
             None,
         );
-        screen.set_board_metrics(guide_view::Layout::new(profile, viewport).m.board);
+        screen.set_board_metrics(
+            guide_view::Layout::placed(profile, viewport, insets, Default::default())
+                .m
+                .board,
+        );
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let mut playback = PlaybackUi::default();
         playback.volume_slider = host.form_factor() == FormFactor::Desktop;
+        playback.picture_in_picture_button =
+            host.form_factor() == FormFactor::Handheld && host.supports_picture_in_picture();
 
         let mut updates = catalog.subscribe();
         let catalog_updates = cx.spawn(async move |view, cx| {
@@ -340,6 +348,7 @@ impl GuideSurface {
             icons,
             _icon_updates: icon_updates,
             playback,
+            pocket: Default::default(),
             pointer: PointerState::default(),
             window_fullscreen: WindowFullscreen::default(),
             _playback_updates: None,
@@ -685,6 +694,14 @@ impl GuideSurface {
         }
         if key == ScreenKey::Activate
             && self.screen.group_chooser().is_none()
+            && self.screen.focus() == ScreenFocus::GroupLane(LaneFocus::Phase)
+            && self.time_chips_shown(window)
+        {
+            self.toggle_hours(cx);
+            return;
+        }
+        if key == ScreenKey::Activate
+            && self.screen.group_chooser().is_none()
             && self.screen.focus() == ScreenFocus::Toolbar(ToolbarFocus::Search)
         {
             let timer = self.search.open_inline();
@@ -740,12 +757,16 @@ impl GuideSurface {
     }
 
     fn open_group_filter(&mut self, window: &Window) -> bool {
+        let sheet = self.sheet_layout(window);
         let rect = guide_view::group_filter_rect(
-            self.layout(window),
+            sheet,
             window.scale_factor(),
             self.screen.group_chooser_can_show_all(),
         );
-        self.open_query_editor(TextTarget::GroupFilter, rect)
+        self.open_query_editor(
+            TextTarget::GroupFilter,
+            sheet.to_window(rect, window.scale_factor()),
+        )
     }
 
     fn open_query_editor(&mut self, target: TextTarget, rect: [i32; 4]) -> bool {
@@ -1166,11 +1187,27 @@ impl GuideSurface {
     /// The window's layout. Guide sections add the backdrop's translucency.
     pub(super) fn layout(&self, window: &Window) -> guide_view::Layout {
         guide_view::Layout {
-            insets: self.insets,
             focus_visible: self.host.form_factor() == FormFactor::Television
                 || window.last_input_was_keyboard(),
-            ..guide_view::Layout::new(self.profile, window.viewport_size())
+            ..guide_view::Layout::placed(
+                self.profile,
+                window.viewport_size(),
+                self.insets,
+                self.pocket_mode(),
+            )
         }
+    }
+
+    /// The Search, Choose groups and Sources region.
+    pub(super) fn sheet_layout(&self, window: &Window) -> guide_view::Layout {
+        let layout = self.layout(window);
+        layout.region(layout.m.sheet)
+    }
+
+    /// Setup fills the safe area.
+    pub(super) fn setup_layout(&self, window: &Window) -> guide_view::Layout {
+        let layout = self.layout(window);
+        layout.region(layout.m.safe)
     }
 
     fn ambient_light(&self) -> bool {
@@ -1207,7 +1244,7 @@ impl GuideSurface {
         choice: sparrow_installed_catalog::GuideBackdrop,
         marker: Option<&guide_view::playing_marker::PlayingMarker>,
     ) -> Option<Div> {
-        let layout = self.layout(window);
+        let layout = self.sheet_layout(window);
         let (surface, search_icons) = guide_view::search_panel(
             layout,
             Self::search_panel_inputs_from(
@@ -1260,12 +1297,35 @@ impl Render for GuideSurface {
             Some(self.profile),
         );
         if self.profile != profile {
+            let previous = self.profile;
+            let shown = self.pocket_mode();
             self.retire_query_editor();
             self.retire_source_editor();
             self.profile = profile;
+            let playing = self.playback.selected()
+                && self.playback.stage() == guide_view::playback::PlaybackStage::Playing;
+            if let Some(turn) = self.pocket.turn(
+                self.host.form_factor(),
+                (previous, profile),
+                shown,
+                playing,
+                self.playback.fullscreen(),
+            ) {
+                self.turn_fullscreen(turn, cx);
+            }
         }
         let layout = self.layout(window);
-        self.screen.set_board_metrics(layout.m.board);
+        let pocket = layout.pocket().is_some();
+        let watch = layout
+            .pocket()
+            .is_some_and(|pocket| pocket.mode == guide_view::PocketMode::Watch);
+        let guide_area = layout.region(layout.m.guide);
+        let sheet_area = layout.region(layout.m.sheet);
+        // A Pocket region lays out from its own corner; TV and Desktop fill the window.
+        let in_area = |area: guide_view::Layout, content: Div| {
+            if pocket { area.place(content) } else { content }
+        };
+        self.screen.set_board_metrics(guide_area.m.board);
         self.sync_window_fullscreen(window);
         let (frame, picture) = self.playback.fullscreen_frame(window, cx.reduce_motion());
         self.update_playback_viewports(window, picture, cx);
@@ -1306,7 +1366,9 @@ impl Render for GuideSurface {
         if let Some(setup) = self.render_setup(window) {
             self.arrival.leave();
             self.icons.hide();
-            return root.child(setup).children(editor);
+            return root
+                .child(in_area(layout.region(layout.m.safe), setup))
+                .children(editor);
         }
         let choice = self.backdrop();
         let marker = self.playback.playing_marker();
@@ -1380,39 +1442,47 @@ impl Render for GuideSurface {
             cx.reduce_motion(),
             !self.screen.families().is_empty(),
         );
-        let guide = self.sections.guide(
-            &self.screen,
-            self.presented_preview.as_ref(),
-            self.description.as_ref(),
-            &self.icons,
-            marker,
-            sections::GuideFrame {
-                viewport,
-                layout: guide_view::Layout {
-                    translucent: choice != sparrow_installed_catalog::GuideBackdrop::Flat,
-                    ..layout
+        let time_chips = self.time_chips_shown(window);
+        let guide = (!watch).then(|| {
+            self.sections.guide(
+                &self.screen,
+                self.presented_preview.as_ref(),
+                self.description.as_ref(),
+                &self.icons,
+                marker,
+                sections::GuideFrame {
+                    viewport,
+                    layout: guide_view::Layout {
+                        translucent: choice != sparrow_installed_catalog::GuideBackdrop::Flat,
+                        ..guide_area
+                    },
+                    minute: minute.sample(),
+                    wave,
+                    slide,
+                    docked: selected,
+                    inline_search: self.search.state().view() == SearchView::Inline,
+                    band_focus: if self.playback.dock_focused() {
+                        ScreenFocus::None
+                    } else {
+                        layout.shown_focus(self.screen.focus())
+                    },
+                    hover: match self.pointer.hover {
+                        Some(pointer_ui::HitTarget::Screen(focus)) => focus,
+                        _ => ScreenFocus::None,
+                    },
+                    time_chips,
+                    hours_open: time_chips && self.pocket.hours_open,
                 },
-                minute: minute.sample(),
-                wave,
-                slide,
-                docked: selected,
-                inline_search: self.search.state().view() == SearchView::Inline,
-                band_focus: if self.playback.dock_focused() {
-                    ScreenFocus::None
-                } else {
-                    layout.shown_focus(self.screen.focus())
-                },
-                hover: match self.pointer.hover {
-                    Some(pointer_ui::HitTarget::Screen(focus)) => focus,
-                    _ => ScreenFocus::None,
-                },
-            },
-            minute,
-        );
+                minute,
+            )
+        });
 
         root.child(backdrop.opacity(wave.backdrop_opacity()))
             .child(glow())
-            .child(guide)
+            .children(guide.map(|guide| in_area(guide_area, guide)))
+            .when(!watch && !selected, |root| {
+                root.children(guide_view::idle_band(layout))
+            })
             .when(frame.fullscreen > 0., |root| {
                 root.child(
                     div()
@@ -1430,21 +1500,32 @@ impl Render for GuideSurface {
                     .absolute()
                     .inset_0()
                     .opacity(opacity)
-                    .children(guide_view::group_sheet(
-                        layout,
-                        &self.screen,
-                        &mut self.group_viewport,
-                        self.active_editor
-                            .is_some_and(|(_, target)| target == TextTarget::GroupFilter),
-                    ))
-                    .children(self.sources_sheet(window))
-                    .children(search)
+                    .children(
+                        guide_view::group_sheet(
+                            sheet_area,
+                            &self.screen,
+                            &mut self.group_viewport,
+                            self.active_editor
+                                .is_some_and(|(_, target)| target == TextTarget::GroupFilter),
+                        )
+                        .map(|sheet| in_area(sheet_area, sheet)),
+                    )
+                    .children(
+                        self.sources_sheet(window)
+                            .map(|sheet| in_area(sheet_area, sheet)),
+                    )
+                    .children(search.map(|search| in_area(sheet_area, search)))
                     .when_some(self.feedback, |surface, message| {
+                        // Pocket keeps feedback off the native picture, above the bottom chrome.
+                        let toast = div().absolute().right(px(20.));
+                        let toast = if pocket {
+                            let [_, top, _, height] = layout.m.safe;
+                            toast.bottom(px((layout.height - top - height + 132.) * layout.unit))
+                        } else {
+                            toast.top(px(78.))
+                        };
                         surface.child(
-                            div()
-                                .absolute()
-                                .right(px(20.))
-                                .top(px(78.))
+                            toast
                                 .rounded(px(8.))
                                 .bg(rgb(0x22324f))
                                 .text_color(rgb(0xeef3f8))

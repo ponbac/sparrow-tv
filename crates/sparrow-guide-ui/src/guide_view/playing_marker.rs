@@ -86,6 +86,10 @@ impl Tint {
         })
     }
 
+    pub(super) fn edge_color(self) -> u32 {
+        self.edge
+    }
+
     /// A bar along the left edge of a focused surface of `height` reference px.
     pub(super) fn edge(self, layout: Layout, height: f32) -> Div {
         layout

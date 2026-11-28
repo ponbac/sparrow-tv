@@ -39,12 +39,16 @@ impl GuideSurface {
             return false;
         };
         self.tune(generation, channel, chip.is_some(), repeat, cx);
+        if !repeat {
+            self.pocket.tuned(self.host.form_factor(), self.profile);
+        }
         true
     }
 
     pub(in super::super) fn search_tune(&mut self, tune: SearchTune, cx: &mut Context<Self>) {
         if Some(tune.generation) == self.screen.generation() {
             self.tune(tune.generation, tune.channel, false, false, cx);
+            self.pocket.tuned(self.host.form_factor(), self.profile);
         }
     }
 

@@ -209,10 +209,20 @@ struct InlineGeometry {
 
 impl InlineGeometry {
     fn new(layout: Layout, docked: bool) -> Self {
-        let (x, toolbar_width) = panel_bounds(layout, docked);
+        // The compact Pocket toolbar keeps its buttons right of the field.
+        let (x, toolbar_width, trailing) = if layout.compact_pocket() {
+            (
+                super::POCKET_GUTTER,
+                layout.width - 2. * super::POCKET_GUTTER,
+                super::pocket::TRAILING_WIDTH,
+            )
+        } else {
+            let (x, width) = panel_bounds(layout, docked);
+            (x, width, INLINE_TRAILING_WIDTH)
+        };
         Self {
             x,
-            width: (toolbar_width - INLINE_TRAILING_WIDTH).max(0.),
+            width: (toolbar_width - trailing).max(0.),
             field_height: (layout.height - BAND_TOP).clamp(0., TOOLBAR_HEIGHT),
         }
     }

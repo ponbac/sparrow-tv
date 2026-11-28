@@ -33,6 +33,7 @@ use crate::{
             FullscreenFrame, FullscreenMotion, PlaybackControl as Control, PlaybackNext,
             PlaybackOverlay, PlaybackProgramme, PlaybackStage, PlayerClick, PlayerPointer, ZapRoll,
             docked_playback, fullscreen_actions, fullscreen_band, picker, picture_rect,
+            pocket::{self, PocketDetails, Upcoming},
             tuning_field, video_picture,
         },
     },
@@ -85,6 +86,8 @@ pub(super) struct PlaybackUi {
     flight_channel: Option<TvTuneTarget>,
     /// Desktop gets a draggable volume slider in the fullscreen band.
     pub(super) volume_slider: bool,
+    /// Handhelds that support it get a picture-in-picture control.
+    pub(super) picture_in_picture_button: bool,
 }
 
 /// A still of the picture that GPUI moves between the dock and fullscreen
@@ -164,6 +167,8 @@ impl PlaybackSubject {
 enum PlayerMenu {
     Audio(usize),
     Quality(usize),
+    /// The Pocket overflow controls.
+    More(usize),
 }
 
 impl PlayerMenu {
@@ -171,6 +176,7 @@ impl PlayerMenu {
         match self {
             Self::Audio(_) => Control::AudioTrack,
             Self::Quality(_) => Control::Quality,
+            Self::More(_) => Control::More,
         }
     }
 }
@@ -214,6 +220,10 @@ impl PlaybackUi {
 
     pub(super) fn docked(&self) -> bool {
         self.state.selected.is_some() && !self.fullscreen()
+    }
+
+    pub(super) fn selected(&self) -> bool {
+        self.state.selected.is_some()
     }
 
     pub(super) fn dock_focused(&self) -> bool {
@@ -280,7 +290,7 @@ impl PlaybackUi {
         )
     }
 
-    fn stage(&self) -> PlaybackStage {
+    pub(super) fn stage(&self) -> PlaybackStage {
         if self.state.pending_zap.is_some()
             || (self.state.phase == TvPlaybackPhase::Stopping && self.state.selected.is_some())
         {
@@ -322,7 +332,113 @@ impl PlaybackUi {
                 }
             ),
             self.volume_slider,
+            self.picture_in_picture_button,
         )
+    }
+
+    fn can_restart(&self) -> bool {
+        match self.state.phase {
+            TvPlaybackPhase::Failed { can_restart, .. } => can_restart,
+            _ => matches!(self.stage(), PlaybackStage::Playing | PlaybackStage::Paused),
+        }
+    }
+
+    /// The Pocket control bar outside fullscreen, left to right.
+    fn watch_actions(&self) -> Vec<Control> {
+        let stage = self.stage();
+        let live = matches!(stage, PlaybackStage::Playing | PlaybackStage::Paused);
+        let mut actions = Vec::new();
+        if live {
+            actions.push(if stage == PlaybackStage::Paused {
+                Control::Resume
+            } else {
+                Control::Pause
+            });
+            actions.push(Control::SetMuted(!self.state.controls.muted));
+            if self.selected_audio_track().is_some() {
+                actions.push(Control::AudioTrack);
+            }
+        } else if stage == PlaybackStage::Failed && self.can_restart() {
+            actions.push(Control::Restart);
+        }
+        if live && self.picture_in_picture_button {
+            actions.push(Control::PictureInPicture);
+        }
+        actions.push(Control::EnterFullscreen);
+        if !self.more_actions().is_empty() {
+            actions.push(Control::More);
+        }
+        if stage != PlaybackStage::Stopping {
+            actions.push(Control::Stop);
+        }
+        actions
+    }
+
+    /// The overflow menu behind More.
+    fn more_actions(&self) -> Vec<Control> {
+        let mut actions = Vec::new();
+        if self.stage() != PlaybackStage::Failed && self.can_restart() {
+            actions.push(Control::Restart);
+        }
+        if self
+            .shown_subject()
+            .is_some_and(|subject| subject.family.variants().len() > 1)
+        {
+            actions.push(Control::Quality);
+        }
+        if self.stage() == PlaybackStage::Failed {
+            actions.push(Control::CopyDiagnostics);
+        }
+        actions
+    }
+
+    /// Description, Up Next and Quality Variants for the Pocket chrome.
+    fn pocket_details(&self, now: DateTime<Utc>) -> PocketDetails<'_> {
+        let Some(subject) = self.shown().and_then(|shown| self.subject_for(shown)) else {
+            return PocketDetails {
+                actions: self.watch_actions(),
+                ..Default::default()
+            };
+        };
+        let schedule = subject
+            .schedule
+            .as_ref()
+            .map(Page::items)
+            .unwrap_or_default();
+        let current = subject.current(now);
+        let selected = self.state.selected.as_ref().map(|target| &target.channel);
+        PocketDetails {
+            group: subject
+                .family
+                .variants()
+                .first()
+                .map_or("", ChannelSummary::group),
+            description: current.and_then(ProgrammeSummary::description),
+            upcoming: schedule
+                .iter()
+                .filter(|slot| slot.starts_at() >= current.map_or(now, ProgrammeSummary::ends_at))
+                .take(4)
+                .map(|slot| Upcoming {
+                    starts: guide_view::clock_time(slot.starts_at()),
+                    title: slot.title(),
+                    minutes: (slot.ends_at() - slot.starts_at()).num_minutes(),
+                })
+                .collect(),
+            variants: subject
+                .family
+                .variants()
+                .iter()
+                .enumerate()
+                .filter_map(|(index, channel)| {
+                    Some((
+                        index,
+                        channel.variant()?.quality(),
+                        Some(channel.id()) == selected,
+                    ))
+                })
+                .collect(),
+            actions: self.watch_actions(),
+        }
     }
 
     /// Keeps input on a visible control when the active Playback Session changes.
@@ -506,7 +622,20 @@ impl PlaybackUi {
                         root.child(tuning_field(layout, overlay, frame))
                     })
                     .when(frame.caption > 0., |root| {
-                        root.child(docked_playback(layout, overlay, frame))
+                        root.child(if layout.compact_pocket() {
+                            let details = self.pocket_details(minute.now.to_utc());
+                            pocket::chrome(
+                                layout,
+                                overlay,
+                                &details,
+                                frame,
+                                minute,
+                                pointer.as_ref(),
+                            )
+                            .unwrap_or_else(gpui::div)
+                        } else {
+                            docked_playback(layout, overlay, frame)
+                        })
                     })
                     .when(frame.band > 0., |root| {
                         root.child(fullscreen_band(
@@ -561,6 +690,17 @@ impl PlaybackUi {
                         variant
                             .variant()
                             .map(|variant| quality_name(variant.quality()))
+                    })
+                    .collect(),
+            ),
+            PlayerMenu::More(index) => (
+                *index,
+                self.more_actions()
+                    .into_iter()
+                    .map(|action| match action {
+                        Control::Restart => "Restart",
+                        Control::Quality => "Quality",
+                        _ => self.copy.label(),
                     })
                     .collect(),
             ),
@@ -704,9 +844,13 @@ impl GuideSurface {
             self.playback.dock_focus = false;
             self.playback.controls_visible = false;
             self.playback.control = None;
+            self.playback.menu = None;
         }
         if !fullscreen {
-            self.playback.menu = None;
+            // The Pocket Watch screen keeps its menus while docked.
+            if exiting || self.playback.state.selected.is_none() {
+                self.playback.menu = None;
+            }
             self.playback.idle = None;
             self.playback.control = None;
             self.playback.controls_visible = false;
@@ -799,7 +943,8 @@ impl GuideSurface {
                 .iter()
                 .find(|channel| channel.id() == &channel_id)?;
             let title = channel_title(channel).to_owned();
-            let limit = PageRequest::first(PageLimit::new(4).ok()?);
+            // The current Programme and four after it for the Pocket Up Next list.
+            let limit = PageRequest::first(PageLimit::new(5).ok()?);
             let schedule = family_order(channel, family.variants())
                 .filter_map(|candidate| {
                     core.schedule(
@@ -845,8 +990,10 @@ impl GuideSurface {
         }));
     }
 
+    /// The TV Search desk hides the picture. Pocket sheets sit clear of it.
     pub(super) fn dock_hidden(&self) -> bool {
         self.search.state().view() == SearchView::Desk
+            && !matches!(self.profile, guide_view::Profile::Pocket(..))
     }
 
     pub(super) fn ambient_exposed(&self) -> bool {
@@ -1083,6 +1230,10 @@ impl GuideSurface {
             self.send_playback(Command::ExitFullscreen);
             return true;
         }
+        if self.pocket.leave_watch(self.pocket_mode()) {
+            self.restore_guide_after_playback(false, cx);
+            return true;
+        }
         if !self.playback.dock_focused()
             && self.screen.focus() == ScreenFocus::Toolbar(ToolbarFocus::Search)
         {
@@ -1226,7 +1377,20 @@ impl GuideSurface {
 
     fn activate_player(&mut self, action: Control, cx: &mut Context<Self>) {
         let command = match action {
-            Control::EnterFullscreen => Command::Fullscreen,
+            Control::EnterFullscreen => {
+                self.pocket.chose_fullscreen();
+                Command::Fullscreen
+            }
+            Control::PictureInPicture => {
+                if !self.host.enter_picture_in_picture() {
+                    self.show_feedback(Some("Picture-in-picture is unavailable."), cx);
+                }
+                return;
+            }
+            Control::More => {
+                self.playback.menu = Some(PlayerMenu::More(0));
+                return;
+            }
             Control::ExitFullscreen => Command::ExitFullscreen,
             Control::Pause => Command::Pause,
             Control::Resume => Command::Resume,
@@ -1308,6 +1472,7 @@ impl GuideSurface {
     }
 
     fn menu_key(&mut self, key: ScreenKey, cx: &mut Context<Self>) {
+        let more = self.playback.more_actions();
         match (self.playback.menu.as_mut(), key) {
             (Some(PlayerMenu::Audio(index)), ScreenKey::Arrow(direction)) => {
                 let count = self
@@ -1346,6 +1511,18 @@ impl GuideSurface {
                 }
                 self.playback.menu = None;
             }
+            (Some(PlayerMenu::More(index)), ScreenKey::Arrow(direction)) => {
+                if let Some(next) = step(Some(*index), more.len(), direction) {
+                    *index = next;
+                }
+            }
+            (Some(PlayerMenu::More(index)), ScreenKey::Activate) => {
+                let action = more.get(*index).copied();
+                self.playback.menu = None;
+                if let Some(action) = action {
+                    self.activate_player(action, cx);
+                }
+            }
             (Some(PlayerMenu::Quality(index)), ScreenKey::Activate) => {
                 let choice = self.playback.subject.as_ref().and_then(|subject| {
                     let channel = subject.family.variants().get(*index)?;
@@ -1367,13 +1544,36 @@ impl GuideSurface {
             return None;
         }
         let view = cx.weak_entity();
-        Some(std::rc::Rc::new(move |click, _, cx| {
-            let _ = view.update(cx, |view, cx| view.player_click(click, cx));
+        Some(std::rc::Rc::new(move |click, window, cx| {
+            let _ = view.update(cx, |view, cx| view.player_click(click, window, cx));
         }))
     }
 
-    fn player_click(&mut self, click: PlayerClick, cx: &mut Context<Self>) {
+    fn player_click(&mut self, click: PlayerClick, window: &mut Window, cx: &mut Context<Self>) {
         match click {
+            PlayerClick::Variant(index) => {
+                let choice = self.playback.shown_subject().and_then(|subject| {
+                    let channel = subject.family.variants().get(index)?;
+                    Some((subject.family.generation(), channel.id().clone()))
+                });
+                if let Some((generation, channel)) = choice {
+                    self.tune(generation, channel, true, false, cx);
+                }
+            }
+            PlayerClick::Zap(direction) => self.zap(direction, false, cx),
+            PlayerClick::Guide => {
+                self.pocket.leave_watch(self.pocket_mode());
+                self.playback.menu = None;
+                self.restore_guide_after_playback(false, cx);
+            }
+            PlayerClick::Watch => {
+                self.pocket.show_watch();
+                cx.notify();
+            }
+            PlayerClick::Search => {
+                self.playback.menu = None;
+                self.search_from_watch(window, cx);
+            }
             PlayerClick::Control(action) => {
                 if self.playback.fullscreen() {
                     self.playback.control = Some(action);
@@ -1382,7 +1582,11 @@ impl GuideSurface {
             }
             PlayerClick::Pick(index) => {
                 match &mut self.playback.menu {
-                    Some(PlayerMenu::Audio(current) | PlayerMenu::Quality(current)) => {
+                    Some(
+                        PlayerMenu::Audio(current)
+                        | PlayerMenu::Quality(current)
+                        | PlayerMenu::More(current),
+                    ) => {
                         *current = index;
                     }
                     None => return,
@@ -1407,6 +1611,23 @@ impl GuideSurface {
             self.playback.retarget_motion(cx);
         }
         self.arm_controls(cx);
+    }
+
+    /// A tap on a handheld's fullscreen picture shows the band, or hides it
+    /// while playback runs without a menu.
+    pub(super) fn toggle_player_controls(&mut self, cx: &mut Context<Self>) {
+        let hides = self.playback.controls_visible
+            && self.playback.menu.is_none()
+            && self.playback.stage() == PlaybackStage::Playing;
+        if !self.playback.fullscreen() || !hides {
+            self.reveal_player_controls(cx);
+            return;
+        }
+        self.playback.controls_visible = false;
+        self.playback.control = None;
+        self.playback.idle = None;
+        self.playback.retarget_motion(cx);
+        cx.notify();
     }
 
     pub(super) fn set_volume_step(&mut self, step: f32) {
@@ -1438,12 +1659,27 @@ impl GuideSurface {
         if self.playback.state.selected.is_none() || self.playback.fullscreen() == fullscreen {
             return false;
         }
+        self.pocket.chose_fullscreen();
         self.playback.dock_focus = false;
         self.send_playback(if fullscreen {
             Command::Fullscreen
         } else {
             Command::ExitFullscreen
         })
+    }
+
+    /// Turning the phone cuts straight to or from fullscreen: the system
+    /// already animates the rotation, so no still flies.
+    pub(super) fn turn_fullscreen(&mut self, turn: super::pocket_ui::Turn, cx: &mut Context<Self>) {
+        let enter = turn == super::pocket_ui::Turn::Enter;
+        if self.send_playback(if enter {
+            Command::Fullscreen
+        } else {
+            Command::ExitFullscreen
+        }) {
+            self.playback.motion.retarget(enter, false, true);
+            cx.notify();
+        }
     }
 
     pub(super) fn player_zap(&mut self, direction: ChannelDirection, cx: &mut Context<Self>) {
