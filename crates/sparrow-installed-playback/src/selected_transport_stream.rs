@@ -18,6 +18,11 @@ const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_SECTION_BYTES: usize = 1024;
 const MAX_LABEL_BYTES: usize = 96;
 const MAX_AUDIO_TRACKS: usize = 32;
+const PTS_MASK: u64 = (1 << 33) - 1;
+const PTS_HALF: u64 = 1 << 32;
+const MAX_AV_PTS_SKEW_TICKS: i64 = 30 * 90_000;
+const MAX_AUDIO_PES_BEFORE_VIDEO: u32 = 64;
+const MAX_AUDIO_PES_SINCE_VIDEO: u32 = 16;
 const AUDIO_TRACK_ID_PREFIX: &str = "atrk1_";
 const AUDIO_TRACK_ID_HEX_BYTES: usize = 32;
 const AUDIO_TRACK_ID_BYTES: usize = AUDIO_TRACK_ID_PREFIX.len() + AUDIO_TRACK_ID_HEX_BYTES;
@@ -1020,6 +1025,7 @@ fn safe_label(bytes: &[u8]) -> Option<String> {
 struct PacketSelector {
     pmt_pid: u16,
     retained_pids: HashSet<u16>,
+    audio_rebaser: Option<AudioTimestampRebaser>,
     pat: Vec<u8>,
     pmt: Vec<u8>,
     pat_continuity: u8,
@@ -1065,11 +1071,27 @@ impl PacketSelector {
         if programme.pcr_pid != 0x1fff {
             retained_pids.insert(programme.pcr_pid);
         }
+        let audio_rebaser = selected_audio_pid.and_then(|audio_pid| {
+            let video_pids = retained_streams
+                .iter()
+                .filter(|stream| matches!(stream.kind, StreamKind::Video))
+                .map(|stream| stream.pid)
+                .collect::<HashSet<_>>();
+            (!video_pids.is_empty()).then_some(AudioTimestampRebaser {
+                audio_pid,
+                video_pids,
+                video_dts: None,
+                audio_pes_since_video: 0,
+                lock: AudioTimestampLock::Seeking { audio_pes_seen: 0 },
+                dropping_pes: false,
+            })
+        });
         let pat = rewritten_pat(programme);
         let pmt = rewritten_pmt(programme, &retained_streams)?;
         Ok(Self {
             pmt_pid: programme.pmt_pid,
             retained_pids,
+            audio_rebaser,
             pat,
             pmt,
             pat_continuity: 0,
@@ -1097,11 +1119,194 @@ impl PacketSelector {
                     );
                 }
             } else if self.retained_pids.contains(&header.pid) {
-                output.extend_from_slice(packet);
+                if let Some(rebaser) = &mut self.audio_rebaser {
+                    rebaser.append_packet(header, packet, &mut output);
+                } else {
+                    output.extend_from_slice(packet);
+                }
             }
         }
         output
     }
+}
+
+struct AudioTimestampRebaser {
+    audio_pid: u16,
+    video_pids: HashSet<u16>,
+    video_dts: Option<u64>,
+    audio_pes_since_video: u32,
+    lock: AudioTimestampLock,
+    dropping_pes: bool,
+}
+
+#[derive(Clone, Copy)]
+enum AudioTimestampLock {
+    Seeking { audio_pes_seen: u32 },
+    Locked { offset: u64 },
+}
+
+impl AudioTimestampRebaser {
+    fn append_packet(
+        &mut self,
+        header: PacketHeader<'_>,
+        packet: &[u8; TS_PACKET_BYTES],
+        output: &mut Vec<u8>,
+    ) {
+        if header.pid != self.audio_pid {
+            if header.payload_unit_start
+                && self.video_pids.contains(&header.pid)
+                && let Some(timestamp) = PesTimestamps::read(header, packet).decode_time()
+            {
+                self.video_dts = Some(timestamp);
+                self.audio_pes_since_video = 0;
+            }
+            output.extend_from_slice(packet);
+            return;
+        }
+
+        if !header.payload_unit_start {
+            if !self.dropping_pes {
+                output.extend_from_slice(packet);
+            }
+            return;
+        }
+
+        self.dropping_pes = false;
+        self.audio_pes_since_video = self.audio_pes_since_video.saturating_add(1);
+        let timestamps = PesTimestamps::read(header, packet);
+        let clock_pair = self.video_dts.zip(timestamps.decode_time());
+        let offset = match self.lock {
+            AudioTimestampLock::Seeking { audio_pes_seen } => match clock_pair {
+                Some((video, audio)) => pick_offset(audio, video),
+                None if audio_pes_seen + 1 >= MAX_AUDIO_PES_BEFORE_VIDEO => 0,
+                None => {
+                    // An early raw timestamp can anchor the player's clock.
+                    self.lock = AudioTimestampLock::Seeking {
+                        audio_pes_seen: audio_pes_seen + 1,
+                    };
+                    self.dropping_pes = true;
+                    return;
+                }
+            },
+            AudioTimestampLock::Locked { offset } => match clock_pair {
+                Some((video, audio))
+                    if self.audio_pes_since_video <= MAX_AUDIO_PES_SINCE_VIDEO
+                        && signed_delta((audio + offset) & PTS_MASK, video).abs()
+                            > MAX_AV_PTS_SKEW_TICKS =>
+                {
+                    pick_offset(audio, video)
+                }
+                _ => offset,
+            },
+        };
+        self.lock = AudioTimestampLock::Locked { offset };
+
+        match timestamps {
+            _ if offset == 0 => output.extend_from_slice(packet),
+            PesTimestamps::None => output.extend_from_slice(packet),
+            PesTimestamps::Present {
+                pts_offset,
+                pts,
+                dts,
+            } => {
+                let mut rewritten = *packet;
+                let (pts_bytes, rest) = rewritten[pts_offset..]
+                    .split_first_chunk_mut::<5>()
+                    .expect("readable PES contains PTS");
+                write_pts_dts(pts_bytes, pts + offset);
+                if let Some(dts) = dts {
+                    write_pts_dts(
+                        rest.first_chunk_mut::<5>()
+                            .expect("readable PES with DTS contains both timestamps"),
+                        dts + offset,
+                    );
+                }
+                output.extend_from_slice(&rewritten);
+            }
+            PesTimestamps::Split | PesTimestamps::Unreadable => self.dropping_pes = true,
+        }
+    }
+}
+
+fn signed_delta(a: u64, b: u64) -> i64 {
+    let diff = a.wrapping_sub(b) & PTS_MASK;
+    if diff >= PTS_HALF {
+        diff as i64 - (1_i64 << 33)
+    } else {
+        diff as i64
+    }
+}
+
+fn pick_offset(audio: u64, video: u64) -> u64 {
+    if signed_delta(audio, video).abs() <= MAX_AV_PTS_SKEW_TICKS {
+        0
+    } else {
+        video.wrapping_sub(audio) & PTS_MASK
+    }
+}
+
+enum PesTimestamps {
+    None,
+    Present {
+        pts_offset: usize,
+        pts: u64,
+        dts: Option<u64>,
+    },
+    Split,
+    Unreadable,
+}
+
+impl PesTimestamps {
+    fn read(header: PacketHeader<'_>, packet: &[u8; TS_PACKET_BYTES]) -> Self {
+        if !header.payload_unit_start || packet[3] & 0xc0 != 0 {
+            return Self::Unreadable;
+        }
+        let Some(payload) = header.payload else {
+            return Self::Unreadable;
+        };
+        if payload.len() < 9 || !payload.starts_with(&[0, 0, 1]) || payload[6] & 0xc0 != 0x80 {
+            return Self::Unreadable;
+        }
+        let flags = (payload[7] >> 6) & 0x03;
+        let timestamp_bytes = match flags {
+            0b00 => return Self::None,
+            0b10 => 5,
+            0b11 => 10,
+            _ => return Self::Unreadable,
+        };
+        if payload.len() < 9 + timestamp_bytes || usize::from(payload[8]) < timestamp_bytes {
+            return Self::Split;
+        }
+        Self::Present {
+            pts_offset: TS_PACKET_BYTES - payload.len() + 9,
+            pts: read_pts_dts(&payload[9..14]),
+            dts: (flags == 0b11).then(|| read_pts_dts(&payload[14..19])),
+        }
+    }
+
+    fn decode_time(&self) -> Option<u64> {
+        match *self {
+            Self::Present { pts, dts, .. } => dts.or(Some(pts)),
+            _ => None,
+        }
+    }
+}
+
+fn read_pts_dts(bytes: &[u8]) -> u64 {
+    (u64::from(bytes[0] & 0x0e) << 29)
+        | (u64::from(bytes[1]) << 22)
+        | (u64::from(bytes[2] & 0xfe) << 14)
+        | (u64::from(bytes[3]) << 7)
+        | u64::from(bytes[4] >> 1)
+}
+
+fn write_pts_dts(dst: &mut [u8; 5], ts: u64) {
+    let ts = ts & PTS_MASK;
+    dst[0] = (dst[0] & 0xf1) | (((ts >> 29) & 0x0e) as u8);
+    dst[1] = ((ts >> 22) & 0xff) as u8;
+    dst[2] = (dst[2] & 0x01) | (((ts >> 14) & 0xfe) as u8);
+    dst[3] = ((ts >> 7) & 0xff) as u8;
+    dst[4] = (dst[4] & 0x01) | (((ts << 1) & 0xfe) as u8);
 }
 
 fn rewritten_pat(programme: &Programme) -> Vec<u8> {
@@ -1491,6 +1696,177 @@ mod tests {
     }
 
     #[test]
+    fn coherent_audio_and_video_keep_their_original_packets() {
+        let mut selector = fixture_selector();
+        let video = fixture_pes(0x101, 9_000_000, None);
+        let audio = fixture_pes(0x102, 6_300_000, None);
+        assert_eq!(selector.filter(&[video, audio]), [video, audio].concat());
+    }
+
+    #[tokio::test]
+    async fn discovery_rebases_disjoint_audio_before_exposing_it_to_the_player() {
+        let programme = fixture_programme();
+        let psi_and_tails = fixture_transport(&programme);
+        let video_dts = 400_000_000;
+        let audio_pts = video_dts - 2_591 * 90_000;
+        let early_audio = fixture_pes(0x102, audio_pts - 2_880, None);
+        let early_tail = fixture_packet(0x102, false, 1, &[0xab]);
+        let video = fixture_pes(0x101, video_dts + 3_600, Some(video_dts));
+        let audio = fixture_pes(0x102, audio_pts, None);
+        let mut following_audio = fixture_pes(0x102, audio_pts + 2_880, None);
+        following_audio[3] |= 1;
+
+        let mut discovery = [early_audio, early_tail].concat();
+        discovery.extend_from_slice(&psi_and_tails[..2 * TS_PACKET_BYTES]);
+        discovery.extend_from_slice(&[video, audio].concat());
+        let body: PlaybackByteStream = Box::pin(stream::iter([
+            Ok(Bytes::from(discovery)),
+            Ok(Bytes::copy_from_slice(&following_audio)),
+        ]));
+        let mut opened =
+            SelectedTransportStream::open(body, SelectionRequest::Initial { saved: None })
+                .await
+                .expect("fixture programme is discovered");
+        let initial = opened.stream.next().await.unwrap().unwrap();
+        assert_eq!(packet_pids(&initial), vec![0, 0x100, 0x101, 0x102]);
+        assert_eq!(
+            &initial[2 * TS_PACKET_BYTES..],
+            [video, fixture_pes(0x102, video_dts, None)].concat()
+        );
+
+        let mut expected = fixture_pes(0x102, video_dts + 2_880, None);
+        expected[3] |= 1;
+        assert_eq!(
+            opened.stream.next().await.unwrap().unwrap().as_ref(),
+            expected
+        );
+    }
+
+    #[test]
+    fn coherent_clocks_stay_unchanged_across_pts_wraparound() {
+        let mut selector = fixture_selector();
+        let wrap = 1 << 33;
+        let packets = [
+            fixture_pes(0x101, wrap - 4_000, None),
+            fixture_pes(0x102, 1_000, None),
+            fixture_pes(0x101, 4_000, None),
+            fixture_pes(0x102, wrap - 1_000, None),
+            fixture_pes(0x102, 1_880, None),
+        ];
+        assert_eq!(selector.filter(&packets), packets.concat());
+    }
+
+    #[test]
+    fn rebasing_preserves_audio_pts_dts_separation_timestamp_bits_and_pcr() {
+        let mut programme = fixture_programme();
+        programme.pcr_pid = 0x102;
+        let mut selector = PacketSelector::new(&programme, Some(0x102)).unwrap();
+        let video_pts = (1 << 33) - 1_000;
+        let video = fixture_pes(0x101, video_pts, None);
+        // The unusual prefix and marker bits, and DTS greater than PTS,
+        // are forwarded verbatim except for the timestamp value bits.
+        let mut audio = fixture_pes(0x102, 9_000_000, Some(9_002_000));
+        let mut expected = fixture_pes(0x102, video_pts - 2_000, Some(video_pts));
+        for packet in [&mut audio, &mut expected] {
+            packet[13] = (packet[13] & 0x0e) | 0x90;
+            packet[15] &= 0xfe;
+            packet[22] &= 0xfe;
+            packet.copy_within(4..180, 12);
+            packet[3] = 0x30;
+            packet[4..12].copy_from_slice(&[7, 0x10, 0x12, 0x34, 0x56, 0x78, 0x7e, 0]);
+        }
+        assert_eq!(selector.filter(&[video, audio]), [video, expected].concat());
+    }
+
+    #[test]
+    fn split_audio_pes_passes_only_when_no_rebase_is_needed() {
+        let video = fixture_pes(0x101, 40_000_000, None);
+        let audio = fixture_pes(0x102, 10_000_000, None);
+        let mut split = audio;
+        split[3] = 0x31;
+        split[4] = 171;
+        split[5] = 0;
+        split[176..].copy_from_slice(&audio[4..16]);
+        let tail = fixture_packet(0x102, false, 2, &audio[16..]);
+        let mut next_audio = fixture_pes(0x102, 10_002_880, None);
+        next_audio[3] |= 3;
+
+        let mut coherent = fixture_selector();
+        let coherent_audio = fixture_pes(0x102, 40_000_000, None);
+        let packets = [video, coherent_audio, split, tail];
+        assert_eq!(coherent.filter(&packets), packets.concat());
+
+        let mut disjoint = fixture_selector();
+        let mut expected_next = fixture_pes(0x102, 40_002_880, None);
+        expected_next[3] |= 3;
+        assert_eq!(
+            disjoint.filter(&[video, audio, split, tail, next_audio]),
+            [video, coherent_audio, expected_next].concat()
+        );
+    }
+
+    #[test]
+    fn stalled_video_cannot_relock_audio_against_a_stale_timestamp() {
+        let mut selector = fixture_selector();
+        let video_pts = 40_000_000;
+        let audio_pts = 10_000_000;
+        let mut packets = vec![fixture_pes(0x101, video_pts, None)];
+        let mut expected = packets.clone();
+        for index in 0..16 {
+            let elapsed = index * 2_880;
+            packets.push(fixture_pes(0x102, audio_pts + elapsed, None));
+            expected.push(fixture_pes(0x102, video_pts + elapsed, None));
+        }
+        packets.push(fixture_pes(0x102, audio_pts + 3_000_000, None));
+        expected.push(fixture_pes(0x102, video_pts + 3_000_000, None));
+        assert_eq!(selector.filter(&packets), expected.concat());
+    }
+
+    #[test]
+    fn absent_video_timestamps_fall_back_to_identity_on_the_64th_audio_pes() {
+        let mut selector = fixture_selector();
+        for index in 0..63 {
+            let audio = fixture_pes(0x102, 10_000_000 + index * 2_880, None);
+            let tail = fixture_packet(0x102, false, 1, &[0xab]);
+            assert!(selector.filter(&[audio, tail]).is_empty());
+        }
+        let packets = [
+            fixture_pes(0x102, 10_181_440, None),
+            fixture_packet(0x102, false, 1, &[0xab]),
+            fixture_pes(0x102, 10_184_320, None),
+        ];
+        assert_eq!(selector.filter(&packets), packets.concat());
+    }
+
+    #[test]
+    fn fresh_video_relocks_after_discontinuities_and_restores_coherent_identity() {
+        let mut selector = fixture_selector();
+        let first_video = fixture_pes(0x101, 40_000_000, None);
+        let second_video = fixture_pes(0x101, 41_000_000, None);
+        let third_video = fixture_pes(0x101, 42_000_000, None);
+        let coherent_audio = fixture_pes(0x102, 42_005_000, None);
+        let packets = [
+            first_video,
+            fixture_pes(0x102, 10_000_000, None),
+            second_video,
+            fixture_pes(0x102, 20_000_000, None),
+            fixture_pes(0x102, 20_002_880, None),
+            third_video,
+            coherent_audio,
+        ];
+        let expected = [
+            first_video,
+            fixture_pes(0x102, 40_000_000, None),
+            second_video,
+            fixture_pes(0x102, 41_000_000, None),
+            fixture_pes(0x102, 41_002_880, None),
+            third_video,
+            coherent_audio,
+        ];
+        assert_eq!(selector.filter(&packets), expected.concat());
+    }
+
+    #[test]
     fn private_data_streams_take_the_dolby_codec_their_descriptors_declare() {
         let codec = |descriptors: &[u8]| match classify_stream(0x06, descriptors) {
             StreamKind::Audio(codec) => Some(codec),
@@ -1561,6 +1937,35 @@ mod tests {
                 },
             ],
         }
+    }
+
+    fn fixture_selector() -> PacketSelector {
+        PacketSelector::new(&fixture_programme(), Some(0x102)).unwrap()
+    }
+
+    fn fixture_pes(pid: u16, pts: u64, dts: Option<u64>) -> [u8; TS_PACKET_BYTES] {
+        fn timestamp_bytes(value: u64, prefix: u64) -> [u8; 5] {
+            let high = value >> 30;
+            let middle = (value >> 15) & 0x7fff;
+            let low = value & 0x7fff;
+            let packed = (prefix << 36)
+                | (high << 33)
+                | (1 << 32)
+                | (middle << 17)
+                | (1 << 16)
+                | (low << 1)
+                | 1;
+            packed.to_be_bytes()[3..].try_into().unwrap()
+        }
+
+        let (flags, header_length) = if dts.is_some() { (0xc0, 10) } else { (0x80, 5) };
+        let stream_id = if pid == 0x101 { 0xe0 } else { 0xbd };
+        let mut payload = vec![0, 0, 1, stream_id, 0, 24, 0x80, flags, header_length];
+        payload.extend_from_slice(&timestamp_bytes(pts, u64::from(flags >> 6)));
+        if let Some(dts) = dts {
+            payload.extend_from_slice(&timestamp_bytes(dts, 1));
+        }
+        fixture_packet(pid, true, 0, &payload)
     }
 
     fn fixture_transport(programme: &Programme) -> Vec<u8> {
