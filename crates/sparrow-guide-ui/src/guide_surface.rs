@@ -22,7 +22,7 @@ use sparrow_tv_guide::{
 use tokio::task::AbortHandle;
 
 use crate::{
-    Catalog, Edit, GuideHost, HostEvent, HostKey, Insets, Phase, PlaybackHost,
+    Catalog, Edit, EditorKey, GuideHost, HostEvent, HostKey, Insets, Phase, PlaybackHost,
     channel_icons::ChannelIcons,
     guide_view::{self, FormFactor, Profile},
     search_flow::{SearchEffect, SearchFlow},
@@ -531,8 +531,32 @@ impl GuideSurface {
     }
 
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.host.editor_key(event, cx) {
+        let editor_key = self.host.editor_key(event, cx);
+        if !matches!(editor_key, EditorKey::Ignored) {
             cx.stop_propagation();
+            match editor_key {
+                EditorKey::Ignored | EditorKey::Handled => {}
+                EditorKey::QueryCancelled(generation) => {
+                    if self.query_edited(generation, Edit::Cancelled, cx).is_some() {
+                        self.close_top_layer(window, cx);
+                    }
+                }
+                EditorKey::QueryCommitted {
+                    generation,
+                    text,
+                    key,
+                } => match self.query_edited(generation, Edit::Committed(text), cx) {
+                    Some(TextTarget::Search) => {
+                        self.search_viewport.follow_focus();
+                        let effect = self.search.leave_editor(key);
+                        self.search_effect(effect, Some((window, false)), cx);
+                    }
+                    Some(TextTarget::GroupFilter) if matches!(key, ScreenKey::Arrow(_)) => {
+                        self.press(key, false, window, cx);
+                    }
+                    _ => {}
+                },
+            }
             cx.notify();
             return;
         }
@@ -635,37 +659,44 @@ impl GuideSurface {
                 }
             }
             HostEvent::Edited { generation, edit } => {
-                let Some((current, target)) = self.active_editor else {
-                    return;
-                };
-                if current != generation {
-                    return;
+                if self.query_edited(generation, edit, cx).is_some() {
+                    cx.notify();
                 }
-                self.minute_tick = None;
-                self.icons.note_navigation();
-                if !matches!(edit, Edit::Changed(_)) {
-                    self.active_editor = None;
-                }
-                match edit {
-                    Edit::Changed(text) | Edit::Committed(text) => match target {
-                        TextTarget::GroupFilter => {
-                            self.screen
-                                .group_chooser_intent(GroupChooserIntent::Filter(text));
-                            self.sync_view(cx);
-                        }
-                        TextTarget::Search => {
-                            let timer = self.search.edit(text);
-                            self.schedule_search(timer, cx);
-                        }
-                    },
-                    Edit::Rejected => {
-                        self.show_feedback(Some("Couldn’t open the keyboard."), cx);
-                    }
-                    Edit::Cancelled => {}
-                }
-                cx.notify();
             }
         }
+    }
+
+    fn query_edited(
+        &mut self,
+        generation: u64,
+        edit: Edit,
+        cx: &mut Context<Self>,
+    ) -> Option<TextTarget> {
+        let (current, target) = self.active_editor?;
+        if current != generation {
+            return None;
+        }
+        self.minute_tick = None;
+        self.icons.note_navigation();
+        if !matches!(edit, Edit::Changed(_)) {
+            self.active_editor = None;
+        }
+        match edit {
+            Edit::Changed(text) | Edit::Committed(text) => match target {
+                TextTarget::GroupFilter => {
+                    self.screen
+                        .group_chooser_intent(GroupChooserIntent::Filter(text));
+                    self.sync_view(cx);
+                }
+                TextTarget::Search => {
+                    let timer = self.search.edit(text);
+                    self.schedule_search(timer, cx);
+                }
+            },
+            Edit::Rejected => self.show_feedback(Some("Couldn’t open the keyboard."), cx),
+            Edit::Cancelled => {}
+        }
+        Some(target)
     }
 
     fn press(&mut self, key: ScreenKey, repeat: bool, window: &mut Window, cx: &mut Context<Self>) {

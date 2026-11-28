@@ -98,86 +98,103 @@ impl SearchViewport {
     }
 }
 
-/// The Search control under a point in layout units, mirroring `search_panel`.
-/// Outside the field, popup and sheet it returns `Close`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in super::super) enum SearchHit {
+    Control(SearchFocus),
+    Empty,
+    Scrim,
+}
+
+/// Hit-tests Search in layout units using the geometry drawn by `search_panel`.
 pub(in super::super) fn search_hit(
     layout: Layout,
     panel: &SearchPanel<'_>,
     viewport: &SearchViewport,
     [x, y]: [f32; 2],
-) -> Option<SearchFocus> {
-    match panel.state.view() {
+) -> SearchHit {
+    let focus = match panel.state.view() {
         SearchView::Closed => None,
         SearchView::Inline => {
             let geometry = InlineGeometry::new(layout, panel.docked);
-            if (BAND_TOP..BAND_TOP + geometry.field_height).contains(&y) {
-                if !(geometry.x..geometry.x + geometry.width).contains(&x) {
-                    return Some(SearchFocus::Close);
-                }
+            if super::contains(
+                [geometry.x, BAND_TOP, geometry.width, geometry.field_height],
+                [x, y],
+            ) {
                 let clear = !panel.display_term.is_empty()
                     && x >= geometry.x + geometry.width - INLINE_CLEAR_INSET;
-                return Some(if clear {
+                return SearchHit::Control(if clear {
                     SearchFocus::Clear
                 } else {
                     SearchFocus::Field
                 });
             }
-            if !(geometry.popup_x..geometry.popup_x + geometry.popup_width).contains(&x) {
-                return Some(SearchFocus::Close);
-            }
             let rows = inline_rows(panel.state, panel.display_term);
             let list_y = y - INLINE_POPUP_Y;
-            if !(0. ..inline_height(layout, rows.len())).contains(&list_y) {
-                return Some(SearchFocus::Close);
+            let list_x = x - geometry.popup_x;
+            if rows.is_empty()
+                || !(0. ..geometry.popup_width).contains(&list_x)
+                || !(0. ..inline_height(layout, rows.len())).contains(&list_y)
+            {
+                return SearchHit::Scrim;
             }
             let offset =
                 list_y - (INLINE_PADDING - 1.) + viewport.inline_scroll.clipped(INLINE_PITCH);
             let slot = (offset / INLINE_PITCH).floor();
-            if rows.is_empty() || slot < 0. || offset - slot * INLINE_PITCH > INLINE_ROW_HEIGHT {
-                return Some(SearchFocus::Close);
+            if !(INLINE_PADDING..geometry.popup_width - INLINE_PADDING).contains(&list_x)
+                || slot < 0.
+                || offset - slot * INLINE_PITCH >= INLINE_ROW_HEIGHT
+            {
+                return SearchHit::Empty;
             }
             rows.get(viewport.inline_scroll.first() + slot as usize)
-                .map_or(Some(SearchFocus::Close), InlineRow::focus)
+                .and_then(InlineRow::focus)
         }
         SearchView::Desk => {
             let x = x - desk_x(layout);
-            if x < 0. {
-                return Some(SearchFocus::Close);
-            }
             let width = layout.sheet_width();
+            if !(0. ..width).contains(&x) || !(0. ..layout.height).contains(&y) {
+                return SearchHit::Scrim;
+            }
             if (width - 78. ..width - 30.).contains(&x) && (30. ..78.).contains(&y) {
-                return Some(SearchFocus::Close);
+                return SearchHit::Control(SearchFocus::Close);
             }
             let x = x - DESK_PADDING;
             if (DESK_FILTER_Y..DESK_FILTER_Y + DESK_FILTER_HEIGHT).contains(&y) {
                 let field = desk_field_width(layout, panel.state, panel.has_exclusions);
-                return if (0. ..field).contains(&x) {
-                    Some(SearchFocus::Field)
-                } else {
-                    (panel.has_exclusions && x > desk_content_width(layout) - INCLUDE_WIDTH)
-                        .then_some(SearchFocus::IncludeHidden)
-                };
+                let content_width = desk_content_width(layout);
+                if (0. ..field).contains(&x) {
+                    return SearchHit::Control(SearchFocus::Field);
+                }
+                if panel.has_exclusions
+                    && (content_width - INCLUDE_WIDTH..content_width).contains(&x)
+                {
+                    return SearchHit::Control(SearchFocus::IncludeHidden);
+                }
+                return SearchHit::Empty;
             }
             let offset = y - DESK_LIST_Y;
             if offset < 0. || !(0. ..desk_content_width(layout)).contains(&x) {
-                return None;
+                return SearchHit::Empty;
             }
             if desk_retry_label(panel.state.status()).is_some() {
-                return super::contains(DESK_RETRY_BOUNDS, [x, offset])
-                    .then_some(SearchFocus::Retry);
-            }
-            let rows = panel.state.channels();
-            let offset = offset + viewport.desk_scroll.clipped(DESK_PITCH);
-            let index = viewport.desk_scroll.first() + (offset / DESK_PITCH) as usize;
-            match rows.get(index) {
-                Some(row) if offset % DESK_PITCH <= DESK_ROW_HEIGHT => {
-                    Some(SearchFocus::Channel(row.channel().number()))
+                super::contains(DESK_RETRY_BOUNDS, [x, offset]).then_some(SearchFocus::Retry)
+            } else {
+                let rows = panel.state.channels();
+                let offset = offset + viewport.desk_scroll.clipped(DESK_PITCH);
+                let index = viewport.desk_scroll.first() + (offset / DESK_PITCH) as usize;
+                match rows.get(index) {
+                    Some(row) if offset % DESK_PITCH <= DESK_ROW_HEIGHT => {
+                        Some(SearchFocus::Channel(row.channel().number()))
+                    }
+                    None if index == rows.len() && panel.state.has_more() => {
+                        Some(SearchFocus::More)
+                    }
+                    _ => None,
                 }
-                None if index == rows.len() && panel.state.has_more() => Some(SearchFocus::More),
-                _ => None,
             }
         }
-    }
+    };
+    focus.map_or(SearchHit::Empty, SearchHit::Control)
 }
 
 /// The Desk notice's retry button, relative to the result list.
@@ -1103,7 +1120,8 @@ mod tests {
 
     use super::{
         BAND_TOP, INLINE_POPUP_Y, InlineGeometry, InlineRow, Layout, RowScroll, SearchFocus,
-        SearchPanel, SearchViewport, inline_slice, search_editor_rect, search_hit,
+        SearchHit, SearchPanel, SearchViewport, desk_x, inline_slice, search_editor_rect,
+        search_hit,
     };
     use crate::guide_view::{POCKET_GUTTER, PocketClass, Pointer, Profile};
 
@@ -1183,13 +1201,49 @@ mod tests {
         let right = layout.width - POCKET_GUTTER;
         // The toolbar buttons squeeze the field, not the results under it.
         assert!(field.x + field.width < right - 100.);
-        assert_eq!(hit(POCKET_GUTTER + 10.), None);
-        assert_eq!(hit(right - 10.), None);
-        assert_eq!(hit(right + 2.), Some(SearchFocus::Close));
+        assert_eq!(hit(POCKET_GUTTER + 10.), SearchHit::Empty);
+        assert_eq!(hit(right - 10.), SearchHit::Empty);
+        assert_eq!(hit(right + 2.), SearchHit::Scrim);
+        assert_eq!(
+            search_hit(
+                layout,
+                &panel,
+                &viewport,
+                [field.x + 1., INLINE_POPUP_Y + 1.]
+            ),
+            SearchHit::Empty
+        );
         // Beside the field, the toolbar row still closes Search.
         assert_eq!(
             search_hit(layout, &panel, &viewport, [right - 10., BAND_TOP + 10.]),
-            Some(SearchFocus::Close)
+            SearchHit::Scrim
+        );
+    }
+
+    #[test]
+    fn desk_distinguishes_the_close_control_from_the_surrounding_scrim() {
+        let layout = Layout::new(Profile::Tv, size(px(1920.), px(1080.)));
+        let mut state = SearchState::new(None);
+        let _ = state.set_view(SearchView::Desk);
+        let panel = SearchPanel {
+            marker: None,
+            state: &state,
+            display_term: "",
+            focus: SearchFocus::Field,
+            editing: true,
+            has_exclusions: false,
+            docked: false,
+            families: &[],
+            now: chrono::DateTime::UNIX_EPOCH,
+        };
+        let viewport = SearchViewport::default();
+        let hit = |point| search_hit(layout, &panel, &viewport, point);
+        assert_eq!(hit([desk_x(layout) - 1., 50.]), SearchHit::Scrim);
+        assert_eq!(hit([desk_x(layout) + 1., -1.]), SearchHit::Scrim);
+        assert_eq!(hit([desk_x(layout) + 1., 50.]), SearchHit::Empty);
+        assert_eq!(
+            hit([layout.width - 50., 50.]),
+            SearchHit::Control(SearchFocus::Close)
         );
     }
 

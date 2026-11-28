@@ -13,7 +13,7 @@ use playback::DesktopPlayback;
 
 const USAGE: &str = "Usage: sparrow-desktop [--data-dir DIRECTORY | --fixture]\n\
     Click, scroll or use the arrow keys. Enter selects. Escape goes back.\n\
-    / or Ctrl+F searches, F toggles full screen, Space pauses, M mutes, G returns to the Guide.\n\
+    /, Ctrl+F or Ctrl+K searches, F toggles full screen, Space pauses, M mutes, G returns to the Guide.\n\
     --fixture uses a temporary data directory and the loopback Shield fixture on port 18108.";
 
 pub(super) fn run() -> Result<(), &'static str> {

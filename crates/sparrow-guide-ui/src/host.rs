@@ -4,7 +4,7 @@ use gpui::{App, Div, KeyDownEvent, RenderImage, Window};
 use sparrow_core::ChannelDirection;
 use sparrow_installed_catalog::{InstalledCatalog, SavedSourceLocations};
 use sparrow_installed_playback::tv::TvPlaybackRunner;
-use sparrow_tv_guide::{now_focus::Direction, setup::SetupField};
+use sparrow_tv_guide::{guide_screen::ScreenKey, now_focus::Direction, setup::SetupField};
 
 use crate::FormFactor;
 
@@ -23,13 +23,26 @@ pub trait TextEditorHost {
     /// Drops the open editor as Cancelled, as a press outside it does.
     fn cancel_editor(&self);
 
-    fn editor_key(&self, _event: &KeyDownEvent, _cx: &mut App) -> bool {
-        false
+    fn editor_key(&self, _event: &KeyDownEvent, _cx: &mut App) -> EditorKey {
+        EditorKey::Ignored
     }
 
     fn editor_overlay(&self, _window: &Window) -> Option<Div> {
         None
     }
+}
+
+/// A desktop query's terminal keys carry the final edit in the same input event
+/// so the Guide can apply it before acting on the key.
+pub enum EditorKey {
+    Ignored,
+    Handled,
+    QueryCancelled(u64),
+    QueryCommitted {
+        generation: u64,
+        text: String,
+        key: ScreenKey,
+    },
 }
 
 /// Window integration for the shared guide.

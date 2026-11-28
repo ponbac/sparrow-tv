@@ -168,6 +168,21 @@ impl SearchFlow {
         }
     }
 
+    /// Move from the Desktop text editor without activating a result or
+    /// dismissing inline Search when the query has no actionable rows yet.
+    pub(super) fn leave_editor(&mut self, key: ScreenKey) -> SearchEffect {
+        let target = match (self.state.view(), key) {
+            (SearchView::Inline, ScreenKey::Arrow(Direction::Up)) => self.inline_options().last(),
+            (SearchView::Inline, _) => self.inline_options().next(),
+            (SearchView::Desk, ScreenKey::Arrow(Direction::Up)) => self.desk_target(Direction::Up),
+            (SearchView::Desk, _) => self
+                .first_desk_result()
+                .or_else(|| self.desk_target(Direction::Down)),
+            (SearchView::Closed, _) => None,
+        };
+        target.map_or(SearchEffect::None, |target| self.move_focus(target))
+    }
+
     /// Activates a typed renderer target. Stale or hidden choices have no effect.
     pub(super) fn activate(&mut self, target: SearchFocus) -> SearchEffect {
         if !self.available(target) {
@@ -479,5 +494,44 @@ impl SearchFlow {
         Some(SearchFocus::Channel(
             self.state.channels().last()?.channel().number(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn desktop_editor_navigation_keeps_inline_search_open_when_no_choices_are_available() {
+        let mut search = SearchFlow::new(None);
+        let _ = search.open_inline();
+        let _ = search.edit("query".into());
+        for key in [ScreenKey::Arrow(Direction::Down), ScreenKey::Activate] {
+            assert!(matches!(search.leave_editor(key), SearchEffect::None));
+            assert_eq!(search.state().view(), SearchView::Inline);
+            assert_eq!(search.focus(), SearchFocus::Field);
+        }
+        assert!(matches!(search.back(), SearchEffect::Dismiss));
+        assert_eq!(search.state().view(), SearchView::Closed);
+    }
+
+    #[test]
+    fn desktop_editor_enter_focuses_an_available_desk_action_without_activating_it() {
+        let mut search = SearchFlow::new(None);
+        let _ = search.state.set_view(SearchView::Desk);
+        let _ = search.set_preferences(HashSet::from(["Hidden".into()]), Arc::default());
+        assert!(matches!(
+            search.leave_editor(ScreenKey::Activate),
+            SearchEffect::None
+        ));
+        assert_eq!(search.focus(), SearchFocus::IncludeHidden);
+        assert!(!search.state().include_hidden());
+
+        assert!(matches!(
+            search.activate(SearchFocus::Field),
+            SearchEffect::Edit
+        ));
+        assert_eq!(search.focus(), SearchFocus::Field);
+        assert_eq!(search.state().view(), SearchView::Desk);
     }
 }

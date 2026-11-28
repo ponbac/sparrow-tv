@@ -42,6 +42,7 @@ pub(crate) fn parse(reader: &mut dyn BufRead) -> Result<Vec<ParsedChannel>, Safe
     interned_groups.insert(Arc::clone(&empty));
     let mut interned_icons: HashSet<Arc<str>> = HashSet::new();
     let mut pending: Option<PendingEntry> = None;
+    let mut completed_entries = 0;
     let mut header_seen = false;
     let mut first_line = true;
     let mut line_bytes = Vec::new();
@@ -97,7 +98,7 @@ pub(crate) fn parse(reader: &mut dyn BufRead) -> Result<Vec<ParsedChannel>, Safe
                 ));
             }
 
-            let entry = next_entry_number(channels.len());
+            let entry = next_entry_number(completed_entries);
             let metadata = line
                 .strip_prefix("#EXTINF:")
                 .ok_or_else(|| invalid_format(Some(entry), M3uFailureKind::MalformedMetadata))?;
@@ -111,11 +112,15 @@ pub(crate) fn parse(reader: &mut dyn BufRead) -> Result<Vec<ParsedChannel>, Safe
 
         let entry = pending.take().ok_or_else(|| {
             invalid_format(
-                Some(next_entry_number(channels.len())),
+                Some(next_entry_number(completed_entries)),
                 M3uFailureKind::UnexpectedLocation,
             )
         })?;
         let playback = parse_playback(line, entry.number)?;
+        completed_entries += 1;
+        if is_non_live(&playback, &entry.group) {
+            continue;
+        }
         let tvg_id = if entry.tvg_id.is_empty() {
             Arc::clone(&empty)
         } else {
@@ -123,10 +128,12 @@ pub(crate) fn parse(reader: &mut dyn BufRead) -> Result<Vec<ParsedChannel>, Safe
         };
         let group = if let Some(existing) = interned_groups.get(entry.group.as_str()) {
             Arc::clone(existing)
-        } else {
-            let group: Arc<str> = Arc::from(entry.group);
+        } else if let Ok(filter) = ChannelGroupFilter::parse(entry.group) {
+            let group: Arc<str> = Arc::from(filter.as_str());
             interned_groups.insert(Arc::clone(&group));
             group
+        } else {
+            Arc::clone(&empty)
         };
         let icon = entry.icon.map(|icon| {
             if let Some(existing) = interned_icons.get(icon.as_str()) {
@@ -226,7 +233,7 @@ fn parse_metadata(metadata: &str, entry: u32) -> Result<PendingEntry, SafeFailur
         group: attributes
             .group_title
             .as_deref()
-            .map(normalize_queryable_group)
+            .map(normalize_presentation)
             .unwrap_or_default(),
         icon: attributes.tvg_logo.and_then(|logo| {
             let logo = logo.trim();
@@ -451,13 +458,6 @@ pub(crate) fn normalize_presentation(value: &str) -> String {
     normalized
 }
 
-fn normalize_queryable_group(value: &str) -> String {
-    let normalized = normalize_presentation(value);
-    ChannelGroupFilter::parse(normalized)
-        .map(|group| group.as_str().to_owned())
-        .unwrap_or_default()
-}
-
 fn parse_playback(location: &str, entry: u32) -> Result<Url, SafeFailure> {
     let playback = Url::parse(location)
         .map_err(|_| invalid_format(Some(entry), M3uFailureKind::UnsupportedPlaybackSource))?;
@@ -471,6 +471,133 @@ fn parse_playback(location: &str, entry: u32) -> Result<Url, SafeFailure> {
     Ok(playback)
 }
 
+/// Only explicit non-live paths, file extensions or group tags exclude an entry.
+/// Plain movie/series group names and live stream formats are left alone.
+fn is_non_live(playback: &Url, group: &str) -> bool {
+    let path = playback.path();
+    let first = path.trim_start_matches('/').split('/').next().unwrap_or("");
+    if ["movie", "series", "vod", "vods", "timeshift"]
+        .iter()
+        .any(|segment| first.eq_ignore_ascii_case(segment))
+    {
+        return true;
+    }
+
+    let file = path.rsplit('/').next().unwrap_or("");
+    if let Some((_, extension)) = file.rsplit_once('.')
+        && [
+            "mkv", "mp4", "avi", "mov", "m4v", "wmv", "webm", "mpg", "mpeg", "divx", "vob", "iso",
+            "3gp", "ogv",
+        ]
+        .iter()
+        .any(|container| extension.eq_ignore_ascii_case(container))
+    {
+        return true;
+    }
+
+    if !group.contains(['(', '[']) {
+        return false;
+    }
+    let group = group.to_ascii_lowercase();
+    [
+        "(vod)", "[vod]", "(serie)", "[serie]", "(series)", "[series]",
+    ]
+    .iter()
+    .any(|tag| group.contains(tag))
+}
+
 fn invalid_format(entry: Option<u32>, reason: M3uFailureKind) -> SafeFailure {
     SafeFailure::InvalidFormat { entry, reason }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mixed_playlists_keep_only_live_channels() {
+        let mut playlist = String::from("#EXTM3U\n");
+        let live = [
+            ("/123", "Movies"),
+            ("/live/123.ts", "Sky Movies"),
+            ("/123.m3u8?next=/movie/file.mp4", "Series"),
+            ("/live/series/123", "Drama (Series HD)"),
+            ("/123.m2ts", "Live"),
+            ("/123.mpegts", "Live"),
+            ("/123.m3u", "Live"),
+            ("/123.mpd", "Live"),
+        ];
+        let on_demand = [
+            ("//MoViE/123.txt", "Movies"),
+            ("/series/123", "Drama"),
+            ("/vod/123.m3u8", "Drama"),
+            ("/vods/123", "Drama"),
+            ("/timeshift/123.ts", "Live"),
+            ("/123.MKV?format=ts", "Movies"),
+            ("/123.mp4#live", "Movies"),
+            ("/123.avi", "Movies"),
+            ("/123.ts", "Movies (VOD)"),
+            ("/123", "Movies [Vod]"),
+            ("/123", "Drama （SeRiE）"),
+            ("/123", "Drama [Serie]"),
+            ("/123", "Drama (Series)"),
+            ("/123", "Drama [Series]"),
+        ];
+        for (index, (path, group)) in live.into_iter().chain(on_demand).enumerate() {
+            use std::fmt::Write as _;
+            writeln!(
+                playlist,
+                "#EXTINF:-1 group-title=\"{group}\",Entry {index}\nhttps://fixture.invalid{path}"
+            )
+            .expect("writing to a string succeeds");
+        }
+
+        let channels = parse(&mut playlist.as_bytes()).expect("playlist is valid");
+        let retained: Vec<_> = channels
+            .iter()
+            .map(|channel| channel.group.as_ref())
+            .collect();
+        assert_eq!(retained, live.map(|(_, group)| group));
+    }
+
+    #[test]
+    fn on_demand_only_playlists_have_no_playable_channels() {
+        let playlist = b"#EXTM3U\n#EXTINF:-1,Episode\nhttps://fixture.invalid/series/123\n";
+        assert_eq!(
+            parse(&mut playlist.as_slice()).err(),
+            Some(SafeFailure::NoPlayableChannels)
+        );
+    }
+
+    #[test]
+    fn malformed_entries_are_validated_and_numbered_in_playlist_order() {
+        for (tail, reason) in [
+            (
+                "#EXTINF:invalid group-title=\"(VOD)\",Movie\nhttps://fixture.invalid/movie/2\n",
+                M3uFailureKind::MalformedMetadata,
+            ),
+            (
+                "#EXTINF:-1 group-title=\"(VOD)\",Movie\nftp://fixture.invalid/movie/2\n",
+                M3uFailureKind::UnsupportedPlaybackSource,
+            ),
+            (
+                "#EXTINF:-1 group-title=\"(VOD)\",Movie\n",
+                M3uFailureKind::IncompleteEntry,
+            ),
+            (
+                "https://fixture.invalid/movie/2\n",
+                M3uFailureKind::UnexpectedLocation,
+            ),
+        ] {
+            let playlist =
+                format!("#EXTM3U\n#EXTINF:-1,Movie\nhttps://fixture.invalid/movie/1\n{tail}");
+            assert_eq!(
+                parse(&mut playlist.as_bytes()).err(),
+                Some(SafeFailure::InvalidFormat {
+                    entry: Some(2),
+                    reason
+                })
+            );
+        }
+    }
 }

@@ -5,11 +5,11 @@ use gpui::{
     prelude::*, px, rgb, rgba,
 };
 use sparrow_guide_ui::{
-    ClipboardTarget, DraftStatus, Edit, FieldEdit, FormFactor, GuideHost, HostEvent, SourceEvent,
-    TextEditorHost,
+    ClipboardTarget, DraftStatus, Edit, EditorKey, FieldEdit, FormFactor, GuideHost, HostEvent,
+    SourceEvent, TextEditorHost,
 };
 use sparrow_installed_catalog::SavedSourceLocations;
-use sparrow_tv_guide::setup::SetupField;
+use sparrow_tv_guide::{guide_screen::ScreenKey, now_focus::Direction, setup::SetupField};
 use tokio::sync::mpsc;
 
 pub(super) struct DesktopHost {
@@ -177,13 +177,95 @@ impl DesktopHost {
                 );
             }
         } else {
-            let edit = if committed {
-                Edit::Committed(text)
-            } else {
-                Edit::Cancelled
-            };
-            self.send(HostEvent::Edited { generation, edit });
+            self.send(HostEvent::Edited {
+                generation,
+                edit: Edit::Cancelled,
+            });
         }
+    }
+
+    fn edit_key(
+        &self,
+        event: &KeyDownEvent,
+        read_clipboard: impl FnOnce() -> Option<String>,
+    ) -> EditorKey {
+        let key = event.keystroke.key.as_str();
+        let modifiers = event.keystroke.modifiers;
+        let mut slot = self.editor.borrow_mut();
+        let Some(editor) = slot.as_mut() else {
+            return EditorKey::Ignored;
+        };
+        let query = editor.source.is_none();
+
+        match key {
+            "escape" | "enter" if !event.is_held && !query => {
+                if let Some(editor) = slot.take() {
+                    drop(slot);
+                    self.finish_edit(editor, key == "enter");
+                }
+                return EditorKey::Handled;
+            }
+            "escape" if !event.is_held => {
+                let generation = editor.generation;
+                slot.take();
+                return EditorKey::QueryCancelled(generation);
+            }
+            "enter" | "up" | "down"
+                if query
+                    && !event.is_held
+                    && !modifiers.control
+                    && !modifiers.platform
+                    && !modifiers.alt =>
+            {
+                let generation = editor.generation;
+                let text = std::mem::take(&mut editor.text);
+                slot.take();
+                let key = match key {
+                    "up" => ScreenKey::Arrow(Direction::Up),
+                    "down" => ScreenKey::Arrow(Direction::Down),
+                    _ => ScreenKey::Activate,
+                };
+                return EditorKey::QueryCommitted {
+                    generation,
+                    text,
+                    key,
+                };
+            }
+            "a" | "f" | "k"
+                if modifiers.control
+                    && (key == "a" || (query && !modifiers.platform && !modifiers.alt)) =>
+            {
+                editor.all_selected = !editor.text.is_empty();
+                return EditorKey::Handled;
+            }
+            "left" | "right" | "home" | "end" => {
+                editor.move_caret(key);
+                return EditorKey::Handled;
+            }
+            "backspace" | "delete" => editor.delete(key == "delete"),
+            "v" if modifiers.control => {
+                let Some(text) = read_clipboard() else {
+                    return EditorKey::Handled;
+                };
+                editor.insert(&text);
+            }
+            _ if modifiers.control || modifiers.platform || modifiers.alt => {
+                return EditorKey::Handled;
+            }
+            _ => {
+                let Some(text) = event.keystroke.key_char.as_deref() else {
+                    return EditorKey::Handled;
+                };
+                editor.insert(text);
+            }
+        }
+        if query {
+            self.send(HostEvent::Edited {
+                generation: editor.generation,
+                edit: Edit::Changed(editor.text.clone()),
+            });
+        }
+        EditorKey::Handled
     }
 }
 
@@ -321,52 +403,10 @@ impl TextEditorHost for DesktopHost {
         }
     }
 
-    fn editor_key(&self, event: &KeyDownEvent, cx: &mut App) -> bool {
-        let key = event.keystroke.key.as_str();
-        let modifiers = event.keystroke.modifiers;
-        let mut slot = self.editor.borrow_mut();
-        let Some(editor) = slot.as_mut() else {
-            return false;
-        };
-
-        match key {
-            "enter" | "escape" if !event.is_held => {
-                if let Some(editor) = slot.take() {
-                    drop(slot);
-                    self.finish_edit(editor, key == "enter");
-                }
-                return true;
-            }
-            "a" if modifiers.control => {
-                editor.all_selected = !editor.text.is_empty();
-                return true;
-            }
-            "left" | "right" | "home" | "end" => {
-                editor.move_caret(key);
-                return true;
-            }
-            "backspace" | "delete" => editor.delete(key == "delete"),
-            "v" if modifiers.control => {
-                let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
-                    return true;
-                };
-                editor.insert(&text);
-            }
-            _ if modifiers.control || modifiers.platform || modifiers.alt => return true,
-            _ => {
-                let Some(text) = event.keystroke.key_char.as_deref() else {
-                    return true;
-                };
-                editor.insert(text);
-            }
-        }
-        if editor.source.is_none() {
-            self.send(HostEvent::Edited {
-                generation: editor.generation,
-                edit: Edit::Changed(editor.text.clone()),
-            });
-        }
-        true
+    fn editor_key(&self, event: &KeyDownEvent, cx: &mut App) -> EditorKey {
+        self.edit_key(event, || {
+            cx.read_from_clipboard().and_then(|item| item.text())
+        })
     }
 
     fn editor_overlay(&self, window: &Window) -> Option<Div> {
@@ -430,7 +470,105 @@ impl TextEditorHost for DesktopHost {
 
 #[cfg(test)]
 mod tests {
-    use super::{Editor, SetupField};
+    use gpui::{Keystroke, Modifiers};
+
+    use super::*;
+
+    fn key(key: &str, control: bool) -> KeyDownEvent {
+        KeyDownEvent {
+            keystroke: Keystroke {
+                key: key.into(),
+                key_char: (key.len() == 1).then(|| key.into()),
+                modifiers: Modifiers {
+                    control,
+                    ..Modifiers::default()
+                },
+            },
+            is_held: false,
+            prefer_character_input: false,
+        }
+    }
+
+    #[test]
+    fn query_arrows_and_enter_commit_the_text_and_return_the_navigation_key() {
+        let (send, _) = mpsc::unbounded_channel();
+        let host = DesktopHost::new(send);
+        for (name, expected) in [
+            ("down", ScreenKey::Arrow(Direction::Down)),
+            ("up", ScreenKey::Arrow(Direction::Up)),
+            ("enter", ScreenKey::Activate),
+        ] {
+            assert!(host.open_query(1, [0; 4], "query"));
+            let result = host.edit_key(&key(name, false), || None);
+            assert!(
+                matches!(result, EditorKey::QueryCommitted { generation: 1, text, key } if text == "query" && key == expected)
+            );
+            assert!(host.editor.borrow().is_none());
+        }
+    }
+
+    #[test]
+    fn escape_dismisses_the_query_layer_but_only_cancels_a_source_field() {
+        let (send, mut events) = mpsc::unbounded_channel();
+        let host = DesktopHost::new(send);
+        let escape = key("escape", false);
+        assert!(host.open_query(1, [0; 4], "query"));
+        assert!(matches!(
+            host.edit_key(&escape, || None),
+            EditorKey::QueryCancelled(1)
+        ));
+        assert!(host.editor.borrow().is_none());
+        assert!(events.try_recv().is_err());
+
+        assert!(host.begin_draft(2, None));
+        assert!(matches!(
+            events.try_recv(),
+            Ok(HostEvent::Source {
+                update: SourceEvent::Draft(DraftStatus::Opened),
+                ..
+            })
+        ));
+        assert!(host.edit_field(2, 3, SetupField::M3u, [0; 4]));
+        assert!(matches!(
+            host.edit_key(&escape, || None),
+            EditorKey::Handled
+        ));
+        assert!(matches!(
+            events.try_recv(),
+            Ok(HostEvent::Source {
+                session: 2,
+                update: SourceEvent::Field {
+                    generation: 3,
+                    field: SetupField::M3u,
+                    edit: FieldEdit::Cancelled,
+                    ..
+                },
+            })
+        ));
+        assert!(host.editor.borrow().is_none());
+        assert!(host.draft.borrow().is_some());
+    }
+
+    #[test]
+    fn search_shortcuts_select_query_text_for_replacement() {
+        let (send, mut events) = mpsc::unbounded_channel();
+        let host = DesktopHost::new(send);
+        for shortcut in ["f", "k"] {
+            assert!(host.open_query(1, [0; 4], "old"));
+            assert!(matches!(
+                host.edit_key(&key(shortcut, true), || None),
+                EditorKey::Handled
+            ));
+            assert!(events.try_recv().is_err());
+            assert!(matches!(
+                host.edit_key(&key("x", false), || None),
+                EditorKey::Handled
+            ));
+            assert!(
+                matches!(events.try_recv(), Ok(HostEvent::Edited { edit: Edit::Changed(text), .. }) if text == "x")
+            );
+        }
+    }
 
     #[test]
     fn caret_edits_insert_and_delete_around_the_caret() {

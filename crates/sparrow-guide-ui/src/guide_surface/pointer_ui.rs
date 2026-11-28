@@ -19,7 +19,7 @@ use sparrow_tv_guide::{
 use super::{GuideSurface, TextTarget};
 use crate::{
     FormFactor,
-    guide_view::{self, Layout, PocketMode, PocketTool, Pointer, SourceFocus},
+    guide_view::{self, Layout, PocketMode, PocketTool, Pointer, SearchHit, SourceFocus},
     search_flow::SearchFocus,
 };
 
@@ -27,6 +27,10 @@ use crate::{
 const LINE: f32 = 44.;
 /// Pointer travel, in logical pixels, that counts as moving over the picture.
 const REVEAL_TRAVEL: f32 = 3.;
+
+fn search_shortcut(key: &str, control: bool) -> bool {
+    key == "/" || (control && matches!(key, "f" | "k"))
+}
 
 /// Something a pointer press can act on.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -161,8 +165,11 @@ impl GuideSurface {
         }
         if self.search.state().view() != SearchView::Closed {
             let panel = self.search_panel_inputs(None);
-            return guide_view::search_hit(sheet, &panel, &self.search_viewport, sheet_point)
-                .map(HitTarget::Search);
+            return match guide_view::search_hit(sheet, &panel, &self.search_viewport, sheet_point) {
+                SearchHit::Control(focus) => Some(HitTarget::Search(focus)),
+                SearchHit::Empty => None,
+                SearchHit::Scrim => Some(HitTarget::Scrim),
+            };
         }
         let docked = self.playback.docked() || self.playback.fullscreen();
         let compact = layout.compact_pocket();
@@ -278,6 +285,9 @@ impl GuideSurface {
         self.cancel_arrival(cx);
         let target = self.hit_test(window, event.position);
         let double = self.pointer.double_press(target, event.click_count);
+        if target.is_none() && self.search.state().view() != SearchView::Closed {
+            return;
+        }
         let editing = match self.active_editor.map(|(_, target)| target) {
             Some(TextTarget::Search) => Some(HitTarget::Search(SearchFocus::Field)),
             Some(TextTarget::GroupFilter) => Some(HitTarget::Chooser(GroupChooserFocus::Filter)),
@@ -293,9 +303,13 @@ impl GuideSurface {
         if editing.is_some() && editing == target {
             return;
         }
-        // A press anywhere else drops the open editor without committing it.
-        if self.active_editor.take().is_some() || self.source_editor_open() {
-            self.host.cancel_editor();
+        // A control press ends editing before activation. Scrims close the layer
+        // and let its dismissal retire the editor.
+        if target != Some(HitTarget::Scrim) {
+            self.retire_query_editor();
+            if self.source_editor_open() {
+                self.host.cancel_editor();
+            }
         }
         let Some(target) = target else {
             cx.notify();
@@ -442,8 +456,7 @@ impl GuideSurface {
                 }
             }
             Some(HitTarget::Search(_)) | None
-                if matches!(target, Some(HitTarget::Search(_)))
-                    || (self.search.state().view() == SearchView::Desk && in_sheet) =>
+                if self.search.state().view() != SearchView::Closed =>
             {
                 let view = self.search.state().view();
                 let pitch = if view == SearchView::Desk { 82. } else { 58. };
@@ -539,7 +552,7 @@ impl GuideSurface {
         }
         let modifiers = event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
-        let control_key = matches!(key, "f" | "up" | "down");
+        let control_key = matches!(key, "f" | "k" | "up" | "down");
         if modifiers.alt || modifiers.platform || (modifiers.control && !control_key) {
             return false;
         }
@@ -550,9 +563,13 @@ impl GuideSurface {
             "escape" if !event.is_held => {
                 self.close_top_layer(window, cx);
             }
-            "/" | "f" if key == "/" || modifiers.control => {
+            key if search_shortcut(key, modifiers.control) => {
                 self.playback_set_fullscreen(false);
-                if !sheet
+                if self.search.state().view() != SearchView::Closed {
+                    self.search_viewport.follow_focus();
+                    let effect = self.search.activate(SearchFocus::Field);
+                    self.search_effect(effect, Some((window, false)), cx);
+                } else if !sheet
                     && self
                         .screen
                         .set_focus(ScreenFocus::Toolbar(ToolbarFocus::Search))
@@ -707,6 +724,15 @@ impl GuideSurface {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_search_shortcuts_require_control_for_letter_keys() {
+        assert!(search_shortcut("/", false));
+        for key in ["f", "k"] {
+            assert!(search_shortcut(key, true));
+            assert!(!search_shortcut(key, false));
+        }
+    }
 
     #[test]
     fn a_double_click_on_the_dock_keeps_the_picture_it_opened_fullscreen() {
