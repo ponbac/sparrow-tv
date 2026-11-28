@@ -1,17 +1,21 @@
 //! Process lifetime for Android TV playback and its Media3 bridge.
 
-use std::sync::{Arc, OnceLock};
+use std::{
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
+use sparrow_guide_ui::PlaybackHost;
 use sparrow_installed_catalog::InstalledCatalog;
 use sparrow_installed_playback::{
     PlaybackManager,
-    android::AndroidMedia3Reader,
+    android::{AndroidMedia3Reader, AndroidPlaybackViewport},
     tv::{TvPlaybackCommand, TvPlaybackPhase, TvPlaybackRunner},
 };
 use sparrow_source_http::HttpPlaybackAccess;
 use tokio::runtime::Handle;
 
-use crate::android_player::AndroidPlayer;
+use crate::android_player::{self, AndroidPlayer};
 
 static PLAYBACK: OnceLock<Playback> = OnceLock::new();
 
@@ -23,7 +27,61 @@ pub(super) struct Playback {
     _manager: Arc<PlaybackManager>,
 }
 
-pub(super) fn start(catalog: &InstalledCatalog) {
+pub(super) struct ShieldPlayback;
+
+impl PlaybackHost for ShieldPlayback {
+    fn start(&self, catalog: &InstalledCatalog) -> Option<TvPlaybackRunner> {
+        start(catalog);
+        get().map(|playback| playback.runner.clone())
+    }
+
+    fn host_active(&self, id: u64, active: bool) {
+        if let Some(playback) = get() {
+            playback.player.host_active(id, active);
+        }
+    }
+
+    fn host_destroyed(&self, id: u64) {
+        if let Some(playback) = get() {
+            playback.player.host_destroyed(id);
+        }
+    }
+
+    fn set_picture_bounds(&self, id: u64, docked: Option<[i32; 4]>, fullscreen: Option<[i32; 4]>) {
+        let bounds = |[left, top, width, height]: [i32; 4], fullscreen| {
+            AndroidPlaybackViewport::parse(
+                left.max(0) as u32,
+                top.max(0) as u32,
+                width.max(0) as u32,
+                height.max(0) as u32,
+                fullscreen,
+            )
+            .ok()
+        };
+        if let Some(playback) = get() {
+            playback.runner.set_viewports(
+                id,
+                docked.and_then(|rect| bounds(rect, false)),
+                fullscreen.and_then(|rect| bounds(rect, true)),
+            );
+        }
+    }
+
+    fn set_ambient_sampling(&self, id: u64, epoch: u64) {
+        android_player::set_ambient_sampling(id, epoch);
+    }
+
+    fn capture_flight_still(&self, id: u64, request: u64, size: [u32; 2]) -> bool {
+        android_player::capture_flight_still(id, request, size);
+        true
+    }
+
+    fn picture_reveal_duration(&self) -> Duration {
+        crate::picture_reveal_duration()
+    }
+}
+
+fn start(catalog: &InstalledCatalog) {
     let core = catalog.core().clone();
     let Ok(access) = HttpPlaybackAccess::new() else {
         log::warn!("Shield playback transport was unavailable");
@@ -53,10 +111,6 @@ pub(super) fn start(catalog: &InstalledCatalog) {
 
 pub(super) fn get() -> Option<&'static Playback> {
     PLAYBACK.get()
-}
-
-pub(super) fn send(command: TvPlaybackCommand) -> bool {
-    get().is_some_and(|playback| playback.runner.commands().try_send(command).is_ok())
 }
 
 pub(super) fn diagnostics() -> (&'static str, Option<u32>, bool, u64) {

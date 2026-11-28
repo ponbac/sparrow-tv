@@ -8,6 +8,8 @@ pub struct BoardView {
     pub(crate) selection: u64,
     pub(crate) families: usize,
     pub(crate) page: PageStatus,
+    /// Families laid out on each board line.
+    pub(crate) columns: usize,
 }
 
 impl BoardView {
@@ -36,7 +38,7 @@ pub(crate) enum RowMove<A> {
     LoadMore,
 }
 
-pub(crate) struct DownSteps<const COLUMNS: usize, F, A> {
+pub(crate) struct DownSteps<F, A> {
     pending: Option<Pending<F, A>>,
 }
 
@@ -48,13 +50,13 @@ struct Pending<F, A> {
     anchor: A,
 }
 
-impl<const COLUMNS: usize, F, A> Default for DownSteps<COLUMNS, F, A> {
+impl<F, A> Default for DownSteps<F, A> {
     fn default() -> Self {
         Self { pending: None }
     }
 }
 
-impl<const COLUMNS: usize, F: Copy + Eq, A> DownSteps<COLUMNS, F, A> {
+impl<F: Copy + Eq, A> DownSteps<F, A> {
     pub(crate) fn down(
         &mut self,
         origin: F,
@@ -118,7 +120,8 @@ impl<const COLUMNS: usize, F: Copy + Eq, A> DownSteps<COLUMNS, F, A> {
     }
 
     fn resolve(&mut self, pending: Pending<F, A>, board: BoardView) -> RowMove<A> {
-        let target = pending.family.saturating_add(pending.steps * COLUMNS);
+        let columns = board.columns.max(1);
+        let target = pending.family.saturating_add(pending.steps * columns);
         if target < board.families {
             return RowMove::Focus(target, pending.anchor);
         }
@@ -132,9 +135,9 @@ impl<const COLUMNS: usize, F: Copy + Eq, A> DownSteps<COLUMNS, F, A> {
             }
             PageStatus::Complete | PageStatus::Failed | PageStatus::ReconcileGeneration => {
                 let last = board.families - 1;
-                let last_line = last / COLUMNS;
-                if last_line > pending.family / COLUMNS {
-                    let target = (last_line * COLUMNS + pending.family % COLUMNS).min(last);
+                let last_line = last / columns;
+                if last_line > pending.family / columns {
+                    let target = (last_line * columns + pending.family % columns).min(last);
                     RowMove::Focus(target, pending.anchor)
                 } else if board.failed() {
                     RowMove::Retry

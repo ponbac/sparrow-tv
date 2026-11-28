@@ -38,6 +38,8 @@ jobs:
             clang \
             libssl-dev \
             libwebkit2gtk-4.1-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
             lld \
             pkg-config
 

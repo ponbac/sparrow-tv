@@ -5,8 +5,6 @@ use crate::{
     board_focus::{DownSteps, RowMove},
 };
 
-const COLUMNS: usize = 3;
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Direction {
     Up,
@@ -43,7 +41,7 @@ pub enum NowMove {
 
 #[derive(Default)]
 pub struct NowNavigation {
-    down: DownSteps<COLUMNS, NowFocus, ()>,
+    down: DownSteps<NowFocus, ()>,
 }
 
 impl NowNavigation {
@@ -74,10 +72,11 @@ impl NowNavigation {
             return NowMove::Stay;
         }
 
-        let column = family % COLUMNS;
+        let columns = board.columns.max(1);
+        let column = family % columns;
         match direction {
-            Direction::Up if family < COLUMNS => NowMove::ToGroupLane,
-            Direction::Up => NowMove::Focus(NowFocus::Channel(family - COLUMNS)),
+            Direction::Up if family < columns => NowMove::ToGroupLane,
+            Direction::Up => NowMove::Focus(NowFocus::Channel(family - columns)),
             Direction::Left => match focus {
                 NowFocus::Variant { chip: 0, .. } => NowMove::Focus(NowFocus::Channel(family)),
                 NowFocus::Variant { chip, .. } => NowMove::Focus(NowFocus::Variant {
@@ -97,7 +96,7 @@ impl NowNavigation {
                         family,
                         chip: next_chip,
                     })
-                } else if column + 1 < COLUMNS && family + 1 < board.families {
+                } else if column + 1 < columns && family + 1 < board.families {
                     NowMove::Focus(NowFocus::Channel(family + 1))
                 } else {
                     NowMove::Stay
@@ -134,10 +133,15 @@ mod tests {
     use crate::PageStatus;
 
     fn board(families: usize, page: PageStatus) -> BoardView {
+        grid(families, page, 3)
+    }
+
+    fn grid(families: usize, page: PageStatus, columns: usize) -> BoardView {
         BoardView {
             selection: 0,
             families,
             page,
+            columns,
         }
     }
 
@@ -189,6 +193,32 @@ mod tests {
             ),
             NowMove::ToGroupLane,
         );
+    }
+
+    #[test]
+    fn desktop_columns_set_the_line_length() {
+        let mut navigation = NowNavigation::default();
+        for columns in [1, 2, 4, 6] {
+            let board = grid(13, PageStatus::Complete, columns);
+            let mut press = |focus, direction| navigation.press(focus, direction, 0, board);
+            assert_eq!(
+                press(NowFocus::Channel(0), Direction::Down),
+                NowMove::Focus(NowFocus::Channel(columns)),
+            );
+            assert_eq!(
+                press(NowFocus::Channel(columns), Direction::Up),
+                NowMove::Focus(NowFocus::Channel(0)),
+            );
+            let last_in_line = columns - 1;
+            assert_eq!(
+                press(NowFocus::Channel(last_in_line), Direction::Right),
+                NowMove::Stay,
+            );
+            assert_eq!(
+                press(NowFocus::Channel(last_in_line), Direction::Up),
+                NowMove::ToGroupLane,
+            );
+        }
     }
 
     #[test]

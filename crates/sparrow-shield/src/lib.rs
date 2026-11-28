@@ -3,22 +3,17 @@
 
 mod activity;
 mod android_player;
-mod catalog;
-mod channel_icons;
-mod guide_fonts;
-mod guide_surface;
-mod guide_view;
 mod playback;
-mod search_flow;
 
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Mutex, Once, OnceLock},
+    rc::Rc,
+    sync::{Arc, LazyLock, Mutex, Once, OnceLock},
     time::Instant,
 };
 
-use gpui::{AnyWindowHandle, Global, QuitMode};
+use gpui::{AnyWindowHandle, App, AppContext, Global, QuitMode, WindowOptions};
 use gpui_mobile::android::{host, jni as mobile_jni};
 use jni::{
     EnvUnowned,
@@ -27,14 +22,20 @@ use jni::{
     sys::{jboolean, jstring},
 };
 use ndk::native_window::NativeWindow;
+use sparrow_guide_ui::{
+    Catalog, DraftStatus, Edit, FieldEdit, GuideSurface, HostEvent, SourceEvent,
+};
 use tokio::sync::mpsc;
+
+static CATALOG: LazyLock<Arc<Catalog>> =
+    LazyLock::new(|| Arc::new(Catalog::new(Some(Arc::new(playback::ShieldPlayback)))));
 
 static INITIALIZE_LOGS: Once = Once::new();
 static START_RENDERER: OnceLock<mpsc::UnboundedSender<host::HostId>> = OnceLock::new();
 
 enum ActivityUpdate {
     AnimatorScale(f32),
-    Window(host::HostId, activity::Event),
+    Window(host::HostId, HostEvent),
 }
 
 static ACTIVITY_EVENTS: OnceLock<mpsc::UnboundedSender<ActivityUpdate>> = OnceLock::new();
@@ -74,6 +75,7 @@ fn init_logging() {
                     android_logger::FilterBuilder::new()
                         .filter_level(log::LevelFilter::Off)
                         .filter_module("sparrow_shield", log::LevelFilter::Warn)
+                        .filter_module("sparrow_guide_ui", log::LevelFilter::Warn)
                         .build(),
                 )
                 .with_tag("SparrowShield"),
@@ -98,6 +100,28 @@ fn init_logging() {
     });
 }
 
+fn open_guide(id: u64, cx: &mut App) -> Option<AnyWindowHandle> {
+    match cx.open_window(WindowOptions::default(), |window, cx| {
+        DIAGNOSTICS.lock().unwrap().software =
+            window.gpu_specs().map(|specs| specs.is_software_emulated);
+        cx.new(|cx| {
+            GuideSurface::new(
+                Rc::new(activity::ShieldActivity(id)),
+                Arc::clone(&CATALOG),
+                window,
+                cx,
+            )
+        })
+    }) {
+        Ok(window) => Some(window.into()),
+        Err(_) => {
+            DIAGNOSTICS.lock().unwrap().graphics_failed = true;
+            log::error!("Sparrow Shield could not open its window");
+            None
+        }
+    }
+}
+
 fn start_renderer() {
     START_RENDERER.get_or_init(|| {
         let (closed, mut destroyed) = mpsc::unbounded_channel();
@@ -112,7 +136,7 @@ fn start_renderer() {
             }
         });
         host::on_open_window(|id, cx| {
-            if let Some(window) = guide_surface::open(id, cx) {
+            if let Some(window) = open_guide(id, cx) {
                 cx.global_mut::<ActivityWindows>().0.insert(id, window);
                 activity::enable_key_routing(id);
                 let mut diagnostics = DIAGNOSTICS.lock().unwrap();
@@ -127,7 +151,7 @@ fn start_renderer() {
         host::start(move |cx| {
             // Android can destroy the last Activity and relaunch in this process.
             cx.set_quit_mode(QuitMode::Explicit);
-            guide_fonts::register(cx);
+            sparrow_guide_ui::register_fonts(cx);
             cx.set_global(ActivityWindows::default());
             cx.spawn(async move |cx| {
                 while let Some(id) = destroyed.recv().await {
@@ -149,13 +173,14 @@ fn start_renderer() {
                             cx.set_reduce_motion(scale == 0.);
                         }),
                         ActivityUpdate::Window(id, event) => cx.update(|cx| {
-                            let window =
-                                cx.global::<ActivityWindows>().0.get(&id).and_then(
-                                    AnyWindowHandle::downcast::<guide_surface::GuideSurface>,
-                                );
+                            let window = cx
+                                .global::<ActivityWindows>()
+                                .0
+                                .get(&id)
+                                .and_then(AnyWindowHandle::downcast::<GuideSurface>);
                             if let Some(window) = window {
                                 let _ = window.update(cx, |view, window, cx| {
-                                    view.activity_event(event, window, cx);
+                                    view.host_event(event, window, cx);
                                 });
                             }
                         }),
@@ -191,10 +216,9 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeStart
         })
         .resolve::<LogErrorAndDefault>();
     if let Some(data_root) = data_root {
-        channel_icons::set_cache_dir(&data_root.join("cache"));
-        catalog::start(data_root);
+        CATALOG.start(data_root);
     } else {
-        catalog::set_start_failed();
+        CATALOG.set_start_failed();
     }
     start_renderer();
 }
@@ -206,7 +230,7 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeCatal
     id: i64,
     active: jboolean,
 ) {
-    catalog::set_active(id as u64, active);
+    CATALOG.set_active(id as u64, active);
 }
 
 #[unsafe(no_mangle)]
@@ -271,7 +295,7 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeDestr
     finishing: jboolean,
 ) {
     let id = id as host::HostId;
-    catalog::host_destroyed(id, finishing);
+    CATALOG.host_destroyed(id, finishing);
     activity::unregister(id);
     host::host_destroyed(id);
     if let Some(closed) = START_RENDERER.get() {
@@ -286,10 +310,10 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldPlayback_nativePictu
     id: i64,
     bottom: i32,
 ) {
-    enqueue_activity(id, activity::Event::PictureBottom(bottom));
+    enqueue_activity(id, HostEvent::PictureBottom(bottom));
 }
 
-fn enqueue_activity(id: i64, event: activity::Event) {
+fn enqueue_activity(id: i64, event: HostEvent) {
     if let Some(events) = ACTIVITY_EVENTS.get() {
         let _ = events.send(ActivityUpdate::Window(id as u64, event));
     }
@@ -323,7 +347,7 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativePrese
     _: JObject,
     id: i64,
 ) {
-    enqueue_activity(id, activity::Event::Presented);
+    enqueue_activity(id, HostEvent::Presented);
 }
 
 #[unsafe(no_mangle)]
@@ -332,7 +356,7 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeBack(
     _: JObject,
     id: i64,
 ) {
-    enqueue_activity(id, activity::Event::Back);
+    enqueue_activity(id, HostEvent::Back);
 }
 
 #[unsafe(no_mangle)]
@@ -348,7 +372,13 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeHostK
     const ALT_CTRL_META: i32 = 0x02 | 0x1000 | 0x10000;
     let guide_shortcut = matches!(code, 19..=22) && modifiers & ALT_CTRL_META != 0;
     if action == 0 && !guide_shortcut {
-        enqueue_activity(id, activity::Event::Key { code, repeat });
+        enqueue_activity(
+            id,
+            HostEvent::Key {
+                key: activity::host_key(code),
+                held: repeat > 0,
+            },
+        );
     }
 }
 
@@ -363,15 +393,15 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeEdito
 ) {
     env.with_env_no_catch(|env| -> Result<(), Error> {
         let edit = match event {
-            0 => activity::Edit::Changed(text.try_to_string(env)?),
-            1 => activity::Edit::Committed(text.try_to_string(env)?),
-            2 => activity::Edit::Cancelled,
-            3 => activity::Edit::Rejected,
+            0 => Edit::Changed(text.try_to_string(env)?),
+            1 => Edit::Committed(text.try_to_string(env)?),
+            2 => Edit::Cancelled,
+            3 => Edit::Rejected,
             _ => return Ok(()),
         };
         enqueue_activity(
             id,
-            activity::Event::Edited {
+            HostEvent::Edited {
                 generation: generation as u64,
                 edit,
             },
@@ -390,14 +420,19 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeSourc
     attempt: i64,
     status: i32,
 ) {
+    let status = match (attempt, status) {
+        (0, 0) => DraftStatus::Opened,
+        (0, 1) => DraftStatus::OpenRejected,
+        (_, 2) => DraftStatus::SaveRejected {
+            attempt: attempt as u64,
+        },
+        _ => return,
+    };
     enqueue_activity(
         id,
-        activity::Event::Source {
+        HostEvent::Source {
             session: session as u64,
-            update: activity::SourceEvent::DraftStatus {
-                attempt: attempt as u64,
-                status,
-            },
+            update: SourceEvent::Draft(status),
         },
     );
 }
@@ -413,9 +448,9 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeSourc
 ) {
     enqueue_activity(
         id,
-        activity::Event::Source {
+        HostEvent::Source {
             session: session as u64,
-            update: activity::SourceEvent::Copied {
+            update: SourceEvent::Copied {
                 attempt: attempt as u64,
                 copied,
             },
@@ -433,7 +468,7 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativePlayb
 ) {
     enqueue_activity(
         id,
-        activity::Event::PlaybackDiagnosticsCopied {
+        HostEvent::PlaybackDiagnosticsCopied {
             attempt: attempt as u64,
             copied,
         },
@@ -451,14 +486,24 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeSourc
     event: i32,
     has_text: jboolean,
 ) {
+    let Some(field) = activity::setup_field(field) else {
+        return;
+    };
+    let edit = match event {
+        1 => FieldEdit::Committed,
+        2 => FieldEdit::Cancelled,
+        3 => FieldEdit::Rejected,
+        4 => FieldEdit::Cleared,
+        _ => return,
+    };
     enqueue_activity(
         id,
-        activity::Event::Source {
+        HostEvent::Source {
             session: session as u64,
-            update: activity::SourceEvent::Field {
+            update: SourceEvent::Field {
                 generation: generation as u64,
                 field,
-                event,
+                edit,
                 has_text,
             },
         },
@@ -486,9 +531,9 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeSaveS
         };
         enqueue_activity(
             id,
-            activity::Event::Source {
+            HostEvent::Source {
                 session: session as u64,
-                update: activity::SourceEvent::Submit {
+                update: SourceEvent::Submit {
                     attempt: attempt as u64,
                     m3u,
                     epg,
@@ -517,9 +562,8 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldActivity_nativeSnaps
     _: JObject,
 ) -> jstring {
     let renderer = *DIAGNOSTICS.lock().unwrap();
-    let (catalog, subscriptions) = catalog::diagnostics();
-    let guide = *guide_surface::GUIDE_DIAGNOSTICS.lock().unwrap();
-    let workflows = *guide_surface::WORKFLOW_DIAGNOSTICS.lock().unwrap();
+    let (catalog, subscriptions) = CATALOG.diagnostics();
+    let (guide, workflows) = CATALOG.guide_diagnostics();
     let (playback, playback_channel, fullscreen, decoded_frames) = playback::diagnostics();
     let snapshot = format!(
         "sparrow-shield-v3 phase={:?} generation_changes={} active={} refreshing={} https={:?} seed={:?} renderer={:?} graphics_failed={} software={:?} initial_window_ms={:?} gpui_windows={} windows_opened={} catalog_subscriptions={} mode={:?} focus={} channel={:?} group_index={:?} chip_index={:?} programme_index={:?} pan_minutes={:?} first_row={} scroll_offset_units={} loaded_families={} page_status={:?} search={:?} channel_results={} programme_results={} hidden_groups={} groups_open={} sources_open={} editor_open={} setup={} setup_focus={} playback={} playback_channel={:?} fullscreen={} decoded_frames={}",
@@ -572,7 +616,16 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_FixtureReceiver_nativeComm
     command: i32,
 ) -> jboolean {
     #[cfg(feature = "fixture")]
-    return catalog::fixture_command(command);
+    return match command {
+        1 => CATALOG
+            .seed_fixture(
+                "http://127.0.0.1:18108/catalog.m3u".into(),
+                "http://127.0.0.1:18108/guide.xml".into(),
+            )
+            .is_some(),
+        2 => CATALOG.probe_https("https://example.com/".into()),
+        _ => false,
+    };
     #[cfg(not(feature = "fixture"))]
     {
         let _ = command;

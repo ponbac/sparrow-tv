@@ -8,8 +8,8 @@ use sparrow_tv_guide::{
     GuidePageRequest, GuideWindow, PageStatus, PageUpdate, VariantPreferences,
     group_chooser::{GroupChooserFocus, GroupChooserIntent, GroupRosterCounts},
     guide_screen::{
-        GroupVisibilityChange, GuideMode, GuideRead, GuideScreen, LaneFocus, ScreenAction,
-        ScreenFocus, ScreenKey, ScreenNotice, ToolbarFocus,
+        BoardMetrics, GroupVisibilityChange, GuideMode, GuideRead, GuideScreen, LaneFocus,
+        ScreenAction, ScreenFocus, ScreenKey, ScreenNotice, ToolbarFocus,
     },
     now_focus::{Direction, NowFocus},
     timeline_focus::TimelineFocus,
@@ -19,7 +19,7 @@ use sparrow_tv_guide::{
 async fn focus_reveals_only_the_pixels_needed_to_clear_the_bottom_margin() {
     let fixture = support::open(catalog(30), None).await;
     let mut screen = open_screen(fixture.core(), HashSet::new());
-    screen.set_surface_height(1080.);
+    screen.set_board_metrics(BoardMetrics::tv(1080.));
 
     for _ in 0..4 {
         arrow(&mut screen, Direction::Down);
@@ -43,7 +43,7 @@ async fn playback_focus_reveals_the_exact_family_and_preserves_its_fullscreen_or
     );
     let fixture = support::open(m3u, None).await;
     let mut screen = open_screen(fixture.core(), HashSet::new());
-    screen.set_surface_height(1080.);
+    screen.set_board_metrics(BoardMetrics::tv(1080.));
     let family = 29;
     let playing = screen.families()[family].variants()[1]
         .channel()
@@ -74,7 +74,7 @@ async fn playback_focus_reveals_the_exact_family_and_preserves_its_fullscreen_or
 async fn near_tail_prefetch_and_held_down_keep_navigation_and_viewport_in_sync() {
     let fixture = support::open(catalog(160), None).await;
     let mut screen = open_screen(fixture.core(), HashSet::new());
-    screen.set_surface_height(962.);
+    screen.set_board_metrics(BoardMetrics::tv(962.));
     assert_eq!(screen.families().len(), 40);
     assert_eq!(screen.focus(), channel(0));
 
@@ -99,6 +99,79 @@ async fn near_tail_prefetch_and_held_down_keep_navigation_and_viewport_in_sync()
     assert_eq!(screen.first_visible_row(), 18);
     assert_eq!(screen.visible_families(2), 48..75);
     assert!(screen.take_reads().is_empty());
+}
+
+fn desktop_metrics(columns: usize, surface_height: f32) -> BoardMetrics {
+    BoardMetrics {
+        now: sparrow_tv_guide::guide_screen::BoardGeometry {
+            top: 442.,
+            columns,
+            ..BoardMetrics::TV_NOW
+        },
+        timeline: sparrow_tv_guide::guide_screen::BoardGeometry {
+            top: 364.,
+            ..BoardMetrics::TV_TIMELINE
+        },
+        surface_height,
+    }
+}
+
+#[tokio::test]
+async fn desktop_grids_step_focus_by_their_column_count() {
+    let fixture = support::open(catalog(30), None).await;
+    for columns in [2, 4] {
+        let mut screen = open_screen(fixture.core(), HashSet::new());
+        screen.set_board_metrics(desktop_metrics(columns, 923.));
+        assert_eq!(screen.focus(), channel(0));
+        arrow(&mut screen, Direction::Down);
+        assert_eq!(screen.focus(), channel(columns));
+        for _ in 1..columns {
+            arrow(&mut screen, Direction::Right);
+        }
+        assert_eq!(screen.focus(), channel(2 * columns - 1));
+        arrow(&mut screen, Direction::Right);
+        assert_eq!(screen.focus(), channel(2 * columns - 1));
+        arrow(&mut screen, Direction::Up);
+        arrow(&mut screen, Direction::Up);
+        assert_eq!(screen.focus(), ScreenFocus::GroupLane(LaneFocus::All));
+        arrow(&mut screen, Direction::Down);
+        assert_eq!(screen.focus(), channel(0));
+        assert_eq!(screen.visible_families(0).end % columns, 0);
+    }
+}
+
+#[tokio::test]
+async fn pointer_scrolling_owns_the_offset_until_an_arrow_reveals_focus() {
+    let fixture = support::open(catalog(160), None).await;
+    let core = fixture.core();
+    let mut screen = open_screen(core, HashSet::new());
+    screen.set_board_metrics(BoardMetrics::tv(1080.));
+    assert_eq!(screen.families().len(), 40);
+
+    assert!(!screen.scroll_by(-50.));
+    assert!(screen.scroll_by(400.));
+    assert_eq!(screen.scroll_offset(), 400.);
+    assert_eq!(screen.focus(), channel(0));
+    assert!(screen.take_reads().is_empty());
+
+    // Clicking a card focuses it in place; the board keeps the pointer's offset.
+    assert!(screen.set_focus(channel(13)));
+    assert_eq!(screen.focus(), channel(13));
+    assert_eq!(screen.scroll_offset(), 400.);
+    assert!(!screen.set_focus(channel(40)));
+    assert!(!screen.set_focus(ScreenFocus::TimelineBoard(TimelineFocus::Channel(0))));
+
+    // Near the loaded end, scrolling requests the next page, and its arrival
+    // leaves the offset alone.
+    screen.scroll_by(10_000.);
+    let continuation = guide_request(&mut screen);
+    let bottom = screen.scroll_offset();
+    complete_guide(&mut screen, core, continuation);
+    assert_eq!(screen.scroll_offset(), bottom);
+
+    arrow(&mut screen, Direction::Down);
+    assert_eq!(screen.focus(), channel(16));
+    assert!(screen.visible_families(0).contains(&16));
 }
 
 #[tokio::test]
@@ -309,7 +382,7 @@ async fn preview_keeps_the_last_board_channel_until_the_group_excludes_it() {
 async fn retries_a_failed_read_and_reconciles_a_cursor_rejected_by_core() {
     let fixture = support::open(catalog(160), None).await;
     let mut screen = open_screen(fixture.core(), HashSet::new());
-    screen.set_surface_height(1080.);
+    screen.set_board_metrics(BoardMetrics::tv(1080.));
     for _ in 0..14 {
         arrow(&mut screen, Direction::Down);
     }
@@ -641,7 +714,7 @@ async fn timeline_and_now_preserve_scroll_and_use_the_target_board_rows() {
     let fixture = support::open(catalog(35), None).await;
     let core = fixture.core();
     let mut screen = open_screen(core, HashSet::new());
-    screen.set_surface_height(1080.);
+    screen.set_board_metrics(BoardMetrics::tv(1080.));
     open_timeline(&mut screen);
     finish_reads(&mut screen, core);
     arrow(&mut screen, Direction::Right);
@@ -698,7 +771,7 @@ async fn timeline_deferred_down_reaches_retry_then_settles_over_the_next_page() 
     let fixture = support::open(catalog(60), None).await;
     let core = fixture.core();
     let mut screen = open_screen(core, HashSet::new());
-    screen.set_surface_height(1080.);
+    screen.set_board_metrics(BoardMetrics::tv(1080.));
     open_timeline(&mut screen);
     finish_reads(&mut screen, core);
     arrow(&mut screen, Direction::Right);
@@ -776,7 +849,7 @@ https://fixture.invalid/next.ts
     let fixture = support::open(m3u, Some(epg)).await;
     let core = fixture.core();
     let mut screen = open_screen(core, HashSet::new());
-    screen.set_surface_height(1080.);
+    screen.set_board_metrics(BoardMetrics::tv(1080.));
     open_timeline(&mut screen);
     finish_reads(&mut screen, core);
     arrow(&mut screen, Direction::Right);

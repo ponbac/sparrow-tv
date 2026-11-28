@@ -5,6 +5,8 @@ members = [
   "crates/sparrow-channel-icons",
   "crates/sparrow-client-contract",
   "crates/sparrow-core",
+  "crates/sparrow-desktop",
+  "crates/sparrow-guide-ui",
   "crates/sparrow-installed-catalog",
   "crates/sparrow-installed-playback",
   "crates/sparrow-server",

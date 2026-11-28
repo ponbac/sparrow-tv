@@ -335,6 +335,17 @@ impl Timeline {
         Some((now - self.starts_at).as_seconds_f64() / (end - self.starts_at).as_seconds_f64())
     }
 
+    /// Moves the visible span by whole half hours, clamped to the Guide window.
+    pub fn pan(&mut self, half_hours: i64) {
+        let wanted = self
+            .starts_at
+            .checked_add_signed(TimeDelta::seconds(
+                half_hours.saturating_mul(HALF_HOUR_SECONDS),
+            ))
+            .unwrap_or(self.starts_at);
+        self.set_start(wanted);
+    }
+
     fn set_start(&mut self, wanted: DateTime<Utc>) {
         let latest = self.window.ends_at - TIMELINE_SPAN;
         self.starts_at = wanted.min(latest).max(self.window.starts_at);

@@ -216,7 +216,10 @@ pub(super) fn capture_flight_still(host: u64, request: u64, [width, height]: [u3
         Ok(())
     });
     if !called {
-        crate::enqueue_activity(host as i64, activity::Event::FlightStill(request, None));
+        crate::enqueue_activity(
+            host as i64,
+            sparrow_guide_ui::HostEvent::FlightStill(request, None),
+        );
     }
 }
 
@@ -238,7 +241,10 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldPlayback_nativeFligh
     } else {
         None
     };
-    crate::enqueue_activity(host, activity::Event::FlightStill(request as u64, frame));
+    crate::enqueue_activity(
+        host,
+        sparrow_guide_ui::HostEvent::FlightStill(request as u64, frame),
+    );
 }
 
 #[unsafe(no_mangle)]
@@ -253,7 +259,7 @@ pub extern "system" fn Java_xyz_ponbac_sparrow_shield_ShieldPlayback_nativeAmbie
 ) {
     crate::enqueue_activity(
         host,
-        activity::Event::Ambient {
+        sparrow_guide_ui::HostEvent::Ambient {
             epoch: epoch as u64,
             colors: [left, right, bottom],
         },

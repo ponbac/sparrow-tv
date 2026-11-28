@@ -7,7 +7,7 @@ and its ring sits right of centre. This sets Å's advance and left side bearing 
 those of its `A` component and centres the ring over `A`, as the default design
 does. Running it again leaves already repaired fonts unchanged.
 
-Usage: scripts/fonts/fix-saira-aring.py crates/sparrow-shield/assets/fonts/*.ttf
+Usage: scripts/fonts/fix-saira-aring.py crates/sparrow-guide-ui/assets/fonts/*.ttf
 """
 
 import sys

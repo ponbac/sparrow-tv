@@ -328,6 +328,16 @@ impl Setup {
         }
     }
 
+    /// Focuses a control under the pointer. Returns false unless the current
+    /// step shows it.
+    pub fn set_focus(&mut self, control: SetupControl, draft: DraftView) -> bool {
+        let shown = self.rows(draft).iter().any(|row| row.contains(&control));
+        if shown {
+            self.focus = control;
+        }
+        shown
+    }
+
     /// Keeps focus on a control the step still shows after the draft changed.
     pub fn reconcile_focus(&mut self, draft: DraftView) {
         if !self.rows(draft).iter().any(|row| row.contains(&self.focus)) {

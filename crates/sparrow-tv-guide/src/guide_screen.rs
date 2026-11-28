@@ -23,22 +23,11 @@ use crate::{
     viewport::VerticalViewport,
 };
 
-pub const NOW_BOARD_TOP: f32 = 522.;
-pub const NOW_COLUMNS: usize = 3;
-pub const NOW_ROW_TOP: f32 = 4.;
-pub const NOW_ROW_HEIGHT: f32 = 100.;
-pub const NOW_ROW_PITCH: f32 = 111.;
 pub const NOW_FOOTER_GAP: f32 = 18.;
 pub const NOW_RETAINED_RETRY_HEIGHT: f32 = 78.;
 pub const NOW_MORE_HEIGHT: f32 = 54.;
-pub const TIMELINE_BOARD_TOP: f32 = 444.;
-pub const TIMELINE_ROW_TOP: f32 = 48.;
-pub const TIMELINE_ROW_HEIGHT: f32 = 83.;
-pub const TIMELINE_ROW_PITCH: f32 = TIMELINE_ROW_HEIGHT;
 
 const FOCUS_MARGIN: f32 = 24.;
-const NOW_BOTTOM_PADDING: f32 = 24.;
-const TIMELINE_BOTTOM_PADDING: f32 = 60.;
 const BOARD_ENTRY_TOLERANCE: f32 = 8.;
 pub const GROUP_PREFETCH_DELAY: Duration = Duration::from_millis(150);
 const CACHED_GROUPS: usize = 8;
@@ -182,43 +171,68 @@ enum BoardMode {
     },
 }
 
-struct BoardGeometry {
-    top: f32,
-    row_top: f32,
-    row_height: f32,
-    pitch: f32,
-    columns: usize,
-    covered_top: f32,
-    bottom_padding: f32,
+/// Row geometry of one Guide board, in the host's layout units.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BoardGeometry {
+    /// Surface y of the board's top edge.
+    pub top: f32,
+    pub row_top: f32,
+    pub row_height: f32,
+    pub pitch: f32,
+    pub columns: usize,
+    /// Board height hidden under a pinned header, such as the Timeline ruler.
+    pub covered_top: f32,
+    pub bottom_padding: f32,
 }
 
-impl GuideMode {
-    fn geometry(self) -> BoardGeometry {
-        match self {
-            Self::Now => BoardGeometry {
-                top: NOW_BOARD_TOP,
-                row_top: NOW_ROW_TOP,
-                row_height: NOW_ROW_HEIGHT,
-                pitch: NOW_ROW_PITCH,
-                columns: NOW_COLUMNS,
-                covered_top: 0.,
-                bottom_padding: NOW_BOTTOM_PADDING,
-            },
-            Self::Timeline => BoardGeometry {
-                top: TIMELINE_BOARD_TOP,
-                row_top: TIMELINE_ROW_TOP,
-                row_height: TIMELINE_ROW_HEIGHT,
-                pitch: TIMELINE_ROW_PITCH,
-                columns: 1,
-                covered_top: TIMELINE_ROW_TOP,
-                bottom_padding: TIMELINE_BOTTOM_PADDING,
-            },
+/// Geometry for both boards and the surface they sit on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BoardMetrics {
+    pub now: BoardGeometry,
+    pub timeline: BoardGeometry,
+    pub surface_height: f32,
+}
+
+impl BoardMetrics {
+    /// The television Now board in 1920-wide reference units.
+    pub const TV_NOW: BoardGeometry = BoardGeometry {
+        top: 522.,
+        row_top: 4.,
+        row_height: 100.,
+        pitch: 111.,
+        columns: 3,
+        covered_top: 0.,
+        bottom_padding: 24.,
+    };
+    /// The television Timeline board in 1920-wide reference units.
+    pub const TV_TIMELINE: BoardGeometry = BoardGeometry {
+        top: 444.,
+        row_top: 48.,
+        row_height: 83.,
+        pitch: 83.,
+        columns: 1,
+        covered_top: 48.,
+        bottom_padding: 60.,
+    };
+
+    pub const fn tv(surface_height: f32) -> Self {
+        Self {
+            now: Self::TV_NOW,
+            timeline: Self::TV_TIMELINE,
+            surface_height,
+        }
+    }
+
+    pub const fn board(&self, mode: GuideMode) -> BoardGeometry {
+        match mode {
+            GuideMode::Now => self.now,
+            GuideMode::Timeline => self.timeline,
         }
     }
 }
 
 impl BoardGeometry {
-    fn row(&self, index: usize) -> Range<f32> {
+    pub fn row(&self, index: usize) -> Range<f32> {
         let top = self.row_top + (index / self.columns) as f32 * self.pitch;
         top..top + self.row_height
     }
@@ -247,7 +261,9 @@ pub struct GuideScreen {
     preview: Option<PreviewFocus>,
     focus_epoch: u64,
     viewport: VerticalViewport,
-    surface_height: f32,
+    metrics: BoardMetrics,
+    /// Arrow keys reveal focus; pointer scrolling owns the offset until the next one.
+    follow_focus: bool,
     reads: Vec<GuideRead>,
 }
 
@@ -277,7 +293,8 @@ impl GuideScreen {
             preview: None,
             focus_epoch: 0,
             viewport: VerticalViewport::default(),
-            surface_height: 0.,
+            metrics: BoardMetrics::tv(0.),
+            follow_focus: true,
             reads: Vec::new(),
         }
     }
@@ -334,6 +351,7 @@ impl GuideScreen {
         });
         let current = self.focus();
         self.cancel_pending_navigation();
+        self.follow_focus = true;
         if preserve_origin && family.is_some() && family == board_family(current) {
             self.reveal_focus();
         } else if let Some(index) = family.or_else(|| (!self.families().is_empty()).then_some(0)) {
@@ -503,14 +521,25 @@ impl GuideScreen {
         self.board().is_some_and(BoardView::failed)
     }
 
-    /// Height of the full surface, in the 1920-wide Guide reference units.
-    pub fn set_surface_height(&mut self, height: f32) {
-        self.surface_height = height.max(0.);
-        self.resize_board();
+    pub fn board_metrics(&self) -> BoardMetrics {
+        self.metrics
+    }
+
+    /// Board geometry and surface height, in the host's layout units.
+    pub fn set_board_metrics(&mut self, metrics: BoardMetrics) {
+        if self.metrics != metrics {
+            self.metrics = metrics;
+            self.viewport.height = (metrics.surface_height - self.geometry().top).max(0.);
+            self.reveal_focus();
+        }
+    }
+
+    fn geometry(&self) -> BoardGeometry {
+        self.metrics.board(self.mode())
     }
 
     fn resize_board(&mut self) {
-        let height = (self.surface_height - self.mode().geometry().top).max(0.);
+        let height = (self.metrics.surface_height - self.geometry().top).max(0.);
         if self.viewport.height != height {
             self.viewport.height = height;
             self.reveal_focus();
@@ -522,7 +551,7 @@ impl GuideScreen {
     }
 
     pub fn first_visible_row(&self) -> usize {
-        let geometry = self.mode().geometry();
+        let geometry = self.geometry();
         if self.viewport.height <= geometry.covered_top {
             return self.families().len().div_ceil(geometry.columns);
         }
@@ -532,7 +561,7 @@ impl GuideScreen {
     /// Family indices for intersecting rows, including overscan on each side.
     pub fn visible_families(&self, overscan: usize) -> Range<usize> {
         let available = self.families().len();
-        let geometry = self.mode().geometry();
+        let geometry = self.geometry();
         if self.viewport.height <= geometry.covered_top {
             return available..available;
         }
@@ -592,6 +621,7 @@ impl GuideScreen {
             self.selected_lane = LaneFocus::All;
             self.cached.clear();
             self.viewport.offset = 0.;
+            self.follow_focus = true;
             self.focus_epoch = self.focus_epoch.wrapping_add(1);
             self.cancel_pending_navigation();
             self.reads.clear();
@@ -763,6 +793,9 @@ impl GuideScreen {
     ) -> ScreenAction {
         if key != ScreenKey::Arrow(Direction::Down) {
             self.cancel_pending_navigation();
+        }
+        if matches!(key, ScreenKey::Arrow(_)) {
+            self.follow_focus = true;
         }
         if let Some(focus) = self.group_chooser.as_ref().map(GroupChooser::focus) {
             return match key {
@@ -1056,8 +1089,9 @@ impl GuideScreen {
                 return;
             }
             (_, Direction::Down) => {
-                let first = self.board_entry_row() * NOW_COLUMNS;
-                let choices = self.families().len().saturating_sub(first).min(NOW_COLUMNS);
+                let columns = self.metrics.now.columns;
+                let first = self.board_entry_row() * columns;
+                let choices = self.families().len().saturating_sub(first).min(columns);
                 if choices > 0 {
                     let offset = if lane == LaneFocus::ChooseGroups {
                         choices - 1
@@ -1103,6 +1137,7 @@ impl GuideScreen {
 
     fn board(&self) -> Option<BoardView> {
         let mut board = self.pages.as_ref()?.board();
+        board.columns = self.geometry().columns;
         if board.page == PageStatus::Complete
             && self.group_pages.as_ref().is_some_and(|groups| {
                 matches!(
@@ -1351,6 +1386,7 @@ impl GuideScreen {
         }
         self.pages = Some(next);
         self.viewport.offset = 0.;
+        self.follow_focus = true;
         self.cancel_pending_navigation();
         self.clear_timeline_return();
         self.reanchor_timeline(displayed);
@@ -1694,13 +1730,13 @@ impl GuideScreen {
     }
 
     fn first_row_after(&self, top: f32) -> usize {
-        let geometry = self.mode().geometry();
+        let geometry = self.geometry();
         let first = ((top - geometry.row_top - geometry.row_height) / geometry.pitch).floor() + 1.;
         (first as usize).min(self.families().len().div_ceil(geometry.columns))
     }
 
     fn rows_bottom(&self) -> f32 {
-        let geometry = self.mode().geometry();
+        let geometry = self.geometry();
         self.families()
             .len()
             .checked_sub(1)
@@ -1711,11 +1747,11 @@ impl GuideScreen {
         !self.families().is_empty() && self.retry_available()
     }
 
-    fn reveal_focus(&mut self) {
+    /// Board content height, including the footer below the rows.
+    fn content_bottom(&self) -> f32 {
         let rows_bottom = self.rows_bottom();
-        let retained_retry = self.retained_retry();
         let footer_top = rows_bottom + NOW_FOOTER_GAP;
-        let content_bottom = if retained_retry {
+        if self.retained_retry() {
             footer_top + NOW_RETAINED_RETRY_HEIGHT
         } else if rows_bottom > 0.
             && matches!(
@@ -1726,8 +1762,14 @@ impl GuideScreen {
             footer_top + NOW_MORE_HEIGHT
         } else {
             rows_bottom
-        };
-        let geometry = self.mode().geometry();
+        }
+    }
+
+    fn reveal_focus(&mut self) {
+        let footer_top = self.rows_bottom() + NOW_FOOTER_GAP;
+        let retained_retry = self.retained_retry();
+        let content_bottom = self.content_bottom();
+        let geometry = self.geometry();
         let focus = self.focus();
         let (target, covered_bottom) = match focus {
             ScreenFocus::Board(NowFocus::Retry)
@@ -1749,10 +1791,82 @@ impl GuideScreen {
         };
         self.viewport.reveal(
             content_bottom + geometry.bottom_padding,
-            target,
+            target.filter(|_| self.follow_focus),
             FOCUS_MARGIN + geometry.covered_top,
             FOCUS_MARGIN + covered_bottom,
         );
+    }
+
+    /// Moves focus to a control under the pointer without scrolling the board.
+    /// Returns false when the control is not on screen in the current mode.
+    pub fn set_focus(&mut self, focus: ScreenFocus) -> bool {
+        let families = self.families().len();
+        let available = match focus {
+            ScreenFocus::None => false,
+            ScreenFocus::Toolbar(_) => true,
+            ScreenFocus::GroupLane(LaneFocus::Group(index)) => index < self.visible_groups.len(),
+            ScreenFocus::GroupLane(_) => true,
+            ScreenFocus::Board(target) => {
+                self.mode() == GuideMode::Now
+                    && match target {
+                        NowFocus::Channel(family) => family < families,
+                        NowFocus::Variant { family, chip } => chip < self.variant_count(family),
+                        NowFocus::Retry => self.retry_available(),
+                    }
+            }
+            ScreenFocus::TimelineBoard(target) => {
+                self.mode() == GuideMode::Timeline
+                    && match target {
+                        TimelineFocus::Channel(family) => family < families,
+                        TimelineFocus::Variant { family, chip } => {
+                            chip < self.variant_count(family)
+                        }
+                        TimelineFocus::Programme { family, cell } => self
+                            .families()
+                            .get(family)
+                            .is_some_and(|row| cell < row.programmes(&self.preferences).len()),
+                        TimelineFocus::Retry => self.retry_available(),
+                    }
+            }
+        };
+        if !available || self.group_chooser.is_some() {
+            return false;
+        }
+        self.cancel_pending_navigation();
+        self.follow_focus = false;
+        self.move_focus(focus);
+        self.schedule_reads();
+        true
+    }
+
+    /// Scrolls the board under pointer control and loads the next page near its end.
+    /// Returns whether the board moved.
+    pub fn scroll_by(&mut self, delta: f32) -> bool {
+        let before = self.viewport.offset;
+        let limit =
+            (self.content_bottom() + self.geometry().bottom_padding - self.viewport.height).max(0.);
+        self.follow_focus = false;
+        self.viewport.offset = (before + delta).clamp(0., limit);
+        let last_shown = self.visible_families(1).end.checked_sub(1);
+        if !self.all_groups_hidden()
+            && self.pages.as_ref().is_some_and(|pages| {
+                pages.needs_automatic_page()
+                    || last_shown.is_some_and(|family| pages.should_prefetch(family))
+            })
+        {
+            self.load_guide_page();
+        }
+        self.viewport.offset != before
+    }
+
+    /// Pans the Timeline by whole half hours inside the loaded Guide window.
+    pub fn pan_timeline(&mut self, half_hours: i64) -> bool {
+        let BoardMode::Timeline { axis, .. } = &mut self.mode else {
+            return false;
+        };
+        let before = axis.starts_at();
+        axis.pan(half_hours);
+        axis.starts_at() != before
     }
 
     fn schedule_reads(&mut self) {

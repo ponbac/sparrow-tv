@@ -5,7 +5,11 @@ use std::{
     sync::{Arc, LazyLock, Mutex, OnceLock},
 };
 
+use gpui::{App, Window};
+use sparrow_core::ChannelDirection;
+use sparrow_guide_ui::{ClipboardTarget, FormFactor, GuideHost, HostKey, TextEditorHost};
 use sparrow_installed_catalog::SavedSourceLocations;
+use sparrow_tv_guide::{now_focus::Direction, setup::SetupField};
 
 use jni::{
     Env, JavaVM, jni_sig, jni_str,
@@ -16,45 +20,101 @@ static JVM: OnceLock<JavaVM> = OnceLock::new();
 type ActivityRef = Arc<Global<JObject<'static>>>;
 static ACTIVITIES: LazyLock<Mutex<HashMap<u64, ActivityRef>>> = LazyLock::new(Mutex::default);
 
-pub(super) enum Event {
-    Presented,
-    Ambient { epoch: u64, colors: [u32; 3] },
-    FlightStill(u64, Option<image::RgbaImage>),
-    Back,
-    PictureBottom(i32),
-    Key { code: i32, repeat: i32 },
-    Edited { generation: u64, edit: Edit },
-    Source { session: u64, update: SourceEvent },
-    PlaybackDiagnosticsCopied { attempt: u64, copied: bool },
+pub(super) struct ShieldActivity(pub u64);
+
+impl GuideHost for ShieldActivity {
+    fn id(&self) -> u64 {
+        self.0
+    }
+
+    fn form_factor(&self) -> FormFactor {
+        FormFactor::Television
+    }
+
+    fn guide_painted(&self) {
+        guide_presented(self.0);
+    }
+
+    fn finish(&self, _: &mut Window) {
+        finish(self.0);
+    }
+
+    fn copy_diagnostics(&self, target: ClipboardTarget, text: &str, _: &mut App) -> bool {
+        match target {
+            ClipboardTarget::Source { session, attempt } => {
+                copy_source_diagnostics(self.0, session, attempt, text)
+            }
+            ClipboardTarget::Playback { attempt } => {
+                copy_playback_diagnostics(self.0, attempt, text)
+            }
+        }
+    }
 }
 
-pub(super) enum SourceEvent {
-    Copied {
-        attempt: u64,
-        copied: bool,
-    },
-    DraftStatus {
-        attempt: u64,
-        status: i32,
-    },
-    Field {
-        generation: u64,
-        field: i32,
-        event: i32,
-        has_text: bool,
-    },
-    Submit {
-        attempt: u64,
-        m3u: String,
-        epg: Option<String>,
-    },
+impl TextEditorHost for ShieldActivity {
+    fn open_query(&self, generation: u64, rect: [i32; 4], initial: &str) -> bool {
+        open_text_query(self.0, generation, rect, initial)
+    }
+
+    fn close_editor(&self, generation: u64) {
+        close_text_editor(self.0, generation);
+    }
+
+    fn begin_draft(&self, session: u64, seed: Option<SavedSourceLocations>) -> bool {
+        begin_source_draft(self.0, session, seed)
+    }
+
+    fn close_draft(&self, session: u64) {
+        close_source_draft(self.0, session);
+    }
+
+    fn edit_field(&self, session: u64, generation: u64, field: SetupField, rect: [i32; 4]) -> bool {
+        edit_source(self.0, session, generation, field_index(field), rect)
+    }
+
+    fn clear_field(&self, session: u64, generation: u64, field: SetupField) -> bool {
+        clear_source_field(self.0, session, generation, field_index(field))
+    }
+
+    fn submit_draft(&self, session: u64, attempt: u64) -> bool {
+        submit_sources(self.0, session, attempt)
+    }
+
+    fn finish_save(&self, session: u64, attempt: u64, saved: bool) {
+        finish_source_save(self.0, session, attempt, saved);
+    }
 }
 
-pub(super) enum Edit {
-    Changed(String),
-    Committed(String),
-    Cancelled,
-    Rejected,
+const fn field_index(field: SetupField) -> i32 {
+    match field {
+        SetupField::M3u => 0,
+        SetupField::Epg => 1,
+    }
+}
+
+pub(super) const fn setup_field(index: i32) -> Option<SetupField> {
+    match index {
+        0 => Some(SetupField::M3u),
+        1 => Some(SetupField::Epg),
+        _ => None,
+    }
+}
+
+pub(super) const fn host_key(code: i32) -> HostKey {
+    match code {
+        19 => HostKey::Arrow(Direction::Up),
+        20 => HostKey::Arrow(Direction::Down),
+        21 => HostKey::Arrow(Direction::Left),
+        22 => HostKey::Arrow(Direction::Right),
+        23 | 66 => HostKey::Activate,
+        102 | 167 => HostKey::Channel(ChannelDirection::Previous),
+        103 | 166 => HostKey::Channel(ChannelDirection::Next),
+        85 => HostKey::TogglePause,
+        86 => HostKey::Stop,
+        126 => HostKey::Resume,
+        127 => HostKey::Pause,
+        _ => HostKey::Other,
+    }
 }
 
 pub(super) fn register(
@@ -106,7 +166,7 @@ pub(super) fn enable_key_routing(id: u64) {
     });
 }
 
-pub(super) fn guide_presented(id: u64) {
+fn guide_presented(id: u64) {
     call(id, |env, activity| {
         env.call_method(
             activity,
@@ -118,7 +178,7 @@ pub(super) fn guide_presented(id: u64) {
     });
 }
 
-pub(super) fn finish(id: u64) {
+fn finish(id: u64) {
     call(id, |env, activity| {
         env.call_method(
             activity,
@@ -130,7 +190,7 @@ pub(super) fn finish(id: u64) {
     });
 }
 
-pub(super) fn open_text_query(id: u64, generation: u64, rect: [i32; 4], initial: &str) -> bool {
+fn open_text_query(id: u64, generation: u64, rect: [i32; 4], initial: &str) -> bool {
     let [left, top, width, height] = rect;
     call(id, |env, activity| {
         let text = JString::from_str(env, initial)?;
@@ -153,7 +213,7 @@ pub(super) fn open_text_query(id: u64, generation: u64, rect: [i32; 4], initial:
     })
 }
 
-pub(super) fn close_text_editor(id: u64, generation: u64) {
+fn close_text_editor(id: u64, generation: u64) {
     call(id, |env, activity| {
         env.call_method(
             activity,
@@ -167,11 +227,7 @@ pub(super) fn close_text_editor(id: u64, generation: u64) {
 
 /// Opens a Source Configuration draft, prefilled with saved locations when given.
 /// The locations pass straight to the Activity's draft and are not retained.
-pub(super) fn begin_source_draft(
-    id: u64,
-    session: u64,
-    seed: Option<SavedSourceLocations>,
-) -> bool {
+fn begin_source_draft(id: u64, session: u64, seed: Option<SavedSourceLocations>) -> bool {
     call(id, |env, activity| {
         let (m3u, epg) = seed.map_or((None, None), |seed| {
             let (m3u, epg) = seed.into_locations();
@@ -195,7 +251,7 @@ pub(super) fn begin_source_draft(
     })
 }
 
-pub(super) fn close_source_draft(id: u64, session: u64) {
+fn close_source_draft(id: u64, session: u64) {
     call(id, |env, activity| {
         env.call_method(
             activity,
@@ -207,7 +263,7 @@ pub(super) fn close_source_draft(id: u64, session: u64) {
     });
 }
 
-pub(super) fn clear_source_field(id: u64, session: u64, generation: u64, field: i32) -> bool {
+fn clear_source_field(id: u64, session: u64, generation: u64, field: i32) -> bool {
     call(id, |env, activity| {
         env.call_method(
             activity,
@@ -224,13 +280,7 @@ pub(super) fn clear_source_field(id: u64, session: u64, generation: u64, field: 
     })
 }
 
-pub(super) fn edit_source(
-    id: u64,
-    session: u64,
-    generation: u64,
-    field: i32,
-    rect: [i32; 4],
-) -> bool {
+fn edit_source(id: u64, session: u64, generation: u64, field: i32, rect: [i32; 4]) -> bool {
     let [left, top, width, height] = rect;
     call(id, |env, activity| {
         env.call_method(
@@ -252,7 +302,7 @@ pub(super) fn edit_source(
     })
 }
 
-pub(super) fn copy_source_diagnostics(id: u64, session: u64, attempt: u64, text: &str) -> bool {
+fn copy_source_diagnostics(id: u64, session: u64, attempt: u64, text: &str) -> bool {
     call(id, |env, activity| {
         let text = JString::from_str(env, text)?;
         env.call_method(
@@ -270,7 +320,7 @@ pub(super) fn copy_source_diagnostics(id: u64, session: u64, attempt: u64, text:
     })
 }
 
-pub(super) fn copy_playback_diagnostics(id: u64, attempt: u64, text: &str) -> bool {
+fn copy_playback_diagnostics(id: u64, attempt: u64, text: &str) -> bool {
     call(id, |env, activity| {
         let text = JString::from_str(env, text)?;
         env.call_method(
@@ -287,7 +337,7 @@ pub(super) fn copy_playback_diagnostics(id: u64, attempt: u64, text: &str) -> bo
     })
 }
 
-pub(super) fn submit_sources(id: u64, session: u64, attempt: u64) -> bool {
+fn submit_sources(id: u64, session: u64, attempt: u64) -> bool {
     call(id, |env, activity| {
         env.call_method(
             activity,
@@ -303,7 +353,7 @@ pub(super) fn submit_sources(id: u64, session: u64, attempt: u64) -> bool {
     })
 }
 
-pub(super) fn finish_source_save(id: u64, session: u64, attempt: u64, saved: bool) {
+fn finish_source_save(id: u64, session: u64, attempt: u64, saved: bool) {
     call(id, |env, activity| {
         env.call_method(
             activity,

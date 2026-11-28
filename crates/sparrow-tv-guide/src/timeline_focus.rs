@@ -41,7 +41,7 @@ pub enum TimelineMove {
 
 #[derive(Default)]
 pub struct TimelineNavigation {
-    down: DownSteps<1, TimelineFocus, DateTime<Utc>>,
+    down: DownSteps<TimelineFocus, DateTime<Utc>>,
 }
 
 impl TimelineNavigation {
@@ -137,6 +137,7 @@ mod tests {
             selection: 1,
             families: 0,
             page: PageStatus::Failed,
+            columns: 1,
         };
         let retained = BoardView {
             families: 3,
@@ -171,6 +172,7 @@ mod tests {
             selection: 0,
             families: 1,
             page: PageStatus::Ready,
+            columns: 1,
         };
         assert_eq!(
             navigation.down(origin, anchor, board),
