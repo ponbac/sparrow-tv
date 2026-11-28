@@ -186,11 +186,12 @@ impl PlaybackUi {
             .as_ref()
             .zip(picture.as_ref())
             .is_some_and(|(old, new)| Arc::ptr_eq(old, new))
+            || self.live_picture.is_none() && picture.is_none()
         {
             return;
         }
         if let Some(old) = std::mem::replace(&mut self.live_picture, picture) {
-            cx.drop_image(old, Some(window));
+            let _ = window.drop_image(old);
         }
         cx.notify();
     }
@@ -573,6 +574,20 @@ impl PlaybackUi {
 }
 
 impl GuideSurface {
+    /// Commits an external Tune or Stop on the UI thread, superseding pending
+    /// Guide tune and zap reads as a local playback action would.
+    pub fn external_playback_intent(&mut self, command: Command) -> bool {
+        if matches!(command, Command::Tune { .. }) && self.activation.is_none() {
+            return false;
+        }
+        if self.send_playback(command) {
+            self.playback.cancel_zap();
+            true
+        } else {
+            false
+        }
+    }
+
     pub(super) fn picture_reveal_duration(&self) -> Duration {
         self.catalog
             .playback()
@@ -995,7 +1010,11 @@ impl GuideSurface {
         frame: FullscreenFrame,
         cx: &mut Context<Self>,
     ) {
-        let parked = self.update_flight_still(window, cx);
+        let embedded = self
+            .catalog
+            .playback()
+            .is_some_and(PlaybackHost::embedded_picture);
+        let parked = !embedded && self.update_flight_still(window, cx);
         let Some(host) = self
             .catalog
             .playback()
@@ -1004,14 +1023,26 @@ impl GuideSurface {
             self.playback.viewports = None;
             return;
         };
-        let rect = picture_rect(self.layout(window), window.scale_factor(), frame);
-        let docked = (!self.dock_hidden()).then_some(rect);
-        // The native picture sits above GPUI. Reveal the tuning field as soon
-        // as a target is pending, including throughout the zap debounce.
-        let viewports = if self.playback.state.pending_zap.is_some() || parked {
+        let rect = |frame| picture_rect(self.layout(window), window.scale_factor(), frame);
+        let viewports = if self.playback.state.pending_zap.is_some()
+            || parked
+            || (embedded && (self.setup.is_some() || !window.is_visible()))
+        {
             [None, None]
+        } else if embedded {
+            // GPUI moves the live image through the flight. Send only physical
+            // endpoints to libmpv, including the endpoint for the control band.
+            let docked = (!self.dock_hidden()).then(|| rect(FullscreenFrame::default()));
+            let fullscreen = rect(FullscreenFrame {
+                fullscreen: 1.,
+                band: f32::from(self.playback.controls_visible),
+                caption: 0.,
+                stripe: 0.,
+            });
+            [docked, Some(fullscreen)]
         } else {
-            [docked, Some(rect)]
+            let rect = rect(frame);
+            [(!self.dock_hidden()).then_some(rect), Some(rect)]
         };
         if self.playback.viewports != Some(viewports) {
             host.set_picture_bounds(self.host.id(), viewports[0], viewports[1]);

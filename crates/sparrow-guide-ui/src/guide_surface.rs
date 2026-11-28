@@ -22,7 +22,7 @@ use sparrow_tv_guide::{
 use tokio::task::AbortHandle;
 
 use crate::{
-    Catalog, Edit, GuideHost, HostEvent, HostKey, Phase,
+    Catalog, Edit, GuideHost, HostEvent, HostKey, Phase, PlaybackHost,
     channel_icons::ChannelIcons,
     guide_view::{self, FormFactor, Profile},
     search_flow::{SearchEffect, SearchFlow},
@@ -198,6 +198,15 @@ impl GuideSurface {
         window.on_next_frame(move |window, _| {
             window.on_next_frame(move |_, _| presenter.guide_painted());
         });
+        if catalog
+            .playback()
+            .is_some_and(PlaybackHost::embedded_picture)
+        {
+            cx.observe_window_visibility(window, |view, _, window, cx| {
+                view.update_playback_viewports(window, Default::default(), cx);
+            })
+            .detach();
+        }
         let host_id = host.id();
         let now = Local::now().fixed_offset();
         let mut screen = GuideScreen::new(now.to_utc(), *now.offset(), HashSet::new());

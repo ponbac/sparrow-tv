@@ -6,7 +6,7 @@ mod transport;
 
 use std::{future::Future, io::Read, pin::Pin, sync::Arc};
 
-use sparrow_core::{CatalogAccess, ChannelId, ChannelQuality};
+use sparrow_core::{CatalogAccess, ChannelFamily, ChannelId, ChannelQuality, ChannelSummary};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::{
@@ -86,6 +86,29 @@ impl TvTuneTarget {
             lower: None,
         }
     }
+
+    pub fn from_family(family: &ChannelFamily, channel: &ChannelSummary) -> Self {
+        let quality = channel.variant().map(|variant| variant.quality());
+        let lower = quality.and_then(|quality| {
+            family
+                .variants()
+                .iter()
+                .filter_map(|channel| {
+                    let candidate = channel.variant()?.quality();
+                    (candidate < quality).then(|| TvQualityVariant {
+                        channel: channel.id().clone(),
+                        quality: candidate,
+                    })
+                })
+                .max_by_key(|candidate| candidate.quality)
+        });
+        Self {
+            number: channel.number(),
+            channel: channel.id().clone(),
+            quality,
+            lower,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -131,6 +154,7 @@ pub enum TvPlaybackCommand {
     Resume,
     Restart,
     Stop,
+    StopConfirmed(oneshot::Sender<Result<(), TvPlaybackFailure>>),
     SelectAudio {
         token: TvTransportToken,
         track: AudioTrackId,
@@ -378,5 +402,17 @@ impl TvPlaybackRunner {
             .await
             .map_err(|_| TvPlaybackFailure::CleanupUnconfirmed)??;
         Ok(TvSourceChange { _resume: guard })
+    }
+
+    /// Stops the current session and confirms its transport and picture were released.
+    pub async fn stop(&self) -> Result<(), TvPlaybackFailure> {
+        let (stopped, confirmation) = oneshot::channel();
+        self.commands
+            .send(TvPlaybackCommand::StopConfirmed(stopped))
+            .await
+            .map_err(|_| TvPlaybackFailure::CleanupUnconfirmed)?;
+        confirmation
+            .await
+            .map_err(|_| TvPlaybackFailure::CleanupUnconfirmed)?
     }
 }

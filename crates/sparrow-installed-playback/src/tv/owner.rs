@@ -309,7 +309,7 @@ impl Owner {
                 }
             }
             Command::Restart => self.restart().await,
-            Command::Stop => {
+            command @ (Command::Stop | Command::StopConfirmed(_)) => {
                 self.cancel_zap();
                 self.snapshot.selected = None;
                 self.audio_request = None;
@@ -318,6 +318,17 @@ impl Owner {
                     self.snapshot.phase = Phase::Stopping;
                 } else {
                     self.set_idle();
+                }
+                if let Command::StopConfirmed(stopped) = command {
+                    self.publish();
+                    self.drive().await;
+                    self.publish();
+                    let result = if self.snapshot.phase == Phase::Idle {
+                        Ok(())
+                    } else {
+                        Err(Failure::CleanupUnconfirmed)
+                    };
+                    let _ = stopped.send(result);
                 }
             }
             Command::SelectAudio { token, track } => {

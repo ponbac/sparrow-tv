@@ -47,6 +47,10 @@ pub trait GuideHost: TextEditorHost {
 /// outside GPUI. Embedded playback can deliver LivePicture events instead.
 pub trait PlaybackHost: Send + Sync {
     fn start(&self, catalog: &InstalledCatalog) -> Option<TvPlaybackRunner>;
+    /// An embedded picture can move with GPUI while the renderer keeps an endpoint size.
+    fn embedded_picture(&self) -> bool {
+        false
+    }
     fn host_active(&self, _id: u64, _active: bool) {}
     fn host_destroyed(&self, _id: u64) {}
     fn set_picture_bounds(

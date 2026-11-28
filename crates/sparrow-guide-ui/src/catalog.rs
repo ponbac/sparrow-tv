@@ -228,8 +228,12 @@ impl Catalog {
         self.state.playback.as_deref()
     }
 
-    pub(crate) fn runner(&self) -> Option<&TvPlaybackRunner> {
+    pub fn runner(&self) -> Option<&TvPlaybackRunner> {
         self.state.runner.get()
+    }
+
+    pub fn runtime(&self) -> Option<&Runtime> {
+        self.worker.get()?.as_ref().map(|worker| &worker.runtime)
     }
 
     pub fn guide_diagnostics(&self) -> (GuideDiagnostics, WorkflowDiagnostics) {
@@ -446,7 +450,7 @@ impl Catalog {
         Some(result)
     }
 
-    pub(super) fn playback_query<T: Send + 'static>(
+    pub fn playback_query<T: Send + 'static>(
         &self,
         query: impl FnOnce(&CatalogAccess) -> T + Send + 'static,
     ) -> Option<tokio::task::JoinHandle<Option<T>>> {

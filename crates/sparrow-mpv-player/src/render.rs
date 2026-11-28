@@ -13,6 +13,7 @@ use sparrow_installed_playback::{
     android::{AndroidPlaybackError, AndroidPlaybackViewport},
     tv::TvPresentationKey,
 };
+use tokio::sync::watch;
 
 use crate::{
     Backend, VideoFrame,
@@ -24,6 +25,7 @@ use crate::{
 pub(crate) struct Publication {
     current: ArcSwapOption<Picture>,
     serial: AtomicU64,
+    pub(crate) changed: watch::Sender<()>,
 }
 
 pub(crate) struct Picture {
@@ -53,6 +55,7 @@ impl Publication {
         // before clearing, but a replacement binding may publish concurrently.
         if let Some(picture) = self.picture(key) {
             self.current.compare_and_swap(&picture, None);
+            self.changed.send_replace(());
         }
     }
 }
@@ -229,6 +232,9 @@ fn render(
         }
         if first {
             publication.current.store(Some(picture.clone()));
+        }
+        if picture.visible.load(Ordering::Acquire) {
+            publication.changed.send_replace(());
         }
         if matches!(update, Update::Frame(_)) {
             progress.presented.fetch_add(1, Ordering::Release);

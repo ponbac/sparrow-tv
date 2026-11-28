@@ -4,8 +4,12 @@ use gpui::{AppContext, Bounds, QuitMode, TitlebarOptions, WindowBounds, WindowOp
 use sparrow_guide_ui::{Catalog, GuideHost, GuideSurface, register_fonts};
 use tokio::sync::mpsc;
 
+mod agent_control;
 mod host;
+mod playback;
+
 use host::DesktopHost;
+use playback::DesktopPlayback;
 
 const USAGE: &str = "Usage: sparrow-desktop [--data-dir DIRECTORY | --fixture]\n\
     Click, scroll or use the arrow keys. Enter selects. Escape goes back.\n\
@@ -38,7 +42,11 @@ pub(super) fn run() -> Result<(), &'static str> {
         return Err(USAGE);
     }
 
-    let catalog = Arc::new(Catalog::new(None));
+    let playback = Arc::new(DesktopPlayback::default());
+    let catalog = Arc::new(Catalog::new(Some(playback.clone())));
+    catalog.start(root);
+    let (agent, mut intents) = mpsc::channel(8);
+    let agent = agent_control::Server::start(catalog.clone(), playback.clone(), agent);
     let opened = Rc::new(Cell::new(false));
     let status = Rc::clone(&opened);
     let guide_catalog = Arc::clone(&catalog);
@@ -66,7 +74,6 @@ pub(super) fn run() -> Result<(), &'static str> {
             ..Default::default()
         };
 
-        catalog.start(root);
         let Ok(window) = cx.open_window(options, |window, cx| {
             cx.new(|cx| GuideSurface::new(host, Arc::clone(&catalog), window, cx))
         }) else {
@@ -74,6 +81,7 @@ pub(super) fn run() -> Result<(), &'static str> {
             return;
         };
         status.set(true);
+        playback.present(window, cx);
         let fixture = use_fixture.then(|| {
             catalog.seed_fixture(
                 "http://127.0.0.1:18108/catalog.m3u".into(),
@@ -92,14 +100,23 @@ pub(super) fn run() -> Result<(), &'static str> {
                 }
             }
             catalog.set_active(id, true);
-            while let Some(event) = pending.recv().await {
-                if cx
-                    .update(|cx| {
-                        window.update(cx, |view, window, cx| view.host_event(event, window, cx))
-                    })
-                    .is_err()
-                {
-                    break;
+            loop {
+                tokio::select! {
+                    event = pending.recv() => {
+                        let Some(event) = event else { break };
+                        if cx.update(|cx| window.update(cx, |view, window, cx| {
+                            view.host_event(event, window, cx)
+                        })).is_err() {
+                            break;
+                        }
+                    }
+                    Some(intent) = intents.recv() => {
+                        if cx.update(|cx| window.update(cx, |view, _, _| {
+                            intent.commit(|command| view.external_playback_intent(command));
+                        })).is_err() {
+                            break;
+                        }
+                    }
                 }
             }
             catalog.host_destroyed(id, true);
@@ -107,6 +124,18 @@ pub(super) fn run() -> Result<(), &'static str> {
         .detach();
         cx.activate(true);
     });
+    if let Some(runtime) = catalog.runtime() {
+        runtime.block_on(async {
+            if let Some(agent) = agent {
+                agent.shutdown().await;
+            }
+            if let Some(runner) = catalog.runner()
+                && runner.stop().await.is_err()
+            {
+                eprintln!("Couldn’t confirm Playback Session cleanup.");
+            }
+        });
+    }
     drop(catalog);
     opened
         .get()

@@ -7,8 +7,15 @@ publish.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.8", default-features = false }
 gpui-platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["wayland", "x11"] }
+image = { version = "0.25", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sparrow-core = { path = "../sparrow-core" }
 sparrow-guide-ui = { path = "../sparrow-guide-ui", features = ["fixture"] }
 sparrow-installed-catalog = { path = "../sparrow-installed-catalog" }
+sparrow-installed-playback = { path = "../sparrow-installed-playback" }
+sparrow-mpv-player = { path = "../sparrow-mpv-player", features = ["embedded"] }
+sparrow-source-http = { path = "../sparrow-source-http" }
 sparrow-tv-guide = { path = "../sparrow-tv-guide" }
 tempfile = "3"
-tokio = { version = "1", features = ["sync"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }

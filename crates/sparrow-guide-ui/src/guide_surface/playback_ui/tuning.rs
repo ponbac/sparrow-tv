@@ -2,9 +2,7 @@
 
 use gpui::Context;
 use sparrow_core::{CatalogGeneration, ChannelDirection, ChannelFamily, ChannelId, ChannelSummary};
-use sparrow_installed_playback::tv::{
-    TvPlaybackCommand as Command, TvQualityVariant, TvTuneTarget,
-};
+use sparrow_installed_playback::tv::{TvPlaybackCommand as Command, TvTuneTarget};
 use sparrow_tv_guide::{
     VariantPreferences, guide_screen::ScreenFocus, normalize_preference_title, now_focus::NowFocus,
     search::SearchTune, timeline_focus::TimelineFocus,
@@ -81,7 +79,7 @@ impl GuideSurface {
                         normalize_preference_title(channel_title(first)),
                     )
                 });
-            Some((tune_target(&family, selected), preference))
+            Some((TvTuneTarget::from_family(&family, selected), preference))
         }) else {
             self.show_feedback(Some("Playback is unavailable."), cx);
             return;
@@ -188,7 +186,7 @@ impl GuideSurface {
                 .adjacent_channel_family(generation, number, direction, &excluded)
                 .ok()??;
             let channel = preferred(&family, &preferences)?;
-            Some(tune_target(&family, channel))
+            Some(TvTuneTarget::from_family(&family, channel))
         }) else {
             return;
         };
@@ -224,29 +222,6 @@ impl GuideSurface {
             });
         })
         .detach();
-    }
-}
-
-fn tune_target(family: &ChannelFamily, channel: &ChannelSummary) -> TvTuneTarget {
-    let quality = channel.variant().map(|variant| variant.quality());
-    let lower = quality.and_then(|quality| {
-        family
-            .variants()
-            .iter()
-            .filter_map(|channel| {
-                let candidate = channel.variant()?.quality();
-                (candidate < quality).then(|| TvQualityVariant {
-                    channel: channel.id().clone(),
-                    quality: candidate,
-                })
-            })
-            .max_by_key(|candidate| candidate.quality)
-    });
-    TvTuneTarget {
-        number: channel.number(),
-        channel: channel.id().clone(),
-        quality,
-        lower,
     }
 }
 

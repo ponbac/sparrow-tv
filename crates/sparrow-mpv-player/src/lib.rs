@@ -23,7 +23,7 @@ use sparrow_installed_playback::{
 };
 use tokio::{
     runtime::Handle,
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, watch},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -44,6 +44,7 @@ pub enum Backend {
 #[derive(Clone, Copy, Debug)]
 pub struct MpvDiagnostics {
     pub presented_frames: u64,
+    pub current_time_ms: u64,
     pub vo_delayed_frames: Option<u64>,
     pub decoder_dropped_frames: Option<u64>,
     pub vo_dropped_frames: Option<u64>,
@@ -117,6 +118,11 @@ impl MpvPresentation {
     /// Loads the latest visible picture without waiting on the render worker.
     pub fn latest_frame(&self) -> Option<Arc<VideoFrame>> {
         self.latest.visible_frame()
+    }
+
+    /// Coalesces frame publication, visibility changes and picture clears.
+    pub fn subscribe_frames(&self) -> watch::Receiver<()> {
+        self.latest.changed.subscribe()
     }
 
     pub async fn diagnostics(&self) -> Result<MpvDiagnostics, AndroidPlaybackError> {
@@ -241,6 +247,7 @@ impl TvPresentation for MpvPresentation {
                     .ok_or(AndroidPlaybackError)?
                     .set_viewport(viewport);
             }
+            worker.latest.changed.send_replace(());
             Ok(())
         })
     }
@@ -267,6 +274,7 @@ impl Binding {
         let engine = &self.engine;
         MpvDiagnostics {
             presented_frames: self.render.presented(),
+            current_time_ms: (engine.number(c"time-pos") * 1_000.) as u64,
             vo_delayed_frames: engine.integer(c"vo-delayed-frame-count"),
             decoder_dropped_frames: engine.integer(c"decoder-frame-drop-count"),
             vo_dropped_frames: engine.integer(c"frame-drop-count"),
