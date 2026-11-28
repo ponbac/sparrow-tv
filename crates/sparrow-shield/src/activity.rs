@@ -113,6 +113,18 @@ impl TextEditorHost for ShieldActivity {
         close_text_editor(self.id, generation);
     }
 
+    fn cancel_editor(&self) {
+        call(self.id, |env, activity| {
+            env.call_method(
+                activity,
+                jni_str!("cancelTextEditor"),
+                jni_sig!("(J)V"),
+                &[JValue::Long(self.id as i64)],
+            )?;
+            Ok(())
+        });
+    }
+
     fn begin_draft(&self, session: u64, seed: Option<SavedSourceLocations>) -> bool {
         begin_source_draft(self.id, session, seed)
     }

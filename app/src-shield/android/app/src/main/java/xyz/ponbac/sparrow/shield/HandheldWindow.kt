@@ -29,6 +29,7 @@ internal class HandheldWindow(
       activity.sendInsets(safe.top, safe.right, safe.bottom, safe.left, ime.bottom)
       insets
     }
+    ViewCompat.requestApplyInsets(root)
     guide.setOnTouchListener { _, event ->
       when (event.actionMasked) {
         MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP, MotionEvent.ACTION_MOVE,

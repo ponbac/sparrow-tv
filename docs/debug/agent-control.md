@@ -1,6 +1,6 @@
 # Agent Control
 
-Opt-in local commands for a **running installed** Sparrow on Linux. Search the Channel Catalog, start a Playback Session, and read playback diagnostics without driving the desktop compositor.
+Agent Control provides opt-in local commands for a running Sparrow on Linux. Search the Channel Catalog, start a Playback Session, and read playback diagnostics without driving the desktop compositor. The GPUI desktop and the legacy Tauri AppImage both use the same CLI.
 
 This is not MCP, not WebMCP, and not a production HTTP API. The installed app still has no localhost catalog server (see [ADR 0003](../adr/0003-share-one-core-across-sibling-adapters.md)). The listener exists only when the process environment opts in.
 
@@ -8,8 +8,8 @@ The in-repo CLI is `scripts/agent-control/cli.ts`, invoked as `just agent …` f
 
 ## When to use it
 
-- Reproduce or watch in-app Linux playback (WebKit/MSE) on a real Channel, for example `Eurosport 1 FHD SE`.
-- Confirm whether a freeze is a session restart loop (`phase` bouncing through `recovering`) or a stuck picture (`standstills`, `msSinceTimeAdvance`).
+- Reproduce or watch in-app Linux playback on a real Channel, for example `Eurosport 1 FHD SE`.
+- Distinguish a restart loop (`phase` bouncing through `recovering`) from a stuck picture (`currentTimeMs` or `presentedFrames` stops advancing).
 - Copy a diagnostics snapshot after a change, before more player-policy tweaks.
 
 Do not use it to replace unit tests. Do not scrape the DOM or send Hyprland mouse events.
@@ -25,7 +25,21 @@ The binary binds a Unix socket only when **both** variables are set in the **sam
 
 If the socket is set but the token or path is invalid, the app prints `sparrow-agent-control: unavailable` and does not listen. On a successful bind it prints `sparrow-agent-control: listening`.
 
-Linux desktop only. Ordinary AppImages and `tauri dev` include the code; it stays inert without the env vars. Rebuild after Agent Control, player, or diagnostics changes — an already-running AppImage will not pick them up.
+### GPUI desktop
+
+Install the system libmpv development package, then start `sparrow-desktop` with Agent Control enabled.
+
+```sh
+export SPARROW_AGENT_SOCKET="${XDG_RUNTIME_DIR}/sparrow-agent.sock"
+export SPARROW_AGENT_TOKEN="$(openssl rand -hex 16)"
+just run-desktop &
+```
+
+Run `just agent ping` from the same shell. `ready: true` means the Guide is active, its Channel Catalog is ready, and the Playback Runner is available. The app uses `$XDG_DATA_HOME/xyz.ponbac.sparrow` or `~/.local/share/xyz.ponbac.sparrow` by default. Set `SPARROW_DATA_DIR` or pass `just run-desktop --data-dir DIRECTORY` to select a different directory. For a release build, use `just build-desktop`, then launch `target/release/sparrow-desktop` with the same environment.
+
+### Legacy Tauri AppImage
+
+The AppImage and `tauri dev` support the same socket environment. Rebuild the AppImage after changing Agent Control, playback, or diagnostics.
 
 ```sh
 export SPARROW_AGENT_SOCKET="${XDG_RUNTIME_DIR}/sparrow-agent.sock"
@@ -75,7 +89,34 @@ Wait flags can be combined (AND). `--media-advancing` requires **two consecutive
 
 Exit codes: `0` ok, `1` CLI/usage, `2` app error envelope, `3` wait timeout (includes `last` snapshot).
 
-## Reading a snapshot
+## Reading a GPUI snapshot
+
+```json
+{
+  "ok": true,
+  "result": {
+    "_tag": "snapshot",
+    "channelName": "Eurosport 1 FHD SE",
+    "diagnostics": {
+      "version": 2,
+      "engine": "embedded-libmpv",
+      "phase": "playing",
+      "recoveryCount": 0,
+      "media": {
+        "paused": false,
+        "currentTimeMs": 12000,
+        "presentedFrames": 240,
+        "droppedVideoFrames": 0
+      },
+      "controls": {"volumePercent": 100.0, "muted": false, "fullscreen": false}
+    }
+  }
+}
+```
+
+`presentedFrames` counts new pictures published by the libmpv renderer for the current binding. `droppedVideoFrames` combines the decoder and video-output drop counters. Compare `currentTimeMs` and `presentedFrames` across snapshots or use `wait --media-advancing`. `media` can be `null` until a binding is playing, and both `channelName` and `diagnostics` are `null` when no Channel is selected.
+
+### Legacy Tauri snapshot
 
 `snapshot` looks like:
 
@@ -146,7 +187,7 @@ just agent snapshot
 just agent snapshot
 ```
 
-If the second snapshot shows new `standstills` or `msSinceTimeAdvance` stuck above a few seconds while `presentedFrames` is unchanged, the picture is frozen. Paste that JSON (not provider URLs) when asking for a player change.
+If `presentedFrames` stays unchanged while the Channel remains in `playing`, the renderer has stopped publishing pictures. In a Tauri snapshot, also look for new `standstills` and high `msSinceTimeAdvance`. Share the allowlisted snapshot when asking for a player change.
 
 Omarchy `omarchy capture screenshot fullscreen save` can sit beside this as visual proof. It does not replace `snapshot`. In a desktop-size window `tune` leaves the picture filling the window (the Theater layout's watch mode, [ADR 0006](../adr/0006-use-a-theater-layout-on-desktop-and-number-channels-in-core.md)); the Channel info and controls over it hide after three seconds without input, so a later capture shows the picture alone. In a smaller window `tune` leaves the pocket layout's watch mode ([ADR 0007](../adr/0007-use-a-pocket-layout-where-the-picture-cannot-be-covered.md)): the picture with the Channel info and controls under it. Nothing is drawn over the picture there and nothing hides. On Android TV, which has no watch mode, `tune` plays in the Guide's docked picture at the top left.
 
@@ -159,13 +200,14 @@ Omarchy `omarchy capture screenshot fullscreen save` can sit beside this as visu
 
 ## Verification
 
-`just check` includes frontend command/lifecycle tests, actual mpegts.js IO/demuxer pause/resume regressions, Rust socket framing/deadline tests, and CLI tests against real Unix sockets (including EOF, oversized responses, shell metacharacters, and motion/deadline semantics). These checks do not replace a rebuilt AppImage test with moving video **and** verified audio output.
+`just check` includes the GPUI socket contract and the embedded libmpv playback test, legacy frontend command and lifecycle tests, mpegts.js pause and resume regressions, and CLI tests against real Unix sockets. Verify moving video and audio output separately in the installed build.
 
 ## Implementation map
 
 | Piece | Location |
 |---|---|
-| Socket, token, eval dispatch | `app/src-tauri/src/agent_control.rs` |
+| GPUI socket, dispatch and diagnostics | `crates/sparrow-desktop/src/linux/agent_control.rs` |
+| Legacy socket, token, eval dispatch | `app/src-tauri/src/agent_control.rs` |
 | Command execution | `app/src/features/agent-control/agent-control.ts` |
 | Catalog / player bindings | `app/src/features/agent-control/agent-control-binding.ts` |
 | Webview reply bridge | `app/src/features/agent-control/installed-agent-bridge.tsx` |

@@ -53,6 +53,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
             clang \
+            libmpv-dev \
             libssl-dev \
             libwebkit2gtk-4.1-dev \
             libxkbcommon-dev \
@@ -130,6 +131,7 @@ jobs:
             gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good \
             libayatana-appindicator3-dev \
+            libmpv-dev \
             librsvg2-dev \
             libssl-dev \
             libwebkit2gtk-4.1-dev \

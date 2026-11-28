@@ -80,6 +80,7 @@ impl DesktopPlayback {
 
     pub(super) fn present(self: Arc<Self>, window: WindowHandle<GuideSurface>, cx: &App) {
         let mut player = self.player.subscribe();
+        let background = cx.background_executor().clone();
         cx.spawn(async move |cx| {
             let Ok(player) = player
                 .wait_for(Option::is_some)
@@ -107,14 +108,20 @@ impl DesktopPlayback {
                     serial = next;
                     let epoch = self.ambient_epoch.load(Ordering::Relaxed);
                     let ambient = frame.as_ref().map(|frame| frame.ambient);
-                    let picture = frame.and_then(|frame| {
-                        let pixels = image::RgbaImage::from_raw(
-                            frame.width,
-                            frame.height,
-                            frame.bgra.clone(),
-                        )?;
-                        Some(Arc::new(RenderImage::new([image::Frame::new(pixels)])))
-                    });
+                    let picture = if let Some(frame) = frame {
+                        background
+                            .spawn(async move {
+                                let pixels = image::RgbaImage::from_raw(
+                                    frame.width,
+                                    frame.height,
+                                    frame.bgra.clone(),
+                                )?;
+                                Some(Arc::new(RenderImage::new([image::Frame::new(pixels)])))
+                            })
+                            .await
+                    } else {
+                        None
+                    };
                     if cx
                         .update(|cx| {
                             window.update(cx, |view, window, cx| {

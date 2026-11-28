@@ -21,7 +21,7 @@ pub trait TextEditorHost {
     fn finish_save(&self, session: u64, attempt: u64, saved: bool);
 
     /// Drops the open editor as Cancelled, as a press outside it does.
-    fn cancel_editor(&self) {}
+    fn cancel_editor(&self);
 
     fn editor_key(&self, _event: &KeyDownEvent, _cx: &mut App) -> bool {
         false

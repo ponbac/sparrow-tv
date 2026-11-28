@@ -1,4 +1,4 @@
-use std::{cell::Cell, env, path::PathBuf, rc::Rc, sync::Arc};
+use std::{cell::Cell, env, path::PathBuf, rc::Rc, sync::Arc, time::Duration};
 
 use gpui::{AppContext, Bounds, QuitMode, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 use sparrow_guide_ui::{Catalog, GuideHost, GuideSurface, register_fonts};
@@ -125,16 +125,24 @@ pub(super) fn run() -> Result<(), &'static str> {
         cx.activate(true);
     });
     if let Some(runtime) = catalog.runtime() {
-        runtime.block_on(async {
-            if let Some(agent) = agent {
-                agent.shutdown().await;
-            }
-            if let Some(runner) = catalog.runner()
-                && runner.stop().await.is_err()
-            {
-                eprintln!("Couldn’t confirm Playback Session cleanup.");
-            }
+        let shutdown = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                if let Some(agent) = agent {
+                    agent.shutdown().await;
+                }
+                if let Some(runner) = catalog.runner()
+                    && runner.stop().await.is_err()
+                {
+                    eprintln!("Couldn’t confirm Playback Session cleanup.");
+                }
+            })
+            .await
         });
+        if shutdown.is_err() {
+            // Dropping the runtime can wait for the same stalled teardown.
+            eprintln!("Sparrow TV shutdown timed out.");
+            std::process::exit(1);
+        }
     }
     drop(catalog);
     opened

@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef SPARROW_EGL
+#ifdef SPARROW_MPV_EGL
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #define GL_GLEXT_PROTOTYPES
@@ -60,10 +60,18 @@ sparrow_mpv *sparrow_mpv_create(void *stream, mpv_stream_cb_read_fn read,
     atomic_init(&mpv->opened, 0);
     if (!mpv->player)
         goto failed;
+#ifndef SPARROW_MPV_EGL
+    (void)backend;
+#endif
     const char *options[][2] = {
         {"config", "no"}, {"terminal", "no"}, {"msg-level", "all=no"},
         {"load-scripts", "no"}, {"autoload-files", "no"}, {"ytdl", "no"},
-        {"vo", "libmpv"}, {"hwdec", backend == 0 ? "no" : "auto"}, {"idle", "yes"},
+        {"vo", "libmpv"}, {"idle", "yes"},
+#ifdef SPARROW_MPV_EGL
+        {"hwdec", backend == 0 ? "no" : "auto"},
+#else
+        {"hwdec", "no"},
+#endif
         {"video-timing-offset", "0.012"},
         {"demuxer", "lavf"}, {"demuxer-lavf-format", "mpegts"},
         {"osd-level", "0"}, {"input-default-bindings", "no"},
@@ -86,7 +94,8 @@ failed:
 typedef struct {
     mpv_render_context *context;
     mpv_handle *player;
-#ifdef SPARROW_EGL
+    int64_t target_time_scale;
+#ifdef SPARROW_MPV_EGL
     EGLDisplay display;
     EGLContext gl;
     EGLSurface surface;
@@ -95,7 +104,7 @@ typedef struct {
 #endif
 } sparrow_renderer;
 
-#ifdef SPARROW_EGL
+#ifdef SPARROW_MPV_EGL
 static void *gl_proc(void *unused, const char *name) {
     (void)unused;
     return (void *)eglGetProcAddress(name);
@@ -196,7 +205,7 @@ static int render_egl(sparrow_renderer *renderer, int width, int height, size_t 
 void sparrow_mpv_free_render(sparrow_renderer *renderer) {
     if (renderer->context)
         mpv_render_context_free(renderer->context);
-#ifdef SPARROW_EGL
+#ifdef SPARROW_MPV_EGL
     release_egl(renderer);
 #endif
     free(renderer);
@@ -211,10 +220,12 @@ sparrow_renderer *sparrow_mpv_create_render(sparrow_mpv *mpv, void *wake_context
         {MPV_RENDER_PARAM_API_TYPE, MPV_RENDER_API_TYPE_SW}, {0},
     };
     renderer->player = mpv->player;
+    // target_time follows libmpv's internal clock, in nanoseconds since 2.2.
+    renderer->target_time_scale = mpv_client_api_version() >= MPV_MAKE_VERSION(2, 2) ? 1 : 1000;
+#ifdef SPARROW_MPV_EGL
     int result = MPV_ERROR_UNSUPPORTED;
     if (backend == 0)
         result = mpv_render_context_create(&renderer->context, mpv->player, params);
-#ifdef SPARROW_EGL
     else if (init_egl(renderer)) {
         mpv_opengl_init_params gl = {.get_proc_address = gl_proc};
         mpv_render_param gl_params[] = {
@@ -224,6 +235,9 @@ sparrow_renderer *sparrow_mpv_create_render(sparrow_mpv *mpv, void *wake_context
         };
         result = mpv_render_context_create(&renderer->context, mpv->player, gl_params);
     }
+#else
+    (void)backend;
+    int result = mpv_render_context_create(&renderer->context, mpv->player, params);
 #endif
     if (result < 0) {
         sparrow_mpv_free_render(renderer);
@@ -269,15 +283,16 @@ int sparrow_mpv_update(sparrow_renderer *renderer, int64_t *delay_ns) {
     if (mpv_render_context_get_info(renderer->context, param) >= 0 &&
         (info.flags & MPV_RENDER_FRAME_INFO_PRESENT) &&
         !(info.flags & (MPV_RENDER_FRAME_INFO_REDRAW | MPV_RENDER_FRAME_INFO_REPEAT))) {
-        // mpv 0.41 assigns vo_frame.pts (nanoseconds) despite the header comment.
-        *delay_ns = info.target_time ? info.target_time - mpv_get_time_ns(renderer->player) : 0;
+        *delay_ns = info.target_time
+            ? info.target_time * renderer->target_time_scale - mpv_get_time_us(renderer->player) * 1000
+            : 0;
         return 2;
     }
     return 1;
 }
 
 int sparrow_mpv_render(sparrow_renderer *renderer, int width, int height, size_t stride, void *pixels) {
-#ifdef SPARROW_EGL
+#ifdef SPARROW_MPV_EGL
     if (renderer->display != EGL_NO_DISPLAY)
         return render_egl(renderer, width, height, stride, pixels);
 #endif

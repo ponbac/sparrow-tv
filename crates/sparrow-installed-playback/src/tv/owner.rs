@@ -1350,8 +1350,8 @@ impl Owner {
         };
         let live = session.bound;
         if self.cleanup_is_blocked() || (live && self.snapshot.transport_token.is_none()) {
-            // The next reconciliation uses the latest bounds once the picture
-            // can move again. A new presentation starts at those bounds itself.
+            // Queued commands can retain this picture before reconciliation.
+            // Move it to the latest bounds once the old transport is released.
             self.viewport_pending = true;
             return;
         }

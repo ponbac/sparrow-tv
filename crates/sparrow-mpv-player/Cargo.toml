@@ -7,10 +7,11 @@ publish.workspace = true
 [features]
 embedded = ["dep:arc-swap", "dep:sparrow-installed-playback", "dep:tokio", "dep:tokio-util"]
 egl = ["embedded"]
+benchmark = ["embedded"]
 
 [[example]]
 name = "benchmark"
-required-features = ["embedded"]
+required-features = ["benchmark"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 arc-swap = { version = "1", optional = true }

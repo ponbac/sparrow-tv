@@ -617,26 +617,35 @@ async fn a_fullscreen_pause_can_move_the_exact_retained_picture_back_to_the_dock
 }
 
 #[tokio::test]
-async fn a_viewport_deferred_until_the_transport_retires_moves_the_retained_picture() {
+async fn queued_retunes_and_restart_apply_the_latest_bounds_to_the_retained_picture() {
     let (fixture, mut owner) = setup();
     visible(&mut owner, 1).await;
     let key = tune(&mut owner, target(1)).await;
     owner.command(Command::Fullscreen).await;
-
-    owner.cancel_deadlines();
+    // The owner drains queued commands before reconciling a retune.
+    for selected in [target(2), target(1)] {
+        owner
+            .command(Command::Tune {
+                target: selected,
+                repeat: false,
+            })
+            .await;
+    }
     owner.command(Command::ExitFullscreen).await;
+    assert_eq!(owner.snapshot.phase, Phase::Stopping);
     assert!(
         fixture
             .calls()
             .ends_with(&[Call::Viewport(key.clone(), Some(true))])
     );
 
-    owner.command(Command::Pause).await;
-    owner.drive().await;
-    assert_eq!(owner.snapshot.phase, Phase::Paused(TvPauseCause::User));
+    owner.command(Command::Restart).await;
+    assert!(owner.drive().await);
     assert!(fixture.calls().ends_with(&[
+        Call::Suspend,
         Call::StopPicture(TvPresentationStop::RetainPicture),
         Call::Viewport(key, Some(false)),
+        Call::Reopen,
     ]));
 }
 

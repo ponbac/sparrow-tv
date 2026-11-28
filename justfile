@@ -15,6 +15,13 @@ check-app:
     bun test scripts/agent-control/cli.test.ts
     cd app && bun run build
 
+[positional-arguments]
+run-desktop *args:
+    cargo run --locked --package sparrow-desktop -- "$@"
+
+build-desktop:
+    cargo build --locked --release --package sparrow-desktop
+
 # Drive a running installed Sparrow. Requires SPARROW_AGENT_SOCKET and SPARROW_AGENT_TOKEN.
 # Pass CLI flags after `--`, e.g. `just -- agent --help` or `just agent ping`.
 [positional-arguments]

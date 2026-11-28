@@ -45,17 +45,24 @@ pub enum Backend {
 pub struct MpvDiagnostics {
     pub presented_frames: u64,
     pub current_time_ms: u64,
-    pub vo_delayed_frames: Option<u64>,
     pub decoder_dropped_frames: Option<u64>,
     pub vo_dropped_frames: Option<u64>,
+    pub paused: bool,
+    pub opaque_playlist: bool,
+    #[cfg(feature = "benchmark")]
+    pub benchmark: BenchmarkDiagnostics,
+}
+
+#[cfg(feature = "benchmark")]
+#[derive(Clone, Copy, Debug)]
+pub struct BenchmarkDiagnostics {
+    pub vo_delayed_frames: Option<u64>,
     pub volume: f64,
     pub muted: bool,
-    pub paused: bool,
     pub audio_output_active: bool,
     pub audio_stream_id: Option<u64>,
     pub track_count: Option<u64>,
     pub hardware_decoding: bool,
-    pub opaque_playlist: bool,
 }
 
 type Operation = Box<dyn FnOnce(&mut Worker) + Send>;
@@ -275,19 +282,22 @@ impl Binding {
         MpvDiagnostics {
             presented_frames: self.render.presented(),
             current_time_ms: (engine.number(c"time-pos") * 1_000.) as u64,
-            vo_delayed_frames: engine.integer(c"vo-delayed-frame-count"),
             decoder_dropped_frames: engine.integer(c"decoder-frame-drop-count"),
             vo_dropped_frames: engine.integer(c"frame-drop-count"),
-            volume: engine.number(c"volume"),
-            muted: engine.flag(c"mute"),
             paused: engine.flag(c"pause"),
-            audio_output_active: engine.has_string(c"current-ao")
-                && !engine.string_is(c"current-ao", c"null"),
-            audio_stream_id: engine.integer(c"current-tracks/audio/src-id"),
-            track_count: engine.integer(c"track-list/count"),
-            hardware_decoding: engine.has_string(c"hwdec-current")
-                && !engine.string_is(c"hwdec-current", c"no"),
             opaque_playlist: engine.private_path(),
+            #[cfg(feature = "benchmark")]
+            benchmark: BenchmarkDiagnostics {
+                vo_delayed_frames: engine.integer(c"vo-delayed-frame-count"),
+                volume: engine.number(c"volume"),
+                muted: engine.flag(c"mute"),
+                audio_output_active: engine.has_string(c"current-ao")
+                    && !engine.string_is(c"current-ao", c"null"),
+                audio_stream_id: engine.integer(c"current-tracks/audio/src-id"),
+                track_count: engine.integer(c"track-list/count"),
+                hardware_decoding: engine.has_string(c"hwdec-current")
+                    && !engine.string_is(c"hwdec-current", c"no"),
+            },
         }
     }
 

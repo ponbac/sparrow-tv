@@ -280,8 +280,7 @@ impl GuideSurface {
             return;
         }
         // A press anywhere else drops the open editor without committing it.
-        self.retire_query_editor();
-        if self.source_editor_open() {
+        if self.active_editor.take().is_some() || self.source_editor_open() {
             self.host.cancel_editor();
         }
         let Some(target) = target else {

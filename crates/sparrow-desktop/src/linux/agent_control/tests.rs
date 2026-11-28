@@ -5,6 +5,42 @@ use super::*;
 const TOKEN: &str = "socket-contract-test-token";
 
 #[test]
+fn config_requires_a_private_local_socket_and_printable_token() {
+    let runtime = tempfile::tempdir_in("/var/tmp").unwrap();
+    let outside = tempfile::tempdir_in("/var/tmp").unwrap();
+    let symlink = runtime.path().join("escape");
+    std::os::unix::fs::symlink(outside.path(), &symlink).unwrap();
+    let runtime_dir = Some(runtime.path());
+    let socket = runtime.path().join("agent.sock");
+    let valid = |socket, token: &str| {
+        Config {
+            socket,
+            token: token.into(),
+        }
+        .valid(runtime_dir)
+    };
+    assert!(valid(socket.clone(), TOKEN));
+    assert!(valid("/tmp/sparrow-agent.sock".into(), TOKEN));
+    for rejected in [
+        PathBuf::from("agent.sock"),
+        runtime.path().join("../agent.sock"),
+        outside.path().join("agent.sock"),
+        symlink.join("agent.sock"),
+        runtime.path().join("a".repeat(MAX_SOCKET_PATH_BYTES)),
+    ] {
+        assert!(!valid(rejected, TOKEN));
+    }
+    for rejected in [
+        "short",
+        "sixteen characters",
+        "0123456789abcdef\n",
+        &"x".repeat(129),
+    ] {
+        assert!(!valid(socket.clone(), rejected));
+    }
+}
+
+#[test]
 fn socket_contract_with_a_catalog_and_playback_runner() {
     let root = tempfile::tempdir().unwrap();
     let playback = Arc::new(DesktopPlayback::default());

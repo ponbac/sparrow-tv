@@ -1,6 +1,6 @@
-# Embedded Linux playback spike
+# Embedded Linux playback
 
-Enable `embedded` on Linux to link the system libmpv through pkg-config. The spike was tested with libmpv 2.5.0 (mpv 0.41.0). Enable `egl` to also build the offscreen OpenGL renderer with system EGL and GL. The features are opt-in so unrelated workspace builds can run without those libraries.
+Linux builds of `sparrow-desktop` enable `embedded` and link the system libmpv through pkg-config. A full Linux workspace build therefore needs libmpv development headers. The minimum pkg-config version is **1.109.0**, the software rendering API introduced in mpv 0.33. Ubuntu 22.04 supplies it in `libmpv-dev`. Building an individual package that does not enable `embedded` does not require libmpv. The optional `egl` feature also builds the offscreen OpenGL renderer and requires system EGL and GL development headers.
 
 `TvPlaybackRunner` owns Playback Sessions, recovery and Audio Track selection. `PlaybackManager` selects and filters the MPEG-TS Audio Track before returning bytes. libmpv opens a single `sparrow://playback` callback tied to the exact stream generation. The callback receives bytes and privacy-safe errors. The HTTP connection and Playback Source stay in Rust. The libmpv instance disables config loading, external file autoloading and logs, and forces MPEG-TS demuxing.
 
@@ -9,8 +9,12 @@ The client and render APIs run on separate threads. Client controls and shutdown
 ## GPUI handoff
 
 - In `sparrow-desktop`, build the Playback Manager and `MpvPresentation` on the playback runtime, pass the presentation to `TvPlaybackRunner::spawn`, and call `connect`. Reuse the Guide's playback command, snapshot, host visibility and physical viewport interfaces.
-- In `sparrow-guide-ui`, paint the latest visible frame in the existing picture rectangle, below the controls. Read the frame on the animation tick while playback is visible. Cache one `RenderImage` by frame serial, use the existing BGRA-to-`RenderImage` construction, and remove superseded images from the atlas with `Window::drop_image`. The video frame already includes the input for the Guide ambient renderer.
+- The desktop subscribes to frame publication, deduplicates by frame serial, and constructs each `RenderImage` on GPUI's background executor. The Guide paints the image below the controls, removes superseded images with `Window::drop_image`, and takes ambient colors from the same video frame.
 - Use the Guide's still flight at dock/fullscreen transition. Hand off physical viewport sizes at the endpoints to avoid resizing the software buffer or EGL framebuffer on each animation tick. Acknowledge `still_handoff` when the recovery still paints. A user pause releases the Playback Source and holds the latest frame, then resume starts a new stream generation at the live edge.
+
+## Playback test
+
+`cargo test -p sparrow-mpv-player --features embedded` uses a loopback Playback Source and runs without a window or audio device. Its video-only fixture was generated with `ffmpeg -f lavfi -i 'color=c=blue:s=64x48:r=12:d=4' -an -c:v libx264 -g 12 -mpegts_flags +pat_pmt_at_frames -f mpegts tests/fixtures/blue.mpegts` from this crate's directory.
 
 ## Run the benchmark
 
@@ -24,7 +28,7 @@ ffmpeg -y -f lavfi -i 'testsrc2=size=1920x1080:rate=60' \
   -metadata:s:a:1 language=swe -t 40 -c:v libx264 -preset veryfast \
   -crf 21 -threads 8 -g 60 -pix_fmt yuv420p -c:a aac \
   -f mpegts /tmp/sparrow-mpv-1080p60.ts
-cargo build --release -p sparrow-mpv-player --features egl --example benchmark
+cargo build --release -p sparrow-mpv-player --features benchmark,egl --example benchmark
 target/release/examples/benchmark /tmp/sparrow-mpv-1080p60.ts 40 docked sw 18
 target/release/examples/benchmark /tmp/sparrow-mpv-1080p60.ts 40 fullscreen sw 18
 target/release/examples/benchmark /tmp/sparrow-mpv-1080p60.ts 40 docked egl 18

@@ -65,6 +65,7 @@ unsafe extern "C" {
     fn sparrow_mpv_integer(mpv: *mut NativeMpv, name: *const c_char) -> i64;
     fn sparrow_mpv_number(mpv: *mut NativeMpv, name: *const c_char) -> c_double;
     fn sparrow_mpv_flag(mpv: *mut NativeMpv, name: *const c_char) -> c_int;
+    #[cfg(feature = "benchmark")]
     fn sparrow_mpv_string_is(
         mpv: *mut NativeMpv,
         name: *const c_char,
@@ -224,6 +225,7 @@ impl Engine {
         unsafe { sparrow_mpv_has_string(self.handle.as_ptr(), name.as_ptr()) != 0 }
     }
 
+    #[cfg(feature = "benchmark")]
     pub(crate) fn string_is(&self, name: &CStr, value: &CStr) -> bool {
         unsafe { sparrow_mpv_string_is(self.handle.as_ptr(), name.as_ptr(), value.as_ptr()) != 0 }
     }

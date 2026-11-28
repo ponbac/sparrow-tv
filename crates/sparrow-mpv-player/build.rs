@@ -6,9 +6,9 @@ fn main() {
     }
     println!("cargo:rerun-if-changed=src/native.c");
     let mpv = pkg_config::Config::new()
-        .atleast_version("2.5.0")
+        .atleast_version("1.109.0")
         .probe("mpv")
-        .expect("libmpv 2.5.0 development headers are required");
+        .expect("libmpv 1.109.0 development headers are required");
     let mut build = cc::Build::new();
     build.file("src/native.c").includes(mpv.include_paths);
     if std::env::var_os("CARGO_FEATURE_EGL").is_some() {
@@ -16,7 +16,7 @@ fn main() {
             let gl = pkg_config::probe_library(library).expect("EGL and OpenGL are required");
             build.includes(gl.include_paths);
         }
-        build.define("SPARROW_EGL", None);
+        build.define("SPARROW_MPV_EGL", None);
     }
     build.compile("sparrow_mpv_native");
 }

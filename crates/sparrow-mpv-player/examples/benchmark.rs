@@ -291,12 +291,15 @@ mod linux {
         sleep(Duration::from_secs(2)).await;
         let pre = player.diagnostics().await.unwrap();
         assert!(
-            pre.audio_output_active && pre.opaque_playlist && pre.muted && !pre.paused,
+            pre.benchmark.audio_output_active
+                && pre.opaque_playlist
+                && pre.benchmark.muted
+                && !pre.paused,
             "{pre:?}"
         );
-        assert!((pre.volume - 1.).abs() < 0.01, "{pre:?}");
+        assert!((pre.benchmark.volume - 1.).abs() < 0.01, "{pre:?}");
         assert!(
-            pre.track_count == Some(2) && pre.audio_stream_id.is_some(),
+            pre.benchmark.track_count == Some(2) && pre.benchmark.audio_stream_id.is_some(),
             "{pre:?}"
         );
         let start = Instant::now();
@@ -334,10 +337,13 @@ mod linux {
             p(&native_samples, 0.95),
             p(&samples, 0.50),
             p(&samples, 0.95),
-            delta(pre.vo_delayed_frames, post.vo_delayed_frames),
+            delta(
+                pre.benchmark.vo_delayed_frames,
+                post.benchmark.vo_delayed_frames
+            ),
             delta(pre.decoder_dropped_frames, post.decoder_dropped_frames),
             delta(pre.vo_dropped_frames, post.vo_dropped_frames),
-            post.hardware_decoding,
+            post.benchmark.hardware_decoding,
         );
         assert!(changed_ambient && post.opaque_playlist);
         assert!(
@@ -365,7 +371,10 @@ mod linux {
         })
         .await;
         let controls = player.diagnostics().await.unwrap();
-        assert!(!controls.muted && controls.volume == 0., "{controls:?}");
+        assert!(
+            !controls.benchmark.muted && controls.benchmark.volume == 0.,
+            "{controls:?}"
+        );
 
         send(&commands, Command::Pause).await;
         wait_until(|| {
@@ -419,11 +428,11 @@ mod linux {
         })
         .await;
         let diagnostics = player.diagnostics().await.unwrap();
-        assert!(diagnostics.audio_output_active && diagnostics.opaque_playlist);
+        assert!(diagnostics.benchmark.audio_output_active && diagnostics.opaque_playlist);
         assert!(
-            diagnostics.track_count == Some(2)
-                && diagnostics.audio_stream_id.is_some()
-                && diagnostics.audio_stream_id != pre.audio_stream_id,
+            diagnostics.benchmark.track_count == Some(2)
+                && diagnostics.benchmark.audio_stream_id.is_some()
+                && diagnostics.benchmark.audio_stream_id != pre.benchmark.audio_stream_id,
             "{diagnostics:?}"
         );
 

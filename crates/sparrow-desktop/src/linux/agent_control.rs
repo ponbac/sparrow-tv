@@ -21,7 +21,7 @@ use tokio::{
     net::{UnixListener, UnixStream},
     sync::{mpsc, oneshot, watch},
     task::{JoinHandle, JoinSet},
-    time::timeout,
+    time::{sleep, timeout},
 };
 
 use super::playback::DesktopPlayback;
@@ -34,6 +34,7 @@ const CHANNEL_LIMIT: u16 = 40;
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const DISPATCH_TIMEOUT: Duration = Duration::from_secs(12);
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
 struct Config {
     socket: PathBuf,
@@ -166,14 +167,20 @@ async fn serve(
     let dispatcher = Arc::new(dispatcher);
     let token: Arc<str> = config.token.into();
     let mut connections = JoinSet::new();
-    let result = loop {
+    loop {
         tokio::select! {
-            _ = &mut shutdown => break Ok(()),
+            _ = &mut shutdown => break,
             _ = connections.join_next(), if !connections.is_empty() => {}
             connection = listener.accept() => {
                 let (stream, _) = match connection {
                     Ok(connection) => connection,
-                    Err(error) => break Err(error),
+                    Err(error) => {
+                        eprintln!("sparrow-agent-control: accept failed: {error}");
+                        tokio::select! {
+                            _ = &mut shutdown => break,
+                            _ = sleep(ACCEPT_BACKOFF) => continue,
+                        }
+                    }
                 };
                 if connections.len() < MAX_CONNECTIONS {
                     let dispatcher = Arc::clone(&dispatcher);
@@ -182,9 +189,9 @@ async fn serve(
                 }
             }
         }
-    };
+    }
     connections.shutdown().await;
-    result
+    Ok(())
 }
 
 async fn bind(path: PathBuf) -> io::Result<(UnixListener, SocketFile)> {
@@ -470,8 +477,6 @@ impl Dispatcher {
                             "paused": sample.paused,
                             "currentTimeMs": sample.current_time_ms,
                             "presentedFrames": sample.presented_frames,
-                            "decodedFrames": sample.presented_frames,
-                            "totalVideoFrames": sample.presented_frames,
                             "droppedVideoFrames": sample.decoder_dropped_frames.unwrap_or(0)
                                 + sample.vo_dropped_frames.unwrap_or(0),
                         })

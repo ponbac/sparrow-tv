@@ -82,13 +82,14 @@ public final class ShieldActivity extends Activity implements SurfaceHolder.Call
         nativeStart(getApplicationContext(), getDataDir().getAbsolutePath());
         nativeRegisterHost(hostId, isTelevision, playback.supportsPictureInPicture());
         updateMotionPreference();
-        if (!isTelevision) {
-            handheld = new HandheldWindow(this, root, view);
-        } else if (hostId == 1) {
+        if (isTelevision && hostId == 1) {
             openingGuide = new OpeningGuideView(this);
             root.addView(openingGuide);
         }
         setContentView(root);
+        if (!isTelevision) {
+            handheld = new HandheldWindow(this, root, view);
+        }
         root.requestFocus();
     }
 
@@ -257,6 +258,10 @@ public final class ShieldActivity extends Activity implements SurfaceHolder.Call
             editor.retireRequest(generation);
             postForHost(id, () -> editor.close(generation));
         }
+    }
+
+    public void cancelTextEditor(long id) {
+        postForHost(id, editor::cancel);
     }
 
     public void beginSourceDraft(long id, long session, String m3u, String epg) {
