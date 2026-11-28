@@ -262,6 +262,50 @@ async fn superseded_debounce_and_reads_cannot_replace_the_active_generation() {
     assert!(state.channels().is_empty());
 }
 
+#[tokio::test]
+async fn refining_a_search_keeps_previous_results_visible_until_replacement_arrives() {
+    let mut m3u = String::from("#EXTM3U\n");
+    add(&mut m3u, 1, VISIBLE, "Manchester One");
+    add(&mut m3u, 2, VISIBLE, "Manchester Two");
+    add(&mut m3u, 3, VISIBLE, "Other News");
+    let fixture = support::open(m3u, None).await;
+    let core = fixture.core();
+    let mut state = SearchState::new(core.status().generation());
+    populate(&mut state, core, SearchView::Inline, "man");
+    assert_eq!(state.status(), SearchStatus::Ready);
+    assert_eq!(state.channels().len(), 2);
+
+    // Typing another character keeps the existing rows visible during debounce and read.
+    let ticket = state.set_term("manchester two").unwrap();
+    assert_eq!(state.status(), SearchStatus::Ready);
+    assert_eq!(state.channels().len(), 2);
+    let request = state.finish_debounce(ticket).unwrap();
+    assert_eq!(state.status(), SearchStatus::Ready);
+    assert_eq!(state.channels().len(), 2);
+
+    // Completing replaces the previous hits cleanly without mixing old and new rows.
+    assert_eq!(state.complete(request.run(core)), PageUpdate::Applied);
+    assert_eq!(state.status(), SearchStatus::Ready);
+    assert_eq!(state.channels().len(), 1);
+    assert_eq!(state.channels()[0].channel().name(), "Manchester Two");
+
+    // Refining to a non-matching term keeps prior hits until the empty result arrives.
+    let ticket = state.set_term("manchester zzz").unwrap();
+    assert_eq!(state.status(), SearchStatus::Ready);
+    assert_eq!(state.channels().len(), 1);
+    let request = state.finish_debounce(ticket).unwrap();
+    assert_eq!(state.complete(request.run(core)), PageUpdate::Applied);
+    assert_eq!(state.status(), SearchStatus::Empty);
+    assert!(state.channels().is_empty());
+
+    // Clearing the term clears hits immediately.
+    populate(&mut state, core, SearchView::Inline, "man");
+    assert_eq!(state.channels().len(), 2);
+    assert!(state.set_term("").is_none());
+    assert_eq!(state.status(), SearchStatus::Idle);
+    assert!(state.channels().is_empty());
+}
+
 fn populate(state: &mut SearchState, core: &CatalogAccess, view: SearchView, term: &str) {
     state.set_view(view);
     let ticket = state.set_term(term).unwrap();

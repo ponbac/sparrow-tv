@@ -19,7 +19,7 @@ use sparrow_core::{
 
 use crate::{GuideFamily, PageUpdate, VariantPreferences, time::programme_at};
 
-pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(90);
+pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(25);
 const PAGE_SIZE: u16 = 40;
 const INLINE_LIMIT: usize = 8;
 const MAX_FIELD_BYTES: usize = 256;
@@ -295,6 +295,7 @@ enum Pending {
     Reading {
         id: u64,
         cancelled: BlockingTaskCancellation,
+        replace: bool,
     },
     Failed,
     ReconcileGeneration,
@@ -341,7 +342,7 @@ impl SearchState {
         }
         self.view = view;
         self.include_hidden = false;
-        self.restart()
+        self.restart(true)
     }
 
     pub fn set_term(&mut self, field: &str) -> Option<SearchDebounce> {
@@ -349,8 +350,9 @@ impl SearchState {
         if self.input == input {
             return None;
         }
+        let clear_hits = !matches!(input, Input::Valid(_));
         self.input = input;
-        self.restart()
+        self.restart(clear_hits)
     }
 
     /// Apply the current status after a publication or stale result.
@@ -362,7 +364,7 @@ impl SearchState {
             return None;
         }
         self.generation = generation;
-        self.restart()
+        self.restart(true)
     }
 
     pub fn set_preferences(
@@ -402,8 +404,7 @@ impl SearchState {
         }
         let visible = !self.hits.rows.rows.is_empty() || !self.hits.programmes.is_empty();
         match self.pending {
-            Pending::Debouncing(_) => SearchStatus::Loading,
-            Pending::Reading { .. } if !visible => SearchStatus::Loading,
+            Pending::Debouncing(_) | Pending::Reading { .. } if !visible => SearchStatus::Loading,
             Pending::Failed => SearchStatus::Failed,
             Pending::ReconcileGeneration => SearchStatus::ReconcileGeneration,
             _ if visible => SearchStatus::Ready,
@@ -497,14 +498,18 @@ impl SearchState {
     }
 
     pub fn complete(&mut self, outcome: SearchCompletion) -> PageUpdate {
-        if self.generation != Some(outcome.generation)
-            || !matches!(self.pending, Pending::Reading { id, .. } if id == outcome.id)
-        {
+        let Pending::Reading { id, replace, .. } = self.pending else {
+            return PageUpdate::Superseded;
+        };
+        if self.generation != Some(outcome.generation) || id != outcome.id {
             return PageUpdate::Superseded;
         }
         self.pending = Pending::Idle;
         match outcome.result {
             Ok(ReadResult::Inline(results)) if results.generation() == outcome.generation => {
+                if replace {
+                    self.hits = Hits::default();
+                }
                 self.hits.programme_read = outcome.id;
                 self.hits
                     .raw_programmes
@@ -513,6 +518,9 @@ impl SearchState {
                 self.append_channels(results.channels().items());
             }
             Ok(ReadResult::Desk(page)) if page.generation() == outcome.generation => {
+                if replace {
+                    self.hits = Hits::default();
+                }
                 self.next = page.next().cloned();
                 self.append_channels(page.items());
             }
@@ -523,6 +531,10 @@ impl SearchState {
                 return PageUpdate::ReconcileGeneration;
             }
             Err(_) => {
+                if replace {
+                    self.hits = Hits::default();
+                    self.next = None;
+                }
                 self.pending = Pending::Failed;
                 return PageUpdate::Failed;
             }
@@ -554,9 +566,11 @@ impl SearchState {
         Some(intent)
     }
 
-    fn restart(&mut self) -> Option<SearchDebounce> {
+    fn restart(&mut self, clear_hits: bool) -> Option<SearchDebounce> {
         self.cancel_read();
-        self.hits = Hits::default();
+        if clear_hits {
+            self.hits = Hits::default();
+        }
         self.next = None;
         self.pending = Pending::Idle;
         if self.view == SearchView::Closed
@@ -574,10 +588,10 @@ impl SearchState {
         let Input::Valid(term) = &self.input else {
             return None;
         };
-        let branch = match self.view {
+        let (branch, replace) = match self.view {
             SearchView::Closed => return None,
-            SearchView::Inline => Branch::Inline,
-            SearchView::Desk => Branch::Desk(self.next.clone()),
+            SearchView::Inline => (Branch::Inline, true),
+            SearchView::Desk => (Branch::Desk(self.next.clone()), self.next.is_none()),
         };
         let generation = self.generation?;
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
@@ -585,6 +599,7 @@ impl SearchState {
         self.pending = Pending::Reading {
             id,
             cancelled: cancelled.clone(),
+            replace,
         };
         Some(SearchRead {
             id,
