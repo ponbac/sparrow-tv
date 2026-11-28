@@ -1,0 +1,31 @@
+[package]
+name = "sparrow-mpv-player"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+embedded = ["dep:arc-swap", "dep:sparrow-installed-playback", "dep:tokio", "dep:tokio-util"]
+egl = ["embedded"]
+
+[[example]]
+name = "benchmark"
+required-features = ["embedded"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+arc-swap = { version = "1", optional = true }
+sparrow-installed-playback = { path = "../sparrow-installed-playback", optional = true }
+tokio = { version = "1", features = ["macros", "rt", "sync"], optional = true }
+tokio-util = { version = "0.7", optional = true }
+
+[build-dependencies]
+cc = "1"
+pkg-config = "0.3"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+sparrow-core = { path = "../sparrow-core" }
+sparrow-installed-catalog = { path = "../sparrow-installed-catalog" }
+sparrow-source-http = { path = "../sparrow-source-http" }
+tempfile = "3"
+tokio = { version = "1", features = ["io-util", "net", "rt-multi-thread", "time"] }
+libc = "0.2"

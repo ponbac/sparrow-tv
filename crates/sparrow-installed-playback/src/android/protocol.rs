@@ -202,6 +202,25 @@ struct AndroidPlaybackStatusWire {
 pub struct AndroidPlaybackError;
 
 impl AndroidPlaybackStatus {
+    /// Constructs an aggregate sample from native presentation counters.
+    pub const fn from_sample(
+        phase: AndroidPlaybackPhase,
+        decoded_frames: u64,
+        dropped_frames: u64,
+        buffered_duration_ms: u64,
+        silent: bool,
+        audio: AndroidPlaybackAudio,
+    ) -> Self {
+        Self {
+            phase,
+            decoded_frames,
+            dropped_frames,
+            buffered_duration_ms,
+            silent,
+            audio,
+        }
+    }
+
     /// Decodes the allowlisted Media3 status without reflecting malformed input.
     pub fn parse_json(value: &str) -> Result<Self, AndroidPlaybackError> {
         let status: AndroidPlaybackStatusWire =

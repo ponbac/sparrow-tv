@@ -7326,6 +7326,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "sparrow-mpv-player"
+version = "0.0.0"
+dependencies = [
+ "arc-swap",
+ "cc",
+ "libc",
+ "pkg-config",
+ "sparrow-core",
+ "sparrow-installed-catalog",
+ "sparrow-installed-playback",
+ "sparrow-source-http",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "sparrow-server"
 version = "0.0.0"
 dependencies = [

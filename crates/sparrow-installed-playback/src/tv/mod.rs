@@ -1,5 +1,5 @@
-//! Android TV Playback Session ownership. The host posts Media3 operations and
-//! supplies Channel targets, layout bounds and Activity visibility.
+//! Shared TV Playback Session ownership. The host supplies presentation
+//! operations, Channel targets, layout bounds and visibility.
 
 mod owner;
 mod transport;

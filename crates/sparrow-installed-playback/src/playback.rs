@@ -497,14 +497,40 @@ impl PlaybackManager {
             .await
     }
 
-    pub(crate) async fn read_media3(
+    /// Fills a bounded buffer for a native demuxer's blocking read callback.
+    /// An empty read from an exhausted generation remains EOF on later pulls.
+    pub async fn read_native_into(
         &self,
-        session_id: PlaybackSessionId,
-        stream_handle: NativeStreamHandle,
-        maximum: usize,
-    ) -> Result<Vec<u8>, PlaybackManagerError> {
-        self.read_transport(session_id, stream_handle, maximum, true)
-            .await
+        session_id: &PlaybackSessionId,
+        stream_handle: &NativeStreamHandle,
+        buffer: &mut [u8],
+    ) -> Result<usize, PlaybackManagerError> {
+        const MAX_COALESCED_READS: usize = 16;
+        let maximum = buffer.len().min(MAX_NATIVE_PULL_BYTES);
+        let mut filled = 0;
+        for _ in 0..MAX_COALESCED_READS {
+            if filled == maximum {
+                break;
+            }
+            let next = self
+                .read_transport(
+                    session_id.clone(),
+                    stream_handle.clone(),
+                    maximum - filled,
+                    true,
+                )
+                .await;
+            match next {
+                Ok(bytes) if bytes.is_empty() => break,
+                Ok(bytes) => {
+                    buffer[filled..filled + bytes.len()].copy_from_slice(&bytes);
+                    filled += bytes.len();
+                }
+                Err(_) if filled > 0 => break,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(filled)
     }
 
     async fn read_transport(
@@ -925,7 +951,7 @@ impl PlaybackActor {
                 ActorState::Dormant(session) => match self.next_command().await {
                     Some(ActorCommand::Control(command)) => self.control_dormant(session, command),
                     Some(ActorCommand::Read(command)) => {
-                        // Media3 may have received the final bytes after a coalesced
+                        // A native demuxer may have received the final bytes after a coalesced
                         // pull encountered EOF. Report EOF for that generation only.
                         let result = if command.repeat_eof
                             && self.foreground

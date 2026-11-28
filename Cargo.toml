@@ -9,6 +9,7 @@ members = [
   "crates/sparrow-guide-ui",
   "crates/sparrow-installed-catalog",
   "crates/sparrow-installed-playback",
+  "crates/sparrow-mpv-player",
   "crates/sparrow-server",
   "crates/sparrow-shield",
   "crates/sparrow-snapshot-store",

@@ -9,8 +9,6 @@ use crate::{PlaybackManager, playback::MAX_NATIVE_PULL_BYTES};
 
 use super::{AndroidPlaybackError, AndroidPlaybackIdentity};
 
-const MAX_COALESCED_ACTOR_READS: usize = 16;
-
 /// Bounded byte pulls for Media3's dedicated loader thread.
 pub struct AndroidMedia3Reader {
     runtime: Handle,
@@ -36,28 +34,13 @@ impl AndroidMedia3Reader {
         let playback = self.playback.upgrade().ok_or(AndroidPlaybackError)?;
         catch_unwind(AssertUnwindSafe(|| {
             self.runtime.block_on(async move {
-                let mut returned = Vec::with_capacity(maximum);
-                for _ in 0..MAX_COALESCED_ACTOR_READS {
-                    // Unread bytes stay with the actor's exact StreamInstance.
-                    // A retired loader cannot serve or overwrite another stream.
-                    let next = playback
-                        .read_media3(
-                            identity.session_id().clone(),
-                            identity.stream_handle().clone(),
-                            maximum - returned.len(),
-                        )
-                        .await;
-                    match next {
-                        Ok(bytes) if bytes.is_empty() => break,
-                        Ok(bytes) => returned.extend_from_slice(&bytes),
-                        Err(_) if !returned.is_empty() => break,
-                        Err(_) => return Err(AndroidPlaybackError),
-                    }
-                    if returned.len() == maximum {
-                        break;
-                    }
-                }
-                Ok(returned)
+                let mut buffer = vec![0; maximum];
+                let filled = playback
+                    .read_native_into(identity.session_id(), identity.stream_handle(), &mut buffer)
+                    .await
+                    .map_err(|_| AndroidPlaybackError)?;
+                buffer.truncate(filled);
+                Ok(buffer)
             })
         }))
         .map_err(|_| AndroidPlaybackError)?
